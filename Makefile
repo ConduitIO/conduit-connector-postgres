@@ -1,4 +1,4 @@
-.PHONY: build test generate lint
+.PHONY: build test lint
 
 build:
 	go build -o conduit-connector-postgres cmd/pg/main.go
@@ -9,9 +9,6 @@ test:
 	go test $(GOTEST_FLAGS) -race ./...; ret=$$?; \
 		docker compose -f test/docker-compose-postgres.yml down; \
 		exit $$ret
-
-generate:
-	go generate ./...
 
 lint:
 	golangci-lint run
