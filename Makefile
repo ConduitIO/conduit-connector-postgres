@@ -1,4 +1,4 @@
-.PHONY: build test
+.PHONY: build test generate lint
 
 build:
 	go build -o conduit-connector-postgres cmd/pg/main.go

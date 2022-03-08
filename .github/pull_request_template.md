@@ -9,6 +9,6 @@ Fixes # (issue)
 ### Quick checks:
 
 - [ ] I have followed the [Code Guidelines](https://github.com/ConduitIO/conduit/blob/main/docs/code_guidelines.md).
-- [ ] There is no other [pull request](https://github.com/ConduitIO/conduit-connector-kafka/pulls) for the same update/change.
+- [ ] There is no other [pull request](https://github.com/ConduitIO/conduit-connector-postgres/pulls) for the same update/change.
 - [ ] I have written unit tests.
 - [ ] I have made sure that the PR is of reasonable size and can be easily reviewed.
