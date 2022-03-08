@@ -52,7 +52,7 @@ func TestIterator_Next(t *testing.T) {
 			name: "should detect insert",
 			action: func(t *testing.T, db *pgx.Conn) {
 				rows, err := db.Query(context.Background(), `insert into
-				records(id, column1, column2, column3)
+				records2(id, column1, column2, column3)
 				values (6, 'bizz', 456, false);`)
 				is.NoErr(err)
 				defer rows.Close()
@@ -61,7 +61,7 @@ func TestIterator_Next(t *testing.T) {
 			want: sdk.Record{
 				Key: sdk.StructuredData{"id": int64(6)},
 				Metadata: map[string]string{
-					"table":  "records",
+					"table":  "records2",
 					"action": "insert",
 				},
 				Payload: sdk.StructuredData{
@@ -75,7 +75,7 @@ func TestIterator_Next(t *testing.T) {
 			name: "should detect update",
 			action: func(t *testing.T, db *pgx.Conn) {
 				rows, err := db.Query(context.Background(),
-					`update records * set column1 = 'test cdc updates' 
+					`update records2 * set column1 = 'test cdc updates' 
 					where key = '1';`)
 				is.NoErr(err)
 				defer rows.Close()
@@ -84,7 +84,7 @@ func TestIterator_Next(t *testing.T) {
 			want: sdk.Record{
 				Key: sdk.StructuredData{"id": int64(1)},
 				Metadata: map[string]string{
-					"table":  "records",
+					"table":  "records2",
 					"action": "update",
 				},
 				Payload: sdk.StructuredData{
@@ -99,7 +99,7 @@ func TestIterator_Next(t *testing.T) {
 			name: "should detect delete",
 			action: func(t *testing.T, db *pgx.Conn) {
 				rows, err := db.Query(context.Background(),
-					`delete from records where id = 3;`)
+					`delete from records2 where id = 3;`)
 				is.NoErr(err)
 				defer rows.Close()
 			},
@@ -107,7 +107,7 @@ func TestIterator_Next(t *testing.T) {
 			want: sdk.Record{
 				Key: sdk.StructuredData{"id": int64(3)},
 				Metadata: map[string]string{
-					"table":  "records",
+					"table":  "records2",
 					"action": "delete",
 				},
 			},
@@ -149,7 +149,7 @@ func getDefaultIterator(t *testing.T) *Iterator {
 	randSlotName := fmt.Sprintf("conduit%d", n)
 	config := Config{
 		URL:       CDCTestURL,
-		TableName: "records",
+		TableName: "records2",
 		SlotName:  randSlotName,
 	}
 	i, err := NewCDCIterator(ctx, config)
@@ -166,16 +166,14 @@ func getDefaultIterator(t *testing.T) *Iterator {
 func getTestPostgres(t *testing.T) *pgx.Conn {
 	is := is.New(t)
 	prepareDB := []string{
-		// `DROP DATABASE IF EXISTS meroxadb;`,
-		// `CREATE DATABASE IF NOT EXISTS meroxadb;`,
-		`DROP TABLE IF EXISTS records;`,
-		`CREATE TABLE IF NOT EXISTS records (
+		`DROP TABLE IF EXISTS records2;`,
+		`CREATE TABLE IF NOT EXISTS records2 (
 		id bigserial PRIMARY KEY,
 		key bytea,
 		column1 varchar(256),
 		column2 integer,
 		column3 boolean);`,
-		`INSERT INTO records(key, column1, column2, column3)
+		`INSERT INTO records2(key, column1, column2, column3)
 		VALUES('1', 'foo', 123, false),
 		('2', 'bar', 456, true),
 		('3', 'baz', 789, false),

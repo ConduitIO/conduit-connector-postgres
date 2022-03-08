@@ -31,7 +31,7 @@ const SnapshotTestURL = "postgres://meroxauser:meroxapass@localhost:5432/meroxad
 func TestSnapshotterReads(t *testing.T) {
 	is := is.New(t)
 	db := getTestPostgres(t)
-	s, err := NewSnapshotter(db, "records", []string{"id",
+	s, err := NewSnapshotter(db, "records3", []string{"id",
 		"column1", "key"}, "key")
 	is.NoErr(err)
 	i := 0
@@ -51,7 +51,7 @@ func TestSnapshotterReads(t *testing.T) {
 func TestSnapshotterTeardown(t *testing.T) {
 	is := is.New(t)
 	db := getTestPostgres(t)
-	s, err := NewSnapshotter(db, "records", []string{"id",
+	s, err := NewSnapshotter(db, "records3", []string{"id",
 		"column1", "key"}, "key")
 	is.NoErr(err)
 	is.True(s.HasNext()) // failed to queue up record
@@ -65,7 +65,7 @@ func TestSnapshotterTeardown(t *testing.T) {
 func TestPrematureDBClose(t *testing.T) {
 	is := is.New(t)
 	db := getTestPostgres(t)
-	s, err := NewSnapshotter(db, "records", []string{"id",
+	s, err := NewSnapshotter(db, "records3", []string{"id",
 		"column1", "key"}, "key")
 	is.NoErr(err)
 	next1 := s.HasNext()
@@ -88,16 +88,16 @@ func getTestPostgres(t *testing.T) *sql.DB {
 	is := is.New(t)
 	prepareDB := []string{
 		// drop any existing data
-		`DROP TABLE IF EXISTS records;`,
-		// setup records table
-		`CREATE TABLE IF NOT EXISTS records (
+		`DROP TABLE IF EXISTS records3;`,
+		// setup records3 table
+		`CREATE TABLE IF NOT EXISTS records3 (
 		id bigserial PRIMARY KEY,
 		key bytea,
 		column1 varchar(256),
 		column2 integer,
 		column3 boolean);`,
 		// seed values
-		`INSERT INTO records(key, column1, column2, column3)
+		`INSERT INTO records3(key, column1, column2, column3)
 		VALUES('1', 'foo', 123, false),
 		('2', 'bar', 456, true),
 		('3', 'baz', 789, false),

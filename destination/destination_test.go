@@ -54,7 +54,7 @@ func TestAdapter_Write(t *testing.T) {
 					Position: sdk.Position("5"),
 					Metadata: map[string]string{
 						"action": "insert",
-						"table":  "records",
+						"table":  "records1",
 					},
 					Key: sdk.StructuredData{
 						"key": "uuid-mimicking-key-1234",
@@ -80,7 +80,7 @@ func TestAdapter_Write(t *testing.T) {
 					Position: sdk.Position("5"),
 					Metadata: map[string]string{
 						"action": "update",
-						"table":  "records",
+						"table":  "records1",
 					},
 					Key: sdk.StructuredData{
 						"key": "uuid-mimicking-key-1234",
@@ -111,13 +111,13 @@ func TestAdapter_Write(t *testing.T) {
 func getTestPostgres(t *testing.T) *pgx.Conn {
 	is := is.New(t)
 	prepareDB := []string{
-		`DROP TABLE IF EXISTS records;`,
-		`CREATE TABLE IF NOT EXISTS records (
+		`DROP TABLE IF EXISTS records1;`,
+		`CREATE TABLE IF NOT EXISTS records1 (
 		key bytea PRIMARY KEY,
 		column1 varchar(256),
 		column2 integer,
 		column3 boolean);`,
-		`INSERT INTO records(key, column1, column2, column3)
+		`INSERT INTO records1(key, column1, column2, column3)
 		VALUES('1', 'foo', 123, false),
 		('2', 'bar', 456, true),
 		('3', 'baz', 789, false),
