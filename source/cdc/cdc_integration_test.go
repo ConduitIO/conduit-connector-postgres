@@ -22,10 +22,10 @@ import (
 	"time"
 
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/conduitio/conduit/pkg/foundation/assert"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/jackc/pgx/v4"
+	"github.com/matryer/is"
 )
 
 const (
@@ -36,10 +36,11 @@ const (
 )
 
 func TestIterator_Next(t *testing.T) {
+	is := is.New(t)
 	db := getTestPostgres(t)
 	i := getDefaultIterator(t)
 	t.Cleanup(func() {
-		assert.Ok(t, i.Teardown())
+		is.NoErr(i.Teardown())
 	})
 	tests := []struct {
 		name    string
@@ -53,7 +54,7 @@ func TestIterator_Next(t *testing.T) {
 				rows, err := db.Query(context.Background(), `insert into
 				records(id, column1, column2, column3)
 				values (6, 'bizz', 456, false);`)
-				assert.Ok(t, err)
+				is.NoErr(err)
 				defer rows.Close()
 			},
 			wantErr: false,
@@ -76,7 +77,7 @@ func TestIterator_Next(t *testing.T) {
 				rows, err := db.Query(context.Background(),
 					`update records * set column1 = 'test cdc updates' 
 					where key = '1';`)
-				assert.Ok(t, err)
+				is.NoErr(err)
 				defer rows.Close()
 			},
 			wantErr: false,
@@ -99,7 +100,7 @@ func TestIterator_Next(t *testing.T) {
 			action: func(t *testing.T, db *pgx.Conn) {
 				rows, err := db.Query(context.Background(),
 					`delete from records where id = 3;`)
-				assert.Ok(t, err)
+				is.NoErr(err)
 				defer rows.Close()
 			},
 			wantErr: false,
@@ -119,7 +120,7 @@ func TestIterator_Next(t *testing.T) {
 			time.Sleep(1 * time.Second)
 
 			got, err := i.Next(context.Background())
-			assert.Ok(t, err)
+			is.NoErr(err)
 
 			diff := cmp.Diff(
 				got,
@@ -132,18 +133,19 @@ func TestIterator_Next(t *testing.T) {
 			if diff != "" {
 				t.Errorf("%s", diff)
 			}
-			assert.True(t, got.CreatedAt.After(now), "CreatedAt should be After now")
-			assert.Ok(t, i.Ack(context.Background(), got.Position))
+			is.True(got.CreatedAt.After(now)) // CreatedAt should be After now
+			is.NoErr(i.Ack(context.Background(), got.Position))
 		})
 	}
 }
 
 // getDefaultIterator
 func getDefaultIterator(t *testing.T) *Iterator {
+	is := is.New(t)
 	_ = getTestPostgres(t)
 	ctx := context.Background()
 	n, err := rand.Prime(rand.Reader, 4)
-	assert.Ok(t, err)
+	is.NoErr(err)
 	randSlotName := fmt.Sprintf("conduit%d", n)
 	config := Config{
 		URL:       CDCTestURL,
@@ -151,9 +153,9 @@ func getDefaultIterator(t *testing.T) *Iterator {
 		SlotName:  randSlotName,
 	}
 	i, err := NewCDCIterator(ctx, config)
-	assert.Ok(t, err)
-	assert.Equal(t, i.config.KeyColumnName, "id")
-	assert.Equal(t, []string{"id", "key", "column1", "column2", "column3"},
+	is.NoErr(err)
+	is.Equal(i.config.KeyColumnName, "id")
+	is.Equal([]string{"id", "key", "column1", "column2", "column3"},
 		i.config.Columns)
 	return i
 }
@@ -162,6 +164,7 @@ func getDefaultIterator(t *testing.T) *Iterator {
 // connection and returns a DB and the connection string.
 // * It starts and migrates a db with 5 rows for Test_Read* and Test_Open*
 func getTestPostgres(t *testing.T) *pgx.Conn {
+	is := is.New(t)
 	prepareDB := []string{
 		// `DROP DATABASE IF EXISTS meroxadb;`,
 		// `CREATE DATABASE IF NOT EXISTS meroxadb;`,
@@ -179,18 +182,19 @@ func getTestPostgres(t *testing.T) *pgx.Conn {
 		('4', null, null, null);`,
 	}
 	conn, err := pgx.Connect(context.Background(), CDCTestURL)
-	assert.Ok(t, err)
+	is.NoErr(err)
 	conn = migrate(t, conn, prepareDB)
-	assert.Ok(t, err)
+	is.NoErr(err)
 	return conn
 }
 
 // migrate will run a set of migrations on a database to prepare it for a test
 // it fails the test if any migrations are not applied.
 func migrate(t *testing.T, conn *pgx.Conn, migrations []string) *pgx.Conn {
+	is := is.New(t)
 	for _, migration := range migrations {
 		_, err := conn.Exec(context.Background(), migration)
-		assert.Ok(t, err)
+		is.NoErr(err)
 	}
 	return conn
 }

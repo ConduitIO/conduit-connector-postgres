@@ -19,9 +19,8 @@ import (
 	"testing"
 
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/conduitio/conduit/pkg/foundation/assert"
-
 	"github.com/jackc/pgx/v4"
+	"github.com/matryer/is"
 )
 
 // DBURL is the URI to the Postgres instance that docker-compose starts
@@ -110,6 +109,7 @@ func TestAdapter_Write(t *testing.T) {
 	}
 }
 func getTestPostgres(t *testing.T) *pgx.Conn {
+	is := is.New(t)
 	prepareDB := []string{
 		`DROP TABLE IF EXISTS records;`,
 		`CREATE TABLE IF NOT EXISTS records (
@@ -124,16 +124,17 @@ func getTestPostgres(t *testing.T) *pgx.Conn {
 		('4', null, null, null);`,
 	}
 	db, err := pgx.Connect(context.Background(), DBURL)
-	assert.Ok(t, err)
+	is.NoErr(err)
 	db = migrate(t, db, prepareDB)
-	assert.Ok(t, err)
+	is.NoErr(err)
 	return db
 }
 
 func migrate(t *testing.T, db *pgx.Conn, migrations []string) *pgx.Conn {
+	is := is.New(t)
 	for _, migration := range migrations {
 		_, err := db.Exec(context.Background(), migration)
-		assert.Ok(t, err)
+		is.NoErr(err)
 	}
 	return db
 }

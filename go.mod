@@ -5,17 +5,18 @@ go 1.17
 require (
 	github.com/Masterminds/squirrel v1.5.2
 	github.com/batchcorp/pgoutput v0.3.2
-	github.com/conduitio/conduit v0.1.1
 	github.com/conduitio/conduit-connector-sdk v0.0.0-20220304172424-32a20f262a14
 	github.com/google/go-cmp v0.5.7
 	github.com/jackc/pgx v3.6.2+incompatible
 	github.com/jackc/pgx/v4 v4.14.1
 	github.com/lib/pq v1.10.4
+	github.com/matryer/is v1.4.0
 )
 
 require (
 	github.com/conduitio/conduit-connector-protocol v0.0.0-20220302182649-4f4c215c2b83 // indirect
 	github.com/fatih/color v1.13.0 // indirect
+	github.com/gofrs/uuid v4.2.0+incompatible // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/hashicorp/go-hclog v1.1.0 // indirect
 	github.com/hashicorp/go-plugin v1.4.3 // indirect
@@ -27,6 +28,7 @@ require (
 	github.com/jackc/pgproto3/v2 v2.2.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20200714003250-2b9c44734f2b // indirect
 	github.com/jackc/pgtype v1.9.1 // indirect
+	github.com/jhump/protoreflect v1.10.2-0.20220118162304-602a8db873e3 // indirect
 	github.com/jpillora/backoff v1.0.0 // indirect
 	github.com/lann/builder v0.0.0-20180802200727-47ae307949d0 // indirect
 	github.com/lann/ps v0.0.0-20150810152359-62de8c46ede0 // indirect
