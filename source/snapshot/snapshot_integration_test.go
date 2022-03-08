@@ -19,11 +19,11 @@ package snapshot
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 
+	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/conduitio/conduit/pkg/foundation/assert"
-	"github.com/conduitio/conduit/pkg/foundation/cerrors"
-	"github.com/conduitio/conduit/pkg/plugin/sdk"
 
 	_ "github.com/lib/pq"
 )
@@ -62,7 +62,7 @@ func TestSnapshotterTeardown(t *testing.T) {
 	assert.True(t, !s.snapshotComplete,
 		"snapshot prematurely marked complete")
 	got := s.Teardown()
-	assert.True(t, cerrors.Is(got, ErrSnapshotInterrupt),
+	assert.True(t, errors.Is(got, ErrSnapshotInterrupt),
 		"failed to get snapshot interrupt")
 }
 
@@ -74,7 +74,7 @@ func TestPrematureDBClose(t *testing.T) {
 	next1 := s.HasNext()
 	assert.Equal(t, true, next1)
 	teardownErr := s.Teardown()
-	assert.True(t, cerrors.Is(teardownErr, ErrSnapshotInterrupt),
+	assert.True(t, errors.Is(teardownErr, ErrSnapshotInterrupt),
 		"failed to get snapshot interrupt error")
 	_, err = s.Next(context.Background())
 	assert.Error(t, err)
@@ -82,7 +82,7 @@ func TestPrematureDBClose(t *testing.T) {
 	assert.Equal(t, false, next2)
 	rec, err := s.Next(context.Background())
 	assert.Equal(t, rec, sdk.Record{})
-	assert.True(t, cerrors.Is(err, ErrNoRows),
+	assert.True(t, errors.Is(err, ErrNoRows),
 		"failed to get snapshot incomplete")
 }
 

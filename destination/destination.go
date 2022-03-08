@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/conduitio/conduit/pkg/plugin/sdk"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jackc/pgx/v4"

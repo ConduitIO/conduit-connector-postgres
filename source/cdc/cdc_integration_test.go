@@ -23,8 +23,8 @@ import (
 	"testing"
 	"time"
 
+	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/conduitio/conduit/pkg/foundation/assert"
-	"github.com/conduitio/conduit/pkg/plugin/sdk"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/jackc/pgx/v4"

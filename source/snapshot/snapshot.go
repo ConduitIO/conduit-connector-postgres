@@ -17,12 +17,12 @@ package snapshot
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"reflect"
 	"strconv"
 	"time"
 
-	"github.com/conduitio/conduit/pkg/foundation/cerrors"
-	"github.com/conduitio/conduit/pkg/plugin/sdk"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 
 	sq "github.com/Masterminds/squirrel"
 )
@@ -34,10 +34,10 @@ var (
 	// ErrNoRows is returned when there are no rows to read.
 	// * This can happen if the database is closed early, if there are no
 	// rows in the result set, or if there are no results left to return.
-	ErrNoRows = cerrors.Errorf("no more rows")
+	ErrNoRows = fmt.Errorf("no more rows")
 	// ErrSnapshotInterrupt is returned when Teardown or any other signal
 	// cancels an in-progress snapshot.
-	ErrSnapshotInterrupt = cerrors.Errorf("interrupted snapshot")
+	ErrSnapshotInterrupt = fmt.Errorf("interrupted snapshot")
 )
 
 // Snapshotter implements the Iterator interface for capturing an initial table
@@ -80,7 +80,7 @@ func NewSnapshotter(db *sql.DB, table string, columns []string, key string) (*Sn
 	// load our initial set of rows into the snapshotter after we've set the db
 	err := s.loadRows()
 	if err != nil {
-		return nil, cerrors.Errorf("failed to get rows for snapshot: %w", err)
+		return nil, fmt.Errorf("failed to get rows for snapshot: %w", err)
 	}
 	return s, nil
 }
@@ -113,7 +113,7 @@ func (s *Snapshotter) Next(ctx context.Context) (sdk.Record, error) {
 	rec := sdk.Record{}
 	rec, err := withPayload(rec, s.rows, s.columns, s.key)
 	if err != nil {
-		return sdk.Record{}, cerrors.Errorf("failed to assign payload: %w",
+		return sdk.Record{}, fmt.Errorf("failed to assign payload: %w",
 			err)
 	}
 	rec = withMetadata(rec, s.table, s.key)
@@ -137,11 +137,11 @@ func (s *Snapshotter) Teardown() error {
 	}
 	closeErr := s.rows.Close()
 	if closeErr != nil {
-		return cerrors.Errorf("failed to close rows: %w", closeErr)
+		return fmt.Errorf("failed to close rows: %w", closeErr)
 	}
 	rowsErr := s.rows.Err()
 	if rowsErr != nil {
-		return cerrors.Errorf("rows error: %w", rowsErr)
+		return fmt.Errorf("rows error: %w", rowsErr)
 	}
 	return interruptErr
 }
@@ -153,12 +153,12 @@ func (s *Snapshotter) Teardown() error {
 func (s *Snapshotter) loadRows() error {
 	query, args, err := psql.Select(s.columns...).From(s.table).ToSql()
 	if err != nil {
-		return cerrors.Errorf("failed to create read query: %w", err)
+		return fmt.Errorf("failed to create read query: %w", err)
 	}
 	//nolint:sqlclosecheck,rowserrcheck //both are called at teardown
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
-		return cerrors.Errorf("failed to query context: %w", err)
+		return fmt.Errorf("failed to query context: %w", err)
 	}
 	s.rows = rows
 	return nil
@@ -206,7 +206,7 @@ func withPayload(rec sdk.Record, rows *sql.Rows, columns []string, key string) (
 	// get the column types for those rows and record them as well
 	colTypes, err := rows.ColumnTypes()
 	if err != nil {
-		return sdk.Record{}, cerrors.Errorf("failed to get column types: %w", err)
+		return sdk.Record{}, fmt.Errorf("failed to get column types: %w", err)
 	}
 
 	// BLOCK 3
@@ -215,7 +215,7 @@ func withPayload(rec sdk.Record, rows *sql.Rows, columns []string, key string) (
 	payload := make(sdk.StructuredData)
 	err = rows.Scan(vals...)
 	if err != nil {
-		return sdk.Record{}, cerrors.Errorf("failed to scan: %w", err)
+		return sdk.Record{}, fmt.Errorf("failed to scan: %w", err)
 	}
 
 	// BLOCK 3 or 4, argument could be made this is related to payload serialization
@@ -255,7 +255,7 @@ func withPayload(rec sdk.Record, rows *sql.Rows, columns []string, key string) (
 			}
 			i, err := strconv.ParseInt(val, 10, 16)
 			if err != nil {
-				return sdk.Record{}, cerrors.Errorf("failed to parse int: %w", err)
+				return sdk.Record{}, fmt.Errorf("failed to parse int: %w", err)
 			}
 			payload[col] = i
 		case "INT8":
@@ -266,7 +266,7 @@ func withPayload(rec sdk.Record, rows *sql.Rows, columns []string, key string) (
 			}
 			i, err := strconv.ParseInt(val, 10, 16)
 			if err != nil {
-				return sdk.Record{}, cerrors.Errorf("failed to parse int: %w", err)
+				return sdk.Record{}, fmt.Errorf("failed to parse int: %w", err)
 			}
 			payload[col] = i
 		case "BOOL":
@@ -277,11 +277,11 @@ func withPayload(rec sdk.Record, rows *sql.Rows, columns []string, key string) (
 			}
 			b, err := strconv.ParseBool(val)
 			if err != nil {
-				return sdk.Record{}, cerrors.Errorf("failed to parse boolean: %w", err)
+				return sdk.Record{}, fmt.Errorf("failed to parse boolean: %w", err)
 			}
 			payload[col] = b
 		default:
-			sdk.Logger(context.Background()).Err(cerrors.Errorf("failed to handle type %T", t.DatabaseTypeName())).Send()
+			sdk.Logger(context.Background()).Err(fmt.Errorf("failed to handle type %T", t.DatabaseTypeName())).Send()
 			payload[col] = nil
 		}
 	}

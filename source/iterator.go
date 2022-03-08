@@ -19,7 +19,7 @@ package source
 import (
 	"context"
 
-	"github.com/conduitio/conduit/pkg/plugin/sdk"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
 // Strategy defines an iterator interface that all Iterators must fulfill.
