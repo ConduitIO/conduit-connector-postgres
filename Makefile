@@ -5,9 +5,9 @@ build:
 
 test:
 	# run required docker containers, execute integration tests, stop containers after tests
-	docker compose -f test/docker-compose-postgres.yml up --quiet-pull -d --wait
+	docker compose -f test/docker-compose.yml up --quiet-pull -d --wait
 	go test $(GOTEST_FLAGS) -race ./...; ret=$$?; \
-		docker compose -f test/docker-compose-postgres.yml down; \
+		docker compose -f test/docker-compose.yml down; \
 		exit $$ret
 
 lint:
