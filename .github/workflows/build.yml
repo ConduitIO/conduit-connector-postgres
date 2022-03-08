@@ -17,4 +17,4 @@ jobs:
           go-version: 1.17
 
       - name: Test
-        run: go test ./...
+        run: make test GOTEST_FLAGS="-v -count=1"
