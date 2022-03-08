@@ -21,10 +21,8 @@ import (
 	"strings"
 	"sync"
 
-	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/conduitio/conduit/pkg/foundation/multierror"
-
 	"github.com/batchcorp/pgoutput"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx"
 )
 
@@ -156,10 +154,19 @@ func (i *Iterator) Teardown() error {
 	i.wg.Wait()
 	defer i.db.Close()
 
-	termErr := i.terminateBackend()
-	dropReplErr := i.dropReplicationSlot()
-	dropPubErr := i.dropPublication()
-	return multierror.Append(termErr, dropPubErr, dropReplErr)
+	err := i.terminateBackend()
+	if err != nil {
+		return err
+	}
+	err = i.dropReplicationSlot()
+	if err != nil {
+		return err
+	}
+	err = i.dropPublication()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // attachSubscription builds a subscription with its own dedicated replication
