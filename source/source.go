@@ -17,12 +17,12 @@ package source
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 
-	"github.com/conduitio/conduit/pkg/foundation/cerrors"
-	"github.com/conduitio/conduit/pkg/plugin/sdk"
-	"github.com/conduitio/conduit/pkg/plugins/pg/source/cdc"
-	"github.com/conduitio/conduit/pkg/plugins/pg/source/snapshot"
+	"github.com/conduitio/conduit-connector-postgres/source/cdc"
+	"github.com/conduitio/conduit-connector-postgres/source/snapshot"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
 // requiredFields is a list of our plugin required config fields for validation
@@ -47,7 +47,7 @@ func NewSource() sdk.Source {
 func (s *Source) Configure(ctx context.Context, cfg map[string]string) error {
 	err := validateConfig(cfg, requiredFields)
 	if err != nil {
-		return cerrors.Errorf("config failed validation: %w", err)
+		return fmt.Errorf("config failed validation: %w", err)
 	}
 	s.config = cfg
 	return nil
@@ -57,7 +57,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 	case "snapshot":
 		db, err := sql.Open("postgres", s.config["url"])
 		if err != nil {
-			return cerrors.Errorf("failed to connect to database: %w", err)
+			return fmt.Errorf("failed to connect to database: %w", err)
 		}
 		columns := parseColumns(s.config)
 		snap, err := snapshot.NewSnapshotter(
@@ -66,7 +66,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			columns,
 			s.config["key"])
 		if err != nil {
-			return cerrors.Errorf("failed to open snapshotter: %w", err)
+			return fmt.Errorf("failed to open snapshotter: %w", err)
 		}
 		s.Iterator = snap
 	default:
@@ -81,7 +81,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			Columns:         columns,
 		})
 		if err != nil {
-			return cerrors.Errorf("failed to open cdc connection: %w", err)
+			return fmt.Errorf("failed to open cdc connection: %w", err)
 		}
 		s.Iterator = i
 	}
@@ -107,7 +107,7 @@ func (s *Source) Teardown(context.Context) error {
 func validateConfig(cfg map[string]string, required []string) error {
 	for _, k := range required {
 		if _, ok := cfg[k]; !ok {
-			return cerrors.Errorf("plugin config missing required field %s", k)
+			return fmt.Errorf("plugin config missing required field %s", k)
 		}
 	}
 	return nil

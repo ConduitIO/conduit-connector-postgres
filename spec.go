@@ -15,7 +15,7 @@
 package pg
 
 import (
-	"github.com/conduitio/conduit/pkg/plugin/sdk"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
 func Specification() sdk.Specification {

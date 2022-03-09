@@ -12,18 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// //go:build integration
-
 package destination
 
 import (
 	"context"
 	"testing"
 
-	"github.com/conduitio/conduit/pkg/foundation/assert"
-	"github.com/conduitio/conduit/pkg/plugin/sdk"
-
+	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v4"
+	"github.com/matryer/is"
 )
 
 // DBURL is the URI to the Postgres instance that docker-compose starts
@@ -57,7 +54,7 @@ func TestAdapter_Write(t *testing.T) {
 					Position: sdk.Position("5"),
 					Metadata: map[string]string{
 						"action": "insert",
-						"table":  "records",
+						"table":  "records1",
 					},
 					Key: sdk.StructuredData{
 						"key": "uuid-mimicking-key-1234",
@@ -83,7 +80,7 @@ func TestAdapter_Write(t *testing.T) {
 					Position: sdk.Position("5"),
 					Metadata: map[string]string{
 						"action": "update",
-						"table":  "records",
+						"table":  "records1",
 					},
 					Key: sdk.StructuredData{
 						"key": "uuid-mimicking-key-1234",
@@ -112,30 +109,32 @@ func TestAdapter_Write(t *testing.T) {
 	}
 }
 func getTestPostgres(t *testing.T) *pgx.Conn {
+	is := is.New(t)
 	prepareDB := []string{
-		`DROP TABLE IF EXISTS records;`,
-		`CREATE TABLE IF NOT EXISTS records (
+		`DROP TABLE IF EXISTS records1;`,
+		`CREATE TABLE IF NOT EXISTS records1 (
 		key bytea PRIMARY KEY,
 		column1 varchar(256),
 		column2 integer,
 		column3 boolean);`,
-		`INSERT INTO records(key, column1, column2, column3)
+		`INSERT INTO records1(key, column1, column2, column3)
 		VALUES('1', 'foo', 123, false),
 		('2', 'bar', 456, true),
 		('3', 'baz', 789, false),
 		('4', null, null, null);`,
 	}
 	db, err := pgx.Connect(context.Background(), DBURL)
-	assert.Ok(t, err)
+	is.NoErr(err)
 	db = migrate(t, db, prepareDB)
-	assert.Ok(t, err)
+	is.NoErr(err)
 	return db
 }
 
 func migrate(t *testing.T, db *pgx.Conn, migrations []string) *pgx.Conn {
+	is := is.New(t)
 	for _, migration := range migrations {
 		_, err := db.Exec(context.Background(), migration)
-		assert.Ok(t, err)
+		is.NoErr(err)
 	}
 	return db
 }

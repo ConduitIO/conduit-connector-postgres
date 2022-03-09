@@ -12,14 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:generate mockgen -destination=mock/iterator.go -package=mock . Iterator
-
 package source
 
 import (
 	"context"
 
-	"github.com/conduitio/conduit/pkg/plugin/sdk"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
 // Strategy defines an iterator interface that all Iterators must fulfill.

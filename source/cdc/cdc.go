@@ -21,11 +21,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/conduitio/conduit/pkg/foundation/cerrors"
-	"github.com/conduitio/conduit/pkg/foundation/multierror"
-	"github.com/conduitio/conduit/pkg/plugin/sdk"
-
 	"github.com/batchcorp/pgoutput"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx"
 )
 
@@ -70,17 +67,17 @@ func NewCDCIterator(ctx context.Context, config Config) (*Iterator, error) {
 
 	err := i.connectDB()
 	if err != nil {
-		return nil, cerrors.Errorf("failed to connect to postgres: %w", err)
+		return nil, fmt.Errorf("failed to connect to postgres: %w", err)
 	}
 
 	err = i.attachSubscription()
 	if err != nil {
-		return nil, cerrors.Errorf("failed to setup subscription %w", err)
+		return nil, fmt.Errorf("failed to setup subscription %w", err)
 	}
 
 	err = i.setPosition(config.Position)
 	if err != nil {
-		return nil, cerrors.Errorf("failed to set starting position: %w", err)
+		return nil, fmt.Errorf("failed to set starting position: %w", err)
 	}
 
 	go i.listen(wctx)
@@ -140,7 +137,7 @@ func (i *Iterator) Next(ctx context.Context) (sdk.Record, error) {
 func (i *Iterator) Ack(ctx context.Context, pos sdk.Position) error {
 	n, err := parsePosition(string(pos))
 	if err != nil {
-		return cerrors.Errorf("failed to parse position")
+		return fmt.Errorf("failed to parse position")
 	}
 	return i.sub.AdvanceLSN(n)
 }
@@ -157,10 +154,19 @@ func (i *Iterator) Teardown() error {
 	i.wg.Wait()
 	defer i.db.Close()
 
-	termErr := i.terminateBackend()
-	dropReplErr := i.dropReplicationSlot()
-	dropPubErr := i.dropPublication()
-	return multierror.Append(termErr, dropPubErr, dropReplErr)
+	err := i.terminateBackend()
+	if err != nil {
+		return err
+	}
+	err = i.dropReplicationSlot()
+	if err != nil {
+		return err
+	}
+	err = i.dropPublication()
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // attachSubscription builds a subscription with its own dedicated replication
@@ -176,28 +182,28 @@ func (i *Iterator) attachSubscription() error {
 
 	err := i.configureColumns()
 	if err != nil {
-		return cerrors.Errorf("failed to find table columns: %w", err)
+		return fmt.Errorf("failed to find table columns: %w", err)
 	}
 
 	err = i.configureKeyColumn()
 	if err != nil {
-		return cerrors.Errorf("failed to find key: %w", err)
+		return fmt.Errorf("failed to find key: %w", err)
 	}
 
 	replConn, err := getReplicationConnection(i.config.URL)
 	if err != nil {
-		return cerrors.Errorf("failed to get replication conn: %w", err)
+		return fmt.Errorf("failed to get replication conn: %w", err)
 	}
 
 	err = i.createPublicationForTable()
 	if err != nil {
-		return cerrors.Errorf("failed to create publication: %w", err)
+		return fmt.Errorf("failed to create publication: %w", err)
 	}
 
 	err = replConn.CreateReplicationSlot(i.config.SlotName, "pgoutput")
 	if err != nil {
 		if !strings.Contains(err.Error(), "SQLSTATE 42710") {
-			return cerrors.Errorf("failed to create replication slot: %v", err)
+			return fmt.Errorf("failed to create replication slot: %v", err)
 		}
 	}
 
@@ -221,7 +227,7 @@ func (i *Iterator) createPublicationForTable() error {
 			i.config.TableName))
 	if err != nil {
 		if !strings.Contains(err.Error(), "SQLSTATE 42710") {
-			return cerrors.Errorf("failed to create publication %s: %w",
+			return fmt.Errorf("failed to create publication %s: %w",
 				i.config.SlotName, err)
 		}
 	}
@@ -231,7 +237,7 @@ func (i *Iterator) createPublicationForTable() error {
 func (i *Iterator) connectDB() error {
 	rc, err := getReplicationConnection(i.config.URL)
 	if err != nil {
-		return cerrors.Errorf("failed to get replication connection: %w", err)
+		return fmt.Errorf("failed to get replication connection: %w", err)
 	}
 	i.db = rc.Conn
 	return nil
@@ -251,19 +257,19 @@ func (i *Iterator) registerMessageHandlers() pgoutput.Handler {
 		case pgoutput.Insert:
 			values, err := set.Values(v.RelationID, v.Row)
 			if err != nil {
-				return cerrors.Errorf("handleInsert failed: %w", err)
+				return fmt.Errorf("handleInsert failed: %w", err)
 			}
 			return i.handleInsert(v.RelationID, values, messageWalPos)
 		case pgoutput.Update:
 			values, err := set.Values(v.RelationID, v.Row)
 			if err != nil {
-				return cerrors.Errorf("handleUpdate failed: %w", err)
+				return fmt.Errorf("handleUpdate failed: %w", err)
 			}
 			return i.handleUpdate(v.RelationID, values, messageWalPos)
 		case pgoutput.Delete:
 			values, err := set.Values(v.RelationID, v.Row)
 			if err != nil {
-				return cerrors.Errorf("handleDelete failed: %w", err)
+				return fmt.Errorf("handleDelete failed: %w", err)
 			}
 			return i.handleDelete(v.RelationID, values, messageWalPos)
 		}
@@ -289,11 +295,11 @@ func (i *Iterator) configureKeyColumn() error {
 	var colName string
 	err := row.Scan(&colName)
 	if err != nil {
-		return cerrors.Errorf("failed to scan row: %w", err)
+		return fmt.Errorf("failed to scan row: %w", err)
 	}
 
 	if colName == "" {
-		return cerrors.Errorf("got empty key column")
+		return fmt.Errorf("got empty key column")
 	}
 	i.config.KeyColumnName = colName
 
@@ -313,7 +319,7 @@ func (i *Iterator) configureColumns() error {
 		WHERE table_name = '%s'`, i.config.TableName)
 	rows, err := i.db.Query(query)
 	if err != nil {
-		return cerrors.Errorf("withColumns query failed: %w", err)
+		return fmt.Errorf("withColumns query failed: %w", err)
 	}
 	defer rows.Close()
 
@@ -321,7 +327,7 @@ func (i *Iterator) configureColumns() error {
 		var val *string
 		err := rows.Scan(&val)
 		if err != nil {
-			return cerrors.Errorf("failed to get column names from values: ")
+			return fmt.Errorf("failed to get column names from values: ")
 		}
 		i.config.Columns = append(i.config.Columns, *val)
 	}
@@ -336,7 +342,7 @@ func (i *Iterator) terminateBackend() error {
 		where slot_name = '%s';`,
 		i.config.SlotName))
 	if err != nil {
-		return cerrors.Errorf("failed to terminate replication slot: %w", err)
+		return fmt.Errorf("failed to terminate replication slot: %w", err)
 	}
 	defer rows.Close()
 	return nil
@@ -345,11 +351,11 @@ func (i *Iterator) terminateBackend() error {
 func getReplicationConnection(url string) (*pgx.ReplicationConn, error) {
 	connInfo, err := pgx.ParseConnectionString(url)
 	if err != nil {
-		return nil, cerrors.Errorf("failed to parse connection info: %w", err)
+		return nil, fmt.Errorf("failed to parse connection info: %w", err)
 	}
 	replConn, err := pgx.ReplicationConnect(connInfo)
 	if err != nil {
-		return nil, cerrors.Errorf("failed to create replication connection: %w", err)
+		return nil, fmt.Errorf("failed to create replication connection: %w", err)
 	}
 	return replConn, nil
 }
@@ -368,7 +374,7 @@ func (i *Iterator) dropReplicationSlot() error {
 		from pg_replication_slots
 		where slot_name = '%s;`, i.config.SlotName))
 	if err != nil {
-		return cerrors.Errorf("failed to drop replication slot: %w", err)
+		return fmt.Errorf("failed to drop replication slot: %w", err)
 	}
 	defer rows.Close()
 	return nil
@@ -379,7 +385,7 @@ func (i *Iterator) dropPublication() error {
 		i.config.PublicationName)
 	rows, err := i.db.Query(query)
 	if err != nil {
-		return cerrors.Errorf("failed to connecto to replication: %w", err)
+		return fmt.Errorf("failed to connecto to replication: %w", err)
 	}
 	defer rows.Close()
 	return nil

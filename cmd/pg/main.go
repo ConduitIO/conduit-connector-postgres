@@ -15,10 +15,10 @@
 package main
 
 import (
-	"github.com/conduitio/conduit/pkg/plugin/sdk"
-	"github.com/conduitio/conduit/pkg/plugins/pg"
-	"github.com/conduitio/conduit/pkg/plugins/pg/destination"
-	"github.com/conduitio/conduit/pkg/plugins/pg/source"
+	pg "github.com/conduitio/conduit-connector-postgres"
+	"github.com/conduitio/conduit-connector-postgres/destination"
+	"github.com/conduitio/conduit-connector-postgres/source"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
 func main() {

@@ -123,7 +123,7 @@ replication enabled. You can use our docker-compose file that works with the
 default test settings by running:
 
 ```bash
-docker-compose -f ./test/docker-compose-postgres.yml up -d
+docker-compose -f ./test/docker-compose.yml up -d
 ```
 
 *Note*: remove the -d flag from either docker-compose command to hold the
