@@ -7,6 +7,11 @@ services:
     volumes:
       - "pg_0_data:/bitnami/postgresql"
       - "./conf.d/:/bitnami/postgresql/conf/conf.d/"
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-q", "-d", "meroxadb", "-U", "meroxauser" ]
+      timeout: 30s
+      interval: 10s
+      retries: 5
     environment:
       - POSTGRESQL_POSTGRES_PASSWORD=meroxaadmin
       - POSTGRESQL_USERNAME=meroxauser
