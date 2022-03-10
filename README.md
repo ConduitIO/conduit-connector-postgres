@@ -76,13 +76,12 @@ column names for the configured table and set them in memory.
 ## Configuration Options
 
 | name             | description                                                                                                                     | required             | default              |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------- | -------------------- | -------------------- |
+|------------------|---------------------------------------------------------------------------------------------------------------------------------|----------------------|----------------------|
 | table            | the name of the table in Postgres that the connector should read                                                                | yes                  | n/a                  |
 | url              | formatted connection string to the database.                                                                                    | yes                  | n/a                  |
 | columns          | comma separated string list of column names that should be built in to each Record's payload.                                   | no                   | `*` (all columns)    |
 | key              | column name that records should use for their `Key` fields. defaults to the column's primary key if nothing is specified        | no                   | primary key of table |
-| snapshot         | whether or not the plugin will take a snapshot of the entire table acquiring a read level lock before starting cdc mode         | n/a                  | enabled              |
-| cdc              | enables CDC features                                                                                                            | req. for CDC mode    | off                  |
+| mode             | the connector's operation mode. Available modes: `cdc`, `snapshot`                                                              | no                   | `cdc`                |
 | publication_name | name of the publication to listen for WAL events                                                                                | req. for CDC mode    | `pglogrepl`          |
 | slot_name        | name of the slot opened for replication events                                                                                  | req. for CDC mode    | `pglogrepl_demo`     |
 | replication_url  | URL for the CDC connection to use. If no replication_url is provided, then the CDC connection attempts the use the `url` value. | optional in CDC mode | n/a                  |
