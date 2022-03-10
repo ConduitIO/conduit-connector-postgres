@@ -41,19 +41,17 @@ Publication and slot name are user configurable, and must be correctly set.
 The plugin will do what it can to be smart about publication and slot 
 management, but it can't handle everything.
 
-If a `replication_url` is provided, it will be used for CDC features instead of 
-the url. If no `replication_url` is provided, but cdc is enabled, then it will 
-attempt to use that url value for CDC features and logical replication setup.
 Example configuration for CDC features:
-```
-"cdc":              "true",
-"publication_name": "meroxademo",
-"slot_name":        "meroxademo",
-"url":              url,
-"replication_url":  url,
-"key":              "key",
-"table":            "records",
-"columns":          "key,column1,column2,column3",
+```json
+{
+ "mode": "cdc",
+ "publication_name": "meroxademo",
+ "slot_name": "meroxademo",
+ "url": "url",
+ "key": "key",
+ "table": "records",
+ "columns": "key,column1,column2,column3"
+}
 ```
 
 ### CDC Event Buffer
@@ -84,7 +82,6 @@ column names for the configured table and set them in memory.
 | mode             | the connector's operation mode. Available modes: `cdc`, `snapshot`                                                              | no                   | `cdc`                |
 | publication_name | name of the publication to listen for WAL events                                                                                | req. for CDC mode    | `pglogrepl`          |
 | slot_name        | name of the slot opened for replication events                                                                                  | req. for CDC mode    | `pglogrepl_demo`     |
-| replication_url  | URL for the CDC connection to use. If no replication_url is provided, then the CDC connection attempts the use the `url` value. | optional in CDC mode | n/a                  |
 
 # Destination 
 The Postgres Destination takes a `record.Record` and parses it into a valid 
