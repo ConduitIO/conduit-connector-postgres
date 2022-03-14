@@ -173,13 +173,6 @@ func (i *Iterator) Teardown() error {
 // connection. It prepares a replication slot and publication for the connector
 // if they're not yet setup with sane defaults if they're not configured.
 func (i *Iterator) attachSubscription() error {
-	if i.config.PublicationName == "" {
-		i.config.PublicationName = "conduitpub"
-	}
-	if i.config.SlotName == "" {
-		i.config.SlotName = "conduitslot"
-	}
-
 	err := i.configureColumns()
 	if err != nil {
 		return fmt.Errorf("failed to find table columns: %w", err)
