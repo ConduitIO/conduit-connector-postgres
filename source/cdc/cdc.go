@@ -129,7 +129,7 @@ func (i *Iterator) Next(ctx context.Context) (sdk.Record, error) {
 		case r := <-i.messages:
 			return r, nil
 		case <-ctx.Done():
-			return sdk.Record{}, sdk.ErrBackoffRetry
+			return sdk.Record{}, ctx.Err()
 		}
 	}
 }
@@ -365,11 +365,11 @@ func (i *Iterator) dropReplicationSlot() error {
 	rows, err := i.db.Query(fmt.Sprintf(
 		`select pg_drop_replication_slot(slot_name)
 		from pg_replication_slots
-		where slot_name = '%s;`, i.config.SlotName))
+		where slot_name = '%s'`, i.config.SlotName))
 	if err != nil {
 		return fmt.Errorf("failed to drop replication slot: %w", err)
 	}
-	defer rows.Close()
+	rows.Close()
 	return nil
 }
 
@@ -380,6 +380,6 @@ func (i *Iterator) dropPublication() error {
 	if err != nil {
 		return fmt.Errorf("failed to connecto to replication: %w", err)
 	}
-	defer rows.Close()
+	rows.Close()
 	return nil
 }
