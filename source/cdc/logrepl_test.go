@@ -65,6 +65,7 @@ func TestIterator_Next(t *testing.T) {
 					"action": "insert",
 				},
 				Payload: sdk.StructuredData{
+					"id":      int64(6),
 					"column1": "bizz",
 					"column2": int32(456),
 					"column3": false,
@@ -85,6 +86,7 @@ func TestIterator_Next(t *testing.T) {
 					"action": "update",
 				},
 				Payload: sdk.StructuredData{
+					"id":      int64(1),
 					"column1": "test cdc updates",
 					"column2": int32(123),
 					"column3": false,

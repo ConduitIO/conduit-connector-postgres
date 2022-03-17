@@ -208,7 +208,5 @@ func (h *LogreplHandler) buildRecordPayload(values map[string]pgtype.Value) sdk.
 			payload[k] = value
 		}
 	}
-	// TODO remove next line, payload should contain the whole record
-	delete(payload, h.keyColumn) // NB: dedupe Key out of payload
 	return payload
 }
