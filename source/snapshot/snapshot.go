@@ -152,7 +152,6 @@ func (s *Snapshotter) loadRows(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create read query: %w", err)
 	}
-	//nolint:sqlclosecheck,rowserrcheck //both are called at teardown
 	rows, err := s.conn.Query(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("failed to query context: %w", err)
