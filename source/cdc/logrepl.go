@@ -120,7 +120,7 @@ func (i *LogreplIterator) listen(ctx context.Context) {
 		Str("publication", i.config.PublicationName).
 		Msg("starting logical replication")
 
-	err := i.sub.Start(ctx, i.lsn, i.handler(ctx))
+	err := i.sub.Start(ctx)
 	if err != nil {
 		// TODO return error
 		sdk.Logger(ctx).Err(err).Msg("subscription failed")
@@ -183,16 +183,18 @@ func (i *LogreplIterator) attachSubscription(ctx context.Context) error {
 		i.config.SlotName,
 		i.config.PublicationName,
 		[]string{i.config.TableName},
+		i.lsn,
+		i.handler(),
 	)
 
 	i.sub = sub
 	return nil
 }
 
-func (i *LogreplIterator) handler(ctx context.Context) logrepl.Handler {
+func (i *LogreplIterator) handler() logrepl.Handler {
 	set := logrepl.NewRelationSet(i.conn.ConnInfo())
 
-	return func(m pglogrepl.Message, lsn pglogrepl.LSN) error {
+	return func(ctx context.Context, m pglogrepl.Message, lsn pglogrepl.LSN) error {
 		sdk.Logger(ctx).Trace().
 			Str("lsn", lsn.String()).
 			Str("messageType", m.Type().String()).

@@ -38,10 +38,11 @@ type Subscription struct {
 	SlotName      string
 	Publication   string
 	Tables        []string
+	StartLSN      pglogrepl.LSN
+	Handler       Handler
 	StatusTimeout time.Duration
 
-	// TODO make this nicer
-	stop    chan struct{}
+	stop    context.CancelFunc
 	stopped chan struct{}
 
 	// cleanup is the function that gets called on teardown.
@@ -53,23 +54,30 @@ type Subscription struct {
 	walFlushed pglogrepl.LSN
 }
 
-type Handler func(pglogrepl.Message, pglogrepl.LSN) error
+type Handler func(context.Context, pglogrepl.Message, pglogrepl.LSN) error
 
-func NewSubscription(config pgconn.Config, slotName, publication string, tables []string) *Subscription {
+func NewSubscription(
+	config pgconn.Config,
+	slotName,
+	publication string,
+	tables []string,
+	startLSN pglogrepl.LSN,
+	h Handler,
+) *Subscription {
 	return &Subscription{
 		ConnConfig:    config,
 		SlotName:      slotName,
 		Publication:   publication,
 		Tables:        tables,
+		StartLSN:      startLSN,
+		Handler:       h,
 		StatusTimeout: 10 * time.Second,
-
-		stop:    make(chan struct{}),
-		stopped: make(chan struct{}),
 	}
 }
 
 // Start replication and block until error or ctx is canceled.
-func (s *Subscription) Start(ctx context.Context, startLSN pglogrepl.LSN, h Handler) (err error) {
+func (s *Subscription) Start(ctx context.Context) (err error) {
+	s.stopped = make(chan struct{})
 	defer close(s.stopped)
 	defer func() {
 		// use fresh context for cleanup
@@ -95,14 +103,22 @@ func (s *Subscription) Start(ctx context.Context, startLSN pglogrepl.LSN, h Hand
 	if err != nil {
 		return err
 	}
-	err = s.startReplication(ctx, conn, startLSN)
+	err = s.startReplication(ctx, conn)
 	if err != nil {
 		return err
 	}
 
-	s.walWritten = startLSN
-	s.walFlushed = s.walWritten
+	lctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	s.stop = cancel
+	s.walWritten = s.StartLSN
+	s.walFlushed = s.StartLSN
 
+	return s.listen(lctx, conn)
+}
+
+// listen runs until context is cancelled or an error is encountered.
+func (s *Subscription) listen(ctx context.Context, conn *pgconn.PgConn) error {
 	nextStatusUpdateAt := time.Now().Add(s.StatusTimeout)
 	for {
 		if time.Now().After(nextStatusUpdateAt) {
@@ -132,36 +148,57 @@ func (s *Subscription) Start(ctx context.Context, startLSN pglogrepl.LSN, h Hand
 
 		switch copyDataMsg.Data[0] {
 		case pglogrepl.PrimaryKeepaliveMessageByteID:
-			pkm, err := pglogrepl.ParsePrimaryKeepaliveMessage(copyDataMsg.Data[1:])
+			err := s.handlePrimaryKeepaliveMessage(ctx, conn, copyDataMsg)
 			if err != nil {
-				return fmt.Errorf("failed to parse primary keepalive message: %w", err)
-			}
-			if pkm.ReplyRequested {
-				if err = s.sendStatusUpdate(ctx, conn); err != nil {
-					return fmt.Errorf("failed to send status: %w", err)
-				}
+				return err
 			}
 		case pglogrepl.XLogDataByteID:
-			xld, err := pglogrepl.ParseXLogData(copyDataMsg.Data[1:])
+			err := s.handleXLogData(ctx, copyDataMsg)
 			if err != nil {
-				return fmt.Errorf("failed to parse xlog data: %w", err)
-			}
-
-			if xld.WALStart > 0 && xld.WALStart <= startLSN {
-				// skip stuff that's in the past
-				continue
-			}
-
-			logicalMsg, err := pglogrepl.Parse(xld.WALData)
-			if err != nil {
-				return fmt.Errorf("invalid message: %w", err)
-			}
-
-			if err = h(logicalMsg, xld.WALStart); err != nil {
-				return fmt.Errorf("handler error: %w", err)
+				return err
 			}
 		}
 	}
+}
+
+// handlePrimaryKeepaliveMessage will handle the primary keepalive message and
+// send a reply if requested.
+func (s *Subscription) handlePrimaryKeepaliveMessage(ctx context.Context, conn *pgconn.PgConn, copyDataMsg *pgproto3.CopyData) error {
+	pkm, err := pglogrepl.ParsePrimaryKeepaliveMessage(copyDataMsg.Data[1:])
+	if err != nil {
+		return fmt.Errorf("failed to parse primary keepalive message: %w", err)
+	}
+	if pkm.ReplyRequested {
+		if err = s.sendStatusUpdate(ctx, conn); err != nil {
+			return fmt.Errorf("failed to send status: %w", err)
+		}
+	}
+	return nil
+}
+
+// handleXLogData will parse the logical replication message and forward it to
+// the handler.
+func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3.CopyData) error {
+	xld, err := pglogrepl.ParseXLogData(copyDataMsg.Data[1:])
+	if err != nil {
+		return fmt.Errorf("failed to parse xlog data: %w", err)
+	}
+
+	if xld.WALStart > 0 && xld.WALStart <= s.StartLSN {
+		// skip stuff that's in the past
+		return nil
+	}
+
+	logicalMsg, err := pglogrepl.Parse(xld.WALData)
+	if err != nil {
+		return fmt.Errorf("invalid message: %w", err)
+	}
+
+	if err = s.Handler(ctx, logicalMsg, xld.WALStart); err != nil {
+		return fmt.Errorf("handler error: %w", err)
+	}
+
+	return nil
 }
 
 // Ack stores the LSN as flushed. Next time WAL positions are flushed, Postgres
@@ -171,16 +208,21 @@ func (s *Subscription) Ack(lsn pglogrepl.LSN) {
 	atomic.StoreUint64((*uint64)(&s.walFlushed), uint64(lsn))
 }
 
+// Stop signals to the subscription it should stop. Call Wait to block until the
+// subscription actually stops running.
 func (s *Subscription) Stop() {
-	select {
-	case <-s.stop:
-		return // already received stop signal
-	default:
-		close(s.stop)
+	if s.stop != nil {
+		s.stop()
 	}
 }
 
+// Wait will block until the subscription is stopped. If the context gets
+// cancelled in the meantime it will return the context error, otherwise nil is
+// returned.
 func (s *Subscription) Wait(ctx context.Context) error {
+	if s.stopped == nil {
+		return nil
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -271,7 +313,7 @@ func (s *Subscription) createReplicationSlot(ctx context.Context, conn *pgconn.P
 // startReplication starts replication with a specific start LSN and adds two
 // cleanup functions, one for sending the last status update and one for sending
 // the standby copy done signal.
-func (s *Subscription) startReplication(ctx context.Context, conn *pgconn.PgConn, startLSN pglogrepl.LSN) error {
+func (s *Subscription) startReplication(ctx context.Context, conn *pgconn.PgConn) error {
 	pluginArgs := []string{
 		`"proto_version" '1'`,
 		fmt.Sprintf(`"publication_names" '%s'`, s.Publication),
@@ -281,7 +323,7 @@ func (s *Subscription) startReplication(ctx context.Context, conn *pgconn.PgConn
 		ctx,
 		conn,
 		s.SlotName,
-		startLSN,
+		s.StartLSN,
 		pglogrepl.StartReplicationOptions{
 			Timeline:   0,
 			Mode:       pglogrepl.LogicalReplication,
@@ -369,6 +411,9 @@ func (s *Subscription) sendStatusUpdate(ctx context.Context, conn *pgconn.PgConn
 	return nil
 }
 
+// receiveMessage tries to receive a message from the replication stream. If the
+// deadline is reached before a message is received it returns
+// context.DeadlineExceeded.
 func (s *Subscription) receiveMessage(ctx context.Context, conn *pgconn.PgConn, deadline time.Time) (pgproto3.BackendMessage, error) {
 	wctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
