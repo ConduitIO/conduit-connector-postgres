@@ -15,111 +15,183 @@
 package cdc
 
 import (
-	"strconv"
+	"context"
+	"fmt"
 	"time"
 
+	"github.com/conduitio/conduit-connector-postgres/logrepl"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgtype"
 )
 
+type action string
+
+var (
+	actionInsert action = "insert"
+	actionUpdate action = "update"
+	actionDelete action = "delete"
+)
+
+type LogreplHandler struct {
+	keyColumn   string
+	relationSet *logrepl.RelationSet
+	out         chan<- sdk.Record
+}
+
+func NewLogreplHandler(rs *logrepl.RelationSet, keyColumn string, out chan<- sdk.Record) *LogreplHandler {
+	return &LogreplHandler{
+		keyColumn:   keyColumn,
+		relationSet: rs,
+		out:         out,
+	}
+}
+
+func (h *LogreplHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogrepl.LSN) error {
+	sdk.Logger(ctx).Trace().
+		Str("lsn", lsn.String()).
+		Str("messageType", m.Type().String()).
+		Msg("handler received pglogrepl.Message")
+
+	switch m := m.(type) {
+	case *pglogrepl.RelationMessage:
+		// We have to add the Relations to our Set so that we can
+		// decode our own output
+		h.relationSet.Add(m)
+	case *pglogrepl.InsertMessage:
+		err := h.handleInsert(ctx, m, lsn)
+		if err != nil {
+			return fmt.Errorf("logrepl handler insert: %w", err)
+		}
+	case *pglogrepl.UpdateMessage:
+		err := h.handleUpdate(ctx, m, lsn)
+		if err != nil {
+			return fmt.Errorf("logrepl handler update: %w", err)
+		}
+	case *pglogrepl.DeleteMessage:
+		err := h.handleDelete(ctx, m, lsn)
+		if err != nil {
+			return fmt.Errorf("logrepl handler update: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // handleInsert formats a Record with INSERT event data from Postgres and
 // inserts it into the records buffer for later reading.
-func (i *LogreplIterator) handleInsert(
-	relID pgtype.OID,
-	values map[string]pgtype.Value,
-	pos pglogrepl.LSN,
-) error {
-	rec := sdk.Record{
-		CreatedAt: time.Now(),
-		Metadata: map[string]string{
-			"action": "insert",
-			"table":  i.config.TableName,
-		},
+func (h *LogreplHandler) handleInsert(
+	ctx context.Context,
+	msg *pglogrepl.InsertMessage,
+	lsn pglogrepl.LSN,
+) (err error) {
+	rel, err := h.relationSet.Get(pgtype.OID(msg.RelationID))
+	if err != nil {
+		return err
 	}
-	rec = i.withKey(rec, values)
-	rec = i.withPosition(rec, int64(pos))
-	rec = i.withPayload(rec, values)
-	i.push(rec)
-	return nil
+
+	newValues, err := h.relationSet.Values(pgtype.OID(msg.RelationID), msg.Tuple)
+	if err != nil {
+		return fmt.Errorf("failed to decode new values: %w", err)
+	}
+
+	rec := h.buildRecord(actionInsert, rel, newValues, lsn)
+	return h.send(ctx, rec)
 }
 
 // handleUpdate formats a record with a UPDATE event data from Postgres and
 // inserts it into the records buffer for later reading.
-func (i *LogreplIterator) handleUpdate(
-	relID pgtype.OID,
-	values map[string]pgtype.Value,
-	pos pglogrepl.LSN,
+func (h *LogreplHandler) handleUpdate(
+	ctx context.Context,
+	msg *pglogrepl.UpdateMessage,
+	lsn pglogrepl.LSN,
 ) error {
-	rec := sdk.Record{
-		// TODO: Fill out key and add payload and metadata
-		CreatedAt: time.Now(),
-		Metadata: map[string]string{
-			"action": "update",
-			"table":  i.config.TableName,
-		},
+	rel, err := h.relationSet.Get(pgtype.OID(msg.RelationID))
+	if err != nil {
+		return err
 	}
-	rec = i.withKey(rec, values)
-	rec = i.withPosition(rec, int64(pos))
-	rec = i.withPayload(rec, values)
-	i.push(rec)
-	return nil
+
+	newValues, err := h.relationSet.Values(pgtype.OID(msg.RelationID), msg.NewTuple)
+	if err != nil {
+		return fmt.Errorf("failed to decode new values: %w", err)
+	}
+
+	rec := h.buildRecord(actionUpdate, rel, newValues, lsn)
+	return h.send(ctx, rec)
 }
 
 // handleDelete formats a record with a delete event data from Postgres.
 // delete events only send along the primary key of the table.
-func (i *LogreplIterator) handleDelete(
-	relID pgtype.OID,
-	values map[string]pgtype.Value,
-	pos pglogrepl.LSN,
+func (h *LogreplHandler) handleDelete(
+	ctx context.Context,
+	msg *pglogrepl.DeleteMessage,
+	lsn pglogrepl.LSN,
 ) error {
-	rec := sdk.Record{
-		CreatedAt: time.Now(),
-		Metadata: map[string]string{
-			"action": "delete",
-			"table":  i.config.TableName,
-		},
+	rel, err := h.relationSet.Get(pgtype.OID(msg.RelationID))
+	if err != nil {
+		return err
 	}
-	rec = i.withKey(rec, values)
-	rec = i.withPosition(rec, int64(pos))
-	// NB: Delete's shouldn't have payloads. Key + delete action is sufficient.
-	i.push(rec)
-	return nil
+
+	oldValues, err := h.relationSet.Values(pgtype.OID(msg.RelationID), msg.OldTuple)
+	if err != nil {
+		return fmt.Errorf("failed to decode old values: %w", err)
+	}
+
+	rec := h.buildRecord(actionDelete, rel, oldValues, lsn)
+	// NB: Deletes shouldn't have payloads. Key + delete action is sufficient.
+	rec.Payload = nil
+
+	return h.send(ctx, rec)
+}
+
+func (h *LogreplHandler) send(ctx context.Context, rec sdk.Record) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case h.out <- rec:
+		return nil
+	}
+}
+
+func (h *LogreplHandler) buildRecord(
+	action action,
+	relation *pglogrepl.RelationMessage,
+	values map[string]pgtype.Value,
+	lsn pglogrepl.LSN,
+) sdk.Record {
+	return sdk.Record{
+		Position: LSNToPosition(lsn),
+		Metadata: map[string]string{
+			"action": string(action),
+			"table":  relation.RelationName,
+		},
+		CreatedAt: time.Now(),
+		Key:       h.buildRecordKey(values),
+		Payload:   h.buildRecordPayload(values),
+	}
 }
 
 // withKey takes the values from the message and extracts a key that matches
 // the configured keyColumnName.
-func (i *LogreplIterator) withKey(rec sdk.Record, values map[string]pgtype.Value) sdk.Record {
+func (h *LogreplHandler) buildRecordKey(values map[string]pgtype.Value) sdk.Data {
 	key := sdk.StructuredData{}
 	for k, v := range values {
-		if i.config.KeyColumnName == k {
+		if h.keyColumn == k {
 			key[k] = v.Get()
-			rec.Key = key
 		}
 	}
-	return rec
+	return key
 }
 
 // withPayload takes a record and a map of values and formats a payload for
 // the record and then returns the record with that payload attached.
-func (i *LogreplIterator) withPayload(rec sdk.Record, values map[string]pgtype.Value) sdk.Record {
-	rec.Payload = i.formatPayload(values)
-	return rec
-}
-
-// formatPayload formats a structured data payload from a map of Value types.
-func (i *LogreplIterator) formatPayload(values map[string]pgtype.Value) sdk.StructuredData {
+func (h *LogreplHandler) buildRecordPayload(values map[string]pgtype.Value) sdk.Data {
 	payload := sdk.StructuredData{}
 	for k, v := range values {
 		value := v.Get()
 		payload[k] = value
 	}
-	delete(payload, i.config.KeyColumnName) // NB: dedupe Key out of payload
+	// TODO remove next line, payload should contain the whole record
+	delete(payload, h.keyColumn) // NB: dedupe Key out of payload
 	return payload
-}
-
-// sets an integer position to the correct stringed integer on
-func (i *LogreplIterator) withPosition(rec sdk.Record, pos int64) sdk.Record {
-	rec.Position = sdk.Position(strconv.FormatInt(pos, 10))
-	return rec
 }

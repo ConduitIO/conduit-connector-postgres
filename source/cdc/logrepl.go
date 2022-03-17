@@ -17,14 +17,12 @@ package cdc
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"sync"
 	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/logrepl"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
-	"github.com/jackc/pgtype"
 	"github.com/jackc/pgx/v4"
 )
 
@@ -90,7 +88,7 @@ func (i *LogreplIterator) setPosition(pos sdk.Position) error {
 		return nil
 	}
 
-	lsn, err := i.parsePosition(pos)
+	lsn, err := PositionToLSN(pos)
 	if err != nil {
 		return err
 	}
@@ -142,11 +140,11 @@ func (i *LogreplIterator) Next(ctx context.Context) (sdk.Record, error) {
 }
 
 func (i *LogreplIterator) Ack(ctx context.Context, pos sdk.Position) error {
-	n, err := i.parsePosition(pos)
+	lsn, err := PositionToLSN(pos)
 	if err != nil {
 		return fmt.Errorf("failed to parse position")
 	}
-	i.sub.Ack(n)
+	i.sub.Ack(lsn)
 	return nil
 }
 
@@ -184,52 +182,15 @@ func (i *LogreplIterator) attachSubscription(ctx context.Context) error {
 		i.config.PublicationName,
 		[]string{i.config.TableName},
 		i.lsn,
-		i.handler(),
+		NewLogreplHandler(
+			logrepl.NewRelationSet(i.conn.ConnInfo()),
+			i.config.KeyColumnName,
+			i.messages,
+		).Handle,
 	)
 
 	i.sub = sub
 	return nil
-}
-
-func (i *LogreplIterator) handler() logrepl.Handler {
-	set := logrepl.NewRelationSet(i.conn.ConnInfo())
-
-	return func(ctx context.Context, m pglogrepl.Message, lsn pglogrepl.LSN) error {
-		sdk.Logger(ctx).Trace().
-			Str("lsn", lsn.String()).
-			Str("messageType", m.Type().String()).
-			Msg("handler received pglogrepl.Message")
-
-		switch v := m.(type) {
-		case *pglogrepl.RelationMessage:
-			// We have to add the Relations to our Set so that we can
-			// decode our own output
-			set.Add(v)
-		case *pglogrepl.InsertMessage:
-			oid := pgtype.OID(v.RelationID)
-			values, err := set.Values(oid, v.Tuple)
-			if err != nil {
-				return fmt.Errorf("handleInsert failed: %w", err)
-			}
-			return i.handleInsert(oid, values, lsn)
-		case *pglogrepl.UpdateMessage:
-			oid := pgtype.OID(v.RelationID)
-			values, err := set.Values(oid, v.NewTuple)
-			if err != nil {
-				return fmt.Errorf("handleUpdate failed: %w", err)
-			}
-			return i.handleUpdate(oid, values, lsn)
-		case *pglogrepl.DeleteMessage:
-			oid := pgtype.OID(v.RelationID)
-			values, err := set.Values(oid, v.OldTuple)
-			if err != nil {
-				return fmt.Errorf("handleDelete failed: %w", err)
-			}
-			return i.handleDelete(oid, values, lsn)
-		}
-
-		return nil
-	}
 }
 
 // configureKeyColumn queries the db for the name of the primary key column
@@ -287,12 +248,4 @@ func (i *LogreplIterator) configureColumns(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-func (i *LogreplIterator) parsePosition(pos sdk.Position) (pglogrepl.LSN, error) {
-	n, err := strconv.ParseUint(string(pos), 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid position: %w", err)
-	}
-	return pglogrepl.LSN(n), nil
 }

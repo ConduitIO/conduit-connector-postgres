@@ -41,14 +41,23 @@ func (rs *RelationSet) Add(r *pglogrepl.RelationMessage) {
 	rs.relations[pgtype.OID(r.RelationID)] = r
 }
 
-func (rs *RelationSet) Values(id pgtype.OID, row *pglogrepl.TupleData) (map[string]pgtype.Value, error) {
-	values := map[string]pgtype.Value{}
-	rel, ok := rs.relations[id]
+func (rs *RelationSet) Get(id pgtype.OID) (*pglogrepl.RelationMessage, error) {
+	msg, ok := rs.relations[id]
 	if !ok {
-		return values, fmt.Errorf("no relation for %d", id)
+		return nil, fmt.Errorf("no relation for %d", id)
+	}
+	return msg, nil
+}
+
+func (rs *RelationSet) Values(id pgtype.OID, row *pglogrepl.TupleData) (map[string]pgtype.Value, error) {
+	rel, err := rs.Get(id)
+	if err != nil {
+		return nil, fmt.Errorf("no relation for %d", id)
 	}
 
-	// assert same number of row and columns
+	values := map[string]pgtype.Value{}
+
+	// assert same number of row and rel columns
 	for i, tuple := range row.Columns {
 		col := rel.Columns[i]
 		decoder := rs.oidToDecoderValue(pgtype.OID(col.DataType))
