@@ -236,6 +236,7 @@ func (i *LogreplIterator) handler(ctx context.Context) Handler {
 			}
 			return i.handleDelete(oid, values, lsn)
 		}
+
 		return nil
 	}
 }

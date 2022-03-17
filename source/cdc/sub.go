@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/conduitio/conduit-connector-postgres/pgutil"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgconn"
 	"github.com/jackc/pglogrepl"
@@ -324,14 +325,11 @@ func (s *Subscription) Wait(ctx context.Context) error {
 	}
 }
 
+// RelationSet can be used to build a cache of relations returned by logical
+// replication.
 type RelationSet struct {
 	relations map[pgtype.OID]*pglogrepl.RelationMessage
 	connInfo  *pgtype.ConnInfo
-}
-
-type ValueDecoder interface {
-	pgtype.Value
-	pgtype.TextDecoder
 }
 
 // NewRelationSet creates a new relation set.
@@ -356,7 +354,7 @@ func (rs *RelationSet) Values(id pgtype.OID, row *pglogrepl.TupleData) (map[stri
 	// assert same number of row and columns
 	for i, tuple := range row.Columns {
 		col := rel.Columns[i]
-		decoder := rs.Decoder(pgtype.OID(col.DataType))
+		decoder := rs.oidToDecoderValue(pgtype.OID(col.DataType))
 
 		if err := decoder.DecodeText(rs.connInfo, tuple.Data); err != nil {
 			return nil, fmt.Errorf("failed to decode tuple %d: %w", i, err)
@@ -368,147 +366,16 @@ func (rs *RelationSet) Values(id pgtype.OID, row *pglogrepl.TupleData) (map[stri
 	return values, nil
 }
 
-func (rs *RelationSet) Decoder(oid pgtype.OID) ValueDecoder {
-	switch oid {
-	case pgtype.BoolOID:
-		return &pgtype.Bool{}
-	case pgtype.ByteaOID:
-		return &pgtype.Bytea{}
-	case pgtype.QCharOID:
-		// Not all possible values of QChar are representable in the text format
-		return &pgtype.Unknown{}
-	case pgtype.NameOID:
-		return &pgtype.Name{}
-	case pgtype.Int8OID:
-		return &pgtype.Int8{}
-	case pgtype.Int2OID:
-		return &pgtype.Int2{}
-	case pgtype.Int4OID:
-		return &pgtype.Int4{}
-	case pgtype.TextOID:
-		return &pgtype.Text{}
-	case pgtype.OIDOID:
-		// pgtype.OID does not implement the value interface
-		return &pgtype.Unknown{}
-	case pgtype.TIDOID:
-		return &pgtype.TID{}
-	case pgtype.XIDOID:
-		return &pgtype.XID{}
-	case pgtype.CIDOID:
-		return &pgtype.CID{}
-	case pgtype.JSONOID:
-		return &pgtype.JSON{}
-	case pgtype.PointOID:
-		return &pgtype.Point{}
-	case pgtype.LsegOID:
-		return &pgtype.Lseg{}
-	case pgtype.PathOID:
-		return &pgtype.Path{}
-	case pgtype.BoxOID:
-		return &pgtype.Box{}
-	case pgtype.PolygonOID:
-		return &pgtype.Polygon{}
-	case pgtype.LineOID:
-		return &pgtype.Line{}
-	case pgtype.CIDROID:
-		return &pgtype.CIDR{}
-	case pgtype.CIDRArrayOID:
-		return &pgtype.CIDRArray{}
-	case pgtype.Float4OID:
-		return &pgtype.Float4{}
-	case pgtype.Float8OID:
-		return &pgtype.Float8{}
-	case pgtype.CircleOID:
-		return &pgtype.Circle{}
-	case pgtype.UnknownOID:
-		return &pgtype.Unknown{}
-	case pgtype.MacaddrOID:
-		return &pgtype.Macaddr{}
-	case pgtype.InetOID:
-		return &pgtype.Inet{}
-	case pgtype.BoolArrayOID:
-		return &pgtype.BoolArray{}
-	case pgtype.Int2ArrayOID:
-		return &pgtype.Int2Array{}
-	case pgtype.Int4ArrayOID:
-		return &pgtype.Int4Array{}
-	case pgtype.TextArrayOID:
-		return &pgtype.TextArray{}
-	case pgtype.ByteaArrayOID:
-		return &pgtype.ByteaArray{}
-	case pgtype.BPCharArrayOID:
-		return &pgtype.BPCharArray{}
-	case pgtype.VarcharArrayOID:
-		return &pgtype.VarcharArray{}
-	case pgtype.Int8ArrayOID:
-		return &pgtype.Int8Array{}
-	case pgtype.Float4ArrayOID:
-		return &pgtype.Float4Array{}
-	case pgtype.Float8ArrayOID:
-		return &pgtype.Float8Array{}
-	case pgtype.ACLItemOID:
-		return &pgtype.ACLItem{}
-	case pgtype.ACLItemArrayOID:
-		return &pgtype.ACLItemArray{}
-	case pgtype.InetArrayOID:
-		return &pgtype.InetArray{}
-	case pgtype.BPCharOID:
-		return &pgtype.BPChar{}
-	case pgtype.VarcharOID:
-		return &pgtype.Varchar{}
-	case pgtype.DateOID:
-		return &pgtype.Date{}
-	case pgtype.TimeOID:
-		return &pgtype.Time{}
-	case pgtype.TimestampOID:
-		return &pgtype.Timestamp{}
-	case pgtype.TimestampArrayOID:
-		return &pgtype.TimestampArray{}
-	case pgtype.DateArrayOID:
-		return &pgtype.DateArray{}
-	case pgtype.TimestamptzOID:
-		return &pgtype.Timestamptz{}
-	case pgtype.TimestamptzArrayOID:
-		return &pgtype.TimestamptzArray{}
-	case pgtype.IntervalOID:
-		return &pgtype.Interval{}
-	case pgtype.NumericArrayOID:
-		return &pgtype.NumericArray{}
-	case pgtype.BitOID:
-		return &pgtype.Bit{}
-	case pgtype.VarbitOID:
-		return &pgtype.Varbit{}
-	case pgtype.NumericOID:
-		return &pgtype.Numeric{}
-	case pgtype.RecordOID:
-		// The text format output format for Records does not include type
-		// information and is therefore impossible to decode
-		return &pgtype.Unknown{}
-	case pgtype.UUIDOID:
-		return &pgtype.UUID{}
-	case pgtype.UUIDArrayOID:
-		return &pgtype.UUIDArray{}
-	case pgtype.JSONBOID:
-		return &pgtype.JSONB{}
-	case pgtype.JSONBArrayOID:
-		return &pgtype.JSONBArray{}
-	case pgtype.DaterangeOID:
-		return &pgtype.Daterange{}
-	case pgtype.Int4rangeOID:
-		return &pgtype.Int4range{}
-	case pgtype.NumrangeOID:
-		return &pgtype.Numrange{}
-	case pgtype.TsrangeOID:
-		return &pgtype.Tsrange{}
-	case pgtype.TsrangeArrayOID:
-		return &pgtype.TsrangeArray{}
-	case pgtype.TstzrangeOID:
-		return &pgtype.Tstzrange{}
-	case pgtype.TstzrangeArrayOID:
-		return &pgtype.TstzrangeArray{}
-	case pgtype.Int8rangeOID:
-		return &pgtype.Int8range{}
-	default:
+type decoderValue interface {
+	pgtype.Value
+	pgtype.TextDecoder
+}
+
+func (rs *RelationSet) oidToDecoderValue(id pgtype.OID) decoderValue {
+	t, ok := pgutil.OIDToPgType(id).(decoderValue)
+	if !ok {
+		// not all pg types implement pgtype.Value and pgtype.TextDecoder
 		return &pgtype.Unknown{}
 	}
+	return t
 }
