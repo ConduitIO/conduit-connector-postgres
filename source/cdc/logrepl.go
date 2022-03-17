@@ -17,8 +17,6 @@ package cdc
 import (
 	"context"
 	"fmt"
-	"sync"
-	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/logrepl"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -41,86 +39,56 @@ type Config struct {
 // It iterates through that Buffer so that we have a controlled way to get 1
 // record from our CDC buffer without having to expose a loop to the main Read.
 type LogreplIterator struct {
-	wg *sync.WaitGroup
+	config   Config
+	conn     *pgx.Conn
+	messages chan sdk.Record
 
-	config Config
-
-	lsn        pglogrepl.LSN
-	messages   chan sdk.Record
-	killswitch context.CancelFunc
-
-	sub  *logrepl.Subscription
-	conn *pgx.Conn
+	sub *logrepl.Subscription
 }
 
 // NewCDCIterator takes a config and returns up a new CDCIterator or returns an
 // error.
 func NewCDCIterator(ctx context.Context, conn *pgx.Conn, config Config) (*LogreplIterator, error) {
-	wctx, cancel := context.WithCancel(ctx)
 	i := &LogreplIterator{
-		wg:         &sync.WaitGroup{},
-		config:     config,
-		messages:   make(chan sdk.Record),
-		killswitch: cancel,
-		conn:       conn,
+		config:   config,
+		conn:     conn,
+		messages: make(chan sdk.Record),
 	}
 
-	err := i.setPosition(config.Position)
+	err := i.configureColumns(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to set starting position: %w", err)
+		return nil, fmt.Errorf("failed to find table columns: %w", err)
 	}
 
-	err = i.attachSubscription(ctx)
+	err = i.configureKeyColumn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find key: %w", err)
+	}
+
+	err = i.attachSubscription()
 	if err != nil {
 		return nil, fmt.Errorf("failed to setup subscription: %w", err)
 	}
 
-	i.wg.Add(1)
-	go i.listen(wctx)
+	go i.listen(ctx)
 
 	return i, nil
-}
-
-func (i *LogreplIterator) setPosition(pos sdk.Position) error {
-	if pos == nil || string(pos) == "" {
-		i.lsn = 0
-		return nil
-	}
-
-	lsn, err := PositionToLSN(pos)
-	if err != nil {
-		return err
-	}
-	i.lsn = lsn
-	return nil
 }
 
 // listen is meant to be used in a goroutine. It starts the subscription
 // passed to it and handles the subscription flush
 func (i *LogreplIterator) listen(ctx context.Context) {
-	defer func() {
-		i.sub.Stop()
-
-		wctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-		defer cancel()
-		err := i.sub.Wait(wctx)
-		if err != nil {
-			sdk.Logger(ctx).Err(err).Msg("could not stop postgres subscription in time")
-		}
-
-		i.wg.Done()
-	}()
-
 	sdk.Logger(ctx).Info().
-		Str("lsn", i.lsn.String()).
 		Str("slot", i.config.SlotName).
 		Str("publication", i.config.PublicationName).
 		Msg("starting logical replication")
 
 	err := i.sub.Start(ctx)
 	if err != nil {
-		// TODO return error
-		sdk.Logger(ctx).Err(err).Msg("subscription failed")
+		// log it to be safe we don't miss the error, but use warn level
+		// because the error will most probably be still propagated to Conduit
+		// and might be recovered from
+		sdk.Logger(ctx).Warn().Err(err).Msg("subscription returned an error")
 	}
 }
 
@@ -130,10 +98,22 @@ func (i *LogreplIterator) listen(ctx context.Context) {
 func (i *LogreplIterator) Next(ctx context.Context) (sdk.Record, error) {
 	for {
 		select {
-		case r := <-i.messages:
-			return r, nil
 		case <-ctx.Done():
 			return sdk.Record{}, ctx.Err()
+		case <-i.sub.Done():
+			if err := i.sub.Err(); err != nil {
+				return sdk.Record{}, fmt.Errorf("logical replication error: %w", err)
+			}
+			if err := ctx.Err(); err != nil {
+				// subscription is done because the context is cancelled, we went
+				// into the wrong case by chance
+				return sdk.Record{}, err
+			}
+			// subscription stopped without an error and the context is still
+			// open, this is a strange case, shouldn't actually happen
+			return sdk.Record{}, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
+		case r := <-i.messages:
+			return r, nil
 		}
 	}
 }
@@ -150,24 +130,29 @@ func (i *LogreplIterator) Ack(ctx context.Context, pos sdk.Position) error {
 // Teardown kills the CDC subscription and waits for it to be done, closes its
 // connection to the database, then cleans up its slot and publication.
 func (i *LogreplIterator) Teardown(ctx context.Context) error {
-	i.killswitch()
-	i.wg.Wait()
-	// TODO stop subscription here and collect error
+	i.sub.Stop()
+	err := i.sub.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("error while waiting for subscription to stop: %w", err)
+	}
+	err = i.sub.Err()
+	if err != nil {
+		return fmt.Errorf("logical replication error: %w", err)
+	}
 	return nil
 }
 
 // attachSubscription builds a subscription with its own dedicated replication
 // connection. It prepares a replication slot and publication for the connector
-// if they're not yet setup with sane defaults if they're not configured.
-func (i *LogreplIterator) attachSubscription(ctx context.Context) error {
-	err := i.configureColumns(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to find table columns: %w", err)
-	}
-
-	err = i.configureKeyColumn(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to find key: %w", err)
+// if they don't exist yet.
+func (i *LogreplIterator) attachSubscription() error {
+	var lsn pglogrepl.LSN
+	if i.config.Position != nil && string(i.config.Position) != "" {
+		var err error
+		lsn, err = PositionToLSN(i.config.Position)
+		if err != nil {
+			return err
+		}
 	}
 
 	sub := logrepl.NewSubscription(
@@ -175,7 +160,7 @@ func (i *LogreplIterator) attachSubscription(ctx context.Context) error {
 		i.config.SlotName,
 		i.config.PublicationName,
 		[]string{i.config.TableName},
-		i.lsn,
+		lsn,
 		NewLogreplHandler(
 			logrepl.NewRelationSet(i.conn.ConnInfo()),
 			i.config.KeyColumnName,

@@ -43,7 +43,8 @@ type Subscription struct {
 	StatusTimeout time.Duration
 
 	stop    context.CancelFunc
-	stopped chan struct{}
+	done    chan struct{}
+	doneErr error
 
 	// cleanup is the function that gets called on teardown.
 	// Cleanup functions that get added here on initialization act as deferred
@@ -72,13 +73,14 @@ func NewSubscription(
 		StartLSN:      startLSN,
 		Handler:       h,
 		StatusTimeout: 10 * time.Second,
+
+		done: make(chan struct{}),
 	}
 }
 
 // Start replication and block until error or ctx is canceled.
 func (s *Subscription) Start(ctx context.Context) (err error) {
-	s.stopped = make(chan struct{})
-	defer close(s.stopped)
+	defer close(s.done)
 	defer func() {
 		// use fresh context for cleanup
 		cleanupErr := s.cleanup(context.Background())
@@ -89,6 +91,7 @@ func (s *Subscription) Start(ctx context.Context) (err error) {
 			// an error is already returned, let's log this one instead
 			sdk.Logger(ctx).Err(cleanupErr).Msg("failed to cleanup subscription")
 		}
+		s.doneErr = err // store error so it can be retrieved later
 	}()
 
 	conn, err := s.connect(ctx)
@@ -230,15 +233,23 @@ func (s *Subscription) Stop() {
 // cancelled in the meantime it will return the context error, otherwise nil is
 // returned.
 func (s *Subscription) Wait(ctx context.Context) error {
-	if s.stopped == nil {
-		return nil
-	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-s.stopped:
+	case <-s.done:
 		return nil
 	}
+}
+
+// Done returns a channel that is closed when the subscription is done.
+func (s *Subscription) Done() <-chan struct{} {
+	return s.done
+}
+
+// Err returns an error that might have happened when the subscription stopped
+// running.
+func (s *Subscription) Err() error {
+	return s.doneErr
 }
 
 // connect establishes a replication connection and adds a cleanup function
@@ -343,7 +354,7 @@ func (s *Subscription) startReplication(ctx context.Context, conn *pgconn.PgConn
 		return fmt.Errorf("failed to start replication: %w", err)
 	}
 
-	// add cleanup for sending copy done message indicating replication has stopped
+	// add cleanup for sending copy done message indicating replication has done
 	s.addCleanup(func(ctx context.Context) error {
 		if err := s.sendStandbyCopyDone(ctx, conn); err != nil {
 			return fmt.Errorf("failed to send standby copy done: %w", err)
