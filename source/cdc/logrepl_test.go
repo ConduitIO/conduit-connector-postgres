@@ -44,6 +44,9 @@ func TestIterator_Next(t *testing.T) {
 		is.NoErr(i.Teardown(ctx))
 	})
 
+	// give replication some time to start
+	time.Sleep(time.Second)
+
 	tests := []struct {
 		name       string
 		setupQuery string
@@ -106,14 +109,12 @@ func TestIterator_Next(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Now()
 
-			go func() {
-				// give replication some time to start
-				time.Sleep(time.Second)
-				query := fmt.Sprintf(tt.setupQuery, table)
-				_, err := pool.Exec(ctx, query)
-				is.NoErr(err)
-			}()
+			// execute change
+			query := fmt.Sprintf(tt.setupQuery, table)
+			_, err := pool.Exec(ctx, query)
+			is.NoErr(err)
 
+			// fetch the change
 			nextCtx, cancel := context.WithTimeout(ctx, time.Second*10)
 			defer cancel()
 			got, err := i.Next(nextCtx)

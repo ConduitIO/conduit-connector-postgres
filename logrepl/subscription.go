@@ -18,7 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -38,7 +38,6 @@ type Subscription struct {
 	SlotName      string
 	Publication   string
 	Tables        []string
-	WaitTimeout   time.Duration
 	StatusTimeout time.Duration
 
 	// TODO make this nicer
@@ -49,10 +48,6 @@ type Subscription struct {
 	// Cleanup functions that get added here on initialization act as deferred
 	// functions.
 	cleanup func(ctx context.Context) error
-
-	// Mutex is used to prevent reading and writing to a connection concurrently
-	// as well as reading/writing WAL positions.
-	sync.Mutex
 
 	walWritten pglogrepl.LSN
 	walFlushed pglogrepl.LSN
@@ -66,7 +61,6 @@ func NewSubscription(config pgconn.Config, slotName, publication string, tables 
 		SlotName:      slotName,
 		Publication:   publication,
 		Tables:        tables,
-		WaitTimeout:   2 * time.Second,
 		StatusTimeout: 10 * time.Second,
 
 		stop:    make(chan struct{}),
@@ -107,90 +101,91 @@ func (s *Subscription) Start(ctx context.Context, startLSN pglogrepl.LSN, h Hand
 	}
 
 	s.walWritten = startLSN
+	s.walFlushed = s.walWritten
 
-	go func() {
-		tick := time.NewTicker(s.StatusTimeout)
-		defer tick.Stop()
-
-		for {
-			select {
-			case <-tick.C:
-				if err = s.sendStatusUpdate(ctx, conn); err != nil {
-					// TODO don't swallow error
-					return
-				}
-			case <-ctx.Done():
-				return
-			case <-s.stop:
-				return
-			}
-		}
-	}()
-
+	nextStatusUpdateAt := time.Now().Add(s.StatusTimeout)
 	for {
-		select {
-		case <-ctx.Done():
-			return nil
+		if time.Now().After(nextStatusUpdateAt) {
+			err := s.sendStatusUpdate(ctx, conn)
+			if err != nil {
+				return err
+			}
+			nextStatusUpdateAt = time.Now().Add(s.StatusTimeout)
+		}
 
-		case <-s.stop:
-			return nil
-
-		default:
-			wctx, cancel := context.WithTimeout(ctx, s.WaitTimeout)
-			s.Lock()
-			msg, err := conn.ReceiveMessage(wctx)
-			s.Unlock()
-			cancel()
-
+		msg, err := s.receiveMessage(ctx, conn, nextStatusUpdateAt)
+		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				continue
-			} else if errors.Is(err, context.Canceled) {
-				return err
-			} else if err != nil {
-				return fmt.Errorf("replication failed: %w", err)
+			}
+			return err
+		}
+
+		if msg == nil {
+			return fmt.Errorf("replication failed: nil message received, should not happen")
+		}
+
+		copyDataMsg, ok := msg.(*pgproto3.CopyData)
+		if !ok {
+			return fmt.Errorf("unexpected message type %T", msg)
+		}
+
+		switch copyDataMsg.Data[0] {
+		case pglogrepl.PrimaryKeepaliveMessageByteID:
+			pkm, err := pglogrepl.ParsePrimaryKeepaliveMessage(copyDataMsg.Data[1:])
+			if err != nil {
+				return fmt.Errorf("failed to parse primary keepalive message: %w", err)
+			}
+			if pkm.ReplyRequested {
+				if err = s.sendStatusUpdate(ctx, conn); err != nil {
+					return fmt.Errorf("failed to send status: %w", err)
+				}
+			}
+		case pglogrepl.XLogDataByteID:
+			xld, err := pglogrepl.ParseXLogData(copyDataMsg.Data[1:])
+			if err != nil {
+				return fmt.Errorf("failed to parse xlog data: %w", err)
 			}
 
-			if msg == nil {
-				return fmt.Errorf("replication failed: nil message received, should not happen")
+			if xld.WALStart > 0 && xld.WALStart <= startLSN {
+				// skip stuff that's in the past
+				continue
 			}
 
-			copyDataMsg, ok := msg.(*pgproto3.CopyData)
-			if !ok {
-				return fmt.Errorf("unexpected message type %T", msg)
+			logicalMsg, err := pglogrepl.Parse(xld.WALData)
+			if err != nil {
+				return fmt.Errorf("invalid message: %w", err)
 			}
 
-			switch copyDataMsg.Data[0] {
-			case pglogrepl.PrimaryKeepaliveMessageByteID:
-				pkm, err := pglogrepl.ParsePrimaryKeepaliveMessage(copyDataMsg.Data[1:])
-				if err != nil {
-					return fmt.Errorf("failed to parse primary keepalive message: %w", err)
-				}
-				if pkm.ReplyRequested {
-					if err = s.sendStatusUpdate(ctx, conn); err != nil {
-						return fmt.Errorf("failed to send status: %w", err)
-					}
-				}
-			case pglogrepl.XLogDataByteID:
-				xld, err := pglogrepl.ParseXLogData(copyDataMsg.Data[1:])
-				if err != nil {
-					return fmt.Errorf("failed to parse xlog data: %w", err)
-				}
-
-				if xld.WALStart > 0 && xld.WALStart <= startLSN {
-					// skip stuff that's in the past
-					continue
-				}
-
-				logicalMsg, err := pglogrepl.Parse(xld.WALData)
-				if err != nil {
-					return fmt.Errorf("invalid message: %w", err)
-				}
-
-				if err = h(logicalMsg, xld.WALStart); err != nil {
-					return fmt.Errorf("handler error: %w", err)
-				}
+			if err = h(logicalMsg, xld.WALStart); err != nil {
+				return fmt.Errorf("handler error: %w", err)
 			}
 		}
+	}
+}
+
+// Ack stores the LSN as flushed. Next time WAL positions are flushed, Postgres
+// will know it can purge WAL logs up to this LSN.
+func (s *Subscription) Ack(lsn pglogrepl.LSN) {
+	// store with atomic to prevent race conditions with sending status update
+	atomic.StoreUint64((*uint64)(&s.walFlushed), uint64(lsn))
+}
+
+func (s *Subscription) Stop() {
+	select {
+	case <-s.stop:
+		return // already received stop signal
+	default:
+		close(s.stop)
+	}
+}
+
+func (s *Subscription) Wait(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.stopped:
+		return nil
 	}
 }
 
@@ -340,37 +335,9 @@ func (s *Subscription) addCleanup(newCleanup func(context.Context) error) {
 	}
 }
 
-// Ack stores the LSN as flushed. Next time WAL positions are flushed, Postgres
-// will know it can purge WAL logs up to this LSN.
-func (s *Subscription) Ack(lsn pglogrepl.LSN) {
-	s.Lock()
-	defer s.Unlock()
-	s.walFlushed = lsn
-}
-
-func (s *Subscription) Stop() {
-	select {
-	case <-s.stop:
-		return // already received stop signal
-	default:
-		close(s.stop)
-	}
-}
-
-func (s *Subscription) Wait(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-s.stopped:
-		return nil
-	}
-}
-
-// sendDone sends the status message to server indicating that replication is
-// done.
+// sendStandbyCopyDone sends the status message to server indicating that
+// replication is done.
 func (s *Subscription) sendStandbyCopyDone(ctx context.Context, conn *pgconn.PgConn) error {
-	s.Lock()
-	defer s.Unlock()
 	_, err := pglogrepl.SendStandbyCopyDone(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("failed to send standby copy done: %w", err)
@@ -381,16 +348,17 @@ func (s *Subscription) sendStandbyCopyDone(ctx context.Context, conn *pgconn.PgC
 // sendStatusUpdate sends the status message to server indicating which LSNs
 // have been processed.
 func (s *Subscription) sendStatusUpdate(ctx context.Context, conn *pgconn.PgConn) error {
-	s.Lock()
-	defer s.Unlock()
-	if s.walFlushed > s.walWritten {
-		return fmt.Errorf("walWrite (%s) should be >= walFlush (%s)", s.walWritten, s.walFlushed)
+	// load with atomic to prevent race condition with ack
+	walFlushed := pglogrepl.LSN(atomic.LoadUint64((*uint64)(&s.walFlushed)))
+
+	if walFlushed > s.walWritten {
+		return fmt.Errorf("walWrite (%s) should be >= walFlush (%s)", s.walWritten, walFlushed)
 	}
 
 	err := pglogrepl.SendStandbyStatusUpdate(ctx, conn, pglogrepl.StandbyStatusUpdate{
 		WALWritePosition: s.walWritten,
-		WALFlushPosition: s.walFlushed,
-		WALApplyPosition: s.walFlushed,
+		WALFlushPosition: walFlushed,
+		WALApplyPosition: walFlushed,
 		ClientTime:       time.Now(),
 		ReplyRequested:   false,
 	})
@@ -399,4 +367,15 @@ func (s *Subscription) sendStatusUpdate(ctx context.Context, conn *pgconn.PgConn
 	}
 
 	return nil
+}
+
+func (s *Subscription) receiveMessage(ctx context.Context, conn *pgconn.PgConn, deadline time.Time) (pgproto3.BackendMessage, error) {
+	wctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+
+	msg, err := conn.ReceiveMessage(wctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to receive message: %w", err)
+	}
+	return msg, nil
 }
