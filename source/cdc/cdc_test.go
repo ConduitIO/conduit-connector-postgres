@@ -144,8 +144,8 @@ func getDefaultIterator(t *testing.T) *Iterator {
 	is := is.New(t)
 	_ = getTestPostgres(t)
 	ctx := context.Background()
-	randPublication := fmt.Sprintf("confuit%d", rand.Int())
-	randSlotName := fmt.Sprintf("conduit%d", rand.Int())
+	randPublication := fmt.Sprintf("confuit%d", rand.Int()) // nolint:gosec // only a test
+	randSlotName := fmt.Sprintf("conduit%d", rand.Int())    // nolint:gosec // only a test
 	config := Config{
 		URL:             CDCTestURL,
 		TableName:       "records2",
