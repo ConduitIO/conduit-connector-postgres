@@ -148,11 +148,6 @@ func (i *LogreplIterator) Ack(ctx context.Context, pos sdk.Position) error {
 	return nil
 }
 
-// push pushes a record into the buffer.
-func (i *LogreplIterator) push(r sdk.Record) {
-	i.messages <- r
-}
-
 // Teardown kills the CDC subscription and waits for it to be done, closes its
 // connection to the database, then cleans up its slot and publication.
 func (i *LogreplIterator) Teardown(ctx context.Context) error {

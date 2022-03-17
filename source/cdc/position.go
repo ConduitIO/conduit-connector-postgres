@@ -15,21 +15,14 @@
 package cdc
 
 import (
-	"fmt"
-	"strconv"
-
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
 )
 
 func LSNToPosition(lsn pglogrepl.LSN) sdk.Position {
-	return sdk.Position(strconv.FormatUint(uint64(lsn), 10))
+	return sdk.Position(lsn.String())
 }
 
 func PositionToLSN(pos sdk.Position) (pglogrepl.LSN, error) {
-	n, err := strconv.ParseUint(string(pos), 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid position: %w", err)
-	}
-	return pglogrepl.LSN(n), nil
+	return pglogrepl.ParseLSN(string(pos))
 }
