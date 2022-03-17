@@ -24,7 +24,7 @@ import (
 	"github.com/jackc/pgx/v4"
 )
 
-var _ Strategy = (*cdc.Iterator)(nil)
+var _ Strategy = (*cdc.LogreplIterator)(nil)
 var _ Strategy = (*snapshot.Snapshotter)(nil)
 
 // Source implements the new transition to the new plugin SDK for Postgres.

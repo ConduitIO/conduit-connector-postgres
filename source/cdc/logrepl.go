@@ -41,10 +41,10 @@ type Config struct {
 	Columns         []string
 }
 
-// Iterator listens for events from the WAL and pushes them into its buffer.
+// LogreplIterator listens for events from the WAL and pushes them into its buffer.
 // It iterates through that Buffer so that we have a controlled way to get 1
 // record from our CDC buffer without having to expose a loop to the main Read.
-type Iterator struct {
+type LogreplIterator struct {
 	wg *sync.WaitGroup
 
 	config Config
@@ -59,9 +59,9 @@ type Iterator struct {
 
 // NewCDCIterator takes a config and returns up a new CDCIterator or returns an
 // error.
-func NewCDCIterator(ctx context.Context, conn *pgx.Conn, config Config) (*Iterator, error) {
+func NewCDCIterator(ctx context.Context, conn *pgx.Conn, config Config) (*LogreplIterator, error) {
 	wctx, cancel := context.WithCancel(ctx)
-	i := &Iterator{
+	i := &LogreplIterator{
 		wg:         &sync.WaitGroup{},
 		config:     config,
 		messages:   make(chan sdk.Record),
@@ -85,7 +85,7 @@ func NewCDCIterator(ctx context.Context, conn *pgx.Conn, config Config) (*Iterat
 	return i, nil
 }
 
-func (i *Iterator) setPosition(pos sdk.Position) error {
+func (i *LogreplIterator) setPosition(pos sdk.Position) error {
 	if pos == nil || string(pos) == "" {
 		i.lsn = 0
 		return nil
@@ -101,7 +101,7 @@ func (i *Iterator) setPosition(pos sdk.Position) error {
 
 // listen is meant to be used in a goroutine. It starts the subscription
 // passed to it and handles the the subscription flush
-func (i *Iterator) listen(ctx context.Context) {
+func (i *LogreplIterator) listen(ctx context.Context) {
 	defer func() {
 		err := i.sub.Flush(context.Background())
 		if err != nil {
@@ -136,7 +136,7 @@ func (i *Iterator) listen(ctx context.Context) {
 // Next returns the next record in the buffer. This is a blocking operation
 // so it should only be called if we've checked that HasNext is true or else
 // it will block until a record is inserted into the queue.
-func (i *Iterator) Next(ctx context.Context) (sdk.Record, error) {
+func (i *LogreplIterator) Next(ctx context.Context) (sdk.Record, error) {
 	for {
 		select {
 		case r := <-i.messages:
@@ -147,7 +147,7 @@ func (i *Iterator) Next(ctx context.Context) (sdk.Record, error) {
 	}
 }
 
-func (i *Iterator) Ack(ctx context.Context, pos sdk.Position) error {
+func (i *LogreplIterator) Ack(ctx context.Context, pos sdk.Position) error {
 	n, err := i.parsePosition(pos)
 	if err != nil {
 		return fmt.Errorf("failed to parse position")
@@ -156,13 +156,13 @@ func (i *Iterator) Ack(ctx context.Context, pos sdk.Position) error {
 }
 
 // push pushes a record into the buffer.
-func (i *Iterator) push(r sdk.Record) {
+func (i *LogreplIterator) push(r sdk.Record) {
 	i.messages <- r
 }
 
 // Teardown kills the CDC subscription and waits for it to be done, closes its
 // connection to the database, then cleans up its slot and publication.
-func (i *Iterator) Teardown(ctx context.Context) error {
+func (i *LogreplIterator) Teardown(ctx context.Context) error {
 	i.killswitch()
 	i.wg.Wait()
 
@@ -172,7 +172,7 @@ func (i *Iterator) Teardown(ctx context.Context) error {
 // attachSubscription builds a subscription with its own dedicated replication
 // connection. It prepares a replication slot and publication for the connector
 // if they're not yet setup with sane defaults if they're not configured.
-func (i *Iterator) attachSubscription(ctx context.Context) error {
+func (i *LogreplIterator) attachSubscription(ctx context.Context) error {
 	err := i.configureColumns(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to find table columns: %w", err)
@@ -200,10 +200,15 @@ func (i *Iterator) attachSubscription(ctx context.Context) error {
 	return nil
 }
 
-func (i *Iterator) handler(ctx context.Context) Handler {
+func (i *LogreplIterator) handler(ctx context.Context) Handler {
 	set := NewRelationSet(i.conn.ConnInfo())
 
 	return func(m pglogrepl.Message, lsn pglogrepl.LSN) error {
+		sdk.Logger(ctx).Trace().
+			Str("lsn", lsn.String()).
+			Str("messageType", m.Type().String()).
+			Msg("handler received pglogrepl.Message")
+
 		switch v := m.(type) {
 		case *pglogrepl.RelationMessage:
 			// We have to add the Relations to our Set so that we can
@@ -238,7 +243,7 @@ func (i *Iterator) handler(ctx context.Context) Handler {
 // configureKeyColumn queries the db for the name of the primary key column
 // for a table if one exists and sets it to the internal list.
 // * TODO: Determine if tables must have keys
-func (i *Iterator) configureKeyColumn(ctx context.Context) error {
+func (i *LogreplIterator) configureKeyColumn(ctx context.Context) error {
 	if i.config.KeyColumnName != "" {
 		return nil
 	}
@@ -266,7 +271,7 @@ func (i *Iterator) configureKeyColumn(ctx context.Context) error {
 // configureColumns sets the default config to include all of the table's columns
 // unless otherwise specified.
 // * If other columns are specified, it uses them instead.
-func (i *Iterator) configureColumns(ctx context.Context) error {
+func (i *LogreplIterator) configureColumns(ctx context.Context) error {
 	if len(i.config.Columns) > 0 {
 		return nil
 	}
@@ -292,7 +297,7 @@ func (i *Iterator) configureColumns(ctx context.Context) error {
 	return nil
 }
 
-func (i *Iterator) parsePosition(pos sdk.Position) (pglogrepl.LSN, error) {
+func (i *LogreplIterator) parsePosition(pos sdk.Position) (pglogrepl.LSN, error) {
 	n, err := strconv.ParseUint(string(pos), 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("invalid position: %w", err)
@@ -300,7 +305,7 @@ func (i *Iterator) parsePosition(pos sdk.Position) (pglogrepl.LSN, error) {
 	return pglogrepl.LSN(n), nil
 }
 
-func (i *Iterator) createPublication(ctx context.Context) error {
+func (i *LogreplIterator) createPublication(ctx context.Context) error {
 	query := "CREATE PUBLICATION %s FOR TABLE %s"
 	query = fmt.Sprintf(query, i.config.PublicationName, i.config.TableName)
 	_, err := i.conn.Exec(ctx, query)
@@ -314,7 +319,7 @@ func (i *Iterator) createPublication(ctx context.Context) error {
 	return nil
 }
 
-func (i *Iterator) dropPublication(ctx context.Context) error {
+func (i *LogreplIterator) dropPublication(ctx context.Context) error {
 	query := "DROP PUBLICATION IF EXISTS %s"
 	query = fmt.Sprintf(query, i.config.PublicationName)
 	if _, err := i.conn.Exec(ctx, query); err != nil {

@@ -25,7 +25,7 @@ import (
 
 // handleInsert formats a Record with INSERT event data from Postgres and
 // inserts it into the records buffer for later reading.
-func (i *Iterator) handleInsert(
+func (i *LogreplIterator) handleInsert(
 	relID pgtype.OID,
 	values map[string]pgtype.Value,
 	pos pglogrepl.LSN,
@@ -46,7 +46,7 @@ func (i *Iterator) handleInsert(
 
 // handleUpdate formats a record with a UPDATE event data from Postgres and
 // inserts it into the records buffer for later reading.
-func (i *Iterator) handleUpdate(
+func (i *LogreplIterator) handleUpdate(
 	relID pgtype.OID,
 	values map[string]pgtype.Value,
 	pos pglogrepl.LSN,
@@ -68,7 +68,7 @@ func (i *Iterator) handleUpdate(
 
 // handleDelete formats a record with a delete event data from Postgres.
 // delete events only send along the primary key of the table.
-func (i *Iterator) handleDelete(
+func (i *LogreplIterator) handleDelete(
 	relID pgtype.OID,
 	values map[string]pgtype.Value,
 	pos pglogrepl.LSN,
@@ -89,7 +89,7 @@ func (i *Iterator) handleDelete(
 
 // withKey takes the values from the message and extracts a key that matches
 // the configured keyColumnName.
-func (i *Iterator) withKey(rec sdk.Record, values map[string]pgtype.Value) sdk.Record {
+func (i *LogreplIterator) withKey(rec sdk.Record, values map[string]pgtype.Value) sdk.Record {
 	key := sdk.StructuredData{}
 	for k, v := range values {
 		if i.config.KeyColumnName == k {
@@ -102,13 +102,13 @@ func (i *Iterator) withKey(rec sdk.Record, values map[string]pgtype.Value) sdk.R
 
 // withPayload takes a record and a map of values and formats a payload for
 // the record and then returns the record with that payload attached.
-func (i *Iterator) withPayload(rec sdk.Record, values map[string]pgtype.Value) sdk.Record {
+func (i *LogreplIterator) withPayload(rec sdk.Record, values map[string]pgtype.Value) sdk.Record {
 	rec.Payload = i.formatPayload(values)
 	return rec
 }
 
 // formatPayload formats a structured data payload from a map of Value types.
-func (i *Iterator) formatPayload(values map[string]pgtype.Value) sdk.StructuredData {
+func (i *LogreplIterator) formatPayload(values map[string]pgtype.Value) sdk.StructuredData {
 	payload := sdk.StructuredData{}
 	for k, v := range values {
 		value := v.Get()
@@ -119,7 +119,7 @@ func (i *Iterator) formatPayload(values map[string]pgtype.Value) sdk.StructuredD
 }
 
 // sets an integer position to the correct stringed integer on
-func (i *Iterator) withPosition(rec sdk.Record, pos int64) sdk.Record {
+func (i *LogreplIterator) withPosition(rec sdk.Record, pos int64) sdk.Record {
 	rec.Position = sdk.Position(strconv.FormatInt(pos, 10))
 	return rec
 }

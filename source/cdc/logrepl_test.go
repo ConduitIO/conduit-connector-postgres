@@ -108,7 +108,7 @@ func TestIterator_Next(t *testing.T) {
 
 			go func() {
 				// give replication some time to start
-				time.Sleep(time.Millisecond * 500)
+				time.Sleep(time.Second)
 				query := fmt.Sprintf(tt.setupQuery, table)
 				_, err := pool.Exec(ctx, query)
 				is.NoErr(err)
@@ -130,7 +130,7 @@ func TestIterator_Next(t *testing.T) {
 	}
 }
 
-func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string) *Iterator {
+func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string) *LogreplIterator {
 	is := is.New(t)
 	config := Config{
 		URL:             CDCTestURL,
