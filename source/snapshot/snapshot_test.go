@@ -21,7 +21,6 @@ import (
 
 	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	_ "github.com/lib/pq"
 	"github.com/matryer/is"
 )
 

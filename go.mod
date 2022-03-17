@@ -10,7 +10,6 @@ require (
 	github.com/jackc/pgproto3/v2 v2.2.0
 	github.com/jackc/pgtype v1.10.0
 	github.com/jackc/pgx/v4 v4.15.0
-	github.com/lib/pq v1.10.4
 	github.com/matryer/is v1.4.0
 )
 
@@ -32,6 +31,7 @@ require (
 	github.com/jpillora/backoff v1.0.0 // indirect
 	github.com/lann/builder v0.0.0-20180802200727-47ae307949d0 // indirect
 	github.com/lann/ps v0.0.0-20150810152359-62de8c46ede0 // indirect
+	github.com/lib/pq v1.10.4 // indirect
 	github.com/mattn/go-colorable v0.1.12 // indirect
 	github.com/mattn/go-isatty v0.0.14 // indirect
 	github.com/mitchellh/go-testing-interface v1.0.0 // indirect
