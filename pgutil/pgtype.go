@@ -22,6 +22,7 @@ import "github.com/jackc/pgtype"
 // pgtype.Value interfaces, you need to do a type assertion to be sure,
 // otherwise use pgtype.Unknown.
 // If the oid is unknown pgtype.Unknown is returned.
+// nolint:gocyclo // this switch is intentional and can't be slimmed down
 func OIDToPgType(oid pgtype.OID) interface{} {
 	switch oid {
 	case pgtype.BoolOID:
