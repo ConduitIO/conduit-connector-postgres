@@ -148,8 +148,5 @@ func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table s
 
 	i, err := NewCDCIterator(ctx, conn.Conn(), config)
 	is.NoErr(err)
-	is.Equal(i.config.KeyColumnName, "id")
-	is.Equal([]string{"id", "key", "column1", "column2", "column3"},
-		i.config.Columns)
 	return i
 }

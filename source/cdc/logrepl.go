@@ -40,7 +40,6 @@ type Config struct {
 // record from our CDC buffer without having to expose a loop to the main Read.
 type LogreplIterator struct {
 	config   Config
-	conn     *pgx.Conn
 	messages chan sdk.Record
 
 	sub *logrepl.Subscription
@@ -51,21 +50,10 @@ type LogreplIterator struct {
 func NewCDCIterator(ctx context.Context, conn *pgx.Conn, config Config) (*LogreplIterator, error) {
 	i := &LogreplIterator{
 		config:   config,
-		conn:     conn,
 		messages: make(chan sdk.Record),
 	}
 
-	err := i.configureColumns(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find table columns: %w", err)
-	}
-
-	err = i.configureKeyColumn(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find key: %w", err)
-	}
-
-	err = i.attachSubscription()
+	err := i.attachSubscription(ctx, conn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to setup subscription: %w", err)
 	}
@@ -131,21 +119,22 @@ func (i *LogreplIterator) Ack(ctx context.Context, pos sdk.Position) error {
 // connection to the database, then cleans up its slot and publication.
 func (i *LogreplIterator) Teardown(ctx context.Context) error {
 	i.sub.Stop()
-	err := i.sub.Wait(ctx)
-	if err != nil {
-		return fmt.Errorf("error while waiting for subscription to stop: %w", err)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-i.sub.Done():
+		err := i.sub.Err()
+		if err != nil {
+			return fmt.Errorf("logical replication error: %w", err)
+		}
+		return nil
 	}
-	err = i.sub.Err()
-	if err != nil {
-		return fmt.Errorf("logical replication error: %w", err)
-	}
-	return nil
 }
 
 // attachSubscription builds a subscription with its own dedicated replication
 // connection. It prepares a replication slot and publication for the connector
 // if they don't exist yet.
-func (i *LogreplIterator) attachSubscription() error {
+func (i *LogreplIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) error {
 	var lsn pglogrepl.LSN
 	if i.config.Position != nil && string(i.config.Position) != "" {
 		var err error
@@ -155,15 +144,21 @@ func (i *LogreplIterator) attachSubscription() error {
 		}
 	}
 
+	keyColumn, err := i.getKeyColumn(ctx, conn)
+	if err != nil {
+		return fmt.Errorf("failed to find key for table %s (try specifying it manually): %w", i.config.TableName, err)
+	}
+
 	sub := logrepl.NewSubscription(
-		i.conn.Config().Config,
+		conn.Config().Config,
 		i.config.SlotName,
 		i.config.PublicationName,
 		[]string{i.config.TableName},
 		lsn,
 		NewLogreplHandler(
-			logrepl.NewRelationSet(i.conn.ConnInfo()),
-			i.config.KeyColumnName,
+			logrepl.NewRelationSet(conn.ConnInfo()),
+			keyColumn,
+			i.config.Columns,
 			i.messages,
 		).Handle,
 	)
@@ -172,59 +167,25 @@ func (i *LogreplIterator) attachSubscription() error {
 	return nil
 }
 
-// configureKeyColumn queries the db for the name of the primary key column
-// for a table if one exists and sets it to the internal list.
-// * TODO: Determine if tables must have keys
-func (i *LogreplIterator) configureKeyColumn(ctx context.Context) error {
+// getKeyColumn queries the db for the name of the primary key column
+// for a table if one exists and returns it.
+// TODO: Determine if tables must have keys
+func (i *LogreplIterator) getKeyColumn(ctx context.Context, conn *pgx.Conn) (string, error) {
 	if i.config.KeyColumnName != "" {
-		return nil
+		return i.config.KeyColumnName, nil
 	}
 
 	query := `SELECT column_name
 		FROM information_schema.key_column_usage
 		WHERE table_name = $1 AND constraint_name LIKE '%_pkey'
 		LIMIT 1;`
-	row := i.conn.QueryRow(ctx, query, i.config.TableName)
+	row := conn.QueryRow(ctx, query, i.config.TableName)
 
 	var colName string
 	err := row.Scan(&colName)
 	if err != nil {
-		return fmt.Errorf("failed to scan row: %w", err)
+		return "", fmt.Errorf("getKeyColumn query failed: %w", err)
 	}
 
-	if colName == "" {
-		return fmt.Errorf("got empty key column")
-	}
-	i.config.KeyColumnName = colName
-
-	return nil
-}
-
-// configureColumns sets the default config to include all of the table's columns
-// unless otherwise specified.
-// * If other columns are specified, it uses them instead.
-func (i *LogreplIterator) configureColumns(ctx context.Context) error {
-	if len(i.config.Columns) > 0 {
-		return nil
-	}
-
-	query := `SELECT column_name 
-		FROM INFORMATION_SCHEMA.COLUMNS 
-		WHERE table_name = $1`
-	rows, err := i.conn.Query(ctx, query, i.config.TableName)
-	if err != nil {
-		return fmt.Errorf("configureColumns query failed: %w", err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var val string
-		err = rows.Scan(&val)
-		if err != nil {
-			return fmt.Errorf("failed to get column names from values: %w", err)
-		}
-		i.config.Columns = append(i.config.Columns, val)
-	}
-
-	return nil
+	return colName, nil
 }

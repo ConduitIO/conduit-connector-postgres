@@ -35,13 +35,27 @@ var (
 
 type LogreplHandler struct {
 	keyColumn   string
+	columns     map[string]bool // columns can be used to filter only specific columns
 	relationSet *logrepl.RelationSet
 	out         chan<- sdk.Record
 }
 
-func NewLogreplHandler(rs *logrepl.RelationSet, keyColumn string, out chan<- sdk.Record) *LogreplHandler {
+func NewLogreplHandler(
+	rs *logrepl.RelationSet,
+	keyColumn string,
+	columns []string,
+	out chan<- sdk.Record,
+) *LogreplHandler {
+	var columnSet map[string]bool
+	if len(columns) > 0 {
+		columnSet = make(map[string]bool)
+		for _, col := range columns {
+			columnSet[col] = true
+		}
+	}
 	return &LogreplHandler{
 		keyColumn:   keyColumn,
+		columns:     columnSet,
 		relationSet: rs,
 		out:         out,
 	}
@@ -188,8 +202,11 @@ func (h *LogreplHandler) buildRecordKey(values map[string]pgtype.Value) sdk.Data
 func (h *LogreplHandler) buildRecordPayload(values map[string]pgtype.Value) sdk.Data {
 	payload := sdk.StructuredData{}
 	for k, v := range values {
-		value := v.Get()
-		payload[k] = value
+		// filter columns if columns are specified
+		if h.columns == nil || h.columns[k] {
+			value := v.Get()
+			payload[k] = value
+		}
 	}
 	// TODO remove next line, payload should contain the whole record
 	delete(payload, h.keyColumn) // NB: dedupe Key out of payload
