@@ -30,7 +30,6 @@ import (
 // map[string]string passed to the Connector at Configure time.
 type Config struct {
 	Position        sdk.Position
-	URL             string
 	SlotName        string
 	PublicationName string
 	TableName       string
@@ -97,7 +96,7 @@ func (i *LogreplIterator) setPosition(pos sdk.Position) error {
 }
 
 // listen is meant to be used in a goroutine. It starts the subscription
-// passed to it and handles the the subscription flush
+// passed to it and handles the subscription flush
 func (i *LogreplIterator) listen(ctx context.Context) {
 	defer func() {
 		i.sub.Stop()
@@ -142,7 +141,7 @@ func (i *LogreplIterator) Next(ctx context.Context) (sdk.Record, error) {
 func (i *LogreplIterator) Ack(ctx context.Context, pos sdk.Position) error {
 	lsn, err := PositionToLSN(pos)
 	if err != nil {
-		return fmt.Errorf("failed to parse position")
+		return fmt.Errorf("failed to parse position: %w", err)
 	}
 	i.sub.Ack(lsn)
 	return nil

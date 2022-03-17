@@ -70,7 +70,6 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 	default:
 		i, err := cdc.NewCDCIterator(ctx, s.conn, cdc.Config{
 			Position:        pos,
-			URL:             s.config.URL,
 			SlotName:        s.config.SlotName,
 			PublicationName: s.config.PublicationName,
 			TableName:       s.config.Table,

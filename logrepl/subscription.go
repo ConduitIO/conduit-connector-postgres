@@ -122,7 +122,7 @@ func (s *Subscription) listen(ctx context.Context, conn *pgconn.PgConn) error {
 	nextStatusUpdateAt := time.Now().Add(s.StatusTimeout)
 	for {
 		if time.Now().After(nextStatusUpdateAt) {
-			err := s.sendStatusUpdate(ctx, conn)
+			err := s.sendStandbyStatusUpdate(ctx, conn)
 			if err != nil {
 				return err
 			}
@@ -132,6 +132,7 @@ func (s *Subscription) listen(ctx context.Context, conn *pgconn.PgConn) error {
 		msg, err := s.receiveMessage(ctx, conn, nextStatusUpdateAt)
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
+				sdk.Logger(ctx).Trace().Msg("deadline exceeded while receiving message")
 				continue
 			}
 			return err
@@ -157,6 +158,10 @@ func (s *Subscription) listen(ctx context.Context, conn *pgconn.PgConn) error {
 			if err != nil {
 				return err
 			}
+		default:
+			sdk.Logger(ctx).Trace().
+				Bytes("message", copyDataMsg.Data).
+				Msg("ignoring unknown copy data message")
 		}
 	}
 }
@@ -164,12 +169,14 @@ func (s *Subscription) listen(ctx context.Context, conn *pgconn.PgConn) error {
 // handlePrimaryKeepaliveMessage will handle the primary keepalive message and
 // send a reply if requested.
 func (s *Subscription) handlePrimaryKeepaliveMessage(ctx context.Context, conn *pgconn.PgConn, copyDataMsg *pgproto3.CopyData) error {
+	sdk.Logger(ctx).Trace().Msg("handling primary keepalive message")
+
 	pkm, err := pglogrepl.ParsePrimaryKeepaliveMessage(copyDataMsg.Data[1:])
 	if err != nil {
 		return fmt.Errorf("failed to parse primary keepalive message: %w", err)
 	}
 	if pkm.ReplyRequested {
-		if err = s.sendStatusUpdate(ctx, conn); err != nil {
+		if err = s.sendStandbyStatusUpdate(ctx, conn); err != nil {
 			return fmt.Errorf("failed to send status: %w", err)
 		}
 	}
@@ -198,6 +205,9 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 		return fmt.Errorf("handler error: %w", err)
 	}
 
+	if xld.WALStart > 0 {
+		s.walWritten = xld.WALStart
+	}
 	return nil
 }
 
@@ -343,7 +353,7 @@ func (s *Subscription) startReplication(ctx context.Context, conn *pgconn.PgConn
 
 	// add cleanup for sending last status update
 	s.addCleanup(func(ctx context.Context) error {
-		if err := s.sendStatusUpdate(ctx, conn); err != nil {
+		if err := s.sendStandbyStatusUpdate(ctx, conn); err != nil {
 			return fmt.Errorf("failed to send final status update: %w", err)
 		}
 		return nil
@@ -380,6 +390,7 @@ func (s *Subscription) addCleanup(newCleanup func(context.Context) error) {
 // sendStandbyCopyDone sends the status message to server indicating that
 // replication is done.
 func (s *Subscription) sendStandbyCopyDone(ctx context.Context, conn *pgconn.PgConn) error {
+	sdk.Logger(ctx).Trace().Msg("sending standby copy done message")
 	_, err := pglogrepl.SendStandbyCopyDone(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("failed to send standby copy done: %w", err)
@@ -387,15 +398,21 @@ func (s *Subscription) sendStandbyCopyDone(ctx context.Context, conn *pgconn.PgC
 	return nil
 }
 
-// sendStatusUpdate sends the status message to server indicating which LSNs
+// sendStandbyStatusUpdate sends the status message to server indicating which LSNs
 // have been processed.
-func (s *Subscription) sendStatusUpdate(ctx context.Context, conn *pgconn.PgConn) error {
+func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context, conn *pgconn.PgConn) error {
 	// load with atomic to prevent race condition with ack
 	walFlushed := pglogrepl.LSN(atomic.LoadUint64((*uint64)(&s.walFlushed)))
 
 	if walFlushed > s.walWritten {
 		return fmt.Errorf("walWrite (%s) should be >= walFlush (%s)", s.walWritten, walFlushed)
 	}
+
+	sdk.Logger(ctx).Trace().
+		Str("walWrite", s.walWritten.String()).
+		Str("walFlush", walFlushed.String()).
+		Str("walApply", walFlushed.String()).
+		Msg("sending standby status update")
 
 	err := pglogrepl.SendStandbyStatusUpdate(ctx, conn, pglogrepl.StandbyStatusUpdate{
 		WALWritePosition: s.walWritten,
@@ -418,6 +435,7 @@ func (s *Subscription) receiveMessage(ctx context.Context, conn *pgconn.PgConn, 
 	wctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
+	sdk.Logger(ctx).Trace().Msg("receiving message")
 	msg, err := conn.ReceiveMessage(wctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to receive message: %w", err)
