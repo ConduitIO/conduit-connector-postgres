@@ -24,7 +24,7 @@ import (
 // It iterates over a first in first out queue.
 type Strategy interface {
 	// Next pops off the next record in the queue or an error.
-	Next(ctx context.Context) (sdk.Record, error)
+	Next(context.Context) (sdk.Record, error)
 	// Teardown attempts to gracefully teardown the queue.
-	Teardown() error
+	Teardown(context.Context) error
 }

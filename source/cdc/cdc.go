@@ -16,14 +16,17 @@ package cdc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"sync"
+	"time"
 
-	"github.com/batchcorp/pgoutput"
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/jackc/pgx"
+	"github.com/jackc/pgconn"
+	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgtype"
+	"github.com/jackc/pgx/v4"
 )
 
 // Config holds configuration values for our V1 Source. It is parsed from the
@@ -46,40 +49,37 @@ type Iterator struct {
 
 	config Config
 
-	lsn        uint64 // TODO: or maybe use an LSN type here
+	lsn        pglogrepl.LSN
 	messages   chan sdk.Record
 	killswitch context.CancelFunc
 
-	sub *pgoutput.Subscription
-	db  *pgx.Conn
+	sub  *Subscription
+	conn *pgx.Conn
 }
 
 // NewCDCIterator takes a config and returns up a new CDCIterator or returns an
 // error.
-func NewCDCIterator(ctx context.Context, config Config) (*Iterator, error) {
+func NewCDCIterator(ctx context.Context, conn *pgx.Conn, config Config) (*Iterator, error) {
 	wctx, cancel := context.WithCancel(ctx)
 	i := &Iterator{
 		wg:         &sync.WaitGroup{},
 		config:     config,
 		messages:   make(chan sdk.Record),
 		killswitch: cancel,
+		conn:       conn,
 	}
 
-	err := i.connectDB()
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to postgres: %w", err)
-	}
-
-	err = i.attachSubscription()
-	if err != nil {
-		return nil, fmt.Errorf("failed to setup subscription %w", err)
-	}
-
-	err = i.setPosition(config.Position)
+	err := i.setPosition(config.Position)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set starting position: %w", err)
 	}
 
+	err = i.attachSubscription(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to setup subscription: %w", err)
+	}
+
+	i.wg.Add(1)
 	go i.listen(wctx)
 
 	return i, nil
@@ -91,7 +91,7 @@ func (i *Iterator) setPosition(pos sdk.Position) error {
 		return nil
 	}
 
-	lsn, err := parsePosition(string(pos))
+	lsn, err := i.parsePosition(pos)
 	if err != nil {
 		return err
 	}
@@ -102,22 +102,35 @@ func (i *Iterator) setPosition(pos sdk.Position) error {
 // listen is meant to be used in a goroutine. It starts the subscription
 // passed to it and handles the the subscription flush
 func (i *Iterator) listen(ctx context.Context) {
-	i.wg.Add(1)
-	defer cleanupListener(i.wg, i.sub)
-
-	sdk.Logger(ctx).Printf("starting subscription at position %d", i.lsn)
-	err := i.sub.Start(ctx, i.lsn, i.registerMessageHandlers())
-	if err != nil {
-		if err == context.Canceled {
-			return
+	defer func() {
+		err := i.sub.Flush(context.Background())
+		if err != nil {
+			sdk.Logger(ctx).Err(err).Msg("failed to flush subscription")
 		}
-		return
-	}
-}
 
-func cleanupListener(wg *sync.WaitGroup, sub *pgoutput.Subscription) {
-	sub.Flush()
-	wg.Done()
+		i.sub.Stop()
+
+		wctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+		defer cancel()
+		err = i.sub.Wait(wctx)
+		if err != nil {
+			sdk.Logger(ctx).Err(err).Msg("could not stop postgres subscription in time")
+		}
+
+		i.wg.Done()
+	}()
+
+	sdk.Logger(ctx).Info().
+		Str("lsn", i.lsn.String()).
+		Str("slot", i.config.SlotName).
+		Str("publication", i.config.PublicationName).
+		Msg("starting logical replication")
+
+	err := i.sub.Start(ctx, i.lsn, i.handler(ctx))
+	if err != nil {
+		// TODO return error
+		sdk.Logger(ctx).Err(err).Msg("subscription failed")
+	}
 }
 
 // Next returns the next record in the buffer. This is a blocking operation
@@ -135,11 +148,11 @@ func (i *Iterator) Next(ctx context.Context) (sdk.Record, error) {
 }
 
 func (i *Iterator) Ack(ctx context.Context, pos sdk.Position) error {
-	n, err := parsePosition(string(pos))
+	n, err := i.parsePosition(pos)
 	if err != nil {
 		return fmt.Errorf("failed to parse position")
 	}
-	return i.sub.AdvanceLSN(n)
+	return i.sub.AdvanceLSN(ctx, n)
 }
 
 // push pushes a record into the buffer.
@@ -149,141 +162,92 @@ func (i *Iterator) push(r sdk.Record) {
 
 // Teardown kills the CDC subscription and waits for it to be done, closes its
 // connection to the database, then cleans up its slot and publication.
-func (i *Iterator) Teardown() error {
+func (i *Iterator) Teardown(ctx context.Context) error {
 	i.killswitch()
 	i.wg.Wait()
-	defer i.db.Close()
 
-	err := i.terminateBackend()
-	if err != nil {
-		return err
-	}
-	err = i.dropReplicationSlot()
-	if err != nil {
-		return err
-	}
-	err = i.dropPublication()
-	if err != nil {
-		return err
-	}
-	return nil
+	return i.dropPublication(ctx)
 }
 
 // attachSubscription builds a subscription with its own dedicated replication
 // connection. It prepares a replication slot and publication for the connector
 // if they're not yet setup with sane defaults if they're not configured.
-func (i *Iterator) attachSubscription() error {
-	err := i.configureColumns()
+func (i *Iterator) attachSubscription(ctx context.Context) error {
+	err := i.configureColumns(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to find table columns: %w", err)
 	}
 
-	err = i.configureKeyColumn()
+	err = i.configureKeyColumn(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to find key: %w", err)
 	}
 
-	replConn, err := getReplicationConnection(i.config.URL)
-	if err != nil {
-		return fmt.Errorf("failed to get replication conn: %w", err)
-	}
-
-	err = i.createPublicationForTable()
+	err = i.createPublication(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create publication: %w", err)
 	}
 
-	err = replConn.CreateReplicationSlot(i.config.SlotName, "pgoutput")
-	if err != nil {
-		if !strings.Contains(err.Error(), "SQLSTATE 42710") {
-			return fmt.Errorf("failed to create replication slot: %v", err)
-		}
-	}
-
-	var maxWalRetain uint64
-	var failOnHandler bool
-	sub := pgoutput.NewSubscription(
-		replConn,
+	sub := NewSubscription(
+		i.conn.Config().Config,
 		i.config.SlotName,
 		i.config.PublicationName,
-		maxWalRetain,
-		failOnHandler)
+		0,
+		false,
+	)
 
 	i.sub = sub
 	return nil
 }
 
-func (i *Iterator) createPublicationForTable() error {
-	_, err := i.db.Exec(
-		fmt.Sprintf("create publication %s for table %s;",
-			i.config.PublicationName,
-			i.config.TableName))
-	if err != nil {
-		if !strings.Contains(err.Error(), "SQLSTATE 42710") {
-			return fmt.Errorf("failed to create publication %s: %w",
-				i.config.SlotName, err)
-		}
-	}
-	return nil
-}
+func (i *Iterator) handler(ctx context.Context) Handler {
+	set := NewRelationSet(i.conn.ConnInfo())
 
-func (i *Iterator) connectDB() error {
-	rc, err := getReplicationConnection(i.config.URL)
-	if err != nil {
-		return fmt.Errorf("failed to get replication connection: %w", err)
-	}
-	i.db = rc.Conn
-	return nil
-}
-
-// registerMessageHandlers returns a Handler that switches on message type.
-func (i *Iterator) registerMessageHandlers() pgoutput.Handler {
-	// NB: pgx relation sets map a postgres schema to a pgx Message
-	set := pgoutput.NewRelationSet(i.db.ConnInfo)
-
-	handler := func(m pgoutput.Message, messageWalPos uint64) error {
+	return func(m pglogrepl.Message, lsn pglogrepl.LSN) error {
 		switch v := m.(type) {
-		case pgoutput.Relation:
+		case *pglogrepl.RelationMessage:
 			// We have to add the Relations to our Set so that we can
 			// decode our own output
 			set.Add(v)
-		case pgoutput.Insert:
-			values, err := set.Values(v.RelationID, v.Row)
+		case *pglogrepl.InsertMessage:
+			oid := pgtype.OID(v.RelationID)
+			values, err := set.Values(oid, v.Tuple)
 			if err != nil {
 				return fmt.Errorf("handleInsert failed: %w", err)
 			}
-			return i.handleInsert(v.RelationID, values, messageWalPos)
-		case pgoutput.Update:
-			values, err := set.Values(v.RelationID, v.Row)
+			return i.handleInsert(oid, values, lsn)
+		case *pglogrepl.UpdateMessage:
+			oid := pgtype.OID(v.RelationID)
+			values, err := set.Values(oid, v.NewTuple)
 			if err != nil {
 				return fmt.Errorf("handleUpdate failed: %w", err)
 			}
-			return i.handleUpdate(v.RelationID, values, messageWalPos)
-		case pgoutput.Delete:
-			values, err := set.Values(v.RelationID, v.Row)
+			return i.handleUpdate(oid, values, lsn)
+		case *pglogrepl.DeleteMessage:
+			oid := pgtype.OID(v.RelationID)
+			values, err := set.Values(oid, v.OldTuple)
 			if err != nil {
 				return fmt.Errorf("handleDelete failed: %w", err)
 			}
-			return i.handleDelete(v.RelationID, values, messageWalPos)
+			return i.handleDelete(oid, values, lsn)
 		}
 		return nil
 	}
-
-	return handler
 }
 
 // configureKeyColumn queries the db for the name of the primary key column
 // for a table if one exists and sets it to the internal list.
 // * TODO: Determine if tables must have keys
-func (i *Iterator) configureKeyColumn() error {
+func (i *Iterator) configureKeyColumn(ctx context.Context) error {
 	if i.config.KeyColumnName != "" {
 		return nil
 	}
 
-	row := i.db.QueryRow(`SELECT column_name
+	query := `SELECT column_name
 		FROM information_schema.key_column_usage
 		WHERE table_name = $1 AND constraint_name LIKE '%_pkey'
-		LIMIT 1;`, i.config.TableName)
+		LIMIT 1;`
+	row := i.conn.QueryRow(ctx, query, i.config.TableName)
 
 	var colName string
 	err := row.Scan(&colName)
@@ -302,84 +266,59 @@ func (i *Iterator) configureKeyColumn() error {
 // configureColumns sets the default config to include all of the table's columns
 // unless otherwise specified.
 // * If other columns are specified, it uses them instead.
-func (i *Iterator) configureColumns() error {
+func (i *Iterator) configureColumns(ctx context.Context) error {
 	if len(i.config.Columns) > 0 {
 		return nil
 	}
 
-	query := fmt.Sprintf(`SELECT column_name 
+	query := `SELECT column_name 
 		FROM INFORMATION_SCHEMA.COLUMNS 
-		WHERE table_name = '%s'`, i.config.TableName)
-	rows, err := i.db.Query(query)
+		WHERE table_name = $1`
+	rows, err := i.conn.Query(ctx, query, i.config.TableName)
 	if err != nil {
-		return fmt.Errorf("withColumns query failed: %w", err)
+		return fmt.Errorf("configureColumns query failed: %w", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var val *string
-		err := rows.Scan(&val)
+		var val string
+		err = rows.Scan(&val)
 		if err != nil {
-			return fmt.Errorf("failed to get column names from values: ")
+			return fmt.Errorf("failed to get column names from values: %w", err)
 		}
-		i.config.Columns = append(i.config.Columns, *val)
+		i.config.Columns = append(i.config.Columns, val)
 	}
 
 	return nil
 }
 
-func (i *Iterator) terminateBackend() error {
-	rows, err := i.db.Query(fmt.Sprintf(
-		`select pg_terminate_backend(active_pid)
-		from pg_replication_slots
-		where slot_name = '%s';`,
-		i.config.SlotName))
+func (i *Iterator) parsePosition(pos sdk.Position) (pglogrepl.LSN, error) {
+	n, err := strconv.ParseUint(string(pos), 10, 64)
 	if err != nil {
-		return fmt.Errorf("failed to terminate replication slot: %w", err)
+		return 0, fmt.Errorf("invalid position: %w", err)
 	}
-	defer rows.Close()
+	return pglogrepl.LSN(n), nil
+}
+
+func (i *Iterator) createPublication(ctx context.Context) error {
+	query := "CREATE PUBLICATION %s FOR TABLE %s"
+	query = fmt.Sprintf(query, i.config.PublicationName, i.config.TableName)
+	_, err := i.conn.Exec(ctx, query)
+	if err != nil {
+		var pgerr *pgconn.PgError
+		if errors.As(err, &pgerr) && pgerr.Code != pgDuplicateObjectErrorCode {
+			return fmt.Errorf("failed to create publication %s: %w",
+				i.config.SlotName, err)
+		}
+	}
 	return nil
 }
 
-func getReplicationConnection(url string) (*pgx.ReplicationConn, error) {
-	connInfo, err := pgx.ParseConnectionString(url)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse connection info: %w", err)
+func (i *Iterator) dropPublication(ctx context.Context) error {
+	query := "DROP PUBLICATION IF EXISTS %s"
+	query = fmt.Sprintf(query, i.config.PublicationName)
+	if _, err := i.conn.Exec(ctx, query); err != nil {
+		return fmt.Errorf("failed to drop publication: %w", err)
 	}
-	replConn, err := pgx.ReplicationConnect(connInfo)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create replication connection: %w", err)
-	}
-	return replConn, nil
-}
-
-func parsePosition(pos string) (uint64, error) {
-	n, err := strconv.ParseUint(pos, 10, 64)
-	if err != nil {
-		return 0, err
-	}
-	return n, nil
-}
-
-func (i *Iterator) dropReplicationSlot() error {
-	rows, err := i.db.Query(fmt.Sprintf(
-		`select pg_drop_replication_slot(slot_name)
-		from pg_replication_slots
-		where slot_name = '%s'`, i.config.SlotName))
-	if err != nil {
-		return fmt.Errorf("failed to drop replication slot: %w", err)
-	}
-	rows.Close()
-	return nil
-}
-
-func (i *Iterator) dropPublication() error {
-	query := fmt.Sprintf("drop publication if exists %s",
-		i.config.PublicationName)
-	rows, err := i.db.Query(query)
-	if err != nil {
-		return fmt.Errorf("failed to connecto to replication: %w", err)
-	}
-	rows.Close()
 	return nil
 }

@@ -17,12 +17,12 @@ package cdc
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/matryer/is"
 )
 
@@ -37,16 +37,11 @@ func TestIterator_Next(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
 
-	conn, err := pgx.Connect(ctx, CDCTestURL)
-	is.NoErr(err)
+	pool := test.ConnectPool(ctx, t, CDCTestURL)
+	table := test.SetupTestTable(ctx, t, pool)
+	i := testIterator(ctx, t, pool, table)
 	t.Cleanup(func() {
-		is.NoErr(conn.Close(ctx))
-	})
-
-	table := setupTestTable(t, conn)
-	i := testIterator(ctx, t, table)
-	t.Cleanup(func() {
-		is.NoErr(i.Teardown())
+		is.NoErr(i.Teardown(ctx))
 	})
 
 	tests := []struct {
@@ -70,6 +65,7 @@ func TestIterator_Next(t *testing.T) {
 					"column1": "bizz",
 					"column2": int32(456),
 					"column3": false,
+					"key":     nil,
 				},
 			},
 		},
@@ -110,9 +106,13 @@ func TestIterator_Next(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Now()
 
-			query := fmt.Sprintf(tt.setupQuery, table)
-			_, err := conn.Exec(ctx, query)
-			is.NoErr(err)
+			go func() {
+				// give replication some time to start
+				time.Sleep(time.Millisecond * 500)
+				query := fmt.Sprintf(tt.setupQuery, table)
+				_, err := pool.Exec(ctx, query)
+				is.NoErr(err)
+			}()
 
 			nextCtx, cancel := context.WithTimeout(ctx, time.Second*5)
 			defer cancel()
@@ -130,7 +130,7 @@ func TestIterator_Next(t *testing.T) {
 	}
 }
 
-func testIterator(ctx context.Context, t *testing.T, table string) *Iterator {
+func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string) *Iterator {
 	is := is.New(t)
 	config := Config{
 		URL:             CDCTestURL,
@@ -138,48 +138,18 @@ func testIterator(ctx context.Context, t *testing.T, table string) *Iterator {
 		PublicationName: table, // table is random, reuse for publication name
 		SlotName:        table, // table is random, reuse for slot name
 	}
-	i, err := NewCDCIterator(ctx, config)
+
+	// acquire connection for the time of the test
+	conn, err := pool.Acquire(ctx)
+	is.NoErr(err)
+	t.Cleanup(func() {
+		conn.Release()
+	})
+
+	i, err := NewCDCIterator(ctx, conn.Conn(), config)
 	is.NoErr(err)
 	is.Equal(i.config.KeyColumnName, "id")
 	is.Equal([]string{"id", "key", "column1", "column2", "column3"},
 		i.config.Columns)
 	return i
-}
-
-// setupTestTable creates a new table
-func setupTestTable(t *testing.T, conn *pgx.Conn) string {
-	ctx := context.Background()
-	is := is.New(t)
-
-	table := fmt.Sprintf("conduit_%v_%d", strings.ToLower(t.Name()), time.Now().UnixMicro()%1000)
-
-	query := `
-		CREATE TABLE %s (
-		id bigserial PRIMARY KEY,
-		key bytea,
-		column1 varchar(256),
-		column2 integer,
-		column3 boolean)`
-	query = fmt.Sprintf(query, table)
-	_, err := conn.Exec(ctx, query)
-	is.NoErr(err)
-
-	t.Cleanup(func() {
-		query := `DROP TABLE %s`
-		query = fmt.Sprintf(query, table)
-		_, err := conn.Exec(ctx, query)
-		is.NoErr(err)
-	})
-
-	query = `
-		INSERT INTO %s (key, column1, column2, column3)
-		VALUES ('1', 'foo', 123, false),
-		('2', 'bar', 456, true),
-		('3', 'baz', 789, false),
-		('4', null, null, null)`
-	query = fmt.Sprintf(query, table)
-	_, err = conn.Exec(ctx, query)
-	is.NoErr(err)
-
-	return table
 }
