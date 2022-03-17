@@ -16,7 +16,6 @@ package cdc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -24,7 +23,6 @@ import (
 
 	"github.com/conduitio/conduit-connector-postgres/logrepl"
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/jackc/pgconn"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgtype"
 	"github.com/jackc/pgx/v4"
@@ -167,7 +165,7 @@ func (i *LogreplIterator) Teardown(ctx context.Context) error {
 	i.killswitch()
 	i.wg.Wait()
 
-	return i.dropPublication(ctx)
+	return logrepl.DropPublication(ctx, i.conn.PgConn(), i.config.PublicationName, logrepl.DropPublicationOptions{})
 }
 
 // attachSubscription builds a subscription with its own dedicated replication
@@ -184,7 +182,7 @@ func (i *LogreplIterator) attachSubscription(ctx context.Context) error {
 		return fmt.Errorf("failed to find key: %w", err)
 	}
 
-	err = i.createPublication(ctx)
+	err = logrepl.CreatePublication(ctx, i.conn.PgConn(), i.config.PublicationName, logrepl.CreatePublicationOptions{Tables: []string{i.config.TableName}})
 	if err != nil {
 		return fmt.Errorf("failed to create publication: %w", err)
 	}
@@ -305,28 +303,4 @@ func (i *LogreplIterator) parsePosition(pos sdk.Position) (pglogrepl.LSN, error)
 		return 0, fmt.Errorf("invalid position: %w", err)
 	}
 	return pglogrepl.LSN(n), nil
-}
-
-func (i *LogreplIterator) createPublication(ctx context.Context) error {
-	query := "CREATE PUBLICATION %s FOR TABLE %s"
-	query = fmt.Sprintf(query, i.config.PublicationName, i.config.TableName)
-	_, err := i.conn.Exec(ctx, query)
-	if err != nil {
-		var pgerr *pgconn.PgError
-		// TODO use code from logrepl package once the method is moved
-		if errors.As(err, &pgerr) && pgerr.Code != "42710" {
-			return fmt.Errorf("failed to create publication %s: %w",
-				i.config.SlotName, err)
-		}
-	}
-	return nil
-}
-
-func (i *LogreplIterator) dropPublication(ctx context.Context) error {
-	query := "DROP PUBLICATION IF EXISTS %s"
-	query = fmt.Sprintf(query, i.config.PublicationName)
-	if _, err := i.conn.Exec(ctx, query); err != nil {
-		return fmt.Errorf("failed to drop publication: %w", err)
-	}
-	return nil
 }

@@ -22,12 +22,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/conduitio/conduit-connector-postgres/pgutil"
-	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgconn"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgproto3/v2"
-	"github.com/jackc/pgtype"
 )
 
 const (
@@ -54,6 +51,10 @@ type Subscription struct {
 	stop    chan struct{}
 	stopped chan struct{}
 
+	// cleanup is the function that gets called on teardown.
+	// On initialization the cleanup is stored in here.
+	cleanup func() error
+
 	// Mutex is used to prevent reading and writing to a connection at the same time
 	sync.Mutex
 }
@@ -61,11 +62,6 @@ type Subscription struct {
 type Handler func(pglogrepl.Message, pglogrepl.LSN) error
 
 func NewSubscription(config pgconn.Config, slotName, publication string, walRetain uint64, failOnHandler bool) *Subscription {
-	if config.RuntimeParams == nil {
-		config.RuntimeParams = make(map[string]string)
-	}
-	config.RuntimeParams["replication"] = "database"
-
 	return &Subscription{
 		SlotName:      slotName,
 		Publication:   publication,
@@ -140,6 +136,11 @@ func (s *Subscription) AdvanceLSN(ctx context.Context, lsn pglogrepl.LSN) error 
 func (s *Subscription) Start(ctx context.Context, startLSN pglogrepl.LSN, h Handler) error {
 	defer close(s.stopped)
 
+	if s.connConfig.RuntimeParams == nil {
+		s.connConfig.RuntimeParams = make(map[string]string)
+	}
+	s.connConfig.RuntimeParams["replication"] = "database"
+
 	var err error
 	s.conn, err = pgconn.ConnectConfig(ctx, &s.connConfig)
 	if err != nil {
@@ -164,19 +165,6 @@ func (s *Subscription) Start(ctx context.Context, startLSN pglogrepl.LSN, h Hand
 		if !errors.As(err, &pgerr) || pgerr.Code != pgDuplicateObjectErrorCode {
 			return err
 		}
-	} else {
-		// replication slot was created, make sure it's cleaned up at the end
-		defer func() {
-			err := pglogrepl.DropReplicationSlot(
-				context.Background(),
-				s.conn,
-				s.SlotName,
-				pglogrepl.DropReplicationSlotOptions{Wait: true},
-			)
-			if err != nil {
-				sdk.Logger(ctx).Err(err).Msg("failed to drop replication slot")
-			}
-		}()
 	}
 
 	if err := pglogrepl.StartReplication(
@@ -324,59 +312,4 @@ func (s *Subscription) Wait(ctx context.Context) error {
 	case <-s.stopped:
 		return nil
 	}
-}
-
-// RelationSet can be used to build a cache of relations returned by logical
-// replication.
-type RelationSet struct {
-	relations map[pgtype.OID]*pglogrepl.RelationMessage
-	connInfo  *pgtype.ConnInfo
-}
-
-// NewRelationSet creates a new relation set.
-func NewRelationSet(ci *pgtype.ConnInfo) *RelationSet {
-	return &RelationSet{
-		relations: map[pgtype.OID]*pglogrepl.RelationMessage{},
-		connInfo:  ci,
-	}
-}
-
-func (rs *RelationSet) Add(r *pglogrepl.RelationMessage) {
-	rs.relations[pgtype.OID(r.RelationID)] = r
-}
-
-func (rs *RelationSet) Values(id pgtype.OID, row *pglogrepl.TupleData) (map[string]pgtype.Value, error) {
-	values := map[string]pgtype.Value{}
-	rel, ok := rs.relations[id]
-	if !ok {
-		return values, fmt.Errorf("no relation for %d", id)
-	}
-
-	// assert same number of row and columns
-	for i, tuple := range row.Columns {
-		col := rel.Columns[i]
-		decoder := rs.oidToDecoderValue(pgtype.OID(col.DataType))
-
-		if err := decoder.DecodeText(rs.connInfo, tuple.Data); err != nil {
-			return nil, fmt.Errorf("failed to decode tuple %d: %w", i, err)
-		}
-
-		values[col.Name] = decoder
-	}
-
-	return values, nil
-}
-
-type decoderValue interface {
-	pgtype.Value
-	pgtype.TextDecoder
-}
-
-func (rs *RelationSet) oidToDecoderValue(id pgtype.OID) decoderValue {
-	t, ok := pgutil.OIDToPgType(id).(decoderValue)
-	if !ok {
-		// not all pg types implement pgtype.Value and pgtype.TextDecoder
-		return &pgtype.Unknown{}
-	}
-	return t
 }
