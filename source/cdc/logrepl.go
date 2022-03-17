@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/conduitio/conduit-connector-postgres/logrepl"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgconn"
 	"github.com/jackc/pglogrepl"
@@ -53,7 +54,7 @@ type LogreplIterator struct {
 	messages   chan sdk.Record
 	killswitch context.CancelFunc
 
-	sub  *Subscription
+	sub  *logrepl.Subscription
 	conn *pgx.Conn
 }
 
@@ -188,7 +189,7 @@ func (i *LogreplIterator) attachSubscription(ctx context.Context) error {
 		return fmt.Errorf("failed to create publication: %w", err)
 	}
 
-	sub := NewSubscription(
+	sub := logrepl.NewSubscription(
 		i.conn.Config().Config,
 		i.config.SlotName,
 		i.config.PublicationName,
@@ -200,8 +201,8 @@ func (i *LogreplIterator) attachSubscription(ctx context.Context) error {
 	return nil
 }
 
-func (i *LogreplIterator) handler(ctx context.Context) Handler {
-	set := NewRelationSet(i.conn.ConnInfo())
+func (i *LogreplIterator) handler(ctx context.Context) logrepl.Handler {
+	set := logrepl.NewRelationSet(i.conn.ConnInfo())
 
 	return func(m pglogrepl.Message, lsn pglogrepl.LSN) error {
 		sdk.Logger(ctx).Trace().
@@ -312,7 +313,8 @@ func (i *LogreplIterator) createPublication(ctx context.Context) error {
 	_, err := i.conn.Exec(ctx, query)
 	if err != nil {
 		var pgerr *pgconn.PgError
-		if errors.As(err, &pgerr) && pgerr.Code != pgDuplicateObjectErrorCode {
+		// TODO use code from logrepl package once the method is moved
+		if errors.As(err, &pgerr) && pgerr.Code != "42710" {
 			return fmt.Errorf("failed to create publication %s: %w",
 				i.config.SlotName, err)
 		}
