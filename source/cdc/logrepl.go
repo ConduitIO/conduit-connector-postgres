@@ -102,16 +102,11 @@ func (i *LogreplIterator) setPosition(pos sdk.Position) error {
 // passed to it and handles the the subscription flush
 func (i *LogreplIterator) listen(ctx context.Context) {
 	defer func() {
-		err := i.sub.Flush(context.Background())
-		if err != nil {
-			sdk.Logger(ctx).Err(err).Msg("failed to flush subscription")
-		}
-
 		i.sub.Stop()
 
 		wctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 		defer cancel()
-		err = i.sub.Wait(wctx)
+		err := i.sub.Wait(wctx)
 		if err != nil {
 			sdk.Logger(ctx).Err(err).Msg("could not stop postgres subscription in time")
 		}
@@ -151,7 +146,8 @@ func (i *LogreplIterator) Ack(ctx context.Context, pos sdk.Position) error {
 	if err != nil {
 		return fmt.Errorf("failed to parse position")
 	}
-	return i.sub.AdvanceLSN(ctx, n)
+	i.sub.Ack(n)
+	return nil
 }
 
 // push pushes a record into the buffer.
@@ -164,8 +160,8 @@ func (i *LogreplIterator) push(r sdk.Record) {
 func (i *LogreplIterator) Teardown(ctx context.Context) error {
 	i.killswitch()
 	i.wg.Wait()
-
-	return logrepl.DropPublication(ctx, i.conn.PgConn(), i.config.PublicationName, logrepl.DropPublicationOptions{})
+	// TODO stop subscription here and collect error
+	return nil
 }
 
 // attachSubscription builds a subscription with its own dedicated replication
@@ -182,17 +178,11 @@ func (i *LogreplIterator) attachSubscription(ctx context.Context) error {
 		return fmt.Errorf("failed to find key: %w", err)
 	}
 
-	err = logrepl.CreatePublication(ctx, i.conn.PgConn(), i.config.PublicationName, logrepl.CreatePublicationOptions{Tables: []string{i.config.TableName}})
-	if err != nil {
-		return fmt.Errorf("failed to create publication: %w", err)
-	}
-
 	sub := logrepl.NewSubscription(
 		i.conn.Config().Config,
 		i.config.SlotName,
 		i.config.PublicationName,
-		0,
-		false,
+		[]string{i.config.TableName},
 	)
 
 	i.sub = sub

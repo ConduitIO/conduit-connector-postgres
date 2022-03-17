@@ -19,9 +19,9 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
+	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgconn"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgproto3/v2"
@@ -32,175 +32,81 @@ const (
 	pgOutputPlugin             = "pgoutput"
 )
 
+// Subscription manages a subscription to a logical replication slot.
 type Subscription struct {
+	ConnConfig    pgconn.Config
 	SlotName      string
 	Publication   string
+	Tables        []string
 	WaitTimeout   time.Duration
 	StatusTimeout time.Duration
-
-	connConfig pgconn.Config
-	conn       *pgconn.PgConn
-
-	maxWal     uint64
-	walRetain  uint64
-	walFlushed uint64
-
-	failOnHandler bool
 
 	// TODO make this nicer
 	stop    chan struct{}
 	stopped chan struct{}
 
 	// cleanup is the function that gets called on teardown.
-	// On initialization the cleanup is stored in here.
-	cleanup func() error
+	// Cleanup functions that get added here on initialization act as deferred
+	// functions.
+	cleanup func(ctx context.Context) error
 
-	// Mutex is used to prevent reading and writing to a connection at the same time
+	// Mutex is used to prevent reading and writing to a connection concurrently
+	// as well as reading/writing WAL positions.
 	sync.Mutex
+
+	walWritten pglogrepl.LSN
+	walFlushed pglogrepl.LSN
 }
 
 type Handler func(pglogrepl.Message, pglogrepl.LSN) error
 
-func NewSubscription(config pgconn.Config, slotName, publication string, walRetain uint64, failOnHandler bool) *Subscription {
+func NewSubscription(config pgconn.Config, slotName, publication string, tables []string) *Subscription {
 	return &Subscription{
+		ConnConfig:    config,
 		SlotName:      slotName,
 		Publication:   publication,
+		Tables:        tables,
 		WaitTimeout:   2 * time.Second,
 		StatusTimeout: 10 * time.Second,
 
-		connConfig:    config,
-		walRetain:     walRetain,
-		failOnHandler: failOnHandler,
-		stop:          make(chan struct{}),
-		stopped:       make(chan struct{}),
+		stop:    make(chan struct{}),
+		stopped: make(chan struct{}),
 	}
-}
-
-func (s *Subscription) pluginArgs(version, publication string) []string {
-	return []string{
-		fmt.Sprintf(`"proto_version" '%s'`, version),
-		fmt.Sprintf(`"publication_names" '%s'`, publication),
-	}
-}
-
-func (s *Subscription) sendStatus(ctx context.Context, walWrite, walFlush uint64) error {
-	if walFlush > walWrite {
-		return fmt.Errorf("walWrite should be >= walFlush")
-	}
-
-	s.Lock()
-	defer s.Unlock()
-	err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn, pglogrepl.StandbyStatusUpdate{
-		WALWritePosition: pglogrepl.LSN(walWrite),
-		WALFlushPosition: pglogrepl.LSN(walFlush),
-		WALApplyPosition: pglogrepl.LSN(walFlush),
-		ClientTime:       time.Now(),
-		ReplyRequested:   false,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to send standby status update: %w", err)
-	}
-
-	return nil
-}
-
-func (s *Subscription) sendDone(ctx context.Context) error {
-	s.Lock()
-	defer s.Unlock()
-	_, err := pglogrepl.SendStandbyCopyDone(ctx, s.conn)
-	if err != nil {
-		return fmt.Errorf("failed to send standby copy done: %w", err)
-	}
-
-	return nil
-}
-
-// Flush sends the status message to server indicating that we've fully applied
-// all events until maxWal. This allows PostgreSQL to purge its WAL logs.
-func (s *Subscription) Flush(ctx context.Context) error {
-	wp := atomic.LoadUint64(&s.maxWal)
-	err := s.sendStatus(ctx, wp, wp)
-	if err != nil {
-		return err
-	}
-	atomic.StoreUint64(&s.walFlushed, wp)
-	return nil
-}
-
-func (s *Subscription) AdvanceLSN(ctx context.Context, lsn pglogrepl.LSN) error {
-	atomic.StoreUint64(&s.maxWal, uint64(lsn))
-	return s.Flush(ctx)
 }
 
 // Start replication and block until error or ctx is canceled.
-func (s *Subscription) Start(ctx context.Context, startLSN pglogrepl.LSN, h Handler) error {
+func (s *Subscription) Start(ctx context.Context, startLSN pglogrepl.LSN, h Handler) (err error) {
 	defer close(s.stopped)
+	defer func() {
+		// use fresh context for cleanup
+		cleanupErr := s.cleanup(context.Background())
+		if err != nil {
+			// return close connection error
+			err = cleanupErr
+		} else {
+			// an error is already returned, let's log this one instead
+			sdk.Logger(ctx).Err(cleanupErr).Msg("failed to cleanup subscription")
+		}
+	}()
 
-	if s.connConfig.RuntimeParams == nil {
-		s.connConfig.RuntimeParams = make(map[string]string)
-	}
-	s.connConfig.RuntimeParams["replication"] = "database"
-
-	var err error
-	s.conn, err = pgconn.ConnectConfig(ctx, &s.connConfig)
+	conn, err := s.connect(ctx)
 	if err != nil {
 		return err
 	}
-	defer s.conn.Close(context.Background())
-
-	if _, err := pglogrepl.CreateReplicationSlot(
-		ctx,
-		s.conn,
-		s.SlotName,
-		pgOutputPlugin,
-		pglogrepl.CreateReplicationSlotOptions{
-			Temporary:      true,
-			SnapshotAction: "NOEXPORT_SNAPSHOT",
-			Mode:           pglogrepl.LogicalReplication,
-		},
-	); err != nil {
-		// If creating the replication slot fails with code 42710, this means
-		// the replication slot already exists.
-		var pgerr *pgconn.PgError
-		if !errors.As(err, &pgerr) || pgerr.Code != pgDuplicateObjectErrorCode {
-			return err
-		}
+	err = s.createPublication(ctx, conn)
+	if err != nil {
+		return err
+	}
+	err = s.createReplicationSlot(ctx, conn)
+	if err != nil {
+		return err
+	}
+	err = s.startReplication(ctx, conn, startLSN)
+	if err != nil {
+		return err
 	}
 
-	if err := pglogrepl.StartReplication(
-		ctx,
-		s.conn,
-		s.SlotName,
-		startLSN,
-		pglogrepl.StartReplicationOptions{
-			Timeline:   0,
-			Mode:       pglogrepl.LogicalReplication,
-			PluginArgs: s.pluginArgs("1", s.Publication),
-		},
-	); err != nil {
-		return fmt.Errorf("failed to start replication: %w", err)
-	}
-
-	s.maxWal = uint64(startLSN)
-
-	sendStatus := func(ctx context.Context) error {
-		walWrite := atomic.LoadUint64(&s.maxWal)
-		walLastFlushed := atomic.LoadUint64(&s.walFlushed)
-
-		// Confirm only walRetain bytes in past
-		// If walRetain is zero - will confirm current walPos as flushed
-		walFlush := walWrite - s.walRetain
-
-		if walLastFlushed > walFlush {
-			// If there was a manual flush - report its position until we're past it
-			walFlush = walLastFlushed
-		} else if walFlush < 0 {
-			// If we have less than walRetain bytes - just report zero
-			walFlush = 0
-		}
-
-		return s.sendStatus(ctx, walWrite, walFlush)
-	}
+	s.walWritten = startLSN
 
 	go func() {
 		tick := time.NewTicker(s.StatusTimeout)
@@ -209,7 +115,7 @@ func (s *Subscription) Start(ctx context.Context, startLSN pglogrepl.LSN, h Hand
 		for {
 			select {
 			case <-tick.C:
-				if err = sendStatus(ctx); err != nil {
+				if err = s.sendStatusUpdate(ctx, conn); err != nil {
 					// TODO don't swallow error
 					return
 				}
@@ -224,23 +130,15 @@ func (s *Subscription) Start(ctx context.Context, startLSN pglogrepl.LSN, h Hand
 	for {
 		select {
 		case <-ctx.Done():
-			// Send final status and exit
-			if err = s.sendDone(context.Background()); err != nil {
-				return fmt.Errorf("unable to send final status: %w", err)
-			}
 			return nil
 
 		case <-s.stop:
-			// Send final status and exit
-			if err = s.sendDone(context.Background()); err != nil {
-				return fmt.Errorf("unable to send final status: %w", err)
-			}
 			return nil
 
 		default:
 			wctx, cancel := context.WithTimeout(ctx, s.WaitTimeout)
 			s.Lock()
-			msg, err := s.conn.ReceiveMessage(wctx)
+			msg, err := conn.ReceiveMessage(wctx)
 			s.Unlock()
 			cancel()
 
@@ -268,7 +166,7 @@ func (s *Subscription) Start(ctx context.Context, startLSN pglogrepl.LSN, h Hand
 					return fmt.Errorf("failed to parse primary keepalive message: %w", err)
 				}
 				if pkm.ReplyRequested {
-					if err = sendStatus(ctx); err != nil {
+					if err = s.sendStatusUpdate(ctx, conn); err != nil {
 						return fmt.Errorf("failed to send status: %w", err)
 					}
 				}
@@ -288,12 +186,166 @@ func (s *Subscription) Start(ctx context.Context, startLSN pglogrepl.LSN, h Hand
 					return fmt.Errorf("invalid message: %w", err)
 				}
 
-				if err = h(logicalMsg, xld.WALStart); err != nil && s.failOnHandler {
+				if err = h(logicalMsg, xld.WALStart); err != nil {
 					return fmt.Errorf("handler error: %w", err)
 				}
 			}
 		}
 	}
+}
+
+// connect establishes a replication connection and adds a cleanup function
+// which closes the connection afterwards.
+func (s *Subscription) connect(ctx context.Context) (*pgconn.PgConn, error) {
+	if s.ConnConfig.RuntimeParams == nil {
+		s.ConnConfig.RuntimeParams = make(map[string]string)
+	}
+	// enable replication on connection
+	s.ConnConfig.RuntimeParams["replication"] = "database"
+
+	conn, err := pgconn.ConnectConfig(ctx, &s.ConnConfig)
+	if err != nil {
+		return nil, fmt.Errorf("could not establish replication connection: %w", err)
+	}
+
+	// add cleanup to close connection
+	s.addCleanup(func(ctx context.Context) error {
+		if err := conn.Close(ctx); err != nil {
+			return fmt.Errorf("failed to close replication connection: %w", err)
+		}
+		return nil
+	})
+	return conn, nil
+}
+
+// createPublication creates a publication if it doesn't exist yet. If a
+// publication with that name already exists it returns no error. If a
+// publication is created a cleanup function is added which deletes the
+// publication afterwards.
+func (s *Subscription) createPublication(ctx context.Context, conn *pgconn.PgConn) error {
+	if err := CreatePublication(
+		ctx,
+		conn,
+		s.Publication,
+		CreatePublicationOptions{Tables: s.Tables},
+	); err != nil {
+		// If creating the publication fails with code 42710, this means
+		// the publication already exists.
+		var pgerr *pgconn.PgError
+		if !errors.As(err, &pgerr) || pgerr.Code != pgDuplicateObjectErrorCode {
+			return err
+		}
+	} else {
+		// publication was created successfully, drop it when we're done
+		s.addCleanup(func(ctx context.Context) error {
+			err := DropPublication(ctx, conn, s.Publication, DropPublicationOptions{})
+			if err != nil {
+				return fmt.Errorf("failed to drop publication: %w", err)
+			}
+			return nil
+		})
+	}
+	return nil
+}
+
+// createReplicationSlot creates a temporary replication slot which will be
+// deleted once the connection is closed. If a replication slot with that name
+// already exists it returns no error.
+func (s *Subscription) createReplicationSlot(ctx context.Context, conn *pgconn.PgConn) error {
+	if _, err := pglogrepl.CreateReplicationSlot(
+		ctx,
+		conn,
+		s.SlotName,
+		pgOutputPlugin,
+		pglogrepl.CreateReplicationSlotOptions{
+			Temporary:      true, // replication slot is dropped when we disconnect
+			SnapshotAction: "NOEXPORT_SNAPSHOT",
+			Mode:           pglogrepl.LogicalReplication,
+		},
+	); err != nil {
+		// If creating the replication slot fails with code 42710, this means
+		// the replication slot already exists.
+		var pgerr *pgconn.PgError
+		if !errors.As(err, &pgerr) || pgerr.Code != pgDuplicateObjectErrorCode {
+			return err
+		}
+	}
+	return nil
+}
+
+// startReplication starts replication with a specific start LSN and adds two
+// cleanup functions, one for sending the last status update and one for sending
+// the standby copy done signal.
+func (s *Subscription) startReplication(ctx context.Context, conn *pgconn.PgConn, startLSN pglogrepl.LSN) error {
+	pluginArgs := []string{
+		`"proto_version" '1'`,
+		fmt.Sprintf(`"publication_names" '%s'`, s.Publication),
+	}
+
+	if err := pglogrepl.StartReplication(
+		ctx,
+		conn,
+		s.SlotName,
+		startLSN,
+		pglogrepl.StartReplicationOptions{
+			Timeline:   0,
+			Mode:       pglogrepl.LogicalReplication,
+			PluginArgs: pluginArgs,
+		},
+	); err != nil {
+		return fmt.Errorf("failed to start replication: %w", err)
+	}
+
+	// add cleanup for sending copy done message indicating replication has stopped
+	s.addCleanup(func(ctx context.Context) error {
+		if err := s.sendStandbyCopyDone(ctx, conn); err != nil {
+			return fmt.Errorf("failed to send standby copy done: %w", err)
+		}
+		return nil
+	})
+
+	// add cleanup for sending last status update
+	s.addCleanup(func(ctx context.Context) error {
+		if err := s.sendStatusUpdate(ctx, conn); err != nil {
+			return fmt.Errorf("failed to send final status update: %w", err)
+		}
+		return nil
+	})
+
+	return nil
+}
+
+// addCleanup will add the function to the cleanup functions that are called
+// when the subscription is stopped. Functions will get stacked and taken off
+// the stack as they are called (same as deferred functions).
+func (s *Subscription) addCleanup(newCleanup func(context.Context) error) {
+	oldCleanup := s.cleanup
+	if oldCleanup == nil {
+		oldCleanup = func(context.Context) error { return nil } // empty function by default
+	}
+	s.cleanup = func(ctx context.Context) error {
+		// first call new cleanup, then old cleanup to have the same ordering as
+		// deferred functions
+		newErr := newCleanup(ctx)
+		oldErr := oldCleanup(ctx)
+		switch {
+		case oldErr != nil && newErr == nil:
+			return fmt.Errorf("cleanup error: %w", oldErr)
+		case oldErr == nil && newErr != nil:
+			return fmt.Errorf("cleanup error: %w", newErr)
+		case oldErr != nil && newErr != nil:
+			return fmt.Errorf("[%s] %w", newErr, oldErr)
+		}
+		return nil
+	}
+}
+
+// Ack stores the LSN as flushed. Next time WAL positions are flushed, Postgres
+// will know it can purge WAL logs up to this LSN.
+func (s *Subscription) Ack(lsn pglogrepl.LSN) {
+	s.Lock()
+	defer s.Unlock()
+	s.walFlushed = lsn
 }
 
 func (s *Subscription) Stop() {
@@ -312,4 +364,39 @@ func (s *Subscription) Wait(ctx context.Context) error {
 	case <-s.stopped:
 		return nil
 	}
+}
+
+// sendDone sends the status message to server indicating that replication is
+// done.
+func (s *Subscription) sendStandbyCopyDone(ctx context.Context, conn *pgconn.PgConn) error {
+	s.Lock()
+	defer s.Unlock()
+	_, err := pglogrepl.SendStandbyCopyDone(ctx, conn)
+	if err != nil {
+		return fmt.Errorf("failed to send standby copy done: %w", err)
+	}
+	return nil
+}
+
+// sendStatusUpdate sends the status message to server indicating which LSNs
+// have been processed.
+func (s *Subscription) sendStatusUpdate(ctx context.Context, conn *pgconn.PgConn) error {
+	s.Lock()
+	defer s.Unlock()
+	if s.walFlushed > s.walWritten {
+		return fmt.Errorf("walWrite (%s) should be >= walFlush (%s)", s.walWritten, s.walFlushed)
+	}
+
+	err := pglogrepl.SendStandbyStatusUpdate(ctx, conn, pglogrepl.StandbyStatusUpdate{
+		WALWritePosition: s.walWritten,
+		WALFlushPosition: s.walFlushed,
+		WALApplyPosition: s.walFlushed,
+		ClientTime:       time.Now(),
+		ReplyRequested:   false,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to send standby status update: %w", err)
+	}
+
+	return nil
 }

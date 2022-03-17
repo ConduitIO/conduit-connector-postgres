@@ -114,7 +114,7 @@ func TestIterator_Next(t *testing.T) {
 				is.NoErr(err)
 			}()
 
-			nextCtx, cancel := context.WithTimeout(ctx, time.Second*5)
+			nextCtx, cancel := context.WithTimeout(ctx, time.Second*10)
 			defer cancel()
 			got, err := i.Next(nextCtx)
 			is.NoErr(err)
