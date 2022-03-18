@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package cdc
+package logrepl
 
 import (
 	"context"
 	"fmt"
 
-	"github.com/conduitio/conduit-connector-postgres/source/cdc/internal"
+	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v4"
@@ -35,10 +35,10 @@ type Config struct {
 	Columns         []string
 }
 
-// LogreplIterator listens for events from the WAL and pushes them into its buffer.
+// CDCIterator listens for events from the WAL and pushes them into its buffer.
 // It iterates through that Buffer so that we have a controlled way to get 1
 // record from our CDC buffer without having to expose a loop to the main Read.
-type LogreplIterator struct {
+type CDCIterator struct {
 	config   Config
 	messages chan sdk.Record
 
@@ -47,8 +47,8 @@ type LogreplIterator struct {
 
 // NewCDCIterator takes a config and returns up a new CDCIterator or returns an
 // error.
-func NewCDCIterator(ctx context.Context, conn *pgx.Conn, config Config) (*LogreplIterator, error) {
-	i := &LogreplIterator{
+func NewCDCIterator(ctx context.Context, conn *pgx.Conn, config Config) (*CDCIterator, error) {
+	i := &CDCIterator{
 		config:   config,
 		messages: make(chan sdk.Record),
 	}
@@ -65,7 +65,7 @@ func NewCDCIterator(ctx context.Context, conn *pgx.Conn, config Config) (*Logrep
 
 // listen is meant to be used in a goroutine. It starts the subscription
 // passed to it and handles the subscription flush
-func (i *LogreplIterator) listen(ctx context.Context) {
+func (i *CDCIterator) listen(ctx context.Context) {
 	sdk.Logger(ctx).Info().
 		Str("slot", i.config.SlotName).
 		Str("publication", i.config.PublicationName).
@@ -83,7 +83,7 @@ func (i *LogreplIterator) listen(ctx context.Context) {
 // Next returns the next record in the buffer. This is a blocking operation
 // so it should only be called if we've checked that HasNext is true or else
 // it will block until a record is inserted into the queue.
-func (i *LogreplIterator) Next(ctx context.Context) (sdk.Record, error) {
+func (i *CDCIterator) Next(ctx context.Context) (sdk.Record, error) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -106,7 +106,7 @@ func (i *LogreplIterator) Next(ctx context.Context) (sdk.Record, error) {
 	}
 }
 
-func (i *LogreplIterator) Ack(ctx context.Context, pos sdk.Position) error {
+func (i *CDCIterator) Ack(ctx context.Context, pos sdk.Position) error {
 	lsn, err := PositionToLSN(pos)
 	if err != nil {
 		return fmt.Errorf("failed to parse position: %w", err)
@@ -117,7 +117,7 @@ func (i *LogreplIterator) Ack(ctx context.Context, pos sdk.Position) error {
 
 // Teardown kills the CDC subscription and waits for it to be done, closes its
 // connection to the database, then cleans up its slot and publication.
-func (i *LogreplIterator) Teardown(ctx context.Context) error {
+func (i *CDCIterator) Teardown(ctx context.Context) error {
 	i.sub.Stop()
 	select {
 	case <-ctx.Done():
@@ -134,7 +134,7 @@ func (i *LogreplIterator) Teardown(ctx context.Context) error {
 // attachSubscription builds a subscription with its own dedicated replication
 // connection. It prepares a replication slot and publication for the connector
 // if they don't exist yet.
-func (i *LogreplIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) error {
+func (i *CDCIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) error {
 	var lsn pglogrepl.LSN
 	if i.config.Position != nil && string(i.config.Position) != "" {
 		var err error
@@ -170,7 +170,7 @@ func (i *LogreplIterator) attachSubscription(ctx context.Context, conn *pgx.Conn
 // getKeyColumn queries the db for the name of the primary key column
 // for a table if one exists and returns it.
 // TODO: Determine if tables must have keys
-func (i *LogreplIterator) getKeyColumn(ctx context.Context, conn *pgx.Conn) (string, error) {
+func (i *CDCIterator) getKeyColumn(ctx context.Context, conn *pgx.Conn) (string, error) {
 	if i.config.KeyColumnName != "" {
 		return i.config.KeyColumnName, nil
 	}

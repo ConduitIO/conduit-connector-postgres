@@ -18,14 +18,16 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/conduitio/conduit-connector-postgres/source/cdc"
-	"github.com/conduitio/conduit-connector-postgres/source/snapshot"
+	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
+	"github.com/conduitio/conduit-connector-postgres/source/longpoll"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v4"
 )
 
-var _ Iterator = (*cdc.LogreplIterator)(nil)
-var _ Iterator = (*snapshot.Snapshotter)(nil)
+var (
+	_ Iterator = (*logrepl.CDCIterator)(nil)
+	_ Iterator = (*longpoll.SnapshotIterator)(nil)
+)
 
 // Source implements the new transition to the new plugin SDK for Postgres.
 type Source struct {
@@ -57,18 +59,18 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 
 	switch s.config.Mode {
 	case ModeSnapshot:
-		snap, err := snapshot.NewSnapshotter(
+		snap, err := longpoll.NewSnapshotIterator(
 			ctx,
 			s.conn,
 			s.config.Table,
 			s.config.Columns,
 			s.config.Key)
 		if err != nil {
-			return fmt.Errorf("failed to create snapshotter: %w", err)
+			return fmt.Errorf("failed to create long polling iterator: %w", err)
 		}
 		s.iterator = snap
 	default:
-		i, err := cdc.NewCDCIterator(ctx, s.conn, cdc.Config{
+		i, err := logrepl.NewCDCIterator(ctx, s.conn, logrepl.Config{
 			Position:        pos,
 			SlotName:        s.config.SlotName,
 			PublicationName: s.config.PublicationName,
@@ -77,7 +79,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			Columns:         s.config.Columns,
 		})
 		if err != nil {
-			return fmt.Errorf("failed to create CDC iterator: %w", err)
+			return fmt.Errorf("failed to create logical replication iterator: %w", err)
 		}
 		s.iterator = i
 	}

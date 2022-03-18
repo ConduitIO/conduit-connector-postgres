@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package snapshot
+package longpoll
 
 import (
 	"context"
@@ -41,21 +41,21 @@ var (
 	ErrSnapshotInterrupt = fmt.Errorf("interrupted snapshot")
 )
 
-// Snapshotter implements the Iterator interface for capturing an initial table
+// SnapshotIterator implements the Iterator interface for capturing an initial table
 // snapshot.
-type Snapshotter struct {
+type SnapshotIterator struct {
 	// table is the table to snapshot
 	table string
 	// key is the name of the key column for the table snapshot
 	key string
-	// list of columns that snapshotter should record
+	// list of columns that the iterator should record
 	columns []string
 	// conn handle to postgres
 	conn *pgx.Conn
 	// rows holds a reference to the postgres connection. this can be nil so
 	// we must always call loadRows before HasNext or Next.
 	rows pgx.Rows
-	// ineternalPos is an internal integer Position for the Snapshotter to
+	// ineternalPos is an internal integer Position for the SnapshotIterator to
 	// to return at each Read call.
 	internalPos int64
 	// snapshotComplete keeps an internal record of whether the snapshot is
@@ -63,14 +63,14 @@ type Snapshotter struct {
 	snapshotComplete bool
 }
 
-// NewSnapshotter returns a Snapshotter that is an Iterator.
-// * NewSnapshotter attempts to load the sql rows into the Snapshotter and will
+// NewSnapshotIterator returns a SnapshotIterator that is an Iterator.
+// * NewSnapshotIterator attempts to load the sql rows into the SnapshotIterator and will
 // immediately begin to return them to subsequent Read calls.
 // * It acquires a read only transaction lock before reading the table.
 // * If Teardown is called while a snpashot is in progress, it will return an
 // ErrSnapshotInterrupt error.
-func NewSnapshotter(ctx context.Context, conn *pgx.Conn, table string, columns []string, key string) (*Snapshotter, error) {
-	s := &Snapshotter{
+func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, table string, columns []string, key string) (*SnapshotIterator, error) {
+	s := &SnapshotIterator{
 		conn:             conn,
 		table:            table,
 		columns:          columns,
@@ -78,7 +78,7 @@ func NewSnapshotter(ctx context.Context, conn *pgx.Conn, table string, columns [
 		internalPos:      0,
 		snapshotComplete: false,
 	}
-	// load our initial set of rows into the snapshotter after we've set the db
+	// load our initial set of rows into the iterator after we've set the db
 	err := s.loadRows(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get rows for snapshot: %w", err)
@@ -87,11 +87,11 @@ func NewSnapshotter(ctx context.Context, conn *pgx.Conn, table string, columns [
 }
 
 // HasNext returns whether s.rows has another row.
-// * It must be called before Snapshotter#Next is or else it will fail.
+// * It must be called before SnapshotIterator#Next is or else it will fail.
 // * It increments the internal position if another row exists.
 // * If HasNext is called and no rows are available, it will mark the snapshot
 // as complete and then returns.
-func (s *Snapshotter) HasNext() bool {
+func (s *SnapshotIterator) HasNext() bool {
 	next := s.rows.Next()
 	if !next {
 		s.snapshotComplete = true
@@ -101,10 +101,10 @@ func (s *Snapshotter) HasNext() bool {
 	return next
 }
 
-// Next returns the next row in the snapshotter's rows.
+// Next returns the next row in the iterators rows.
 // * If Next is called after HasNext has returned false, it will
 // return an ErrNoRows error.
-func (s *Snapshotter) Next(ctx context.Context) (sdk.Record, error) {
+func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 	if s.snapshotComplete {
 		return sdk.Record{}, ErrNoRows
 	}
@@ -124,18 +124,18 @@ func (s *Snapshotter) Next(ctx context.Context) (sdk.Record, error) {
 }
 
 // Ack is here to implement the Iterator interface, it does nothing.
-func (s *Snapshotter) Ack(context.Context, sdk.Position) error {
+func (s *SnapshotIterator) Ack(context.Context, sdk.Position) error {
 	return nil // acks not needed
 }
 
-// Teardown cleans up the database snapshotter by committing and closing the
+// Teardown cleans up the database iterator by committing and closing the
 // connection to sql.Rows
 // * If the snapshot is not complete yet, it will return an ErrSnpashotInterrupt
 // * Teardown must be called by the caller, it will not automatically be called
 // when the snapshot is completed.
 // * Teardown handles all of its manual cleanup first then calls cancel to
 // stop any unhandled contexts that we've received.
-func (s *Snapshotter) Teardown(ctx context.Context) error {
+func (s *SnapshotIterator) Teardown(ctx context.Context) error {
 	// throw interrupt error if we're not finished with snapshot
 	var interruptErr error
 	if !s.snapshotComplete {
@@ -149,11 +149,11 @@ func (s *Snapshotter) Teardown(ctx context.Context) error {
 	return interruptErr
 }
 
-// loadRows loads the rows returned from the database onto the snapshotter
+// loadRows loads the rows returned from the database onto the iterator
 // or returns an error.
 // * It returns nil if no error was detected.
 // * rows.Close and rows.Err are called at Teardown.
-func (s *Snapshotter) loadRows(ctx context.Context) error {
+func (s *SnapshotIterator) loadRows(ctx context.Context) error {
 	query, args, err := psql.Select(s.columns...).From(s.table).ToSql()
 	if err != nil {
 		return fmt.Errorf("failed to create read query: %w", err)

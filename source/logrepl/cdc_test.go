@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package cdc
+package logrepl
 
 import (
 	"context"
@@ -133,7 +133,7 @@ func TestIterator_Next(t *testing.T) {
 	}
 }
 
-func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string) *LogreplIterator {
+func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string) *CDCIterator {
 	is := is.New(t)
 	config := Config{
 		TableName:       table,

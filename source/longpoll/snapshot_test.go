@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package snapshot
+package longpoll
 
 import (
 	"context"
@@ -27,14 +27,14 @@ import (
 // SnapshotTestURL is a non-replication user url for the test postgres d
 const SnapshotTestURL = "postgres://meroxauser:meroxapass@localhost:5432/meroxadb?sslmode=disable"
 
-func TestSnapshotterReads(t *testing.T) {
+func TestSnapshotIteratorReads(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
 
 	conn := test.ConnectSimple(ctx, t, SnapshotTestURL)
 	table := test.SetupTestTable(ctx, t, conn)
 
-	s, err := NewSnapshotter(ctx, conn, table,
+	s, err := NewSnapshotIterator(ctx, conn, table,
 		[]string{"id", "column1", "key"}, "key")
 	is.NoErr(err)
 	i := 0
@@ -51,14 +51,14 @@ func TestSnapshotterReads(t *testing.T) {
 	is.True(s.snapshotComplete == true) // failed to mark snapshot complete
 }
 
-func TestSnapshotterTeardown(t *testing.T) {
+func TestSnapshotIteratorTeardown(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
 
 	conn := test.ConnectSimple(ctx, t, SnapshotTestURL)
 	table := test.SetupTestTable(ctx, t, conn)
 
-	s, err := NewSnapshotter(ctx, conn, table,
+	s, err := NewSnapshotIterator(ctx, conn, table,
 		[]string{"id", "column1", "key"}, "key")
 	is.NoErr(err)
 	is.True(s.HasNext()) // failed to queue up record
@@ -76,7 +76,7 @@ func TestPrematureDBClose(t *testing.T) {
 	conn := test.ConnectSimple(ctx, t, SnapshotTestURL)
 	table := test.SetupTestTable(ctx, t, conn)
 
-	s, err := NewSnapshotter(ctx, conn, table,
+	s, err := NewSnapshotIterator(ctx, conn, table,
 		[]string{"id", "column1", "key"}, "key")
 	is.NoErr(err)
 	next1 := s.HasNext()
