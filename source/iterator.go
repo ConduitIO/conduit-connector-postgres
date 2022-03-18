@@ -20,11 +20,14 @@ import (
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
-// Strategy defines an iterator interface that all Iterators must fulfill.
+// Iterator defines an iterator interface that all Iterators must fulfill.
 // It iterates over a first in first out queue.
-type Strategy interface {
+type Iterator interface {
 	// Next pops off the next record in the queue or an error.
 	Next(context.Context) (sdk.Record, error)
+	// Ack signals that a record at a specific position was successfully
+	// processed.
+	Ack(context.Context, sdk.Position) error
 	// Teardown attempts to gracefully teardown the queue.
 	Teardown(context.Context) error
 }

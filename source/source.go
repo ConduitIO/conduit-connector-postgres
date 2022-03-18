@@ -24,14 +24,14 @@ import (
 	"github.com/jackc/pgx/v4"
 )
 
-var _ Strategy = (*cdc.LogreplIterator)(nil)
-var _ Strategy = (*snapshot.Snapshotter)(nil)
+var _ Iterator = (*cdc.LogreplIterator)(nil)
+var _ Iterator = (*snapshot.Snapshotter)(nil)
 
 // Source implements the new transition to the new plugin SDK for Postgres.
 type Source struct {
 	sdk.UnimplementedSource
 
-	iterator Strategy
+	iterator Iterator
 	config   Config
 	conn     *pgx.Conn
 }
@@ -88,8 +88,8 @@ func (s *Source) Read(ctx context.Context) (sdk.Record, error) {
 	return s.iterator.Next(ctx)
 }
 
-func (s *Source) Ack(context.Context, sdk.Position) error {
-	return nil
+func (s *Source) Ack(ctx context.Context, pos sdk.Position) error {
+	return s.iterator.Ack(ctx, pos)
 }
 
 func (s *Source) Teardown(ctx context.Context) error {

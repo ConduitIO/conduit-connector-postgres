@@ -88,7 +88,7 @@ func NewSnapshotter(ctx context.Context, conn *pgx.Conn, table string, columns [
 
 // HasNext returns whether s.rows has another row.
 // * It must be called before Snapshotter#Next is or else it will fail.
-// * It increments the interal position if another row exists.
+// * It increments the internal position if another row exists.
 // * If HasNext is called and no rows are available, it will mark the snapshot
 // as complete and then returns.
 func (s *Snapshotter) HasNext() bool {
@@ -121,6 +121,11 @@ func (s *Snapshotter) Next(ctx context.Context) (sdk.Record, error) {
 	rec = withTimestampNow(rec)
 	rec = withPosition(rec, s.internalPos)
 	return rec, nil
+}
+
+// Ack is here to implement the Iterator interface, it does nothing.
+func (s *Snapshotter) Ack(context.Context, sdk.Position) error {
+	return nil // acks not needed
 }
 
 // Teardown cleans up the database snapshotter by committing and closing the
