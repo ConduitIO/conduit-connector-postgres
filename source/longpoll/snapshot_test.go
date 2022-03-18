@@ -24,14 +24,11 @@ import (
 	"github.com/matryer/is"
 )
 
-// SnapshotTestURL is a non-replication user url for the test postgres d
-const SnapshotTestURL = "postgres://meroxauser:meroxapass@localhost:5432/meroxadb?sslmode=disable"
-
 func TestSnapshotterReads(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
 
-	conn := test.ConnectSimple(ctx, t, SnapshotTestURL)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
 	table := test.SetupTestTable(ctx, t, conn)
 
 	s, err := NewSnapshotIterator(ctx, conn, table,
@@ -55,7 +52,7 @@ func TestSnapshotterTeardown(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
 
-	conn := test.ConnectSimple(ctx, t, SnapshotTestURL)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
 	table := test.SetupTestTable(ctx, t, conn)
 
 	s, err := NewSnapshotIterator(ctx, conn, table,
@@ -72,7 +69,7 @@ func TestPrematureDBClose(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
 
-	conn := test.ConnectSimple(ctx, t, SnapshotTestURL)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
 	table := test.SetupTestTable(ctx, t, conn)
 
 	s, err := NewSnapshotIterator(ctx, conn, table,

@@ -27,6 +27,12 @@ import (
 	"github.com/matryer/is"
 )
 
+// RepmgrConnString is a replication user connection string for the test postgres.
+const RepmgrConnString = "postgres://repmgr:repmgrmeroxa@localhost:5432/meroxadb?sslmode=disable"
+
+// RegularConnString is a non-replication user connection string for the test postgres.
+const RegularConnString = "postgres://meroxauser:meroxapass@localhost:5432/meroxadb?sslmode=disable"
+
 type Querier interface {
 	Exec(ctx context.Context, sql string, arguments ...interface{}) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error)
@@ -59,7 +65,7 @@ func ConnectSimple(ctx context.Context, t *testing.T, connString string) *pgx.Co
 func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 	is := is.New(t)
 
-	table := fmt.Sprintf("conduit_%v_%d", strings.ToLower(t.Name()), time.Now().UnixMicro()%1000)
+	table := RandomIdentifier(t)
 
 	query := `
 		CREATE TABLE %s (
@@ -90,4 +96,8 @@ func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 	is.NoErr(err)
 
 	return table
+}
+
+func RandomIdentifier(t *testing.T) string {
+	return fmt.Sprintf("conduit_%v_%d", strings.ToLower(t.Name()), time.Now().UnixMicro()%1000)
 }
