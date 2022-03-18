@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/conduitio/conduit-connector-postgres/source/cdc/internal"
+	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgtype"
@@ -33,19 +33,19 @@ var (
 	actionDelete action = "delete"
 )
 
-type LogreplHandler struct {
+type CDCHandler struct {
 	keyColumn   string
 	columns     map[string]bool // columns can be used to filter only specific columns
 	relationSet *internal.RelationSet
 	out         chan<- sdk.Record
 }
 
-func NewLogreplHandler(
+func NewCDCHandler(
 	rs *internal.RelationSet,
 	keyColumn string,
 	columns []string,
 	out chan<- sdk.Record,
-) *LogreplHandler {
+) *CDCHandler {
 	var columnSet map[string]bool
 	if len(columns) > 0 {
 		columnSet = make(map[string]bool)
@@ -53,7 +53,7 @@ func NewLogreplHandler(
 			columnSet[col] = true
 		}
 	}
-	return &LogreplHandler{
+	return &CDCHandler{
 		keyColumn:   keyColumn,
 		columns:     columnSet,
 		relationSet: rs,
@@ -61,7 +61,7 @@ func NewLogreplHandler(
 	}
 }
 
-func (h *LogreplHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogrepl.LSN) error {
+func (h *CDCHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogrepl.LSN) error {
 	sdk.Logger(ctx).Trace().
 		Str("lsn", lsn.String()).
 		Str("messageType", m.Type().String()).
@@ -94,7 +94,7 @@ func (h *LogreplHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pg
 
 // handleInsert formats a Record with INSERT event data from Postgres and
 // inserts it into the records buffer for later reading.
-func (h *LogreplHandler) handleInsert(
+func (h *CDCHandler) handleInsert(
 	ctx context.Context,
 	msg *pglogrepl.InsertMessage,
 	lsn pglogrepl.LSN,
@@ -115,7 +115,7 @@ func (h *LogreplHandler) handleInsert(
 
 // handleUpdate formats a record with a UPDATE event data from Postgres and
 // inserts it into the records buffer for later reading.
-func (h *LogreplHandler) handleUpdate(
+func (h *CDCHandler) handleUpdate(
 	ctx context.Context,
 	msg *pglogrepl.UpdateMessage,
 	lsn pglogrepl.LSN,
@@ -136,7 +136,7 @@ func (h *LogreplHandler) handleUpdate(
 
 // handleDelete formats a record with a delete event data from Postgres.
 // delete events only send along the primary key of the table.
-func (h *LogreplHandler) handleDelete(
+func (h *CDCHandler) handleDelete(
 	ctx context.Context,
 	msg *pglogrepl.DeleteMessage,
 	lsn pglogrepl.LSN,
@@ -158,7 +158,7 @@ func (h *LogreplHandler) handleDelete(
 	return h.send(ctx, rec)
 }
 
-func (h *LogreplHandler) send(ctx context.Context, rec sdk.Record) error {
+func (h *CDCHandler) send(ctx context.Context, rec sdk.Record) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -167,7 +167,7 @@ func (h *LogreplHandler) send(ctx context.Context, rec sdk.Record) error {
 	}
 }
 
-func (h *LogreplHandler) buildRecord(
+func (h *CDCHandler) buildRecord(
 	action action,
 	relation *pglogrepl.RelationMessage,
 	values map[string]pgtype.Value,
@@ -187,7 +187,7 @@ func (h *LogreplHandler) buildRecord(
 
 // withKey takes the values from the message and extracts a key that matches
 // the configured keyColumnName.
-func (h *LogreplHandler) buildRecordKey(values map[string]pgtype.Value) sdk.Data {
+func (h *CDCHandler) buildRecordKey(values map[string]pgtype.Value) sdk.Data {
 	key := sdk.StructuredData{}
 	for k, v := range values {
 		if h.keyColumn == k {
@@ -199,7 +199,7 @@ func (h *LogreplHandler) buildRecordKey(values map[string]pgtype.Value) sdk.Data
 
 // withPayload takes a record and a map of values and formats a payload for
 // the record and then returns the record with that payload attached.
-func (h *LogreplHandler) buildRecordPayload(values map[string]pgtype.Value) sdk.Data {
+func (h *CDCHandler) buildRecordPayload(values map[string]pgtype.Value) sdk.Data {
 	payload := sdk.StructuredData{}
 	for k, v := range values {
 		// filter columns if columns are specified

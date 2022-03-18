@@ -155,7 +155,7 @@ func (i *CDCIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) er
 		i.config.PublicationName,
 		[]string{i.config.TableName},
 		lsn,
-		NewLogreplHandler(
+		NewCDCHandler(
 			internal.NewRelationSet(conn.ConnInfo()),
 			keyColumn,
 			i.config.Columns,
