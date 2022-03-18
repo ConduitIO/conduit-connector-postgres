@@ -18,7 +18,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/conduitio/conduit-connector-postgres/logrepl"
+	"github.com/conduitio/conduit-connector-postgres/source/cdc/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v4"
@@ -42,7 +42,7 @@ type LogreplIterator struct {
 	config   Config
 	messages chan sdk.Record
 
-	sub *logrepl.Subscription
+	sub *internal.Subscription
 }
 
 // NewCDCIterator takes a config and returns up a new CDCIterator or returns an
@@ -149,14 +149,14 @@ func (i *LogreplIterator) attachSubscription(ctx context.Context, conn *pgx.Conn
 		return fmt.Errorf("failed to find key for table %s (try specifying it manually): %w", i.config.TableName, err)
 	}
 
-	sub := logrepl.NewSubscription(
+	sub := internal.NewSubscription(
 		conn.Config().Config,
 		i.config.SlotName,
 		i.config.PublicationName,
 		[]string{i.config.TableName},
 		lsn,
 		NewLogreplHandler(
-			logrepl.NewRelationSet(conn.ConnInfo()),
+			internal.NewRelationSet(conn.ConnInfo()),
 			keyColumn,
 			i.config.Columns,
 			i.messages,

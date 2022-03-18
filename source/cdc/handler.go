@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/conduitio/conduit-connector-postgres/logrepl"
+	"github.com/conduitio/conduit-connector-postgres/source/cdc/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgtype"
@@ -36,12 +36,12 @@ var (
 type LogreplHandler struct {
 	keyColumn   string
 	columns     map[string]bool // columns can be used to filter only specific columns
-	relationSet *logrepl.RelationSet
+	relationSet *internal.RelationSet
 	out         chan<- sdk.Record
 }
 
 func NewLogreplHandler(
-	rs *logrepl.RelationSet,
+	rs *internal.RelationSet,
 	keyColumn string,
 	columns []string,
 	out chan<- sdk.Record,
