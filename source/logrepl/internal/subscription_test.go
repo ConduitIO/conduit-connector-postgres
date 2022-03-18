@@ -205,7 +205,10 @@ func setupSubscription(
 
 	go func() {
 		err := sub.Start(ctx)
-		is.True(errors.Is(err, context.Canceled))
+		if !errors.Is(err, context.Canceled) {
+			t.Logf("unexpected error: %+v", err)
+			is.Fail()
+		}
 	}()
 
 	// wait for subscription to be ready
