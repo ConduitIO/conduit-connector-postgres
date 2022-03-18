@@ -37,8 +37,8 @@ func TestIterator_Next(t *testing.T) {
 		is.NoErr(i.Teardown(ctx))
 	})
 
-	// give replication some time to start
-	time.Sleep(time.Second)
+	// wait for subscription to be ready
+	<-i.sub.Ready()
 
 	tests := []struct {
 		name       string

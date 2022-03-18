@@ -130,7 +130,7 @@ func TestCreatePublicationAllTables(t *testing.T) {
 			AllTables: true,
 		},
 	)
-	isPgError(is, err, "42501")
+	test.IsPgError(is, err, "42501")
 
 	// next connect with repmgr
 	conn = test.ConnectSimple(ctx, t, test.RepmgrConnString)
@@ -161,7 +161,7 @@ func TestDropPublication(t *testing.T) {
 			IfExists: false, // fail if pub doesn't exist
 		},
 	)
-	isPgError(is, err, "42704")
+	test.IsPgError(is, err, "42704")
 
 	// next connect with repmgr
 	err = DropPublication(
@@ -173,11 +173,4 @@ func TestDropPublication(t *testing.T) {
 		},
 	)
 	is.NoErr(err)
-}
-
-func isPgError(is *is.I, err error, wantCode string) {
-	is.True(err != nil)
-	pgerr, ok := err.(*pgconn.PgError)
-	is.True(ok)
-	is.Equal(pgerr.Code, wantCode)
 }

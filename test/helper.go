@@ -16,6 +16,7 @@ package test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -81,7 +82,7 @@ func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 	t.Cleanup(func() {
 		query := `DROP TABLE %s`
 		query = fmt.Sprintf(query, table)
-		_, err := conn.Exec(ctx, query)
+		_, err := conn.Exec(context.Background(), query)
 		is.NoErr(err)
 	})
 
@@ -100,4 +101,12 @@ func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 
 func RandomIdentifier(t *testing.T) string {
 	return fmt.Sprintf("conduit_%v_%d", strings.ToLower(t.Name()), time.Now().UnixMicro()%1000)
+}
+
+func IsPgError(is *is.I, err error, wantCode string) {
+	is.True(err != nil)
+	var pgerr *pgconn.PgError
+	ok := errors.As(err, &pgerr)
+	is.True(ok) // expected err to be a *pgconn.PgError
+	is.Equal(pgerr.Code, wantCode)
 }

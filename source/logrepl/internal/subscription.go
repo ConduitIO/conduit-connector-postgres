@@ -43,6 +43,7 @@ type Subscription struct {
 	StatusTimeout time.Duration
 
 	stop    context.CancelFunc
+	ready   chan struct{}
 	done    chan struct{}
 	doneErr error
 
@@ -74,17 +75,19 @@ func NewSubscription(
 		Handler:       h,
 		StatusTimeout: 10 * time.Second,
 
-		done: make(chan struct{}),
+		ready: make(chan struct{}),
+		done:  make(chan struct{}),
+		// cleanup does nothing by default
+		cleanup: func(ctx context.Context) error { return nil },
 	}
 }
 
 // Start replication and block until error or ctx is canceled.
 func (s *Subscription) Start(ctx context.Context) (err error) {
-	defer close(s.done)
 	defer func() {
 		// use fresh context for cleanup
 		cleanupErr := s.cleanup(context.Background())
-		if err != nil {
+		if err == nil {
 			// return close connection error
 			err = cleanupErr
 		} else {
@@ -92,6 +95,14 @@ func (s *Subscription) Start(ctx context.Context) (err error) {
 			sdk.Logger(ctx).Err(cleanupErr).Msg("failed to cleanup subscription")
 		}
 		s.doneErr = err // store error so it can be retrieved later
+
+		select {
+		case <-s.ready:
+			// ready is already closed
+		default:
+			close(s.ready)
+		}
+		close(s.done)
 	}()
 
 	conn, err := s.connect(ctx)
@@ -122,6 +133,8 @@ func (s *Subscription) Start(ctx context.Context) (err error) {
 
 // listen runs until context is cancelled or an error is encountered.
 func (s *Subscription) listen(ctx context.Context, conn *pgconn.PgConn) error {
+	// signal that the subscription is ready and is receiving messages
+	close(s.ready)
 	nextStatusUpdateAt := time.Now().Add(s.StatusTimeout)
 	for {
 		if time.Now().After(nextStatusUpdateAt) {
@@ -241,6 +254,12 @@ func (s *Subscription) Wait(ctx context.Context) error {
 	}
 }
 
+// Ready returns a channel that is closed when the subscription is ready and
+// receiving messages.
+func (s *Subscription) Ready() <-chan struct{} {
+	return s.ready
+}
+
 // Done returns a channel that is closed when the subscription is done.
 func (s *Subscription) Done() <-chan struct{} {
 	return s.done
@@ -310,17 +329,18 @@ func (s *Subscription) createPublication(ctx context.Context, conn *pgconn.PgCon
 // deleted once the connection is closed. If a replication slot with that name
 // already exists it returns no error.
 func (s *Subscription) createReplicationSlot(ctx context.Context, conn *pgconn.PgConn) error {
-	if _, err := pglogrepl.CreateReplicationSlot(
+	result, err := pglogrepl.CreateReplicationSlot(
 		ctx,
 		conn,
 		s.SlotName,
 		pgOutputPlugin,
 		pglogrepl.CreateReplicationSlotOptions{
 			Temporary:      true, // replication slot is dropped when we disconnect
-			SnapshotAction: "NOEXPORT_SNAPSHOT",
+			SnapshotAction: "EXPORT_SNAPSHOT",
 			Mode:           pglogrepl.LogicalReplication,
 		},
-	); err != nil {
+	)
+	if err != nil {
 		// If creating the replication slot fails with code 42710, this means
 		// the replication slot already exists.
 		var pgerr *pgconn.PgError
@@ -328,6 +348,7 @@ func (s *Subscription) createReplicationSlot(ctx context.Context, conn *pgconn.P
 			return err
 		}
 	}
+	_ = result // TODO use returned snapshot name to start snapshot iterator
 	return nil
 }
 
@@ -378,9 +399,6 @@ func (s *Subscription) startReplication(ctx context.Context, conn *pgconn.PgConn
 // the stack as they are called (same as deferred functions).
 func (s *Subscription) addCleanup(newCleanup func(context.Context) error) {
 	oldCleanup := s.cleanup
-	if oldCleanup == nil {
-		oldCleanup = func(context.Context) error { return nil } // empty function by default
-	}
 	s.cleanup = func(ctx context.Context) error {
 		// first call new cleanup, then old cleanup to have the same ordering as
 		// deferred functions

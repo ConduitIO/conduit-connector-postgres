@@ -16,6 +16,7 @@ package logrepl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
@@ -124,7 +125,10 @@ func (i *CDCIterator) Teardown(ctx context.Context) error {
 		return ctx.Err()
 	case <-i.sub.Done():
 		err := i.sub.Err()
-		if err != nil {
+		if errors.Is(err, context.Canceled) {
+			// this was a controlled stop
+			return nil
+		} else if err != nil {
 			return fmt.Errorf("logical replication error: %w", err)
 		}
 		return nil
