@@ -42,36 +42,60 @@ func TestParseConfig(t *testing.T) {
 			cfg.Columns = []string{"col1", "col2", "col3"}
 		},
 	}, {
-		name: "snapshot mode",
+		name: "snapshot mode = initial",
 		setupGiven: func(cfg map[string]string) {
-			cfg[ConfigKeyMode] = "snapshot"
+			cfg[ConfigKeySnapshotMode] = "initial"
 		},
 		setupWant: func(cfg *Config) {
-			cfg.Mode = ModeSnapshot
+			cfg.SnapshotMode = SnapshotModeInitial
 		},
 	}, {
-		name: "cdc mode",
+		name: "snapshot mode = never",
 		setupGiven: func(cfg map[string]string) {
-			cfg[ConfigKeyMode] = "cdc"
+			cfg[ConfigKeySnapshotMode] = "never"
 		},
 		setupWant: func(cfg *Config) {
-			cfg.Mode = ModeCDC
+			cfg.SnapshotMode = SnapshotModeNever
+		},
+	}, {
+		name: "cdc mode = auto",
+		setupGiven: func(cfg map[string]string) {
+			cfg[ConfigKeyCDCMode] = "auto"
+		},
+		setupWant: func(cfg *Config) {
+			cfg.CDCMode = CDCModeAuto
+		},
+	}, {
+		name: "cdc mode = logrepl",
+		setupGiven: func(cfg map[string]string) {
+			cfg[ConfigKeyCDCMode] = "logrepl"
+		},
+		setupWant: func(cfg *Config) {
+			cfg.CDCMode = CDCModeLogrepl
+		},
+	}, {
+		name: "cdc mode = long_polling",
+		setupGiven: func(cfg map[string]string) {
+			cfg[ConfigKeyCDCMode] = "long_polling"
+		},
+		setupWant: func(cfg *Config) {
+			cfg.CDCMode = CDCModeLongPolling
 		},
 	}, {
 		name: "publication name",
 		setupGiven: func(cfg map[string]string) {
-			cfg[ConfigKeyPublicationName] = "mypublicationname"
+			cfg[ConfigKeyLogreplPublicationName] = "mypublicationname"
 		},
 		setupWant: func(cfg *Config) {
-			cfg.PublicationName = "mypublicationname"
+			cfg.LogreplPublicationName = "mypublicationname"
 		},
 	}, {
 		name: "slot name",
 		setupGiven: func(cfg map[string]string) {
-			cfg[ConfigKeySlotName] = "myslotname"
+			cfg[ConfigKeyLogreplSlotName] = "myslotname"
 		},
 		setupWant: func(cfg *Config) {
-			cfg.SlotName = "myslotname"
+			cfg.LogreplSlotName = "myslotname"
 		},
 	}, {
 		name: "empty url",
@@ -86,11 +110,17 @@ func TestParseConfig(t *testing.T) {
 		},
 		wantErr: errors.New(`"table" config value must be set`),
 	}, {
-		name: "invalid mode",
+		name: "snapshot mode = invalid",
 		setupGiven: func(cfg map[string]string) {
-			cfg[ConfigKeyMode] = "invalid"
+			cfg[ConfigKeySnapshotMode] = "invalid"
 		},
-		wantErr: errors.New(`"mode" contains unsupported value "invalid", expected one of [full snapshot cdc]`),
+		wantErr: errors.New(`"snapshot_mode" contains unsupported value "invalid", expected one of [initial never]`),
+	}, {
+		name: "cdc mode = invalid",
+		setupGiven: func(cfg map[string]string) {
+			cfg[ConfigKeyCDCMode] = "invalid"
+		},
+		wantErr: errors.New(`"cdc_mode" contains unsupported value "invalid", expected one of [auto logrepl long_polling]`),
 	}}
 
 	for _, tc := range testCases {
@@ -108,11 +138,12 @@ func TestParseConfig(t *testing.T) {
 
 				// want is parsed corresponding to the basic valid config
 				want := Config{
-					URL:             "postgres://user:pass@localhost:5432/testdb?sslmode=disable",
-					Table:           "my_table",
-					Mode:            ModeFull,
-					PublicationName: DefaultPublicationName,
-					SlotName:        DefaultSlotName,
+					URL:                    "postgres://user:pass@localhost:5432/testdb?sslmode=disable",
+					Table:                  "my_table",
+					SnapshotMode:           SnapshotModeInitial,
+					CDCMode:                CDCModeAuto,
+					LogreplPublicationName: DefaultPublicationName,
+					LogreplSlotName:        DefaultSlotName,
 				}
 				tc.setupWant(&want)
 				is.Equal(got, want)
