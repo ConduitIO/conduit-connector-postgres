@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/test"
-	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgtype"
 	"github.com/matryer/is"
@@ -42,6 +41,10 @@ func TestRelationSetUnregisteredType(t *testing.T) {
 }
 
 func TestRelationSetAllTypes(t *testing.T) {
+	// need to reset local timezone in test to ensure it runs the same way on
+	// any machine (CI or local)
+	time.Local = nil
+
 	ctx := context.Background()
 	is := is.New(t)
 
@@ -398,7 +401,7 @@ func isValuesAllTypes(is *is.I, got map[string]pgtype.Value) {
 			InfinityModifier: pgtype.None,
 		},
 		"col_timestamptz": &pgtype.Timestamptz{
-			Time:             time.Date(2022, 3, 14, 15+8, 16, 17, 0, time.FixedZone("", 0)),
+			Time:             time.Date(2022, 3, 14, 15+8, 16, 17, 0, time.UTC),
 			Status:           pgtype.Present,
 			InfinityModifier: pgtype.None,
 		},
@@ -419,9 +422,5 @@ func isValuesAllTypes(is *is.I, got map[string]pgtype.Value) {
 			Status: pgtype.Present,
 		},
 	}
-	diff := cmp.Diff(got, want, cmp.Comparer(func(x, y *big.Int) bool {
-		return x.Cmp(y) == 0
-	}))
-	is.Equal(diff, "")
 	is.Equal(got, want)
 }
