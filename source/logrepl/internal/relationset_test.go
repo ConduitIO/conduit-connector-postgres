@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/test"
+	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgtype"
 	"github.com/matryer/is"
@@ -418,5 +419,9 @@ func isValuesAllTypes(is *is.I, got map[string]pgtype.Value) {
 			Status: pgtype.Present,
 		},
 	}
+	diff := cmp.Diff(got, want, cmp.Comparer(func(x, y *big.Int) bool {
+		return x.Cmp(y) == 0
+	}))
+	is.Equal(diff, "")
 	is.Equal(got, want)
 }
