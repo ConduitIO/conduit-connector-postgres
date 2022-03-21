@@ -90,7 +90,7 @@ func (s *Subscription) Start(ctx context.Context) (err error) {
 		if err == nil {
 			// return close connection error
 			err = cleanupErr
-		} else {
+		} else if cleanupErr != nil {
 			// an error is already returned, let's log this one instead
 			sdk.Logger(ctx).Err(cleanupErr).Msg("failed to cleanup subscription")
 		}
