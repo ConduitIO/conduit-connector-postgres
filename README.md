@@ -73,15 +73,15 @@ column names for the configured table and set them in memory.
 
 ## Configuration Options
 
-| name             | description                                                                                                                     | required             | default              |
-|------------------|---------------------------------------------------------------------------------------------------------------------------------|----------------------|----------------------|
-| table            | the name of the table in Postgres that the connector should read                                                                | yes                  | n/a                  |
-| url              | formatted connection string to the database.                                                                                    | yes                  | n/a                  |
-| columns          | comma separated string list of column names that should be built in to each Record's payload.                                   | no                   | `*` (all columns)    |
-| key              | column name that records should use for their `Key` fields. defaults to the column's primary key if nothing is specified        | no                   | primary key of table |
-| mode             | the connector's operation mode. Available modes: `cdc`, `snapshot`                                                              | no                   | `cdc`                |
-| publication_name | name of the publication to listen for WAL events                                                                                | req. for CDC mode    | `pglogrepl`          |
-| slot_name        | name of the slot opened for replication events                                                                                  | req. for CDC mode    | `pglogrepl_demo`     |
+| name             | description                                                                                                              | required          | default              |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------- | -------------------- |
+| table            | the name of the table in Postgres that the connector should read                                                         | yes               | n/a                  |
+| url              | formatted connection string to the database.                                                                             | yes               | n/a                  |
+| columns          | comma separated string list of column names that should be built in to each Record's payload.                            | no                | `*` (all columns)    |
+| key              | column name that records should use for their `Key` fields. defaults to the column's primary key if nothing is specified | no                | primary key of table |
+| mode             | the connector's operation mode. Available modes: `cdc`, `snapshot`                                                       | no                | `cdc`                |
+| publication_name | name of the publication to listen for WAL events                                                                         | req. for CDC mode | `conduitpub`         |
+| slot_name        | name of the slot opened for replication events                                                                           | req. for CDC mode | `conduitslot`        |
 
 # Destination 
 The Postgres Destination takes a `record.Record` and parses it into a valid 
