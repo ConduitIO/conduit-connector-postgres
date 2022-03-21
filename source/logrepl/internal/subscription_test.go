@@ -210,9 +210,9 @@ func setupSubscription(
 	return sub, messages
 }
 
-// isNoMoreMessages waits for the duration of the timeout if any new messages
-// are received and logs them. If messages were received during the timeout the
-// test is marked as failed.
+// isNoMoreMessages waits for the duration of the timeout and logs any new
+// messages if they are received. If a message is received that is not a "begin"
+// or "commit" message, the test is marked as failed.
 func isNoMoreMessages(t *testing.T, messages <-chan pglogrepl.Message, timeout time.Duration) {
 	is := is.New(t)
 
@@ -223,8 +223,15 @@ func isNoMoreMessages(t *testing.T, messages <-chan pglogrepl.Message, timeout t
 	for {
 		select {
 		case msg := <-messages:
-			t.Logf("unexpected message: %+v", msg)
-			messagesReceived = true
+			// empty begin/commit blocks are expected, work is being done to
+			// reduce them (https://commitfest.postgresql.org/33/3093/)
+			if msg.Type() == pglogrepl.MessageTypeBegin ||
+				msg.Type() == pglogrepl.MessageTypeCommit {
+				t.Logf("got message of type %s: %+v", msg.Type(), msg)
+			} else {
+				t.Logf("unexpected message of type %s: %+v", msg.Type(), msg)
+				messagesReceived = true
+			}
 		case <-timeoutChan:
 			if messagesReceived {
 				is.Fail() // expected no more messages
