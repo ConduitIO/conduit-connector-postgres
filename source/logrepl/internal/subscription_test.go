@@ -129,14 +129,7 @@ func TestSubscriptionRepmgr(t *testing.T) {
 	})
 
 	t.Run("no more messages", func(t *testing.T) {
-		// there should be no more messages, wait shortly to make sure
-		select {
-		case msg := <-messages:
-			t.Logf("unexpected message: %+v", msg)
-			is.Fail() // expected no more messages
-		case <-time.After(500 * time.Millisecond):
-			// all good
-		}
+		isNoMoreMessages(t, messages, time.Millisecond*500)
 	})
 }
 
@@ -165,14 +158,7 @@ func TestSubscriptionClosedContext(t *testing.T) {
 	}
 
 	is.True(errors.Is(sub.Err(), context.Canceled))
-	// there should be no more messages, wait shortly to make sure
-	select {
-	case msg := <-messages:
-		t.Logf("unexpected message: %+v", msg)
-		is.Fail() // expected no more messages
-	case <-time.After(500 * time.Millisecond):
-		// all good
-	}
+	isNoMoreMessages(t, messages, time.Millisecond*500)
 }
 
 func setupSubscription(
@@ -222,4 +208,28 @@ func setupSubscription(
 	})
 
 	return sub, messages
+}
+
+// isNoMoreMessages waits for the duration of the timeout if any new messages
+// are received and logs them. If messages were received during the timeout the
+// test is marked as failed.
+func isNoMoreMessages(t *testing.T, messages <-chan pglogrepl.Message, timeout time.Duration) {
+	is := is.New(t)
+
+	// there should be no more messages, wait shortly to make sure and log any
+	// messages that we receive in the meantime
+	var messagesReceived bool
+	timeoutChan := time.After(timeout)
+	for {
+		select {
+		case msg := <-messages:
+			t.Logf("unexpected message: %+v", msg)
+			messagesReceived = true
+		case <-timeoutChan:
+			if messagesReceived {
+				is.Fail() // expected no more messages
+			}
+			return
+		}
+	}
 }
