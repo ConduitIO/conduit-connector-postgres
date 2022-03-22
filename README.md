@@ -41,19 +41,17 @@ Publication and slot name are user configurable, and must be correctly set.
 The plugin will do what it can to be smart about publication and slot 
 management, but it can't handle everything.
 
-If a `replication_url` is provided, it will be used for CDC features instead of 
-the url. If no `replication_url` is provided, but cdc is enabled, then it will 
-attempt to use that url value for CDC features and logical replication setup.
 Example configuration for CDC features:
-```
-"cdc":              "true",
-"publication_name": "meroxademo",
-"slot_name":        "meroxademo",
-"url":              url,
-"replication_url":  url,
-"key":              "key",
-"table":            "records",
-"columns":          "key,column1,column2,column3",
+```json
+{
+ "mode": "cdc",
+ "publication_name": "meroxademo",
+ "slot_name": "meroxademo",
+ "url": "url",
+ "key": "key",
+ "table": "records",
+ "columns": "key,column1,column2,column3"
+}
 ```
 
 ### CDC Event Buffer
