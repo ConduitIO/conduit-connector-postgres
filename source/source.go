@@ -18,15 +18,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 
 	"github.com/conduitio/conduit-connector-postgres/source/cdc"
 	"github.com/conduitio/conduit-connector-postgres/source/snapshot"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
-
-// requiredFields is a list of our plugin required config fields for validation
-var requiredFields = []string{"url", "table"}
 
 var _ Strategy = (*cdc.Iterator)(nil)
 var _ Strategy = (*snapshot.Snapshotter)(nil)
@@ -37,48 +33,46 @@ type Source struct {
 
 	Iterator Strategy
 
-	config map[string]string
+	config Config
 }
 
 func NewSource() sdk.Source {
 	return &Source{}
 }
 
-func (s *Source) Configure(ctx context.Context, cfg map[string]string) error {
-	err := validateConfig(cfg, requiredFields)
+func (s *Source) Configure(ctx context.Context, cfgRaw map[string]string) error {
+	cfg, err := ParseConfig(cfgRaw)
 	if err != nil {
-		return fmt.Errorf("config failed validation: %w", err)
+		return err
 	}
 	s.config = cfg
 	return nil
 }
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
-	switch s.config["mode"] {
-	case "snapshot":
-		db, err := sql.Open("postgres", s.config["url"])
+	switch s.config.Mode {
+	case ModeSnapshot:
+		db, err := sql.Open("postgres", s.config.URL)
 		if err != nil {
 			return fmt.Errorf("failed to connect to database: %w", err)
 		}
-		columns := parseColumns(s.config)
 		snap, err := snapshot.NewSnapshotter(
 			db,
-			s.config["table"],
-			columns,
-			s.config["key"])
+			s.config.Table,
+			s.config.Columns,
+			s.config.Key)
 		if err != nil {
 			return fmt.Errorf("failed to open snapshotter: %w", err)
 		}
 		s.Iterator = snap
 	default:
-		columns := parseColumns(s.config)
 		i, err := cdc.NewCDCIterator(ctx, cdc.Config{
 			Position:        pos,
-			URL:             s.config["url"],
-			SlotName:        s.config["slot_name"],
-			PublicationName: s.config["publication_name"],
-			TableName:       s.config["table"],
-			KeyColumnName:   s.config["key"],
-			Columns:         columns,
+			URL:             s.config.URL,
+			SlotName:        s.config.SlotName,
+			PublicationName: s.config.PublicationName,
+			TableName:       s.config.Table,
+			KeyColumnName:   s.config.Key,
+			Columns:         s.config.Columns,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to open cdc connection: %w", err)
@@ -101,22 +95,4 @@ func (s *Source) Teardown(context.Context) error {
 		return nil
 	}
 	return s.Iterator.Teardown()
-}
-
-// returns an error if the cfg passed does not have all of the keys in required
-func validateConfig(cfg map[string]string, required []string) error {
-	for _, k := range required {
-		if _, ok := cfg[k]; !ok {
-			return fmt.Errorf("plugin config missing required field %s", k)
-		}
-	}
-	return nil
-}
-
-func parseColumns(config map[string]string) []string {
-	var columns []string
-	if colsRaw := config["columns"]; colsRaw != "" {
-		columns = strings.Split(config["columns"], ",")
-	}
-	return columns
 }

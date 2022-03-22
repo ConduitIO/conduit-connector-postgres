@@ -16,8 +16,8 @@ package cdc
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
+	"math/rand"
 	"testing"
 	"time"
 
@@ -144,13 +144,13 @@ func getDefaultIterator(t *testing.T) *Iterator {
 	is := is.New(t)
 	_ = getTestPostgres(t)
 	ctx := context.Background()
-	n, err := rand.Prime(rand.Reader, 4)
-	is.NoErr(err)
-	randSlotName := fmt.Sprintf("conduit%d", n)
+	randPublication := fmt.Sprintf("confuit%d", rand.Int()) // nolint:gosec // only a test
+	randSlotName := fmt.Sprintf("conduit%d", rand.Int())    // nolint:gosec // only a test
 	config := Config{
-		URL:       CDCTestURL,
-		TableName: "records2",
-		SlotName:  randSlotName,
+		URL:             CDCTestURL,
+		TableName:       "records2",
+		PublicationName: randPublication,
+		SlotName:        randSlotName,
 	}
 	i, err := NewCDCIterator(ctx, config)
 	is.NoErr(err)
