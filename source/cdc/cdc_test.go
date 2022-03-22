@@ -17,13 +17,11 @@ package cdc
 import (
 	"context"
 	"fmt"
-	"math/rand"
+	"strings"
 	"testing"
 	"time"
 
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/jackc/pgx/v4"
 	"github.com/matryer/is"
 )
@@ -36,78 +34,73 @@ const (
 )
 
 func TestIterator_Next(t *testing.T) {
+	ctx := context.Background()
 	is := is.New(t)
-	db := getTestPostgres(t)
-	i := getDefaultIterator(t)
+
+	conn, err := pgx.Connect(ctx, CDCTestURL)
+	is.NoErr(err)
+	t.Cleanup(func() {
+		is.NoErr(conn.Close(ctx))
+	})
+
+	table := setupTestTable(t, conn)
+	i := testIterator(ctx, t, table)
 	t.Cleanup(func() {
 		is.NoErr(i.Teardown())
 	})
+
 	tests := []struct {
-		name    string
-		want    sdk.Record
-		action  func(t *testing.T, db *pgx.Conn)
-		wantErr bool
+		name       string
+		setupQuery string
+		want       sdk.Record
+		wantErr    bool
 	}{
 		{
 			name: "should detect insert",
-			action: func(t *testing.T, db *pgx.Conn) {
-				rows, err := db.Query(context.Background(), `insert into
-				records2(id, column1, column2, column3)
-				values (6, 'bizz', 456, false);`)
-				is.NoErr(err)
-				defer rows.Close()
-			},
+			setupQuery: `INSERT INTO %s (id, column1, column2, column3)
+				VALUES (6, 'bizz', 456, false)`,
 			wantErr: false,
 			want: sdk.Record{
 				Key: sdk.StructuredData{"id": int64(6)},
 				Metadata: map[string]string{
-					"table":  "records2",
+					"table":  table,
 					"action": "insert",
 				},
 				Payload: sdk.StructuredData{
-					"column1": string("bizz"),
+					"column1": "bizz",
 					"column2": int32(456),
-					"column3": bool(false),
+					"column3": false,
 				},
 			},
 		},
 		{
 			name: "should detect update",
-			action: func(t *testing.T, db *pgx.Conn) {
-				rows, err := db.Query(context.Background(),
-					`update records2 * set column1 = 'test cdc updates' 
-					where key = '1';`)
-				is.NoErr(err)
-				defer rows.Close()
-			},
+			setupQuery: `UPDATE %s
+				SET column1 = 'test cdc updates' 
+				WHERE key = '1'`,
 			wantErr: false,
 			want: sdk.Record{
 				Key: sdk.StructuredData{"id": int64(1)},
 				Metadata: map[string]string{
-					"table":  "records2",
+					"table":  table,
 					"action": "update",
 				},
 				Payload: sdk.StructuredData{
-					"column1": string("test cdc updates"),
+					"column1": "test cdc updates",
 					"column2": int32(123),
-					"column3": bool(false),
+					"column3": false,
 					"key":     []uint8("1"),
 				},
 			},
 		},
 		{
-			name: "should detect delete",
-			action: func(t *testing.T, db *pgx.Conn) {
-				rows, err := db.Query(context.Background(),
-					`delete from records2 where id = 3;`)
-				is.NoErr(err)
-				defer rows.Close()
-			},
-			wantErr: false,
+			name:       "should detect delete",
+			setupQuery: `DELETE FROM %s WHERE id = 3`,
+			wantErr:    false,
 			want: sdk.Record{
 				Key: sdk.StructuredData{"id": int64(3)},
 				Metadata: map[string]string{
-					"table":  "records2",
+					"table":  table,
 					"action": "delete",
 				},
 			},
@@ -116,41 +109,34 @@ func TestIterator_Next(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Now()
-			tt.action(t, db)
-			time.Sleep(1 * time.Second)
 
-			got, err := i.Next(context.Background())
+			query := fmt.Sprintf(tt.setupQuery, table)
+			_, err := conn.Exec(ctx, query)
 			is.NoErr(err)
 
-			diff := cmp.Diff(
-				got,
-				tt.want,
-				cmpopts.IgnoreFields(
-					sdk.Record{},
-					"CreatedAt",
-					"Position", // TODO: Assert what we can about position
-				))
-			if diff != "" {
-				t.Errorf("%s", diff)
-			}
-			is.True(got.CreatedAt.After(now)) // CreatedAt should be After now
-			is.NoErr(i.Ack(context.Background(), got.Position))
+			nextCtx, cancel := context.WithTimeout(ctx, time.Second*5)
+			defer cancel()
+			got, err := i.Next(nextCtx)
+			is.NoErr(err)
+
+			is.True(got.CreatedAt.After(now)) // CreatedAt should be after now
+			is.True(len(got.Position) > 0)
+			tt.want.CreatedAt = got.CreatedAt
+			tt.want.Position = got.Position
+
+			is.Equal(got, tt.want)
+			is.NoErr(i.Ack(ctx, got.Position))
 		})
 	}
 }
 
-// getDefaultIterator
-func getDefaultIterator(t *testing.T) *Iterator {
+func testIterator(ctx context.Context, t *testing.T, table string) *Iterator {
 	is := is.New(t)
-	_ = getTestPostgres(t)
-	ctx := context.Background()
-	randPublication := fmt.Sprintf("confuit%d", rand.Int()) // nolint:gosec // only a test
-	randSlotName := fmt.Sprintf("conduit%d", rand.Int())    // nolint:gosec // only a test
 	config := Config{
 		URL:             CDCTestURL,
-		TableName:       "records2",
-		PublicationName: randPublication,
-		SlotName:        randSlotName,
+		TableName:       table,
+		PublicationName: table, // table is random, reuse for publication name
+		SlotName:        table, // table is random, reuse for slot name
 	}
 	i, err := NewCDCIterator(ctx, config)
 	is.NoErr(err)
@@ -160,39 +146,40 @@ func getDefaultIterator(t *testing.T) *Iterator {
 	return i
 }
 
-// getTestPostgres is a testing helper that fails if it can't setup a Postgres
-// connection and returns a DB and the connection string.
-// * It starts and migrates a db with 5 rows for Test_Read* and Test_Open*
-func getTestPostgres(t *testing.T) *pgx.Conn {
+// setupTestTable creates a new table
+func setupTestTable(t *testing.T, conn *pgx.Conn) string {
+	ctx := context.Background()
 	is := is.New(t)
-	prepareDB := []string{
-		`DROP TABLE IF EXISTS records2;`,
-		`CREATE TABLE IF NOT EXISTS records2 (
+
+	table := fmt.Sprintf("conduit_%v_%d", strings.ToLower(t.Name()), time.Now().UnixMicro()%1000)
+
+	query := `
+		CREATE TABLE %s (
 		id bigserial PRIMARY KEY,
 		key bytea,
 		column1 varchar(256),
 		column2 integer,
-		column3 boolean);`,
-		`INSERT INTO records2(key, column1, column2, column3)
-		VALUES('1', 'foo', 123, false),
+		column3 boolean)`
+	query = fmt.Sprintf(query, table)
+	_, err := conn.Exec(ctx, query)
+	is.NoErr(err)
+
+	t.Cleanup(func() {
+		query := `DROP TABLE %s`
+		query = fmt.Sprintf(query, table)
+		_, err := conn.Exec(ctx, query)
+		is.NoErr(err)
+	})
+
+	query = `
+		INSERT INTO %s (key, column1, column2, column3)
+		VALUES ('1', 'foo', 123, false),
 		('2', 'bar', 456, true),
 		('3', 'baz', 789, false),
-		('4', null, null, null);`,
-	}
-	conn, err := pgx.Connect(context.Background(), CDCTestURL)
+		('4', null, null, null)`
+	query = fmt.Sprintf(query, table)
+	_, err = conn.Exec(ctx, query)
 	is.NoErr(err)
-	conn = migrate(t, conn, prepareDB)
-	is.NoErr(err)
-	return conn
-}
 
-// migrate will run a set of migrations on a database to prepare it for a test
-// it fails the test if any migrations are not applied.
-func migrate(t *testing.T, conn *pgx.Conn, migrations []string) *pgx.Conn {
-	is := is.New(t)
-	for _, migration := range migrations {
-		_, err := conn.Exec(context.Background(), migration)
-		is.NoErr(err)
-	}
-	return conn
+	return table
 }
