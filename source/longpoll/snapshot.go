@@ -86,31 +86,19 @@ func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, table string, colu
 	return s, nil
 }
 
-// HasNext returns whether s.rows has another row.
-// * It must be called before SnapshotIterator#Next is or else it will fail.
-// * It increments the internal position if another row exists.
-// * If HasNext is called and no rows are available, it will mark the snapshot
-// as complete and then returns.
-func (s *SnapshotIterator) HasNext() bool {
-	next := s.rows.Next()
-	if !next {
-		s.snapshotComplete = true
-		return next
-	}
-	s.internalPos++
-	return next
-}
-
 // Next returns the next row in the iterators rows.
 // * If Next is called after HasNext has returned false, it will
 // return an ErrNoRows error.
 func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
-	if s.snapshotComplete {
-		return sdk.Record{}, ErrNoRows
-	}
 	if s.rows == nil {
 		return sdk.Record{}, ErrNoRows
 	}
+	if !s.rows.Next() {
+		s.snapshotComplete = true
+		return sdk.Record{}, ErrNoRows
+	}
+	s.internalPos++
+
 	rec := sdk.Record{}
 	rec, err := withPayload(rec, s.rows, s.columns, s.key)
 	if err != nil {

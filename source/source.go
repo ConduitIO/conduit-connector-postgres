@@ -57,8 +57,38 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 	}
 	s.conn = conn
 
-	switch s.config.Mode {
-	case ModeSnapshot:
+	switch s.config.CDCMode {
+	case CDCModeAuto:
+		// TODO add logic that checks if the DB supports logical replication and
+		//  switches to long polling if it's not. For now use logical replication
+		fallthrough
+	case CDCModeLogrepl:
+		if s.config.SnapshotMode == SnapshotModeInitial {
+			// TODO create snapshot iterator for logical replication and pass
+			//  the snapshot mode in the config
+			sdk.Logger(ctx).Warn().Msg("snapshot not supported in logical replication mode")
+		}
+
+		i, err := logrepl.NewCDCIterator(ctx, s.conn, logrepl.Config{
+			Position:        pos,
+			SlotName:        s.config.LogreplSlotName,
+			PublicationName: s.config.LogreplPublicationName,
+			TableName:       s.config.Table,
+			KeyColumnName:   s.config.Key,
+			Columns:         s.config.Columns,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create logical replication iterator: %w", err)
+		}
+		s.iterator = i
+	case CDCModeLongPolling:
+		sdk.Logger(ctx).Warn().Msg("long polling not supported yet, only snapshot is supported")
+		if s.config.SnapshotMode != SnapshotModeInitial {
+			// TODO create long polling iterator and pass snapshot mode in the config
+			sdk.Logger(ctx).Warn().Msg("snapshot disabled, can't do anything right now")
+			return sdk.ErrUnimplemented
+		}
+
 		snap, err := longpoll.NewSnapshotIterator(
 			ctx,
 			s.conn,
@@ -70,18 +100,8 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		}
 		s.iterator = snap
 	default:
-		i, err := logrepl.NewCDCIterator(ctx, s.conn, logrepl.Config{
-			Position:        pos,
-			SlotName:        s.config.SlotName,
-			PublicationName: s.config.PublicationName,
-			TableName:       s.config.Table,
-			KeyColumnName:   s.config.Key,
-			Columns:         s.config.Columns,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to create logical replication iterator: %w", err)
-		}
-		s.iterator = i
+		// shouldn't happen, config was validated
+		return fmt.Errorf("%q contains unsupported value %q, expected one of %v", ConfigKeyCDCMode, s.config.CDCMode, cdcModeAll)
 	}
 	return nil
 }

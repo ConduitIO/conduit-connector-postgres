@@ -27,7 +27,7 @@ import (
 // SnapshotTestURL is a non-replication user url for the test postgres d
 const SnapshotTestURL = "postgres://meroxauser:meroxapass@localhost:5432/meroxadb?sslmode=disable"
 
-func TestSnapshotIteratorReads(t *testing.T) {
+func TestSnapshotterReads(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
 
@@ -39,19 +39,19 @@ func TestSnapshotIteratorReads(t *testing.T) {
 	is.NoErr(err)
 	i := 0
 	for {
-		if next := s.HasNext(); !next {
+		_, err := s.Next(ctx)
+		if err == ErrNoRows {
 			break
 		}
-		i++
-		_, err := s.Next(ctx)
 		is.NoErr(err)
+		i++
 	}
 	is.Equal(4, i)
 	is.NoErr(s.Teardown(ctx))
 	is.True(s.snapshotComplete == true) // failed to mark snapshot complete
 }
 
-func TestSnapshotIteratorTeardown(t *testing.T) {
+func TestSnapshotterTeardown(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
 
@@ -61,7 +61,6 @@ func TestSnapshotIteratorTeardown(t *testing.T) {
 	s, err := NewSnapshotIterator(ctx, conn, table,
 		[]string{"id", "column1", "key"}, "key")
 	is.NoErr(err)
-	is.True(s.HasNext()) // failed to queue up record
 	_, err = s.Next(ctx)
 	is.NoErr(err)
 	is.True(!s.snapshotComplete) // snapshot prematurely marked complete
@@ -79,18 +78,10 @@ func TestPrematureDBClose(t *testing.T) {
 	s, err := NewSnapshotIterator(ctx, conn, table,
 		[]string{"id", "column1", "key"}, "key")
 	is.NoErr(err)
-	next1 := s.HasNext()
-	is.Equal(true, next1)
 	teardownErr := s.Teardown(ctx)
 	is.True(errors.Is(teardownErr, ErrSnapshotInterrupt)) // failed to get snapshot interrupt error
 
-	// next record should still be returned because has next loaded it into memory
-	_, err = s.Next(ctx)
-	is.True(err == nil)
-
 	// now has next should return false because rows were closed prematurely
-	next2 := s.HasNext()
-	is.Equal(false, next2)
 	rec, err := s.Next(ctx)
 	is.Equal(rec, sdk.Record{})
 	is.True(errors.Is(err, ErrNoRows)) // failed to get snapshot incomplete

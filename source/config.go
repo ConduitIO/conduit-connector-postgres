@@ -20,47 +20,66 @@ import (
 )
 
 const (
-	ConfigKeyURL             = "url"
-	ConfigKeyTable           = "table"
-	ConfigKeyColumns         = "columns"
-	ConfigKeyKey             = "key"
-	ConfigKeyMode            = "mode"
-	ConfigKeyPublicationName = "publication_name"
-	ConfigKeySlotName        = "slot_name"
+	ConfigKeyURL                    = "url"
+	ConfigKeyTable                  = "table"
+	ConfigKeyColumns                = "columns"
+	ConfigKeyKey                    = "key"
+	ConfigKeySnapshotMode           = "snapshot_mode"
+	ConfigKeyCDCMode                = "cdc_mode"
+	ConfigKeyLogreplPublicationName = "publication_name"
+	ConfigKeyLogreplSlotName        = "slot_name"
 
 	DefaultPublicationName = "conduitpub"
 	DefaultSlotName        = "conduitslot"
 )
 
 type Config struct {
-	URL             string
-	Table           string
-	Columns         []string
-	Key             string
-	Mode            Mode
-	PublicationName string
-	SlotName        string
+	URL     string
+	Table   string
+	Columns []string
+	Key     string
+
+	// SnapshotMode determines if and when a snapshot is made.
+	SnapshotMode SnapshotMode
+	// CDCMode determines how the connector should listen to changes.
+	CDCMode CDCMode
+
+	// LogreplPublicationName determines the publication name in case the
+	// connector uses logical replication to listen to changes (see CDCMode).
+	LogreplPublicationName string
+	// LogreplSlotName determines the replication slot name in case the
+	// connector uses logical replication to listen to changes (see CDCMode).
+	LogreplSlotName string
 }
 
-type Mode string
+type SnapshotMode string
 
 const (
-	ModeFull     Mode = "full"
-	ModeSnapshot Mode = "snapshot"
-	ModeCDC      Mode = "cdc"
+	SnapshotModeInitial SnapshotMode = "initial"
+	SnapshotModeNever   SnapshotMode = "never"
 )
 
-var modeAll = []Mode{ModeFull, ModeSnapshot, ModeCDC}
+type CDCMode string
+
+const (
+	CDCModeAuto        CDCMode = "auto"
+	CDCModeLogrepl     CDCMode = "logrepl"
+	CDCModeLongPolling CDCMode = "long_polling"
+)
+
+var snapshotModeAll = []SnapshotMode{SnapshotModeInitial, SnapshotModeNever}
+var cdcModeAll = []CDCMode{CDCModeAuto, CDCModeLogrepl, CDCModeLongPolling}
 
 func ParseConfig(cfgRaw map[string]string) (Config, error) {
 	cfg := Config{
-		URL:             cfgRaw[ConfigKeyURL],
-		Table:           cfgRaw[ConfigKeyTable],
-		Columns:         nil, // default
-		Key:             cfgRaw[ConfigKeyKey],
-		Mode:            ModeFull, // default
-		PublicationName: cfgRaw[ConfigKeyPublicationName],
-		SlotName:        cfgRaw[ConfigKeySlotName],
+		URL:                    cfgRaw[ConfigKeyURL],
+		Table:                  cfgRaw[ConfigKeyTable],
+		Columns:                nil, // default
+		Key:                    cfgRaw[ConfigKeyKey],
+		SnapshotMode:           SnapshotModeInitial,
+		CDCMode:                CDCModeAuto,
+		LogreplPublicationName: DefaultPublicationName,
+		LogreplSlotName:        DefaultSlotName,
 	}
 
 	if cfg.URL == "" {
@@ -72,24 +91,39 @@ func ParseConfig(cfgRaw map[string]string) (Config, error) {
 	if colsRaw := cfgRaw[ConfigKeyColumns]; colsRaw != "" {
 		cfg.Columns = strings.Split(colsRaw, ",")
 	}
-	if modeRaw := cfgRaw[ConfigKeyMode]; modeRaw != "" {
-		if !isModeSupported(modeRaw) {
-			return Config{}, fmt.Errorf("%q contains unsupported value %q, expected one of %v", ConfigKeyMode, modeRaw, modeAll)
+	if modeRaw := cfgRaw[ConfigKeySnapshotMode]; modeRaw != "" {
+		if !isSnapshotModeSupported(modeRaw) {
+			return Config{}, fmt.Errorf("%q contains unsupported value %q, expected one of %v", ConfigKeySnapshotMode, modeRaw, snapshotModeAll)
 		}
-		cfg.Mode = Mode(modeRaw)
+		cfg.SnapshotMode = SnapshotMode(modeRaw)
 	}
-	if cfg.PublicationName == "" {
-		cfg.PublicationName = DefaultPublicationName
+	if modeRaw := cfgRaw[ConfigKeyCDCMode]; modeRaw != "" {
+		if !isCDCModeSupported(modeRaw) {
+			return Config{}, fmt.Errorf("%q contains unsupported value %q, expected one of %v", ConfigKeyCDCMode, modeRaw, cdcModeAll)
+		}
+		cfg.CDCMode = CDCMode(modeRaw)
 	}
-	if cfg.SlotName == "" {
-		cfg.SlotName = DefaultSlotName
+	if cfgRaw[ConfigKeyLogreplPublicationName] != "" {
+		cfg.LogreplPublicationName = cfgRaw[ConfigKeyLogreplPublicationName]
+	}
+	if cfgRaw[ConfigKeyLogreplSlotName] != "" {
+		cfg.LogreplSlotName = cfgRaw[ConfigKeyLogreplSlotName]
 	}
 
 	return cfg, nil
 }
 
-func isModeSupported(modeRaw string) bool {
-	for _, m := range modeAll {
+func isSnapshotModeSupported(modeRaw string) bool {
+	for _, m := range snapshotModeAll {
+		if string(m) == modeRaw {
+			return true
+		}
+	}
+	return false
+}
+
+func isCDCModeSupported(modeRaw string) bool {
+	for _, m := range cdcModeAll {
 		if string(m) == modeRaw {
 			return true
 		}
