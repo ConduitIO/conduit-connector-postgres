@@ -21,8 +21,8 @@ github.com/cockroachdb/apd v1.1.0 h1:3LFP3629v+1aKXU5Q37mxmRxX/pIu1nijXydLShEq5I
 github.com/cockroachdb/apd v1.1.0/go.mod h1:8Sl8LxpKi29FqWXR16WEFZRNSz3SoPzUzeMeY4+DwBQ=
 github.com/conduitio/conduit-connector-protocol v0.0.0-20220302182649-4f4c215c2b83 h1:OZ72mKjL3eRJvB8dut0VrC2y63Eeqo4hwwadUSDcfFE=
 github.com/conduitio/conduit-connector-protocol v0.0.0-20220302182649-4f4c215c2b83/go.mod h1:udCU2AkLcYQoLjAO06tHVL2iFJPw+DamK+wllnj50hk=
-github.com/conduitio/conduit-connector-sdk v0.0.0-20220304172424-32a20f262a14 h1:WIXGOWENHELn3lXKAh2kAP4x16hX2o3kIokNEz45SaA=
-github.com/conduitio/conduit-connector-sdk v0.0.0-20220304172424-32a20f262a14/go.mod h1:XiYwUhsC2Rgl8f8L3+nhwfPgIvApUpIHBivIJffaTWw=
+github.com/conduitio/conduit-connector-sdk v0.0.0-20220321172235-c7287fb2b244 h1:Ylw35mIIXsNulbavpOiAl68Qw3357TbA9vSgiA0IhtU=
+github.com/conduitio/conduit-connector-sdk v0.0.0-20220321172235-c7287fb2b244/go.mod h1:qJUIPBWRb3gU7lMaHWlfLs56wfTJL+eJM0MGy8NpgC8=
 github.com/coreos/go-systemd v0.0.0-20190321100706-95778dfbb74e/go.mod h1:F5haX7vjVVG0kc13fIWeqUViNPyEJxv/OmvnBo0Yme4=
 github.com/coreos/go-systemd v0.0.0-20190719114852-fd7a80b32e1f/go.mod h1:F5haX7vjVVG0kc13fIWeqUViNPyEJxv/OmvnBo0Yme4=
 github.com/coreos/go-systemd/v22 v22.3.2/go.mod h1:Y58oyj3AT4RCenI/lSvhwexgC+NSVTIJ3seZv2GcEnc=
@@ -50,6 +50,7 @@ github.com/gofrs/uuid v4.2.0+incompatible h1:yyYWMnhkhrKwwr8gAOcOCYxOOscHgDS9yZg
 github.com/gofrs/uuid v4.2.0+incompatible/go.mod h1:b2aQJv3Z4Fp6yNu3cdSllBxTCLRxnplIgP/c0N/04lM=
 github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b/go.mod h1:SBH7ygxi8pfUlaOkMMuAQtPIUF8ecWP5IEl/CR7VP2Q=
 github.com/golang/mock v1.1.1/go.mod h1:oTYuIxOrZwtPieC+H1uAHpcLFnEyAGVDL/k47Jfbm0A=
+github.com/golang/mock v1.6.0 h1:ErTB+efbowRARo13NNdxyJji2egdxLGQhRaY+DUumQc=
 github.com/golang/mock v1.6.0/go.mod h1:p6yTPP+5HYm5mzsMV8JkE6ZKdX+/wYM6Hr+LicevLPs=
 github.com/golang/protobuf v1.2.0/go.mod h1:6lQm79b+lXiMfvg/cZm0SGofjICqVBUtrP5yJMmIC1U=
 github.com/golang/protobuf v1.3.1/go.mod h1:6lQm79b+lXiMfvg/cZm0SGofjICqVBUtrP5yJMmIC1U=

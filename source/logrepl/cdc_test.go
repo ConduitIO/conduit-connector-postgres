@@ -26,26 +26,19 @@ import (
 	"github.com/matryer/is"
 )
 
-const (
-	// CDCTestURL is the URI for the _logical replication_ server and user.
-	// This is separate from the DB_URL used above since it requires a different
-	// user and permissions for replication.
-	CDCTestURL = "postgres://repmgr:repmgrmeroxa@localhost:5432/meroxadb?sslmode=disable"
-)
-
 func TestIterator_Next(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
 
-	pool := test.ConnectPool(ctx, t, CDCTestURL)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
 	table := test.SetupTestTable(ctx, t, pool)
 	i := testIterator(ctx, t, pool, table)
 	t.Cleanup(func() {
 		is.NoErr(i.Teardown(ctx))
 	})
 
-	// give replication some time to start
-	time.Sleep(time.Second)
+	// wait for subscription to be ready
+	<-i.sub.Ready()
 
 	tests := []struct {
 		name       string

@@ -50,7 +50,7 @@ func CreatePublication(ctx context.Context, conn *pgconn.PgConn, publicationName
 		publicationParams = fmt.Sprintf("WITH (%s)", strings.Join(options.PublicationParams, ", "))
 	}
 
-	sql := fmt.Sprintf("CREATE PUBLICATION %s %s %s", publicationName, forTableString, publicationParams)
+	sql := fmt.Sprintf("CREATE PUBLICATION %q %s %s", publicationName, forTableString, publicationParams)
 
 	mrr := conn.Exec(ctx, sql)
 	return mrr.Close()
@@ -68,7 +68,7 @@ func DropPublication(ctx context.Context, conn *pgconn.PgConn, publicationName s
 		ifExistsString = "IF EXISTS"
 	}
 
-	sql := fmt.Sprintf("DROP PUBLICATION %s %s", ifExistsString, publicationName)
+	sql := fmt.Sprintf("DROP PUBLICATION %s %q", ifExistsString, publicationName)
 
 	mrr := conn.Exec(ctx, sql)
 	return mrr.Close()

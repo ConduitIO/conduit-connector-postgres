@@ -16,6 +16,7 @@ package test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -26,6 +27,12 @@ import (
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/matryer/is"
 )
+
+// RepmgrConnString is a replication user connection string for the test postgres.
+const RepmgrConnString = "postgres://repmgr:repmgrmeroxa@localhost:5432/meroxadb?sslmode=disable"
+
+// RegularConnString is a non-replication user connection string for the test postgres.
+const RegularConnString = "postgres://meroxauser:meroxapass@localhost:5432/meroxadb?sslmode=disable"
 
 type Querier interface {
 	Exec(ctx context.Context, sql string, arguments ...interface{}) (pgconn.CommandTag, error)
@@ -59,7 +66,7 @@ func ConnectSimple(ctx context.Context, t *testing.T, connString string) *pgx.Co
 func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 	is := is.New(t)
 
-	table := fmt.Sprintf("conduit_%v_%d", strings.ToLower(t.Name()), time.Now().UnixMicro()%1000)
+	table := RandomIdentifier(t)
 
 	query := `
 		CREATE TABLE %s (
@@ -75,7 +82,7 @@ func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 	t.Cleanup(func() {
 		query := `DROP TABLE %s`
 		query = fmt.Sprintf(query, table)
-		_, err := conn.Exec(ctx, query)
+		_, err := conn.Exec(context.Background(), query)
 		is.NoErr(err)
 	})
 
@@ -90,4 +97,16 @@ func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 	is.NoErr(err)
 
 	return table
+}
+
+func RandomIdentifier(t *testing.T) string {
+	return fmt.Sprintf("conduit_%v_%d", strings.ToLower(t.Name()), time.Now().UnixMicro()%1000)
+}
+
+func IsPgError(is *is.I, err error, wantCode string) {
+	is.True(err != nil)
+	var pgerr *pgconn.PgError
+	ok := errors.As(err, &pgerr)
+	is.True(ok) // expected err to be a *pgconn.PgError
+	is.Equal(pgerr.Code, wantCode)
 }
