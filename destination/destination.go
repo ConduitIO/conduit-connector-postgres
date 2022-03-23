@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -136,7 +137,10 @@ func (d *Destination) handleUpdate(ctx context.Context, r sdk.Record) error {
 }
 
 func (d *Destination) handleDelete(ctx context.Context, r sdk.Record) error {
-	return fmt.Errorf("not impl")
+	if !hasKey(r) {
+		return fmt.Errorf("key must be provided on delete actions")
+	}
+	return d.remove(ctx, r)
 }
 
 func (d *Destination) upsert(ctx context.Context, r sdk.Record) error {
@@ -168,6 +172,30 @@ func (d *Destination) upsert(ctx context.Context, r sdk.Record) error {
 	}
 
 	return nil
+}
+
+func (d *Destination) remove(ctx context.Context, r sdk.Record) error {
+	log.Printf("REMOVE HIT - %v", r)
+	key, err := getKey(r)
+	if err != nil {
+		return err
+	}
+	keyColumnName := getKeyColumnName(key, d.config.keyColumnName)
+	tableName, err := d.getTableName(r.Metadata)
+	if err != nil {
+		return fmt.Errorf("failed to get table name for write: %w", err)
+	}
+	query, args, err := psql.
+		Delete(tableName).
+		Where(sq.Eq{keyColumnName: key[keyColumnName]}).
+		ToSql()
+	if err != nil {
+		return fmt.Errorf("error formatting insert query: %w", err)
+	}
+	log.Printf("QUERY: %v", query)
+	log.Printf("ARGS: %v", args)
+	_, err = d.conn.Exec(ctx, query, args...)
+	return err
 }
 
 // insert is an append-only operation that doesn't care about keys, but
