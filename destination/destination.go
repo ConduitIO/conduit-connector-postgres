@@ -92,31 +92,46 @@ func (d *Destination) connect(ctx context.Context, uri string) error {
 	return nil
 }
 
+// write routes incoming records to their appropriate handler based on the
+// action declared in the metadata.
+// Defaults to insert behavior if no action is specified.
 func (d *Destination) write(ctx context.Context, r sdk.Record) error {
 	action, ok := r.Metadata["action"]
 	if !ok {
-		return d.upsert(ctx, r)
+		return d.handleInsert(ctx, r)
 	}
 
 	switch action {
-	case actionDelete:
-		return d.handleDelete(ctx, r)
 	case actionInsert:
 		return d.handleInsert(ctx, r)
 	case actionUpdate:
 		return d.handleUpdate(ctx, r)
+	case actionDelete:
+		return d.handleDelete(ctx, r)
 	default:
-		// NB: Do we want to default to upsert behavior? Or insert behavior?
-		// Or something else?
-		return d.upsert(ctx, r)
+		return d.handleInsert(ctx, r)
 	}
 }
 
+// handleInsert checks for the existence of a key. If no key is present it will
+// plainly insert the data.
+// * If a key exists, but no key column name is configured, it attempts a plain
+// insert to that database.
 func (d *Destination) handleInsert(ctx context.Context, r sdk.Record) error {
+	if !hasKey(r) {
+		return d.insert(ctx, r)
+	}
+	if d.config.keyColumnName == "" {
+		return d.insert(ctx, r)
+	}
 	return d.upsert(ctx, r)
 }
 
+// handleUpdate assumes the record has a key and will fail if one is not present
 func (d *Destination) handleUpdate(ctx context.Context, r sdk.Record) error {
+	if !hasKey(r) {
+		return fmt.Errorf("key must be provided on update actions")
+	}
 	return d.upsert(ctx, r)
 }
 
@@ -142,7 +157,7 @@ func (d *Destination) upsert(ctx context.Context, r sdk.Record) error {
 		return fmt.Errorf("failed to get table name for write: %w", err)
 	}
 
-	query, args, err := formatQuery(key, payload, keyColumnName, tableName)
+	query, args, err := formatUpsertQuery(key, payload, keyColumnName, tableName)
 	if err != nil {
 		return fmt.Errorf("error formatting query: %w", err)
 	}
@@ -155,11 +170,46 @@ func (d *Destination) upsert(ctx context.Context, r sdk.Record) error {
 	return nil
 }
 
+// insert is an append-only operation that doesn't care about keys, but
+// can error on constraints violations so should only be used when no table
+// key or unique constraints are otherwise present.
+func (d *Destination) insert(ctx context.Context, r sdk.Record) error {
+	tableName, err := d.getTableName(r.Metadata)
+	if err != nil {
+		return err
+	}
+	key, err := getKey(r)
+	if err != nil {
+		return err
+	}
+	payload, err := getPayload(r)
+	if err != nil {
+		return err
+	}
+	colArgs, valArgs := formatColumnsAndValues(key, payload)
+	query, args, err := psql.
+		Insert(tableName).
+		Columns(colArgs...).
+		Values(valArgs...).
+		ToSql()
+	if err != nil {
+		return fmt.Errorf("error formatting insert query: %w", err)
+	}
+	_, err = d.conn.Exec(ctx, query, args...)
+	return err
+}
+
 func getPayload(r sdk.Record) (sdk.StructuredData, error) {
+	if r.Payload == nil {
+		return sdk.StructuredData{}, nil
+	}
 	return structuredDataFormatter(r.Payload.Bytes())
 }
 
 func getKey(r sdk.Record) (sdk.StructuredData, error) {
+	if r.Key == nil {
+		return sdk.StructuredData{}, nil
+	}
 	return structuredDataFormatter(r.Key.Bytes())
 }
 
@@ -175,13 +225,13 @@ func structuredDataFormatter(raw []byte) (sdk.StructuredData, error) {
 	return data, nil
 }
 
-// formatQuery manually formats the UPSERT and ON CONFLICT query statements.
-// the `ON CONFLICT` portion of this query needs to specify the constraint
+// formatUpsertQuery manually formats the UPSERT and ON CONFLICT query statements.
+// The `ON CONFLICT` portion of this query needs to specify the constraint
 // name.
 // * In our case, we can only rely on the record.Key's parsed key value.
 // * If other schema constraints prevent a write, this won't upsert on
 // that conflict.
-func formatQuery(
+func formatUpsertQuery(
 	key sdk.StructuredData,
 	payload sdk.StructuredData,
 	keyColumnName string,
@@ -268,4 +318,8 @@ func getKeyColumnName(key sdk.StructuredData, defaultKeyName string) string {
 	}
 
 	return defaultKeyName
+}
+
+func hasKey(r sdk.Record) bool {
+	return r.Key != nil && len(r.Key.Bytes()) > 0
 }
