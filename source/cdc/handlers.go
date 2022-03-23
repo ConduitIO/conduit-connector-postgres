@@ -19,7 +19,8 @@ import (
 	"time"
 
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/jackc/pgx/pgtype"
+	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgtype"
 )
 
 // handleInsert formats a Record with INSERT event data from Postgres and
@@ -27,7 +28,7 @@ import (
 func (i *Iterator) handleInsert(
 	relID pgtype.OID,
 	values map[string]pgtype.Value,
-	pos uint64,
+	pos pglogrepl.LSN,
 ) error {
 	rec := sdk.Record{
 		CreatedAt: time.Now(),
@@ -48,7 +49,7 @@ func (i *Iterator) handleInsert(
 func (i *Iterator) handleUpdate(
 	relID pgtype.OID,
 	values map[string]pgtype.Value,
-	pos uint64,
+	pos pglogrepl.LSN,
 ) error {
 	rec := sdk.Record{
 		// TODO: Fill out key and add payload and metadata
@@ -70,7 +71,7 @@ func (i *Iterator) handleUpdate(
 func (i *Iterator) handleDelete(
 	relID pgtype.OID,
 	values map[string]pgtype.Value,
-	pos uint64,
+	pos pglogrepl.LSN,
 ) error {
 	rec := sdk.Record{
 		CreatedAt: time.Now(),
@@ -120,6 +121,5 @@ func (i *Iterator) formatPayload(values map[string]pgtype.Value) sdk.StructuredD
 // sets an integer position to the correct stringed integer on
 func (i *Iterator) withPosition(rec sdk.Record, pos int64) sdk.Record {
 	rec.Position = sdk.Position(strconv.FormatInt(pos, 10))
-	// TODO: update iterator's last seen position
 	return rec
 }

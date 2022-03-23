@@ -16,12 +16,12 @@ package source
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 
 	"github.com/conduitio/conduit-connector-postgres/source/cdc"
 	"github.com/conduitio/conduit-connector-postgres/source/snapshot"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/jackc/pgx/v4"
 )
 
 var _ Strategy = (*cdc.Iterator)(nil)
@@ -31,9 +31,9 @@ var _ Strategy = (*snapshot.Snapshotter)(nil)
 type Source struct {
 	sdk.UnimplementedSource
 
-	Iterator Strategy
-
-	config Config
+	iterator Strategy
+	config   Config
+	conn     *pgx.Conn
 }
 
 func NewSource() sdk.Source {
@@ -49,23 +49,26 @@ func (s *Source) Configure(ctx context.Context, cfgRaw map[string]string) error 
 	return nil
 }
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
+	conn, err := pgx.Connect(ctx, s.config.URL)
+	if err != nil {
+		return fmt.Errorf("failed to connect to database: %w", err)
+	}
+	s.conn = conn
+
 	switch s.config.Mode {
 	case ModeSnapshot:
-		db, err := sql.Open("postgres", s.config.URL)
-		if err != nil {
-			return fmt.Errorf("failed to connect to database: %w", err)
-		}
 		snap, err := snapshot.NewSnapshotter(
-			db,
+			ctx,
+			s.conn,
 			s.config.Table,
 			s.config.Columns,
 			s.config.Key)
 		if err != nil {
-			return fmt.Errorf("failed to open snapshotter: %w", err)
+			return fmt.Errorf("failed to create snapshotter: %w", err)
 		}
-		s.Iterator = snap
+		s.iterator = snap
 	default:
-		i, err := cdc.NewCDCIterator(ctx, cdc.Config{
+		i, err := cdc.NewCDCIterator(ctx, s.conn, cdc.Config{
 			Position:        pos,
 			URL:             s.config.URL,
 			SlotName:        s.config.SlotName,
@@ -75,24 +78,31 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			Columns:         s.config.Columns,
 		})
 		if err != nil {
-			return fmt.Errorf("failed to open cdc connection: %w", err)
+			return fmt.Errorf("failed to create CDC iterator: %w", err)
 		}
-		s.Iterator = i
+		s.iterator = i
 	}
 	return nil
 }
 
 func (s *Source) Read(ctx context.Context) (sdk.Record, error) {
-	return s.Iterator.Next(ctx)
+	return s.iterator.Next(ctx)
 }
 
 func (s *Source) Ack(context.Context, sdk.Position) error {
 	return nil
 }
 
-func (s *Source) Teardown(context.Context) error {
-	if s.Iterator == nil {
-		return nil
+func (s *Source) Teardown(ctx context.Context) error {
+	if s.iterator != nil {
+		if err := s.iterator.Teardown(ctx); err != nil {
+			return fmt.Errorf("failed to tear down iterator: %w", err)
+		}
 	}
-	return s.Iterator.Teardown()
+	if s.conn != nil {
+		if err := s.conn.Close(ctx); err != nil {
+			return fmt.Errorf("failed to close DB connection: %w", err)
+		}
+	}
+	return nil
 }

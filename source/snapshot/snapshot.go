@@ -18,13 +18,13 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"reflect"
 	"strconv"
 	"time"
 
-	sdk "github.com/conduitio/conduit-connector-sdk"
-
 	sq "github.com/Masterminds/squirrel"
+	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/jackc/pgtype"
+	"github.com/jackc/pgx/v4"
 )
 
 // Declare Postgres $ placeholder format
@@ -49,11 +49,11 @@ type Snapshotter struct {
 	key string
 	// list of columns that snapshotter should record
 	columns []string
-	// db handle to postgres
-	db *sql.DB
+	// conn handle to postgres
+	conn *pgx.Conn
 	// rows holds a reference to the postgres connection. this can be nil so
 	// we must always call loadRows before HasNext or Next.
-	rows *sql.Rows
+	rows pgx.Rows
 	// ineternalPos is an internal integer Position for the Snapshotter to
 	// to return at each Read call.
 	internalPos int64
@@ -68,9 +68,9 @@ type Snapshotter struct {
 // * It acquires a read only transaction lock before reading the table.
 // * If Teardown is called while a snpashot is in progress, it will return an
 // ErrSnapshotInterrupt error.
-func NewSnapshotter(db *sql.DB, table string, columns []string, key string) (*Snapshotter, error) {
+func NewSnapshotter(ctx context.Context, conn *pgx.Conn, table string, columns []string, key string) (*Snapshotter, error) {
 	s := &Snapshotter{
-		db:               db,
+		conn:             conn,
 		table:            table,
 		columns:          columns,
 		key:              key,
@@ -78,7 +78,7 @@ func NewSnapshotter(db *sql.DB, table string, columns []string, key string) (*Sn
 		snapshotComplete: false,
 	}
 	// load our initial set of rows into the snapshotter after we've set the db
-	err := s.loadRows()
+	err := s.loadRows(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get rows for snapshot: %w", err)
 	}
@@ -129,16 +129,13 @@ func (s *Snapshotter) Next(ctx context.Context) (sdk.Record, error) {
 // when the snapshot is completed.
 // * Teardown handles all of its manual cleanup first then calls cancel to
 // stop any unhandled contexts that we've received.
-func (s *Snapshotter) Teardown() error {
+func (s *Snapshotter) Teardown(ctx context.Context) error {
 	// throw interrupt error if we're not finished with snapshot
 	var interruptErr error
 	if !s.snapshotComplete {
 		interruptErr = ErrSnapshotInterrupt
 	}
-	closeErr := s.rows.Close()
-	if closeErr != nil {
-		return fmt.Errorf("failed to close rows: %w", closeErr)
-	}
+	s.rows.Close()
 	rowsErr := s.rows.Err()
 	if rowsErr != nil {
 		return fmt.Errorf("rows error: %w", rowsErr)
@@ -150,22 +147,18 @@ func (s *Snapshotter) Teardown() error {
 // or returns an error.
 // * It returns nil if no error was detected.
 // * rows.Close and rows.Err are called at Teardown.
-func (s *Snapshotter) loadRows() error {
+func (s *Snapshotter) loadRows(ctx context.Context) error {
 	query, args, err := psql.Select(s.columns...).From(s.table).ToSql()
 	if err != nil {
 		return fmt.Errorf("failed to create read query: %w", err)
 	}
-	//nolint:sqlclosecheck,rowserrcheck //both are called at teardown
-	rows, err := s.db.Query(query, args...)
+	rows, err := s.conn.Query(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("failed to query context: %w", err)
 	}
 	s.rows = rows
 	return nil
 }
-
-// Push is a noop in the snapshotter case
-func (s *Snapshotter) Push(sdk.Record) {}
 
 // sets an integer position to the correct stringed integer on
 func withPosition(rec sdk.Record, i int64) sdk.Record {
@@ -192,100 +185,187 @@ func withTimestampNow(rec sdk.Record) sdk.Record {
 }
 
 // withPayload builds a record's payload from *sql.Rows.
-func withPayload(rec sdk.Record, rows *sql.Rows, columns []string, key string) (sdk.Record, error) {
-	// TODO: These next three blocks should be refactored out into smaller functions
+func withPayload(rec sdk.Record, rows pgx.Rows, columns []string, key string) (sdk.Record, error) {
+	// get the column types for those rows and record them as well
+	colTypes := rows.FieldDescriptions()
 
-	// BLOCK 1
-	// make a new slice of empty interfaces to scan sql values into
+	// make a new slice of correct pgtypes to scan into
 	vals := make([]interface{}, len(columns))
 	for i := range columns {
-		vals[i] = new(sql.RawBytes)
+		vals[i] = scannerValue(pgtype.OID(colTypes[i].DataTypeOID))
 	}
 
-	// BLOCK 2
-	// get the column types for those rows and record them as well
-	colTypes, err := rows.ColumnTypes()
-	if err != nil {
-		return sdk.Record{}, fmt.Errorf("failed to get column types: %w", err)
-	}
-
-	// BLOCK 3
-	// attempt to build the payload from the rows
-	// scan the row into the interface{} vals we declared earlier
-	payload := make(sdk.StructuredData)
-	err = rows.Scan(vals...)
+	// build the payload from the row
+	err := rows.Scan(vals...)
 	if err != nil {
 		return sdk.Record{}, fmt.Errorf("failed to scan: %w", err)
 	}
 
-	// BLOCK 3 or 4, argument could be made this is related to payload serialization
+	payload := make(sdk.StructuredData)
 	for i, col := range columns {
-		t := colTypes[i]
+		val := vals[i].(pgtype.Value)
 
 		// handle and assign the record a Key
 		if key == col {
-			val := reflect.ValueOf(vals[i]).Elem()
 			// TODO: Handle composite keys
 			rec.Key = sdk.StructuredData{
-				col: string(val.Bytes()),
+				col: val.Get(),
 			}
 		}
-
-		// TODO: Need to add the rest of the types that Postgres can support
-		switch t.DatabaseTypeName() {
-		case "BYTEA":
-			val := string(*(vals[i].(*sql.RawBytes)))
-			if val == "" {
-				payload[col] = nil
-				break
-			}
-			payload[col] = val
-		case "VARCHAR":
-			val := string(*(vals[i].(*sql.RawBytes)))
-			if val == "" {
-				payload[col] = nil
-				break
-			}
-			payload[col] = val
-		case "INT4":
-			val := string(*(vals[i].(*sql.RawBytes)))
-			if val == "" {
-				payload[col] = nil
-				break
-			}
-			i, err := strconv.ParseInt(val, 10, 16)
-			if err != nil {
-				return sdk.Record{}, fmt.Errorf("failed to parse int: %w", err)
-			}
-			payload[col] = i
-		case "INT8":
-			val := string(*(vals[i].(*sql.RawBytes)))
-			if val == "" {
-				payload[col] = nil
-				break
-			}
-			i, err := strconv.ParseInt(val, 10, 16)
-			if err != nil {
-				return sdk.Record{}, fmt.Errorf("failed to parse int: %w", err)
-			}
-			payload[col] = i
-		case "BOOL":
-			val := string(*(vals[i].(*sql.RawBytes)))
-			if val == "" {
-				payload[col] = nil
-				break
-			}
-			b, err := strconv.ParseBool(val)
-			if err != nil {
-				return sdk.Record{}, fmt.Errorf("failed to parse boolean: %w", err)
-			}
-			payload[col] = b
-		default:
-			sdk.Logger(context.Background()).Err(fmt.Errorf("failed to handle type %T", t.DatabaseTypeName())).Send()
-			payload[col] = nil
-		}
+		payload[col] = val.Get()
 	}
 
 	rec.Payload = payload
 	return rec, nil
+}
+
+type ScannerValue interface {
+	pgtype.Value
+	sql.Scanner
+}
+
+func scannerValue(oid pgtype.OID) ScannerValue {
+	switch oid {
+	case pgtype.BoolOID:
+		return &pgtype.Bool{}
+	case pgtype.ByteaOID:
+		return &pgtype.Bytea{}
+	case pgtype.NameOID:
+		return &pgtype.Name{}
+	case pgtype.Int8OID:
+		return &pgtype.Int8{}
+	case pgtype.Int2OID:
+		return &pgtype.Int2{}
+	case pgtype.Int4OID:
+		return &pgtype.Int4{}
+	case pgtype.TextOID:
+		return &pgtype.Text{}
+	case pgtype.TIDOID:
+		return &pgtype.TID{}
+	case pgtype.XIDOID:
+		return &pgtype.XID{}
+	case pgtype.CIDOID:
+		return &pgtype.CID{}
+	case pgtype.JSONOID:
+		return &pgtype.JSON{}
+	case pgtype.PointOID:
+		return &pgtype.Point{}
+	case pgtype.LsegOID:
+		return &pgtype.Lseg{}
+	case pgtype.PathOID:
+		return &pgtype.Path{}
+	case pgtype.BoxOID:
+		return &pgtype.Box{}
+	case pgtype.PolygonOID:
+		return &pgtype.Polygon{}
+	case pgtype.LineOID:
+		return &pgtype.Line{}
+	case pgtype.CIDRArrayOID:
+		return &pgtype.CIDRArray{}
+	case pgtype.Float4OID:
+		return &pgtype.Float4{}
+	case pgtype.Float8OID:
+		return &pgtype.Float8{}
+	case pgtype.CircleOID:
+		return &pgtype.Circle{}
+	case pgtype.UnknownOID:
+		return &pgtype.Unknown{}
+	case pgtype.MacaddrOID:
+		return &pgtype.Macaddr{}
+	case pgtype.InetOID:
+		return &pgtype.Inet{}
+	case pgtype.BoolArrayOID:
+		return &pgtype.BoolArray{}
+	case pgtype.Int2ArrayOID:
+		return &pgtype.Int2Array{}
+	case pgtype.Int4ArrayOID:
+		return &pgtype.Int4Array{}
+	case pgtype.TextArrayOID:
+		return &pgtype.TextArray{}
+	case pgtype.ByteaArrayOID:
+		return &pgtype.ByteaArray{}
+	case pgtype.BPCharArrayOID:
+		return &pgtype.BPCharArray{}
+	case pgtype.VarcharArrayOID:
+		return &pgtype.VarcharArray{}
+	case pgtype.Int8ArrayOID:
+		return &pgtype.Int8Array{}
+	case pgtype.Float4ArrayOID:
+		return &pgtype.Float4Array{}
+	case pgtype.Float8ArrayOID:
+		return &pgtype.Float8Array{}
+	case pgtype.ACLItemOID:
+		return &pgtype.ACLItem{}
+	case pgtype.ACLItemArrayOID:
+		return &pgtype.ACLItemArray{}
+	case pgtype.InetArrayOID:
+		return &pgtype.InetArray{}
+	case pgtype.BPCharOID:
+		return &pgtype.BPChar{}
+	case pgtype.VarcharOID:
+		return &pgtype.Varchar{}
+	case pgtype.DateOID:
+		return &pgtype.Date{}
+	case pgtype.TimeOID:
+		return &pgtype.Time{}
+	case pgtype.TimestampOID:
+		return &pgtype.Timestamp{}
+	case pgtype.TimestampArrayOID:
+		return &pgtype.TimestampArray{}
+	case pgtype.DateArrayOID:
+		return &pgtype.DateArray{}
+	case pgtype.TimestamptzOID:
+		return &pgtype.Timestamptz{}
+	case pgtype.TimestamptzArrayOID:
+		return &pgtype.TimestamptzArray{}
+	case pgtype.IntervalOID:
+		return &pgtype.Interval{}
+	case pgtype.NumericArrayOID:
+		return &pgtype.NumericArray{}
+	case pgtype.BitOID:
+		return &pgtype.Bit{}
+	case pgtype.VarbitOID:
+		return &pgtype.Varbit{}
+	case pgtype.NumericOID:
+		return &pgtype.Numeric{}
+	case pgtype.UUIDOID:
+		return &pgtype.UUID{}
+	case pgtype.UUIDArrayOID:
+		return &pgtype.UUIDArray{}
+	case pgtype.JSONBOID:
+		return &pgtype.JSONB{}
+	case pgtype.JSONBArrayOID:
+		return &pgtype.JSONBArray{}
+	case pgtype.DaterangeOID:
+		return &pgtype.Daterange{}
+	case pgtype.Int4rangeOID:
+		return &pgtype.Int4range{}
+	case pgtype.NumrangeOID:
+		return &pgtype.Numrange{}
+	case pgtype.TsrangeOID:
+		return &pgtype.Tsrange{}
+	case pgtype.TsrangeArrayOID:
+		return &pgtype.TsrangeArray{}
+	case pgtype.TstzrangeOID:
+		return &pgtype.Tstzrange{}
+	case pgtype.TstzrangeArrayOID:
+		return &pgtype.TstzrangeArray{}
+	case pgtype.Int8rangeOID:
+		return &pgtype.Int8range{}
+	case pgtype.CIDROID:
+		// pgtype.CIDROID does not implement the Scanner interface
+		return &pgtype.Unknown{}
+	case pgtype.QCharOID:
+		// Not all possible values of QChar are representable in the text format
+		return &pgtype.Unknown{}
+	case pgtype.OIDOID:
+		// pgtype.OID does not implement the value interface
+		return &pgtype.Unknown{}
+	case pgtype.RecordOID:
+		// The text format output format for Records does not include type
+		// information and is therefore impossible to decode
+		return &pgtype.Unknown{}
+	default:
+		return &pgtype.Unknown{}
+	}
 }
