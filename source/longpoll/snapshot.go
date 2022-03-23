@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package snapshot
+package longpoll
 
 import (
 	"context"
@@ -22,6 +22,7 @@ import (
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/conduitio/conduit-connector-postgres/pgutil"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgtype"
 	"github.com/jackc/pgx/v4"
@@ -40,21 +41,21 @@ var (
 	ErrSnapshotInterrupt = fmt.Errorf("interrupted snapshot")
 )
 
-// Snapshotter implements the Iterator interface for capturing an initial table
+// SnapshotIterator implements the Iterator interface for capturing an initial table
 // snapshot.
-type Snapshotter struct {
+type SnapshotIterator struct {
 	// table is the table to snapshot
 	table string
 	// key is the name of the key column for the table snapshot
 	key string
-	// list of columns that snapshotter should record
+	// list of columns that the iterator should record
 	columns []string
 	// conn handle to postgres
 	conn *pgx.Conn
 	// rows holds a reference to the postgres connection. this can be nil so
 	// we must always call loadRows before HasNext or Next.
 	rows pgx.Rows
-	// ineternalPos is an internal integer Position for the Snapshotter to
+	// ineternalPos is an internal integer Position for the SnapshotIterator to
 	// to return at each Read call.
 	internalPos int64
 	// snapshotComplete keeps an internal record of whether the snapshot is
@@ -62,14 +63,14 @@ type Snapshotter struct {
 	snapshotComplete bool
 }
 
-// NewSnapshotter returns a Snapshotter that is an Iterator.
-// * NewSnapshotter attempts to load the sql rows into the Snapshotter and will
+// NewSnapshotIterator returns a SnapshotIterator that is an Iterator.
+// * NewSnapshotIterator attempts to load the sql rows into the SnapshotIterator and will
 // immediately begin to return them to subsequent Read calls.
 // * It acquires a read only transaction lock before reading the table.
 // * If Teardown is called while a snpashot is in progress, it will return an
 // ErrSnapshotInterrupt error.
-func NewSnapshotter(ctx context.Context, conn *pgx.Conn, table string, columns []string, key string) (*Snapshotter, error) {
-	s := &Snapshotter{
+func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, table string, columns []string, key string) (*SnapshotIterator, error) {
+	s := &SnapshotIterator{
 		conn:             conn,
 		table:            table,
 		columns:          columns,
@@ -77,7 +78,7 @@ func NewSnapshotter(ctx context.Context, conn *pgx.Conn, table string, columns [
 		internalPos:      0,
 		snapshotComplete: false,
 	}
-	// load our initial set of rows into the snapshotter after we've set the db
+	// load our initial set of rows into the iterator after we've set the db
 	err := s.loadRows(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get rows for snapshot: %w", err)
@@ -86,11 +87,11 @@ func NewSnapshotter(ctx context.Context, conn *pgx.Conn, table string, columns [
 }
 
 // HasNext returns whether s.rows has another row.
-// * It must be called before Snapshotter#Next is or else it will fail.
-// * It increments the interal position if another row exists.
+// * It must be called before SnapshotIterator#Next is or else it will fail.
+// * It increments the internal position if another row exists.
 // * If HasNext is called and no rows are available, it will mark the snapshot
 // as complete and then returns.
-func (s *Snapshotter) HasNext() bool {
+func (s *SnapshotIterator) HasNext() bool {
 	next := s.rows.Next()
 	if !next {
 		s.snapshotComplete = true
@@ -100,10 +101,10 @@ func (s *Snapshotter) HasNext() bool {
 	return next
 }
 
-// Next returns the next row in the snapshotter's rows.
+// Next returns the next row in the iterators rows.
 // * If Next is called after HasNext has returned false, it will
 // return an ErrNoRows error.
-func (s *Snapshotter) Next(ctx context.Context) (sdk.Record, error) {
+func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 	if s.snapshotComplete {
 		return sdk.Record{}, ErrNoRows
 	}
@@ -122,14 +123,19 @@ func (s *Snapshotter) Next(ctx context.Context) (sdk.Record, error) {
 	return rec, nil
 }
 
-// Teardown cleans up the database snapshotter by committing and closing the
+// Ack is here to implement the Iterator interface, it does nothing.
+func (s *SnapshotIterator) Ack(context.Context, sdk.Position) error {
+	return nil // acks not needed
+}
+
+// Teardown cleans up the database iterator by committing and closing the
 // connection to sql.Rows
 // * If the snapshot is not complete yet, it will return an ErrSnpashotInterrupt
 // * Teardown must be called by the caller, it will not automatically be called
 // when the snapshot is completed.
 // * Teardown handles all of its manual cleanup first then calls cancel to
 // stop any unhandled contexts that we've received.
-func (s *Snapshotter) Teardown(ctx context.Context) error {
+func (s *SnapshotIterator) Teardown(ctx context.Context) error {
 	// throw interrupt error if we're not finished with snapshot
 	var interruptErr error
 	if !s.snapshotComplete {
@@ -143,11 +149,11 @@ func (s *Snapshotter) Teardown(ctx context.Context) error {
 	return interruptErr
 }
 
-// loadRows loads the rows returned from the database onto the snapshotter
+// loadRows loads the rows returned from the database onto the iterator
 // or returns an error.
 // * It returns nil if no error was detected.
 // * rows.Close and rows.Err are called at Teardown.
-func (s *Snapshotter) loadRows(ctx context.Context) error {
+func (s *SnapshotIterator) loadRows(ctx context.Context) error {
 	query, args, err := psql.Select(s.columns...).From(s.table).ToSql()
 	if err != nil {
 		return fmt.Errorf("failed to create read query: %w", err)
@@ -192,7 +198,7 @@ func withPayload(rec sdk.Record, rows pgx.Rows, columns []string, key string) (s
 	// make a new slice of correct pgtypes to scan into
 	vals := make([]interface{}, len(columns))
 	for i := range columns {
-		vals[i] = scannerValue(pgtype.OID(colTypes[i].DataTypeOID))
+		vals[i] = oidToScannerValue(pgtype.OID(colTypes[i].DataTypeOID))
 	}
 
 	// build the payload from the row
@@ -219,153 +225,16 @@ func withPayload(rec sdk.Record, rows pgx.Rows, columns []string, key string) (s
 	return rec, nil
 }
 
-type ScannerValue interface {
+type scannerValue interface {
 	pgtype.Value
 	sql.Scanner
 }
 
-func scannerValue(oid pgtype.OID) ScannerValue {
-	switch oid {
-	case pgtype.BoolOID:
-		return &pgtype.Bool{}
-	case pgtype.ByteaOID:
-		return &pgtype.Bytea{}
-	case pgtype.NameOID:
-		return &pgtype.Name{}
-	case pgtype.Int8OID:
-		return &pgtype.Int8{}
-	case pgtype.Int2OID:
-		return &pgtype.Int2{}
-	case pgtype.Int4OID:
-		return &pgtype.Int4{}
-	case pgtype.TextOID:
-		return &pgtype.Text{}
-	case pgtype.TIDOID:
-		return &pgtype.TID{}
-	case pgtype.XIDOID:
-		return &pgtype.XID{}
-	case pgtype.CIDOID:
-		return &pgtype.CID{}
-	case pgtype.JSONOID:
-		return &pgtype.JSON{}
-	case pgtype.PointOID:
-		return &pgtype.Point{}
-	case pgtype.LsegOID:
-		return &pgtype.Lseg{}
-	case pgtype.PathOID:
-		return &pgtype.Path{}
-	case pgtype.BoxOID:
-		return &pgtype.Box{}
-	case pgtype.PolygonOID:
-		return &pgtype.Polygon{}
-	case pgtype.LineOID:
-		return &pgtype.Line{}
-	case pgtype.CIDRArrayOID:
-		return &pgtype.CIDRArray{}
-	case pgtype.Float4OID:
-		return &pgtype.Float4{}
-	case pgtype.Float8OID:
-		return &pgtype.Float8{}
-	case pgtype.CircleOID:
-		return &pgtype.Circle{}
-	case pgtype.UnknownOID:
-		return &pgtype.Unknown{}
-	case pgtype.MacaddrOID:
-		return &pgtype.Macaddr{}
-	case pgtype.InetOID:
-		return &pgtype.Inet{}
-	case pgtype.BoolArrayOID:
-		return &pgtype.BoolArray{}
-	case pgtype.Int2ArrayOID:
-		return &pgtype.Int2Array{}
-	case pgtype.Int4ArrayOID:
-		return &pgtype.Int4Array{}
-	case pgtype.TextArrayOID:
-		return &pgtype.TextArray{}
-	case pgtype.ByteaArrayOID:
-		return &pgtype.ByteaArray{}
-	case pgtype.BPCharArrayOID:
-		return &pgtype.BPCharArray{}
-	case pgtype.VarcharArrayOID:
-		return &pgtype.VarcharArray{}
-	case pgtype.Int8ArrayOID:
-		return &pgtype.Int8Array{}
-	case pgtype.Float4ArrayOID:
-		return &pgtype.Float4Array{}
-	case pgtype.Float8ArrayOID:
-		return &pgtype.Float8Array{}
-	case pgtype.ACLItemOID:
-		return &pgtype.ACLItem{}
-	case pgtype.ACLItemArrayOID:
-		return &pgtype.ACLItemArray{}
-	case pgtype.InetArrayOID:
-		return &pgtype.InetArray{}
-	case pgtype.BPCharOID:
-		return &pgtype.BPChar{}
-	case pgtype.VarcharOID:
-		return &pgtype.Varchar{}
-	case pgtype.DateOID:
-		return &pgtype.Date{}
-	case pgtype.TimeOID:
-		return &pgtype.Time{}
-	case pgtype.TimestampOID:
-		return &pgtype.Timestamp{}
-	case pgtype.TimestampArrayOID:
-		return &pgtype.TimestampArray{}
-	case pgtype.DateArrayOID:
-		return &pgtype.DateArray{}
-	case pgtype.TimestamptzOID:
-		return &pgtype.Timestamptz{}
-	case pgtype.TimestamptzArrayOID:
-		return &pgtype.TimestamptzArray{}
-	case pgtype.IntervalOID:
-		return &pgtype.Interval{}
-	case pgtype.NumericArrayOID:
-		return &pgtype.NumericArray{}
-	case pgtype.BitOID:
-		return &pgtype.Bit{}
-	case pgtype.VarbitOID:
-		return &pgtype.Varbit{}
-	case pgtype.NumericOID:
-		return &pgtype.Numeric{}
-	case pgtype.UUIDOID:
-		return &pgtype.UUID{}
-	case pgtype.UUIDArrayOID:
-		return &pgtype.UUIDArray{}
-	case pgtype.JSONBOID:
-		return &pgtype.JSONB{}
-	case pgtype.JSONBArrayOID:
-		return &pgtype.JSONBArray{}
-	case pgtype.DaterangeOID:
-		return &pgtype.Daterange{}
-	case pgtype.Int4rangeOID:
-		return &pgtype.Int4range{}
-	case pgtype.NumrangeOID:
-		return &pgtype.Numrange{}
-	case pgtype.TsrangeOID:
-		return &pgtype.Tsrange{}
-	case pgtype.TsrangeArrayOID:
-		return &pgtype.TsrangeArray{}
-	case pgtype.TstzrangeOID:
-		return &pgtype.Tstzrange{}
-	case pgtype.TstzrangeArrayOID:
-		return &pgtype.TstzrangeArray{}
-	case pgtype.Int8rangeOID:
-		return &pgtype.Int8range{}
-	case pgtype.CIDROID:
-		// pgtype.CIDROID does not implement the Scanner interface
-		return &pgtype.Unknown{}
-	case pgtype.QCharOID:
-		// Not all possible values of QChar are representable in the text format
-		return &pgtype.Unknown{}
-	case pgtype.OIDOID:
-		// pgtype.OID does not implement the value interface
-		return &pgtype.Unknown{}
-	case pgtype.RecordOID:
-		// The text format output format for Records does not include type
-		// information and is therefore impossible to decode
-		return &pgtype.Unknown{}
-	default:
+func oidToScannerValue(oid pgtype.OID) scannerValue {
+	t, ok := pgutil.OIDToPgType(oid).(scannerValue)
+	if !ok {
+		// not all pg types implement pgtype.Value and sql.Scanner
 		return &pgtype.Unknown{}
 	}
+	return t
 }

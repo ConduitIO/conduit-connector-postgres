@@ -18,20 +18,22 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/conduitio/conduit-connector-postgres/source/cdc"
-	"github.com/conduitio/conduit-connector-postgres/source/snapshot"
+	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
+	"github.com/conduitio/conduit-connector-postgres/source/longpoll"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v4"
 )
 
-var _ Strategy = (*cdc.Iterator)(nil)
-var _ Strategy = (*snapshot.Snapshotter)(nil)
+var (
+	_ Iterator = (*logrepl.CDCIterator)(nil)
+	_ Iterator = (*longpoll.SnapshotIterator)(nil)
+)
 
 // Source implements the new transition to the new plugin SDK for Postgres.
 type Source struct {
 	sdk.UnimplementedSource
 
-	iterator Strategy
+	iterator Iterator
 	config   Config
 	conn     *pgx.Conn
 }
@@ -57,20 +59,19 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 
 	switch s.config.Mode {
 	case ModeSnapshot:
-		snap, err := snapshot.NewSnapshotter(
+		snap, err := longpoll.NewSnapshotIterator(
 			ctx,
 			s.conn,
 			s.config.Table,
 			s.config.Columns,
 			s.config.Key)
 		if err != nil {
-			return fmt.Errorf("failed to create snapshotter: %w", err)
+			return fmt.Errorf("failed to create long polling iterator: %w", err)
 		}
 		s.iterator = snap
 	default:
-		i, err := cdc.NewCDCIterator(ctx, s.conn, cdc.Config{
+		i, err := logrepl.NewCDCIterator(ctx, s.conn, logrepl.Config{
 			Position:        pos,
-			URL:             s.config.URL,
 			SlotName:        s.config.SlotName,
 			PublicationName: s.config.PublicationName,
 			TableName:       s.config.Table,
@@ -78,7 +79,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			Columns:         s.config.Columns,
 		})
 		if err != nil {
-			return fmt.Errorf("failed to create CDC iterator: %w", err)
+			return fmt.Errorf("failed to create logical replication iterator: %w", err)
 		}
 		s.iterator = i
 	}
@@ -89,8 +90,8 @@ func (s *Source) Read(ctx context.Context) (sdk.Record, error) {
 	return s.iterator.Next(ctx)
 }
 
-func (s *Source) Ack(context.Context, sdk.Position) error {
-	return nil
+func (s *Source) Ack(ctx context.Context, pos sdk.Position) error {
+	return s.iterator.Ack(ctx, pos)
 }
 
 func (s *Source) Teardown(ctx context.Context) error {

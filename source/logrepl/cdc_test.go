@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package cdc
+package logrepl
 
 import (
 	"context"
@@ -44,6 +44,9 @@ func TestIterator_Next(t *testing.T) {
 		is.NoErr(i.Teardown(ctx))
 	})
 
+	// give replication some time to start
+	time.Sleep(time.Second)
+
 	tests := []struct {
 		name       string
 		setupQuery string
@@ -62,6 +65,7 @@ func TestIterator_Next(t *testing.T) {
 					"action": "insert",
 				},
 				Payload: sdk.StructuredData{
+					"id":      int64(6),
 					"column1": "bizz",
 					"column2": int32(456),
 					"column3": false,
@@ -82,6 +86,7 @@ func TestIterator_Next(t *testing.T) {
 					"action": "update",
 				},
 				Payload: sdk.StructuredData{
+					"id":      int64(1),
 					"column1": "test cdc updates",
 					"column2": int32(123),
 					"column3": false,
@@ -106,15 +111,13 @@ func TestIterator_Next(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Now()
 
-			go func() {
-				// give replication some time to start
-				time.Sleep(time.Millisecond * 500)
-				query := fmt.Sprintf(tt.setupQuery, table)
-				_, err := pool.Exec(ctx, query)
-				is.NoErr(err)
-			}()
+			// execute change
+			query := fmt.Sprintf(tt.setupQuery, table)
+			_, err := pool.Exec(ctx, query)
+			is.NoErr(err)
 
-			nextCtx, cancel := context.WithTimeout(ctx, time.Second*5)
+			// fetch the change
+			nextCtx, cancel := context.WithTimeout(ctx, time.Second*10)
 			defer cancel()
 			got, err := i.Next(nextCtx)
 			is.NoErr(err)
@@ -130,10 +133,9 @@ func TestIterator_Next(t *testing.T) {
 	}
 }
 
-func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string) *Iterator {
+func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string) *CDCIterator {
 	is := is.New(t)
 	config := Config{
-		URL:             CDCTestURL,
 		TableName:       table,
 		PublicationName: table, // table is random, reuse for publication name
 		SlotName:        table, // table is random, reuse for slot name
@@ -148,8 +150,5 @@ func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table s
 
 	i, err := NewCDCIterator(ctx, conn.Conn(), config)
 	is.NoErr(err)
-	is.Equal(i.config.KeyColumnName, "id")
-	is.Equal([]string{"id", "key", "column1", "column2", "column3"},
-		i.config.Columns)
 	return i
 }

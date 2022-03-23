@@ -12,22 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package source
+package logrepl
 
 import (
-	"context"
-
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/jackc/pglogrepl"
 )
 
-// Iterator defines an iterator interface that all Iterators must fulfill.
-// It iterates over a first in first out queue.
-type Iterator interface {
-	// Next pops off the next record in the queue or an error.
-	Next(context.Context) (sdk.Record, error)
-	// Ack signals that a record at a specific position was successfully
-	// processed.
-	Ack(context.Context, sdk.Position) error
-	// Teardown attempts to gracefully teardown the queue.
-	Teardown(context.Context) error
+func LSNToPosition(lsn pglogrepl.LSN) sdk.Position {
+	return sdk.Position(lsn.String())
+}
+
+func PositionToLSN(pos sdk.Position) (pglogrepl.LSN, error) {
+	return pglogrepl.ParseLSN(string(pos))
 }
