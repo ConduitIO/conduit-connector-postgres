@@ -88,7 +88,7 @@ func (h *CDCHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogr
 	case *pglogrepl.DeleteMessage:
 		err := h.handleDelete(ctx, m, lsn)
 		if err != nil {
-			return fmt.Errorf("logrepl handler update: %w", err)
+			return fmt.Errorf("logrepl handler delete: %w", err)
 		}
 	}
 
