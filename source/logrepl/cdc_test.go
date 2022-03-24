@@ -12,42 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package cdc
+package logrepl
 
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/matryer/is"
-)
-
-const (
-	// CDCTestURL is the URI for the _logical replication_ server and user.
-	// This is separate from the DB_URL used above since it requires a different
-	// user and permissions for replication.
-	CDCTestURL = "postgres://repmgr:repmgrmeroxa@localhost:5432/meroxadb?sslmode=disable"
 )
 
 func TestIterator_Next(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
 
-	conn, err := pgx.Connect(ctx, CDCTestURL)
-	is.NoErr(err)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupTestTable(ctx, t, pool)
+	i := testIterator(ctx, t, pool, table)
 	t.Cleanup(func() {
-		is.NoErr(conn.Close(ctx))
+		is.NoErr(i.Teardown(ctx))
 	})
 
-	table := setupTestTable(t, conn)
-	i := testIterator(ctx, t, table)
-	t.Cleanup(func() {
-		is.NoErr(i.Teardown())
-	})
+	// wait for subscription to be ready
+	<-i.sub.Ready()
 
 	tests := []struct {
 		name       string
@@ -67,9 +58,11 @@ func TestIterator_Next(t *testing.T) {
 					"action": "insert",
 				},
 				Payload: sdk.StructuredData{
+					"id":      int64(6),
 					"column1": "bizz",
 					"column2": int32(456),
 					"column3": false,
+					"key":     nil,
 				},
 			},
 		},
@@ -86,6 +79,7 @@ func TestIterator_Next(t *testing.T) {
 					"action": "update",
 				},
 				Payload: sdk.StructuredData{
+					"id":      int64(1),
 					"column1": "test cdc updates",
 					"column2": int32(123),
 					"column3": false,
@@ -110,11 +104,13 @@ func TestIterator_Next(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Now()
 
+			// execute change
 			query := fmt.Sprintf(tt.setupQuery, table)
-			_, err := conn.Exec(ctx, query)
+			_, err := pool.Exec(ctx, query)
 			is.NoErr(err)
 
-			nextCtx, cancel := context.WithTimeout(ctx, time.Second*5)
+			// fetch the change
+			nextCtx, cancel := context.WithTimeout(ctx, time.Second*10)
 			defer cancel()
 			got, err := i.Next(nextCtx)
 			is.NoErr(err)
@@ -130,56 +126,22 @@ func TestIterator_Next(t *testing.T) {
 	}
 }
 
-func testIterator(ctx context.Context, t *testing.T, table string) *Iterator {
+func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string) *CDCIterator {
 	is := is.New(t)
 	config := Config{
-		URL:             CDCTestURL,
 		TableName:       table,
 		PublicationName: table, // table is random, reuse for publication name
 		SlotName:        table, // table is random, reuse for slot name
 	}
-	i, err := NewCDCIterator(ctx, config)
+
+	// acquire connection for the time of the test
+	conn, err := pool.Acquire(ctx)
 	is.NoErr(err)
-	is.Equal(i.config.KeyColumnName, "id")
-	is.Equal([]string{"id", "key", "column1", "column2", "column3"},
-		i.config.Columns)
-	return i
-}
-
-// setupTestTable creates a new table
-func setupTestTable(t *testing.T, conn *pgx.Conn) string {
-	ctx := context.Background()
-	is := is.New(t)
-
-	table := fmt.Sprintf("conduit_%v_%d", strings.ToLower(t.Name()), time.Now().UnixMicro()%1000)
-
-	query := `
-		CREATE TABLE %s (
-		id bigserial PRIMARY KEY,
-		key bytea,
-		column1 varchar(256),
-		column2 integer,
-		column3 boolean)`
-	query = fmt.Sprintf(query, table)
-	_, err := conn.Exec(ctx, query)
-	is.NoErr(err)
-
 	t.Cleanup(func() {
-		query := `DROP TABLE %s`
-		query = fmt.Sprintf(query, table)
-		_, err := conn.Exec(ctx, query)
-		is.NoErr(err)
+		conn.Release()
 	})
 
-	query = `
-		INSERT INTO %s (key, column1, column2, column3)
-		VALUES ('1', 'foo', 123, false),
-		('2', 'bar', 456, true),
-		('3', 'baz', 789, false),
-		('4', null, null, null)`
-	query = fmt.Sprintf(query, table)
-	_, err = conn.Exec(ctx, query)
+	i, err := NewCDCIterator(ctx, conn.Conn(), config)
 	is.NoErr(err)
-
-	return table
+	return i
 }

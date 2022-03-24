@@ -16,24 +16,26 @@ package source
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 
-	"github.com/conduitio/conduit-connector-postgres/source/cdc"
-	"github.com/conduitio/conduit-connector-postgres/source/snapshot"
+	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
+	"github.com/conduitio/conduit-connector-postgres/source/longpoll"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/jackc/pgx/v4"
 )
 
-var _ Strategy = (*cdc.Iterator)(nil)
-var _ Strategy = (*snapshot.Snapshotter)(nil)
+var (
+	_ Iterator = (*logrepl.CDCIterator)(nil)
+	_ Iterator = (*longpoll.SnapshotIterator)(nil)
+)
 
-// Source implements the new transition to the new plugin SDK for Postgres.
+// Source is a Postgres source plugin.
 type Source struct {
 	sdk.UnimplementedSource
 
-	Iterator Strategy
-
-	config Config
+	iterator Iterator
+	config   Config
+	conn     *pgx.Conn
 }
 
 func NewSource() sdk.Source {
@@ -49,50 +51,79 @@ func (s *Source) Configure(ctx context.Context, cfgRaw map[string]string) error 
 	return nil
 }
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
-	switch s.config.Mode {
-	case ModeSnapshot:
-		db, err := sql.Open("postgres", s.config.URL)
-		if err != nil {
-			return fmt.Errorf("failed to connect to database: %w", err)
+	conn, err := pgx.Connect(ctx, s.config.URL)
+	if err != nil {
+		return fmt.Errorf("failed to connect to database: %w", err)
+	}
+	s.conn = conn
+
+	switch s.config.CDCMode {
+	case CDCModeAuto:
+		// TODO add logic that checks if the DB supports logical replication and
+		//  switches to long polling if it's not. For now use logical replication
+		fallthrough
+	case CDCModeLogrepl:
+		if s.config.SnapshotMode == SnapshotModeInitial {
+			// TODO create snapshot iterator for logical replication and pass
+			//  the snapshot mode in the config
+			sdk.Logger(ctx).Warn().Msg("snapshot not supported in logical replication mode")
 		}
-		snap, err := snapshot.NewSnapshotter(
-			db,
-			s.config.Table,
-			s.config.Columns,
-			s.config.Key)
-		if err != nil {
-			return fmt.Errorf("failed to open snapshotter: %w", err)
-		}
-		s.Iterator = snap
-	default:
-		i, err := cdc.NewCDCIterator(ctx, cdc.Config{
+
+		i, err := logrepl.NewCDCIterator(ctx, s.conn, logrepl.Config{
 			Position:        pos,
-			URL:             s.config.URL,
-			SlotName:        s.config.SlotName,
-			PublicationName: s.config.PublicationName,
+			SlotName:        s.config.LogreplSlotName,
+			PublicationName: s.config.LogreplPublicationName,
 			TableName:       s.config.Table,
 			KeyColumnName:   s.config.Key,
 			Columns:         s.config.Columns,
 		})
 		if err != nil {
-			return fmt.Errorf("failed to open cdc connection: %w", err)
+			return fmt.Errorf("failed to create logical replication iterator: %w", err)
 		}
-		s.Iterator = i
+		s.iterator = i
+	case CDCModeLongPolling:
+		sdk.Logger(ctx).Warn().Msg("long polling not supported yet, only snapshot is supported")
+		if s.config.SnapshotMode != SnapshotModeInitial {
+			// TODO create long polling iterator and pass snapshot mode in the config
+			sdk.Logger(ctx).Warn().Msg("snapshot disabled, can't do anything right now")
+			return sdk.ErrUnimplemented
+		}
+
+		snap, err := longpoll.NewSnapshotIterator(
+			ctx,
+			s.conn,
+			s.config.Table,
+			s.config.Columns,
+			s.config.Key)
+		if err != nil {
+			return fmt.Errorf("failed to create long polling iterator: %w", err)
+		}
+		s.iterator = snap
+	default:
+		// shouldn't happen, config was validated
+		return fmt.Errorf("%q contains unsupported value %q, expected one of %v", ConfigKeyCDCMode, s.config.CDCMode, cdcModeAll)
 	}
 	return nil
 }
 
 func (s *Source) Read(ctx context.Context) (sdk.Record, error) {
-	return s.Iterator.Next(ctx)
+	return s.iterator.Next(ctx)
 }
 
-func (s *Source) Ack(context.Context, sdk.Position) error {
-	return nil
+func (s *Source) Ack(ctx context.Context, pos sdk.Position) error {
+	return s.iterator.Ack(ctx, pos)
 }
 
-func (s *Source) Teardown(context.Context) error {
-	if s.Iterator == nil {
-		return nil
+func (s *Source) Teardown(ctx context.Context) error {
+	if s.iterator != nil {
+		if err := s.iterator.Teardown(ctx); err != nil {
+			return fmt.Errorf("failed to tear down iterator: %w", err)
+		}
 	}
-	return s.Iterator.Teardown()
+	if s.conn != nil {
+		if err := s.conn.Close(ctx); err != nil {
+			return fmt.Errorf("failed to close DB connection: %w", err)
+		}
+	}
+	return nil
 }
