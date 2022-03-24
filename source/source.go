@@ -29,7 +29,7 @@ var (
 	_ Iterator = (*longpoll.SnapshotIterator)(nil)
 )
 
-// Source implements the new transition to the new plugin SDK for Postgres.
+// Source is a Postgres source plugin.
 type Source struct {
 	sdk.UnimplementedSource
 

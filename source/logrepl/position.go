@@ -19,10 +19,12 @@ import (
 	"github.com/jackc/pglogrepl"
 )
 
+// LSNToPosition converts a Postgres LSN to a Conduit position.
 func LSNToPosition(lsn pglogrepl.LSN) sdk.Position {
 	return sdk.Position(lsn.String())
 }
 
+// PositionToLSN converts a Conduit position to a Postgres LSN.
 func PositionToLSN(pos sdk.Position) (pglogrepl.LSN, error) {
 	return pglogrepl.ParseLSN(string(pos))
 }

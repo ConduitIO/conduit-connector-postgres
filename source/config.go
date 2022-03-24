@@ -55,15 +55,21 @@ type Config struct {
 type SnapshotMode string
 
 const (
+	// SnapshotModeInitial creates a snapshot in the first run of the pipeline.
 	SnapshotModeInitial SnapshotMode = "initial"
-	SnapshotModeNever   SnapshotMode = "never"
+	// SnapshotModeNever skips snapshot creation altogether.
+	SnapshotModeNever SnapshotMode = "never"
 )
 
 type CDCMode string
 
 const (
-	CDCModeAuto        CDCMode = "auto"
-	CDCModeLogrepl     CDCMode = "logrepl"
+	// CDCModeAuto tries to set up logical replication and falls back to long
+	// polling if that is impossible.
+	CDCModeAuto CDCMode = "auto"
+	// CDCModeLogrepl uses logical replication to listen to changes.
+	CDCModeLogrepl CDCMode = "logrepl"
+	// CDCModeLongPolling uses long polling to listen to changes.
 	CDCModeLongPolling CDCMode = "long_polling"
 )
 

@@ -33,6 +33,8 @@ var (
 	actionDelete action = "delete"
 )
 
+// CDCHandler is responsible for handling logical replication messages,
+// converting them to a record and sending them to a channel.
 type CDCHandler struct {
 	keyColumn   string
 	columns     map[string]bool // columns can be used to filter only specific columns
@@ -61,6 +63,7 @@ func NewCDCHandler(
 	}
 }
 
+// Handle is the handler function that receives all logical replication messages.
 func (h *CDCHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogrepl.LSN) error {
 	sdk.Logger(ctx).Trace().
 		Str("lsn", lsn.String()).
@@ -92,8 +95,8 @@ func (h *CDCHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogr
 	return nil
 }
 
-// handleInsert formats a Record with INSERT event data from Postgres and
-// inserts it into the records buffer for later reading.
+// handleInsert formats a Record with INSERT event data from Postgres and sends
+// it to the output channel.
 func (h *CDCHandler) handleInsert(
 	ctx context.Context,
 	msg *pglogrepl.InsertMessage,
@@ -113,8 +116,8 @@ func (h *CDCHandler) handleInsert(
 	return h.send(ctx, rec)
 }
 
-// handleUpdate formats a record with a UPDATE event data from Postgres and
-// inserts it into the records buffer for later reading.
+// handleUpdate formats a record with UPDATE event data from Postgres and sends
+// it to the output channel.
 func (h *CDCHandler) handleUpdate(
 	ctx context.Context,
 	msg *pglogrepl.UpdateMessage,
@@ -134,8 +137,8 @@ func (h *CDCHandler) handleUpdate(
 	return h.send(ctx, rec)
 }
 
-// handleDelete formats a record with a delete event data from Postgres.
-// delete events only send along the primary key of the table.
+// handleDelete formats a record with DELETE event data from Postgres and sends
+// it to the output channel. Deleted records only contain the key and no payload.
 func (h *CDCHandler) handleDelete(
 	ctx context.Context,
 	msg *pglogrepl.DeleteMessage,
@@ -158,6 +161,8 @@ func (h *CDCHandler) handleDelete(
 	return h.send(ctx, rec)
 }
 
+// send the record to the output channel or detect the cancellation of the
+// context and return the context error.
 func (h *CDCHandler) send(ctx context.Context, rec sdk.Record) error {
 	select {
 	case <-ctx.Done():
@@ -167,6 +172,7 @@ func (h *CDCHandler) send(ctx context.Context, rec sdk.Record) error {
 	}
 }
 
+// buildRecord parses the postgres values and returns a record.
 func (h *CDCHandler) buildRecord(
 	action action,
 	relation *pglogrepl.RelationMessage,
@@ -185,8 +191,8 @@ func (h *CDCHandler) buildRecord(
 	}
 }
 
-// withKey takes the values from the message and extracts a key that matches
-// the configured keyColumnName.
+// buildRecordKey takes the values from the message and extracts the key that
+// matches the configured keyColumnName.
 func (h *CDCHandler) buildRecordKey(values map[string]pgtype.Value) sdk.Data {
 	key := sdk.StructuredData{}
 	for k, v := range values {
@@ -197,8 +203,8 @@ func (h *CDCHandler) buildRecordKey(values map[string]pgtype.Value) sdk.Data {
 	return key
 }
 
-// withPayload takes a record and a map of values and formats a payload for
-// the record and then returns the record with that payload attached.
+// buildRecordPayload takes the values from the message and extracts the payload
+// for the record.
 func (h *CDCHandler) buildRecordPayload(values map[string]pgtype.Value) sdk.Data {
 	payload := sdk.StructuredData{}
 	for k, v := range values {
