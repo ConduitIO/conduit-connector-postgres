@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -175,7 +174,6 @@ func (d *Destination) upsert(ctx context.Context, r sdk.Record) error {
 }
 
 func (d *Destination) remove(ctx context.Context, r sdk.Record) error {
-	log.Printf("REMOVE HIT - %v", r)
 	key, err := getKey(r)
 	if err != nil {
 		return err
@@ -192,8 +190,6 @@ func (d *Destination) remove(ctx context.Context, r sdk.Record) error {
 	if err != nil {
 		return fmt.Errorf("error formatting insert query: %w", err)
 	}
-	log.Printf("QUERY: %v", query)
-	log.Printf("ARGS: %v", args)
 	_, err = d.conn.Exec(ctx, query, args...)
 	return err
 }
@@ -334,7 +330,8 @@ func (d *Destination) getTableName(metadata map[string]string) (string, error) {
 	return tableName, nil
 }
 
-// getKeyColumnName will return the name of the first item in the key.
+// getKeyColumnName will return the name of the first item in the key or the
+// connector-configured default name of the key column name.
 func getKeyColumnName(key sdk.StructuredData, defaultKeyName string) string {
 	if len(key) > 1 {
 		// Go maps aren't order preserving, so anything over len 1 will have
