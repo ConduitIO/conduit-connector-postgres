@@ -23,7 +23,7 @@ body:
   - type: input
     attributes:
       label: Version
-      description: "Version of the Conduit connector as well as version of the Kafka connector you're using."
+      description: "Version of the Conduit connector as well as version of the Postgres connector you're using."
       placeholder: v0.1.0
     validations:
       required: true
