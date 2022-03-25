@@ -1,2 +1,4 @@
 # Binary built with `make build`
 /conduit-connector-postgres
+.DS_Store
+.idea/
