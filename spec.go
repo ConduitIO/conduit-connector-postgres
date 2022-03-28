@@ -57,12 +57,12 @@ func Specification() sdk.Specification {
 				Required:    false,
 				Description: "The column name used to populate record Keys. If no key is specified, the connector will attempt to lookup the table's primary key column. If no primary key column is found, then the source will return an error.",
 			},
-			"publication_name": {
+			"logrepl.publicationName": {
 				Default:     "conduitpub",
 				Required:    false,
 				Description: "Determines which publication the CDC iterator consumes.",
 			},
-			"slot_name": {
+			"logrepl.slotName": {
 				Default:     "conduitslot",
 				Required:    false,
 				Description: "Determines which replication slot the CDC iterator uses.",

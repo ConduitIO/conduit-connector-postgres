@@ -114,13 +114,13 @@ func TestParseConfig(t *testing.T) {
 		setupGiven: func(cfg map[string]string) {
 			cfg[ConfigKeySnapshotMode] = "invalid"
 		},
-		wantErr: errors.New(`"snapshot_mode" contains unsupported value "invalid", expected one of [initial never]`),
+		wantErr: errors.New(`"snapshotMode" contains unsupported value "invalid", expected one of [initial never]`),
 	}, {
 		name: "cdc mode = invalid",
 		setupGiven: func(cfg map[string]string) {
 			cfg[ConfigKeyCDCMode] = "invalid"
 		},
-		wantErr: errors.New(`"cdc_mode" contains unsupported value "invalid", expected one of [auto logrepl long_polling]`),
+		wantErr: errors.New(`"cdcMode" contains unsupported value "invalid", expected one of [auto logrepl long_polling]`),
 	}}
 
 	for _, tc := range testCases {
