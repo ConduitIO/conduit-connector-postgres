@@ -358,7 +358,7 @@ func (s *Subscription) createReplicationSlot(ctx context.Context, conn *pgconn.P
 func (s *Subscription) startReplication(ctx context.Context, conn *pgconn.PgConn) error {
 	pluginArgs := []string{
 		`"proto_version" '1'`,
-		fmt.Sprintf(`"publication_names" '%s'`, s.Publication),
+		fmt.Sprintf(`"logrepl.publicationName" '%s'`, s.Publication),
 	}
 
 	if err := pglogrepl.StartReplication(

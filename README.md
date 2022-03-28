@@ -45,8 +45,8 @@ Example configuration for CDC features:
 ```json
 {
  "mode": "cdc",
- "publication_name": "meroxademo",
- "slot_name": "meroxademo",
+ "logrepl.publicationName": "meroxademo",
+ "logrepl.slotName": "meroxademo",
  "url": "url",
  "key": "key",
  "table": "records",
@@ -73,16 +73,16 @@ column names for the configured table and set them in memory.
 
 ## Configuration Options
 
-| name             | description                                                                                                                                                    | required             | default                |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- | ---------------------- |
-| table            | the name of the table in Postgres that the connector should read                                                                                               | yes                  | n/a                    |
-| url              | formatted connection string to the database.                                                                                                                   | yes                  | n/a                    |
-| columns          | comma separated string list of column names that should be built in to each Record's payload.                                                                  | no                   | (all columns)          |
-| key              | column name that records should use for their `Key` fields. defaults to the column's primary key if nothing is specified                                       | no                   | (primary key of table) |
-| snapshot_mode    | whether or not the plugin will take a snapshot of the entire table acquiring a read level lock before starting cdc mode (allowed values: `initial` or `never`) | no                   | `initial`              |
-| cdc_mode         | determines the CDC mode (allowed values: `auto`, `logrepl` or `long_polling`)                                                                                  | no                   | `auto`                 |
-| publication_name | name of the publication to listen for WAL events                                                                                                               | no                   | `conduitpub`           |
-| slot_name        | name of the slot opened for replication events                                                                                                                 | no                   | `conduitslot`          |
+| name                    | description                                                                                                                                                    | required             | default                |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- | ---------------------- |
+| table                   | the name of the table in Postgres that the connector should read                                                                                               | yes                  | n/a                    |
+| url                     | formatted connection string to the database.                                                                                                                   | yes                  | n/a                    |
+| columns                 | comma separated string list of column names that should be built in to each Record's payload.                                                                  | no                   | (all columns)          |
+| key                     | column name that records should use for their `Key` fields. defaults to the column's primary key if nothing is specified                                       | no                   | (primary key of table) |
+| snapshotMode            | whether or not the plugin will take a snapshot of the entire table acquiring a read level lock before starting cdc mode (allowed values: `initial` or `never`) | no                   | `initial`              |
+| cdcMode                 | determines the CDC mode (allowed values: `auto`, `logrepl` or `long_polling`)                                                                                  | no                   | `auto`                 |
+| logrepl.publicationName | name of the publication to listen for WAL events                                                                                                               | no                   | `conduitpub`           |
+| logrepl.slotName        | name of the slot opened for replication events                                                                                                                 | no                   | `conduitslot`          |
 
 # Destination 
 The Postgres Destination takes a `record.Record` and parses it into a valid 
