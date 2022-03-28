@@ -54,7 +54,7 @@ func TestAdapter_Write(t *testing.T) {
 					Position: sdk.Position("5"),
 					Metadata: map[string]string{
 						"action": "insert",
-						"table":  "records1",
+						"table":  "keyed",
 					},
 					Key: sdk.StructuredData{
 						"key": "uuid-mimicking-key-1234",
@@ -80,7 +80,7 @@ func TestAdapter_Write(t *testing.T) {
 					Position: sdk.Position("5"),
 					Metadata: map[string]string{
 						"action": "update",
-						"table":  "records1",
+						"table":  "keyed",
 					},
 					Key: sdk.StructuredData{
 						"key": "uuid-mimicking-key-1234",
@@ -93,6 +93,54 @@ func TestAdapter_Write(t *testing.T) {
 				},
 			},
 			wantErr: false,
+		},
+		{
+			name: "insert only on table without key",
+			fields: fields{
+				conn: getTestPostgres(t),
+				config: config{
+					keyColumnName: "",
+				},
+			},
+			args: args{
+				ctx: context.Background(),
+				record: sdk.Record{
+					Position: sdk.Position("28357"),
+					Metadata: map[string]string{
+						"table": "unkeyed",
+					},
+					Key: sdk.StructuredData{
+						"key": "appendonly",
+					},
+					Payload: sdk.StructuredData{
+						"column1": "biz",
+						"column2": 456,
+						"column3": false,
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "update requires key",
+			fields: fields{
+				conn:   getTestPostgres(t),
+				config: config{},
+			},
+			args: args{
+				ctx: context.Background(),
+				record: sdk.Record{
+					Position: sdk.Position("617237"),
+					Metadata: map[string]string{
+						"table":  "keyed",
+						"action": "update",
+					},
+					Payload: sdk.StructuredData{
+						"column1": "foo",
+					},
+				},
+			},
+			wantErr: true,
 		},
 	}
 	for _, tt := range tests {
@@ -111,17 +159,23 @@ func TestAdapter_Write(t *testing.T) {
 func getTestPostgres(t *testing.T) *pgx.Conn {
 	is := is.New(t)
 	prepareDB := []string{
-		`DROP TABLE IF EXISTS records1;`,
-		`CREATE TABLE IF NOT EXISTS records1 (
+		`DROP TABLE IF EXISTS keyed;`,
+		`CREATE TABLE IF NOT EXISTS keyed (
 		key bytea PRIMARY KEY,
 		column1 varchar(256),
 		column2 integer,
 		column3 boolean);`,
-		`INSERT INTO records1(key, column1, column2, column3)
+		`INSERT INTO keyed(key, column1, column2, column3)
 		VALUES('1', 'foo', 123, false),
 		('2', 'bar', 456, true),
 		('3', 'baz', 789, false),
 		('4', null, null, null);`,
+		`DROP TABLE IF EXISTS unkeyed;`,
+		`CREATE TABLE IF NOT EXISTS unkeyed (
+		key bytea,
+		column1 varchar(256),
+		column2 integer,
+		column3 boolean);`,
 	}
 	db, err := pgx.Connect(context.Background(), DBURL)
 	is.NoErr(err)
