@@ -136,7 +136,10 @@ func (d *Destination) handleUpdate(ctx context.Context, r sdk.Record) error {
 }
 
 func (d *Destination) handleDelete(ctx context.Context, r sdk.Record) error {
-	return fmt.Errorf("not impl")
+	if !hasKey(r) {
+		return fmt.Errorf("key must be provided on delete actions")
+	}
+	return d.remove(ctx, r)
 }
 
 func (d *Destination) upsert(ctx context.Context, r sdk.Record) error {
@@ -168,6 +171,27 @@ func (d *Destination) upsert(ctx context.Context, r sdk.Record) error {
 	}
 
 	return nil
+}
+
+func (d *Destination) remove(ctx context.Context, r sdk.Record) error {
+	key, err := getKey(r)
+	if err != nil {
+		return err
+	}
+	keyColumnName := getKeyColumnName(key, d.config.keyColumnName)
+	tableName, err := d.getTableName(r.Metadata)
+	if err != nil {
+		return fmt.Errorf("failed to get table name for write: %w", err)
+	}
+	query, args, err := psql.
+		Delete(tableName).
+		Where(sq.Eq{keyColumnName: key[keyColumnName]}).
+		ToSql()
+	if err != nil {
+		return fmt.Errorf("error formatting delete query: %w", err)
+	}
+	_, err = d.conn.Exec(ctx, query, args...)
+	return err
 }
 
 // insert is an append-only operation that doesn't care about keys, but
@@ -306,7 +330,8 @@ func (d *Destination) getTableName(metadata map[string]string) (string, error) {
 	return tableName, nil
 }
 
-// getKeyColumnName will return the name of the first item in the key.
+// getKeyColumnName will return the name of the first item in the key or the
+// connector-configured default name of the key column name.
 func getKeyColumnName(key sdk.StructuredData, defaultKeyName string) string {
 	if len(key) > 1 {
 		// Go maps aren't order preserving, so anything over len 1 will have
