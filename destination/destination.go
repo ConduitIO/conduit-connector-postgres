@@ -188,7 +188,7 @@ func (d *Destination) remove(ctx context.Context, r sdk.Record) error {
 		Where(sq.Eq{keyColumnName: key[keyColumnName]}).
 		ToSql()
 	if err != nil {
-		return fmt.Errorf("error formatting insert query: %w", err)
+		return fmt.Errorf("error formatting delete query: %w", err)
 	}
 	_, err = d.conn.Exec(ctx, query, args...)
 	return err
