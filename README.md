@@ -1,143 +1,110 @@
-# Conduit PostgreSQL Connectors 
+# Conduit Connector PostgreSQL
 
 # Source
-The Postgres Source Connector connects to a database with the provided `url` and
-then will call `Ping` to test the connection. If the `Ping` fails, the `Open`
-method will fail and the Connector won't be started.
 
-Upon starting, the source takes a snapshot of a given table in the database, 
-then switches into CDC mode. In CDC mode, the plugin reads from a buffer of 
-CDC events.
+The Postgres Source Connector connects to a database with the provided `url` and starts creating records for each change
+detected in a table.
+
+Upon starting, the source takes a snapshot of a given table in the database, then switches into CDC mode. In CDC mode,
+the plugin reads from a buffer of CDC events.
 
 ## Snapshot Capture
-When the connector first starts, snapshot mode is enabled. The connector
-acquires a read-only lock on the table, and then reads all rows of the table 
-into Conduit. Once all of the rows in that initial snapshot are read, then the 
-connector releases its lock and switches into CDC mode. 
 
-This behavior is enabled by default, but can be turned off by adding 
-`"snapshot":"off"` to the Source configuration.
+When the connector first starts, snapshot mode is enabled. The connector acquires a read-only lock on the table, and
+then reads all rows of the table into Conduit. Once all rows in that initial snapshot are read the connector releases
+its lock and switches into CDC mode.
+
+This behavior is enabled by default, but can be turned off by adding `"snapshotMode":"never"` to the Source
+configuration.
 
 ## Change Data Capture
-This connector implements CDC features for PostgreSQL by reading WAL events 
-into a buffer that is checked on each call of `Read` after the initial snapshot
-has occurred. If there is a record in the buffer, it grabs and returns that 
-record. If it's empty, it returns `ErrEndData` signaling that Conduit should 
-backoff-retry.
 
- This behavior is enabled by default, but can be turned off by adding 
- `"cdc": "off"` to the Source configuration.
+This connector implements CDC features for PostgreSQL by creating a logical replication slot and a publication that
+listens to changes in the configured table. Every detected change is converted into a record and returned in the call to
+`Read`. If there is no record available at the moment `Read` is called, it blocks until a record is available or the
+connector receives a stop signal.
 
-### CDC  Configuration
-When the connector switches to CDC mode, it attempts to start all necessary 
-connections and runs the initial setup commands to create its logical 
-replication slots and publications. It will connect to an existing slot if one
-with the configured name exists.
+If logical replication isn't available on the PostgreSQL instance, the connector can be configured to use long polling
+by adding `"cdcMode":"longPolling"` to the Source configuration.
 
-The Postgres user specified in the connection URL must have sufficient 
-privileges to run all of these setup commands or it will fail.
+### Logical Replication Configuration
 
-Publication and slot name are user configurable, and must be correctly set. 
-The plugin will do what it can to be smart about publication and slot 
-management, but it can't handle everything.
+When the connector switches to CDC mode, it attempts to run the initial setup commands to create its logical replication
+slot and publication. It will connect to an existing slot if one with the configured name exists.
+
+The Postgres user specified in the connection URL must have sufficient privileges to run all of these setup commands, or
+it will fail.
 
 Example configuration for CDC features:
+
 ```json
 {
- "mode": "cdc",
- "logrepl.publicationName": "meroxademo",
- "logrepl.slotName": "meroxademo",
- "url": "url",
- "key": "key",
- "table": "records",
- "columns": "key,column1,column2,column3"
+  "url": "url",
+  "key": "key",
+  "table": "records",
+  "columns": "key,column1,column2,column3",
+  "cdcMode": "logrepl",
+  "logrepl.publicationName": "meroxademo",
+  "logrepl.slotName": "meroxademo"
 }
 ```
 
-### CDC Event Buffer
-There is a private variable bufferSize that dictates the size of the channel 
-buffer that holds WAL events. If it's full, pushing to that channel will be a 
-blocking operation, and thus execution will stop if the handler for WAL events 
-cannot push into that buffer. That blocking execution could have unknown 
-negative performance consequences, so we should have this be sufficiently high 
-and possibly configured by environment variable.
-
 ## Key Handling
-If no `key` field is provided, then the connector will attempt to look up the 
-primary key column of the table. If that can't be determined it will error.
+
+If no `key` field is provided, then the connector will attempt to look up the primary key column of the table. If that
+can't be determined it will fail.
 
 ## Columns
-If no column names are provided in the config, then the plugin will assume 
-that all columns in the table should be returned. It will attempt to get the 
-column names for the configured table and set them in memory.
+
+If no column names are provided in the config, then the connector will assume that all columns in the table should be
+returned.
 
 ## Configuration Options
 
-| name                    | description                                                                                                                                                    | required             | default                |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- | ---------------------- |
-| table                   | the name of the table in Postgres that the connector should read                                                                                               | yes                  | n/a                    |
-| url                     | formatted connection string to the database.                                                                                                                   | yes                  | n/a                    |
-| columns                 | comma separated string list of column names that should be built in to each Record's payload.                                                                  | no                   | (all columns)          |
-| key                     | column name that records should use for their `Key` fields. defaults to the column's primary key if nothing is specified                                       | no                   | (primary key of table) |
-| snapshotMode            | whether or not the plugin will take a snapshot of the entire table acquiring a read level lock before starting cdc mode (allowed values: `initial` or `never`) | no                   | `initial`              |
-| cdcMode                 | determines the CDC mode (allowed values: `auto`, `logrepl` or `long_polling`)                                                                                  | no                   | `auto`                 |
-| logrepl.publicationName | name of the publication to listen for WAL events                                                                                                               | no                   | `conduitpub`           |
-| logrepl.slotName        | name of the slot opened for replication events                                                                                                                 | no                   | `conduitslot`          |
+| name                      | description                                                                                                                         | required | default                |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | -------- | ---------------------- |
+| `url`                     | Connection string for the Postgres database.                                                                                        | true     |                        |
+| `table`                   | The name of the table in Postgres that the connector should read.                                                                   | true     |                        |
+| `columns`                 | Comma separated list of column names that should be included in each Record's payload.                                              | false    | (all columns)          |
+| `key`                     | Column name that records should use for their `Key` fields.                                                                         | false    | (primary key of table) |
+| `snapshotMode`            | Whether or not the plugin will take a snapshot of the entire table before starting cdc mode (allowed values: `initial` or `never`). | false    | `initial`              |
+| `cdcMode`                 | Determines the CDC mode (allowed values: `auto`, `logrepl` or `long_polling`).                                                      | false    | `auto`                 |
+| `logrepl.publicationName` | Name of the publication to listen for WAL events.                                                                                   | false    | `conduitpub`           |
+| `logrepl.slotName`        | Name of the slot opened for replication events.                                                                                     | false    | `conduitslot`          |
 
-# Destination 
-The Postgres Destination takes a `record.Record` and parses it into a valid 
-SQL query. The Destination is designed to handle different payloads and keys.
-Because of this, each record is individually parsed and upserted. 
+# Destination
+
+The Postgres Destination takes a `record.Record` and parses it into a valid SQL query. The Destination is designed to
+handle different payloads and keys. Because of this, each record is individually parsed and upserted.
 
 ## Table Name
-Every record must have a `table` property set in its metadata, otherwise it
-will error out. However, because of this, our Destination write can support 
-multiple tables in the same connector provided the user has proper access to 
-those tables.
 
-## Keys
-Keys in the Destination are optional and must be unique if they are set.
+If a record contains a `table` property in its metadata it will be inserted in that table, otherwise it will fall back
+to use the table configured in the connector. This way the Destination can support multiple tables in the same
+connector, provided the user has proper access to those tables.
 
-If a Key is included in a Payload, it will be removed.  This is because the Key 
-is also inserted into the database, so the Payload removes it. 
+## Upsert Behavior
 
-This means a Payload value will be ignored if it's also the Key value.
+If the target table already contains a record with the same key, the Destination will upsert with its current received
+values. Because Keys must be unique, this can overwrite and thus potentially lose data, so keys should be assigned
+correctly from the Source.
 
-### Upsert Behavior
-If there is a conflict on a Key, the Destination will upsert with its current 
-received values. Because Keys must be unique, this can overwrite and thus 
-potentially lose data, so keys should be assigned correctly from the Source.
+If there is no key, the record will be simply appended.
 
 ## Configuration Options
 
-| name | description                                  | required | default |
-| ---- | -------------------------------------------- | -------- | ------- |
-| url  | the connection URI for the Postgres database | yes      | n/a     |
+| name    | description                                                                 | required | default |
+| ------- | --------------------------------------------------------------------------- | -------- | ------- |
+| `url`   | Connection string for the Postgres database.                                | true     |         |
+| `table` | The name of the table in Postgres that the connector should write to.       | false    |         |
+| `key`   | Column name used to detect if the target table already contains the record. | false    |         |
 
-# Testing 
-If you're running the integration tests, you'll need a Postgres database with 
-replication enabled. You can use our docker-compose file that works with the 
-default test settings by running:
+# Testing
 
-```bash
-docker-compose -f ./test/docker-compose.yml up -d
-```
+Run `make test` to run all the unit and integration tests, which require Docker to be installed and running. The command
+will handle starting and stopping docker containers for you.
 
-*Note*: remove the -d flag from either docker-compose command to hold the
-container connection open and watch its logs.
+# References
 
-Once the docker-compose services are running, you can run the integration tests:
-
-```bash
-go test -race -v -timeout 10s --tags=integration ./pkg/plugins/pg/...
-```
-
-Run all connector unit tests:
-```bash
-go test -race -v -timeout 10s ./pkg/plugins/pg/...
-```
-
-# References 
-- https://github.com/batchcorp/pgoutput 
 - https://github.com/bitnami/bitnami-docker-postgresql-repmgr
 - https://github.com/Masterminds/squirrel

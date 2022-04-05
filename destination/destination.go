@@ -56,7 +56,7 @@ func (d *Destination) Configure(ctx context.Context, cfg map[string]string) erro
 	d.config = config{
 		url:           cfg["url"],
 		tableName:     cfg["table"],
-		keyColumnName: cfg["keyColumnName"],
+		keyColumnName: cfg["key"],
 	}
 	return nil
 }
