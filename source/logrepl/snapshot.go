@@ -44,7 +44,7 @@ type SnapshotConfig struct {
 type SnapshotIterator struct {
 	config SnapshotConfig
 
-	conn *pgx.Conn
+	tx   pgx.Tx
 	rows pgx.Rows
 
 	internalPos int64
@@ -53,10 +53,9 @@ type SnapshotIterator struct {
 func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, cfg SnapshotConfig) (*SnapshotIterator, error) {
 	s := &SnapshotIterator{
 		config: cfg,
-		conn:   conn,
 	}
 
-	err := s.startSnapshotTx(ctx)
+	err := s.startSnapshotTx(ctx, conn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start snapshot tx: %w", err)
 	}
@@ -78,7 +77,7 @@ func (s *SnapshotIterator) loadRows(ctx context.Context) error {
 		return fmt.Errorf("failed to create read query: %w", err)
 	}
 
-	rows, err := s.conn.Query(ctx, query, args...)
+	rows, err := s.tx.Query(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("failed to query rows: %w", err)
 	}
@@ -87,14 +86,19 @@ func (s *SnapshotIterator) loadRows(ctx context.Context) error {
 	return nil
 }
 
-func (s *SnapshotIterator) startSnapshotTx(ctx context.Context) error {
-	_, err := s.conn.Exec(ctx, `BEGIN ISOLATION LEVEL REPEATABLE READ;`)
+func (s *SnapshotIterator) startSnapshotTx(ctx context.Context, conn *pgx.Conn) error {
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
 	if err != nil {
-		return nil
+		return err
 	}
 
+	s.tx = tx
+
 	snapshotTx := fmt.Sprintf(`SET TRANSACTION SNAPSHOT '%s'`, s.config.SnapshotName)
-	_, err = s.conn.Exec(ctx, snapshotTx)
+	_, err = tx.Exec(ctx, snapshotTx)
 	if err != nil {
 		return err
 	}
@@ -122,15 +126,7 @@ func (s *SnapshotIterator) Ack(ctx context.Context, pos sdk.Position) error {
 // Teardown attempts to gracefully teardown the iterator.
 func (s *SnapshotIterator) Teardown(ctx context.Context) error {
 	s.rows.Close()
-	return s.commit(ctx)
-}
-
-func (s *SnapshotIterator) commit(ctx context.Context) error {
-	_, err := s.conn.Exec(ctx, `COMMIT;`)
-	if err != nil {
-		return fmt.Errorf("failed to commit: %w", err)
-	}
-	return nil
+	return s.tx.Commit(ctx)
 }
 
 func (s *SnapshotIterator) buildRecord(ctx context.Context) (sdk.Record, error) {
