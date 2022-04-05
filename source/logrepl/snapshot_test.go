@@ -26,23 +26,23 @@ import (
 )
 
 func TestLifecycle(t *testing.T) {
-	i := is.New(t)
+	is := is.New(t)
 	ctx := context.Background()
 
 	testConn := test.ConnectSimple(ctx, t, test.RegularConnString)
 	table := test.SetupTestTable(ctx, t, test.ConnectSimple(ctx, t, test.RegularConnString))
 
 	_, err := testConn.Exec(ctx, "BEGIN ISOLATION LEVEL REPEATABLE READ;")
-	i.NoErr(err)
+	is.NoErr(err)
 
 	query := `SELECT * FROM pg_catalog.pg_export_snapshot();`
 	rows, err := testConn.Query(context.Background(), query)
-	i.NoErr(err)
+	is.NoErr(err)
 
 	var name *string
-	i.True(rows.Next())
+	is.True(rows.Next())
 	err = rows.Scan(&name)
-	i.NoErr(err)
+	is.NoErr(err)
 
 	snapshotConn := test.ConnectSimple(ctx, t, test.RegularConnString)
 	s, err := NewSnapshotIterator(context.Background(), snapshotConn, SnapshotConfig{
@@ -52,17 +52,17 @@ func TestLifecycle(t *testing.T) {
 		Columns:      []string{"id", "key", "column1", "column2", "column3"},
 		KeyColumn:    "key",
 	})
-	i.NoErr(err)
+	is.NoErr(err)
 
 	now := time.Now()
 	rec, err := s.Next(ctx)
-	i.NoErr(err)
+	is.NoErr(err)
 
-	i.True(rec.CreatedAt.After(now))
-	i.Equal(rec.Metadata["action"], "snapshot")
+	is.True(rec.CreatedAt.After(now))
+	is.Equal(rec.Metadata["action"], "snapshot")
 	rec.CreatedAt = time.Time{} // reset time for comparison
 
-	i.Equal(rec, sdk.Record{
+	is.Equal(rec, sdk.Record{
 		Position: sdk.Position("0"),
 		Key: sdk.StructuredData{
 			"key": []uint8("1"),
@@ -80,8 +80,8 @@ func TestLifecycle(t *testing.T) {
 	})
 
 	err = s.Teardown(ctx)
-	i.NoErr(err)
+	is.NoErr(err)
 
 	rows.Close()
-	i.NoErr(err)
+	is.NoErr(err)
 }
