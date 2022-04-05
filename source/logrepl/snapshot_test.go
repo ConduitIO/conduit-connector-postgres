@@ -16,140 +16,70 @@ package logrepl
 
 import (
 	"context"
-	"reflect"
-	"strconv"
 	"testing"
 	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/google/go-cmp/cmp"
-	"github.com/jackc/pgx/v4"
+
 	"github.com/matryer/is"
 )
 
-func TestSnapshotIterator_Next(t *testing.T) {
+func TestLifecycle(t *testing.T) {
 	i := is.New(t)
 	ctx := context.Background()
-	db := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 
-	type fields struct {
-		uri          string
-		table        string
-		columns      []string
-		keyColumn    string
-		snapshotName string
-	}
-	type args struct {
-		in0 context.Context
-	}
-	tests := []struct {
-		name    string
-		fields  fields
-		args    args
-		want    sdk.Record
-		wantErr bool
-	}{
-		{
-			name: "should return the first record",
-			fields: fields{
-				table:        test.SetupTestTable(ctx, t, db),
-				columns:      []string{"id", "key", "column1", "column2", "column3"},
-				keyColumn:    "key",
-				uri:          test.RepmgrConnString,
-				snapshotName: createTestSnapshot(t, db),
-			},
-			args: args{
-				in0: context.Background(),
-			},
-			want: sdk.Record{
-				Position: sdk.Position("0"),
-				Key: sdk.StructuredData{
-					"key": []uint8("1"),
-				},
-				Payload: sdk.StructuredData{
-					"id":      int64(1),
-					"column1": "foo",
-					"column2": int32(123),
-					"column3": bool(false),
-				},
-				Metadata: map[string]string{
-					"action": actionSnapshot,
-				},
-			},
-			wantErr: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s, err := NewSnapshotIterator(context.Background(), SnapshotConfig{
-				SnapshotName: tt.fields.snapshotName,
-				Table:        tt.fields.table,
-				Columns:      tt.fields.columns,
-				KeyColumn:    tt.fields.keyColumn,
-				URI:          tt.fields.uri,
-			})
-			i.NoErr(err)
+	testConn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	table := test.SetupTestTable(ctx, t, test.ConnectSimple(ctx, t, test.RegularConnString))
 
-			t.Cleanup(func() {
-				i.NoErr(s.Teardown(context.Background()))
-			})
+	testConn.Exec(ctx, "BEGIN ISOLATION LEVEL REPEATABLE READ;")
+	query := `SELECT * FROM pg_catalog.pg_export_snapshot();`
+	rows, err := testConn.Query(context.Background(), query)
+	i.NoErr(err)
 
-			now := time.Now()
-			got, err := s.Next(tt.args.in0)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("SnapshotIterator.Next() error = %v, wantErr %v", err, tt.wantErr)
-			}
+	var name *string
+	i.True(rows.Next())
+	err = rows.Scan(&name)
+	i.NoErr(err)
 
-			i.True(got.Metadata["table"] == tt.fields.table)
-			delete(got.Metadata, "table") // delete so we don't compare in diff
-			i.True(got.CreatedAt.After(now))
-			got.CreatedAt = time.Time{} // reset so we don't compare in diff
-
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("SnapshotIterator.Next() = %v, want %v", got, tt.want)
-				if diff := cmp.Diff(got, tt.want); diff != "" {
-					t.Log(diff)
-				}
-			}
-		})
-	}
-}
-
-func TestIteration(t *testing.T) {
-	i := is.New(t)
-	ctx := context.Background()
-	db := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-
-	s, err := NewSnapshotIterator(context.Background(), SnapshotConfig{
-		SnapshotName: createTestSnapshot(t, db),
-		Table:        test.SetupTestTable(ctx, t, db),
+	snapshotConn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	s, err := NewSnapshotIterator(context.Background(), snapshotConn, SnapshotConfig{
+		SnapshotName: *name,
+		URI:          test.RegularConnString,
+		Table:        table,
 		Columns:      []string{"id", "key", "column1", "column2", "column3"},
 		KeyColumn:    "key",
-		URI:          test.RepmgrConnString,
 	})
 	i.NoErr(err)
 
 	now := time.Now()
-	for idx := 0; idx < 2; idx++ {
-		rec, err := s.Next(ctx)
-		i.Equal(string(rec.Position), strconv.FormatInt(int64(idx), 10))
-		i.NoErr(err)
-		t.Log(rec)
-		rec.CreatedAt.After(now)
-	}
+	rec, err := s.Next(ctx)
+	i.NoErr(err)
 
-	i.NoErr(s.Teardown(ctx))
-}
+	i.True(rec.CreatedAt.After(now))
+	i.Equal(rec.Metadata["action"], "snapshot")
+	rec.CreatedAt = time.Time{} // reset time for comparison
 
-func createTestSnapshot(t *testing.T, db *pgx.Conn) string {
-	var n *string
-	query := `SELECT * FROM pg_catalog.pg_export_snapshot();`
-	row := db.QueryRow(context.Background(), query)
-	err := row.Scan(&n)
-	if err != nil {
-		t.Logf("failed to scan name: %s", err)
-		t.Fail()
-	}
-	return *n
+	i.Equal(rec, sdk.Record{
+		Position: sdk.Position("0"),
+		Key: sdk.StructuredData{
+			"key": []uint8("1"),
+		},
+		Payload: sdk.StructuredData{
+			"id":      int64(1),
+			"column1": "foo",
+			"column2": int32(123),
+			"column3": bool(false),
+		},
+		Metadata: map[string]string{
+			"action": actionSnapshot,
+			"table":  table,
+		},
+	})
+
+	err = s.Teardown(ctx)
+	i.NoErr(err)
+
+	rows.Close()
+	i.NoErr(err)
 }

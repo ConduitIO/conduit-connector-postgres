@@ -27,7 +27,6 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jackc/pgtype"
 	"github.com/jackc/pgx/v4"
-	"github.com/jackc/pgx/v4/pgxpool"
 )
 
 var psql = sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
@@ -45,26 +44,21 @@ type SnapshotConfig struct {
 type SnapshotIterator struct {
 	config SnapshotConfig
 
-	pool *pgxpool.Pool
+	conn *pgx.Conn
 	rows pgx.Rows
-	tx   pgx.Tx
 
 	internalPos int64
 }
 
-func NewSnapshotIterator(ctx context.Context, cfg SnapshotConfig) (*SnapshotIterator, error) {
+func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, cfg SnapshotConfig) (*SnapshotIterator, error) {
 	s := &SnapshotIterator{
 		config: cfg,
+		conn:   conn,
 	}
 
-	err := s.attachPool(ctx)
+	err := s.startSnapshotTx(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to attach pool: %w", err)
-	}
-
-	err = s.startTransaction(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to acquire snapshot transaction: %w", err)
+		return nil, fmt.Errorf("failed to start snapshot tx: %w", err)
 	}
 
 	err = s.loadRows(ctx)
@@ -75,22 +69,7 @@ func NewSnapshotIterator(ctx context.Context, cfg SnapshotConfig) (*SnapshotIter
 	return s, nil
 }
 
-func (s *SnapshotIterator) attachPool(ctx context.Context) error {
-	pool, err := pgxpool.Connect(ctx, s.config.URI)
-	if err != nil {
-		return err
-	}
-	s.pool = pool
-	return nil
-}
-
 func (s *SnapshotIterator) loadRows(ctx context.Context) error {
-	snapshotTx := fmt.Sprintf("SET TRANSACTION SNAPSHOT '%s';", s.config.SnapshotName)
-	_, err := s.tx.Query(ctx, snapshotTx)
-	if err != nil {
-		return err
-	}
-
 	query, args, err := psql.
 		Select(s.config.Columns...).
 		From(s.config.Table).
@@ -98,23 +77,28 @@ func (s *SnapshotIterator) loadRows(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create read query: %w", err)
 	}
-	rows, err := s.tx.Query(ctx, query, args...)
+
+	rows, err := s.conn.Query(ctx, query, args...)
 	if err != nil {
-		return fmt.Errorf("failed to query context: %w", err)
+		return fmt.Errorf("failed to query rows: %w", err)
 	}
 	s.rows = rows
+
 	return nil
 }
 
-func (s *SnapshotIterator) startTransaction(ctx context.Context) error {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{
-		IsoLevel:   pgx.RepeatableRead,
-		AccessMode: pgx.ReadOnly,
-	})
+func (s *SnapshotIterator) startSnapshotTx(ctx context.Context) error {
+	_, err := s.conn.Exec(ctx, `BEGIN ISOLATION LEVEL REPEATABLE READ;`)
+	if err != nil {
+		return nil
+	}
+
+	snapshotTx := fmt.Sprintf(`SET TRANSACTION SNAPSHOT '%s'`, s.config.SnapshotName)
+	_, err = s.conn.Exec(ctx, snapshotTx)
 	if err != nil {
 		return err
 	}
-	s.tx = tx
+
 	return nil
 }
 
@@ -123,6 +107,7 @@ func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 		if err := s.rows.Err(); err != nil {
 			return sdk.Record{}, fmt.Errorf("rows error: %w", err)
 		}
+
 		return sdk.Record{}, sdk.ErrBackoffRetry
 	}
 
@@ -136,30 +121,30 @@ func (s *SnapshotIterator) Ack(ctx context.Context, pos sdk.Position) error {
 
 // Teardown attempts to gracefully teardown the iterator.
 func (s *SnapshotIterator) Teardown(ctx context.Context) error {
-	defer s.pool.Close()
 	s.rows.Close()
-	err := s.commit(ctx)
-	return err
+	return s.commit(ctx)
 }
 
 func (s *SnapshotIterator) commit(ctx context.Context) error {
-	err := s.tx.Commit(ctx)
+	_, err := s.conn.Exec(ctx, `COMMIT;`)
 	if err != nil {
-		return fmt.Errorf("failed to commit snapshot tx: %w", err)
+		return fmt.Errorf("failed to commit: %w", err)
 	}
 	return nil
 }
 
 func (s *SnapshotIterator) buildRecord(ctx context.Context) (sdk.Record, error) {
 	if err := s.rows.Err(); err != nil {
-		return sdk.Record{}, fmt.Errorf("rows error: %w", err)
+		return sdk.Record{}, fmt.Errorf("build record rows error: %w", err)
 	}
 
 	r, err := withPayloadAndKey(sdk.Record{}, s.rows, s.config.Columns, s.config.KeyColumn)
 	if err != nil {
 		return sdk.Record{}, err
 	}
+
 	r.CreatedAt = time.Now()
+
 	r.Metadata = map[string]string{
 		"action": actionSnapshot,
 		"table":  s.config.Table,
@@ -171,7 +156,8 @@ func (s *SnapshotIterator) buildRecord(ctx context.Context) (sdk.Record, error) 
 	return r, nil
 }
 
-// withPayloadAndKey builds a record's payload from *sql.Rows.
+// withPayloadAndKey builds a record's payload from *sql.Rows. It calls
+// Scan so it assumes that Next has been checked previously.
 func withPayloadAndKey(rec sdk.Record, rows pgx.Rows, columns []string, key string) (sdk.Record, error) {
 	colTypes := rows.FieldDescriptions()
 
