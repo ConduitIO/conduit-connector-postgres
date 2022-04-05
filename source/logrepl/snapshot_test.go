@@ -32,7 +32,9 @@ func TestLifecycle(t *testing.T) {
 	testConn := test.ConnectSimple(ctx, t, test.RegularConnString)
 	table := test.SetupTestTable(ctx, t, test.ConnectSimple(ctx, t, test.RegularConnString))
 
-	testConn.Exec(ctx, "BEGIN ISOLATION LEVEL REPEATABLE READ;")
+	_, err := testConn.Exec(ctx, "BEGIN ISOLATION LEVEL REPEATABLE READ;")
+	i.NoErr(err)
+
 	query := `SELECT * FROM pg_catalog.pg_export_snapshot();`
 	rows, err := testConn.Query(context.Background(), query)
 	i.NoErr(err)
