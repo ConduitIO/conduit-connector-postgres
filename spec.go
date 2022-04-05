@@ -21,51 +21,66 @@ import (
 func Specification() sdk.Specification {
 	return sdk.Specification{
 		Name:    "postgres",
-		Summary: "A PostgreSQL source and destination plugin for Conduit, written in Go.",
-		Version: "v0.0.1",
+		Summary: "A PostgreSQL source and destination plugin for Conduit.",
+		Version: "v0.1.0",
 		Author:  "Meroxa, Inc.",
 		DestinationParams: map[string]sdk.Parameter{
 			"url": {
-				Default:     "true",
+				Default:     "",
 				Required:    true,
-				Description: "connection url to the postgres destination.",
+				Description: "Connection string for the Postgres database.",
+			},
+			"table": {
+				Default:     "",
+				Required:    false,
+				Description: "The name of the table in Postgres that the connector should write to.",
+			},
+			"key": {
+				Default:     "",
+				Required:    false,
+				Description: "Column name used to detect if the target table already contains the record.",
 			},
 		},
 		SourceParams: map[string]sdk.Parameter{
 			"url": {
 				Default:     "",
 				Required:    true,
-				Description: "Connection url to the postgres source.",
-			},
-			"mode": {
-				Default:     "cdc",
-				Required:    false,
-				Description: "Sets the connector's operation mode. Available modes: ['cdc', 'snapshot']",
+				Description: "Connection string for the Postgres database.",
 			},
 			"table": {
 				Default:     "",
 				Required:    true,
-				Description: "Table name for connector to read.",
+				Description: "The name of the table in Postgres that the connector should read.",
 			},
 			"columns": {
-				Default:     "all columns from table",
+				Default:     "",
 				Required:    false,
-				Description: "Comma-separated list of column names that the connector should include in payloads. Key column will be excluded if set.",
+				Description: "Comma separated list of column names that should be included in each Record's payload.",
 			},
 			"key": {
-				Default:     "primary key of column",
+				Default:     "",
 				Required:    false,
-				Description: "The column name used to populate record Keys. If no key is specified, the connector will attempt to lookup the table's primary key column. If no primary key column is found, then the source will return an error.",
+				Description: "Column name that records should use for their `Key` fields.",
+			},
+			"snapshotMode": {
+				Default:     "initial",
+				Required:    false,
+				Description: "Whether or not the plugin will take a snapshot of the entire table before starting cdc mode (allowed values: `initial` or `never`).",
+			},
+			"cdcMode": {
+				Default:     "auto",
+				Required:    false,
+				Description: "Determines the CDC mode (allowed values: `auto`, `logrepl` or `long_polling`).",
 			},
 			"logrepl.publicationName": {
 				Default:     "conduitpub",
 				Required:    false,
-				Description: "Determines which publication the CDC iterator consumes.",
+				Description: "Name of the publication to listen for WAL events.",
 			},
 			"logrepl.slotName": {
 				Default:     "conduitslot",
 				Required:    false,
-				Description: "Determines which replication slot the CDC iterator uses.",
+				Description: "Name of the slot opened for replication events.",
 			},
 		},
 	}
