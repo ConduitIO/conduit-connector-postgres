@@ -70,7 +70,7 @@ func TestLifecycle(t *testing.T) {
 			"table":  table,
 		},
 	})
-	is.NoErr(s.Teardown(ctx)) // TODO: Should return an error
+	is.Equal(ErrSnapshotInterrupt.Error(), s.Teardown(ctx).Error())
 }
 
 // createTestSnapshot starts a transaction that stays open while a snapshot test
