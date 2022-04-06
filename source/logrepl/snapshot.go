@@ -33,7 +33,7 @@ import (
 // ErrSnapshotComplete is returned by Next when a snapshot is finished
 var ErrSnapshotComplete = errors.New("ErrSnapshotComplete")
 
-// ErrSnapshotInterrupted is returned by Teardown when a snapshot is interrupted
+// ErrSnapshotInterrupt is returned by Teardown when a snapshot is interrupted
 var ErrSnapshotInterrupt = errors.New("ErrSnapshotInterrupt")
 
 var psql = sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
