@@ -21,6 +21,8 @@ import (
 
 	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/pgxpool"
 
 	"github.com/matryer/is"
 )
@@ -28,31 +30,24 @@ import (
 func TestLifecycle(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
+	pool := test.ConnectPool(ctx, t, test.RegularConnString)
+	table := test.SetupTestTable(ctx, t, pool)
 
-	testConn := test.ConnectSimple(ctx, t, test.RegularConnString)
-	table := test.SetupTestTable(ctx, t, test.ConnectSimple(ctx, t, test.RegularConnString))
+	tx, name := createTestSnapshot(t, pool)
+	t.Cleanup(func() { tx.Commit(ctx) })
 
-	_, err := testConn.Exec(ctx, "BEGIN ISOLATION LEVEL REPEATABLE READ;")
+	snapshotConn, err := pool.Acquire(ctx)
 	is.NoErr(err)
+	t.Cleanup(func() { snapshotConn.Release() })
 
-	query := `SELECT * FROM pg_catalog.pg_export_snapshot();`
-	rows, err := testConn.Query(context.Background(), query)
-	is.NoErr(err)
-
-	var name *string
-	is.True(rows.Next())
-	err = rows.Scan(&name)
-	is.NoErr(err)
-
-	snapshotConn := test.ConnectSimple(ctx, t, test.RegularConnString)
-	s, err := NewSnapshotIterator(context.Background(), snapshotConn, SnapshotConfig{
-		SnapshotName: *name,
-		URI:          test.RegularConnString,
+	s, err := NewSnapshotIterator(context.Background(), snapshotConn.Conn(), SnapshotConfig{
+		SnapshotName: name,
 		Table:        table,
 		Columns:      []string{"id", "key", "column1", "column2", "column3"},
 		KeyColumn:    "key",
 	})
 	is.NoErr(err)
+	t.Cleanup(func() { s.Teardown(ctx) })
 
 	now := time.Now()
 	rec, err := s.Next(ctx)
@@ -78,10 +73,26 @@ func TestLifecycle(t *testing.T) {
 			"table":  table,
 		},
 	})
+}
 
-	err = s.Teardown(ctx)
+// createTestSnapshot starts a transaction that stays open while a snapshot run.
+// Otherwise, postgres deletes the snapshot as soon as this tx commits,
+// an our snapshot iterator won't find a snapshot at the specifiedname.
+// https://www.postgresql.org/docs/current/sql-set-transaction.html
+func createTestSnapshot(t *testing.T, pool *pgxpool.Pool) (pgx.Tx, string) {
+	ctx := context.Background()
+	is := is.New(t)
+
+	tx, err := pool.Begin(ctx)
+	is.NoErr(err)
+	query := `SELECT * FROM pg_catalog.pg_export_snapshot();`
+	rows, err := tx.Query(context.Background(), query)
 	is.NoErr(err)
 
-	rows.Close()
+	var name *string
+	is.True(rows.Next())
+	err = rows.Scan(&name)
 	is.NoErr(err)
+
+	return tx, *name
 }

@@ -34,7 +34,6 @@ var psql = sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 const actionSnapshot string = "snapshot"
 
 type SnapshotConfig struct {
-	URI          string
 	SnapshotName string
 	Table        string
 	Columns      []string
@@ -74,11 +73,13 @@ func (s *SnapshotIterator) loadRows(ctx context.Context) error {
 		From(s.config.Table).
 		ToSql()
 	if err != nil {
+		s.rows.Close()
 		return fmt.Errorf("failed to create read query: %w", err)
 	}
 
 	rows, err := s.tx.Query(ctx, query, args...)
 	if err != nil {
+		s.rows.Close()
 		return fmt.Errorf("failed to query rows: %w", err)
 	}
 	s.rows = rows
@@ -100,6 +101,7 @@ func (s *SnapshotIterator) startSnapshotTx(ctx context.Context, conn *pgx.Conn) 
 	snapshotTx := fmt.Sprintf(`SET TRANSACTION SNAPSHOT '%s'`, s.config.SnapshotName)
 	_, err = tx.Exec(ctx, snapshotTx)
 	if err != nil {
+		defer s.tx.Rollback(ctx)
 		return err
 	}
 
@@ -125,15 +127,12 @@ func (s *SnapshotIterator) Ack(ctx context.Context, pos sdk.Position) error {
 
 // Teardown attempts to gracefully teardown the iterator.
 func (s *SnapshotIterator) Teardown(ctx context.Context) error {
-	s.rows.Close()
-	return s.tx.Commit(ctx)
+	defer s.tx.Commit(ctx)
+	defer s.rows.Close()
+	return s.rows.Err()
 }
 
 func (s *SnapshotIterator) buildRecord(ctx context.Context) (sdk.Record, error) {
-	if err := s.rows.Err(); err != nil {
-		return sdk.Record{}, fmt.Errorf("build record rows error: %w", err)
-	}
-
 	r, err := withPayloadAndKey(sdk.Record{}, s.rows, s.config.Columns, s.config.KeyColumn)
 	if err != nil {
 		return sdk.Record{}, err
