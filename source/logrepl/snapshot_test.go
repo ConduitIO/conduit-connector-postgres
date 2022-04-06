@@ -16,6 +16,7 @@ package logrepl
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -58,7 +59,7 @@ func TestLifecycle(t *testing.T) {
 	rec.CreatedAt = time.Time{} // reset time for comparison
 
 	is.Equal(rec, sdk.Record{
-		Position: sdk.Position("0"),
+		Position: sdk.Position(fmt.Sprintf("%s:0", table)),
 		Key: sdk.StructuredData{
 			"key": []uint8("1"),
 		},
