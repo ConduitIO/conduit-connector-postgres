@@ -22,7 +22,6 @@ import (
 
 	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 
 	"github.com/matryer/is"
@@ -31,24 +30,21 @@ import (
 func TestLifecycle(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
+
 	pool := test.ConnectPool(ctx, t, test.RegularConnString)
-	table := test.SetupTestTable(ctx, t, pool)
+	table := createTestTable(t, pool)
+	name := createTestSnapshot(t, pool)
 
-	tx, name := createTestSnapshot(t, pool)
-	t.Cleanup(func() { tx.Commit(ctx) })
-
-	snapshotConn, err := pool.Acquire(ctx)
+	conn, err := pool.Acquire(ctx)
 	is.NoErr(err)
-	t.Cleanup(func() { snapshotConn.Release() })
-
-	s, err := NewSnapshotIterator(context.Background(), snapshotConn.Conn(), SnapshotConfig{
+	s, err := NewSnapshotIterator(context.Background(), conn.Conn(), SnapshotConfig{
 		SnapshotName: name,
 		Table:        table,
 		Columns:      []string{"id", "key", "column1", "column2", "column3"},
 		KeyColumn:    "key",
 	})
 	is.NoErr(err)
-	t.Cleanup(func() { s.Teardown(ctx) })
+	t.Cleanup(func() { conn.Release() })
 
 	now := time.Now()
 	rec, err := s.Next(ctx)
@@ -74,17 +70,19 @@ func TestLifecycle(t *testing.T) {
 			"table":  table,
 		},
 	})
+	is.NoErr(s.Teardown(ctx)) // TODO: Should return an error
 }
 
 // createTestSnapshot starts a transaction that stays open while a snapshot run.
 // Otherwise, postgres deletes the snapshot as soon as this tx commits,
 // an our snapshot iterator won't find a snapshot at the specifiedname.
 // https://www.postgresql.org/docs/current/sql-set-transaction.html
-func createTestSnapshot(t *testing.T, pool *pgxpool.Pool) (pgx.Tx, string) {
+func createTestSnapshot(t *testing.T, pool *pgxpool.Pool) string {
 	ctx := context.Background()
 	is := is.New(t)
-
-	tx, err := pool.Begin(ctx)
+	conn, err := pool.Acquire(ctx)
+	is.NoErr(err)
+	tx, err := conn.Begin(ctx)
 	is.NoErr(err)
 	query := `SELECT * FROM pg_catalog.pg_export_snapshot();`
 	rows, err := tx.Query(context.Background(), query)
@@ -95,5 +93,21 @@ func createTestSnapshot(t *testing.T, pool *pgxpool.Pool) (pgx.Tx, string) {
 	err = rows.Scan(&name)
 	is.NoErr(err)
 
-	return tx, *name
+	t.Cleanup(func() {
+		rows.Close()
+		is.NoErr(tx.Commit(ctx))
+		conn.Release()
+	})
+
+	return *name
+}
+
+func createTestTable(t *testing.T, pool *pgxpool.Pool) string {
+	is := is.New(t)
+	ctx := context.Background()
+	tblConn, err := pool.Acquire(ctx)
+	is.NoErr(err)
+	table := test.SetupTestTable(ctx, t, tblConn.Conn())
+	t.Cleanup(func() { tblConn.Release() })
+	return table
 }

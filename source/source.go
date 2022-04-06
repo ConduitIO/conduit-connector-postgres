@@ -64,8 +64,6 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		fallthrough
 	case CDCModeLogrepl:
 		if s.config.SnapshotMode == SnapshotModeInitial {
-			// TODO wire this up
-
 			// TODO create snapshot iterator for logical replication and pass
 			//  the snapshot mode in the config
 			sdk.Logger(ctx).Warn().Msg("snapshot not supported in logical replication mode")

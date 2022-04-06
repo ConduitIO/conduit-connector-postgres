@@ -101,8 +101,10 @@ func (s *SnapshotIterator) startSnapshotTx(ctx context.Context, conn *pgx.Conn) 
 	snapshotTx := fmt.Sprintf(`SET TRANSACTION SNAPSHOT '%s'`, s.config.SnapshotName)
 	_, err = tx.Exec(ctx, snapshotTx)
 	if err != nil {
-		defer s.tx.Rollback(ctx)
-		return err
+		if rollErr := s.tx.Rollback(ctx); rollErr != nil {
+			sdk.Logger(ctx).Err(rollErr).Msg("set transaction rollback failed")
+		}
+		return fmt.Errorf("failed to set transaction snapshot id: %w", err)
 	}
 
 	return nil
@@ -127,8 +129,10 @@ func (s *SnapshotIterator) Ack(ctx context.Context, pos sdk.Position) error {
 
 // Teardown attempts to gracefully teardown the iterator.
 func (s *SnapshotIterator) Teardown(ctx context.Context) error {
-	defer s.tx.Commit(ctx)
-	defer s.rows.Close()
+	s.rows.Close()
+	if commitErr := s.tx.Commit(ctx); commitErr != nil {
+		sdk.Logger(ctx).Err(commitErr).Msg("teardown commit failed")
+	}
 	return s.rows.Err()
 }
 
