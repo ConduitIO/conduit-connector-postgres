@@ -27,7 +27,11 @@ import (
 	"github.com/matryer/is"
 )
 
-func TestLifecycle(t *testing.T) {
+// createTestSnapshotIterator creates a new test table, starts a snapshot  tx
+// on it, and then creates a test SnapshotIterator with the ID of that snapshot.
+// It returns that SnapshotIterator and the string name of the test table.
+// This function handles its own pooled connection cleanup.
+func createTestSnapshotIterator(t *testing.T) (*SnapshotIterator, string) {
 	is := is.New(t)
 	ctx := context.Background()
 
@@ -45,6 +49,14 @@ func TestLifecycle(t *testing.T) {
 	})
 	is.NoErr(err)
 	t.Cleanup(func() { conn.Release() })
+	return s, table
+}
+
+func TestLifecycle(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+
+	s, table := createTestSnapshotIterator(t)
 
 	now := time.Now()
 	rec, err := s.Next(ctx)
