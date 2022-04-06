@@ -17,6 +17,7 @@ package logrepl
 import (
 	"context"
 	"fmt"
+	"log"
 	"testing"
 	"time"
 
@@ -27,29 +28,20 @@ import (
 	"github.com/matryer/is"
 )
 
-// createTestSnapshotIterator creates a new test table, starts a snapshot  tx
-// on it, and then creates a test SnapshotIterator with the ID of that snapshot.
-// It returns that SnapshotIterator and the string name of the test table.
-// This function handles its own pooled connection cleanup.
-func createTestSnapshotIterator(t *testing.T) (*SnapshotIterator, string) {
-	is := is.New(t)
+func TestFullIteration(t *testing.T) {
 	ctx := context.Background()
+	is := is.New(t)
+	s, table := createTestSnapshotIterator(t)
 
-	pool := test.ConnectPool(ctx, t, test.RegularConnString)
-	table := createTestTable(t, pool)
-	name := createTestSnapshot(t, pool)
-
-	conn, err := pool.Acquire(ctx)
-	is.NoErr(err)
-	s, err := NewSnapshotIterator(context.Background(), conn.Conn(), SnapshotConfig{
-		SnapshotName: name,
-		Table:        table,
-		Columns:      []string{"id", "key", "column1", "column2", "column3"},
-		KeyColumn:    "key",
-	})
-	is.NoErr(err)
-	t.Cleanup(func() { conn.Release() })
-	return s, table
+	for i := 0; i < 4; i++ {
+		rec, err := s.Next(ctx)
+		log.Println(i)
+		is.Equal(rec.Position, sdk.Position(fmt.Sprintf("%s:%d", table, i)))
+		is.NoErr(err)
+	}
+	r, err := s.Next(ctx)
+	is.Equal(r, sdk.Record{})
+	is.Equal(err.Error(), ErrSnapshotComplete.Error())
 }
 
 func TestLifecycle(t *testing.T) {
@@ -114,6 +106,32 @@ func createTestSnapshot(t *testing.T, pool *pgxpool.Pool) string {
 	return *name
 }
 
+// createTestSnapshotIterator creates a new test table, starts a snapshot  tx
+// on it, and then creates a test SnapshotIterator with the ID of that snapshot.
+// It returns that SnapshotIterator and the string name of the test table.
+// This function handles its own pooled connection cleanup.
+func createTestSnapshotIterator(t *testing.T) (*SnapshotIterator, string) {
+	is := is.New(t)
+	ctx := context.Background()
+
+	pool := test.ConnectPool(ctx, t, test.RegularConnString)
+	table := createTestTable(t, pool)
+	name := createTestSnapshot(t, pool)
+
+	conn, err := pool.Acquire(ctx)
+	is.NoErr(err)
+	s, err := NewSnapshotIterator(context.Background(), conn.Conn(), SnapshotConfig{
+		SnapshotName: name,
+		Table:        table,
+		Columns:      []string{"id", "key", "column1", "column2", "column3"},
+		KeyColumn:    "key",
+	})
+	is.NoErr(err)
+	t.Cleanup(func() { conn.Release() })
+	return s, table
+}
+
+// createTestTable sets up a test table and cleans up after itself.
 func createTestTable(t *testing.T, pool *pgxpool.Pool) string {
 	is := is.New(t)
 	ctx := context.Background()
