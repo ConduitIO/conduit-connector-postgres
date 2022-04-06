@@ -17,6 +17,7 @@ package logrepl
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -28,6 +29,12 @@ import (
 	"github.com/jackc/pgtype"
 	"github.com/jackc/pgx/v4"
 )
+
+// ErrSnapshotComplete is returned by Next when a snapshot is finished
+var ErrSnapshotComplete = errors.New("ErrSnapshotComplete")
+
+// ErrSnapshotInterrupted is returned by Teardown when a snapshot is interrupted
+var ErrSnapshotInterrupt = errors.New("ErrSnapshotInterrupt")
 
 var psql = sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 
@@ -46,6 +53,7 @@ type SnapshotIterator struct {
 	tx   pgx.Tx
 	rows pgx.Rows
 
+	complete    bool
 	internalPos int64
 }
 
@@ -115,8 +123,8 @@ func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 		if err := s.rows.Err(); err != nil {
 			return sdk.Record{}, fmt.Errorf("rows error: %w", err)
 		}
-
-		return sdk.Record{}, sdk.ErrBackoffRetry
+		s.complete = true
+		return sdk.Record{}, ErrSnapshotComplete
 	}
 
 	return s.buildRecord(ctx)
@@ -133,7 +141,15 @@ func (s *SnapshotIterator) Teardown(ctx context.Context) error {
 	if commitErr := s.tx.Commit(ctx); commitErr != nil {
 		sdk.Logger(ctx).Err(commitErr).Msg("teardown commit failed")
 	}
-	return s.rows.Err()
+	if rowsErr := s.rows.Err(); rowsErr != nil {
+		sdk.Logger(ctx).Err(rowsErr).Msg("rows returned an error")
+	}
+
+	if !s.complete {
+		sdk.Logger(ctx).Warn().Msg("snapshot interrupted")
+		return ErrSnapshotInterrupt
+	}
+	return nil
 }
 
 func (s *SnapshotIterator) buildRecord(ctx context.Context) (sdk.Record, error) {
