@@ -100,7 +100,9 @@ func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 }
 
 func RandomIdentifier(t *testing.T) string {
-	return fmt.Sprintf("conduit_%v_%d", strings.ToLower(t.Name()), time.Now().UnixMicro()%1000)
+	return fmt.Sprintf("conduit_%v_%d",
+		strings.Replace(strings.ToLower(t.Name()), "/", "_", -1),
+		time.Now().UnixMicro()%1000)
 }
 
 func IsPgError(is *is.I, err error, wantCode string) {

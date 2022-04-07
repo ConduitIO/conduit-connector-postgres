@@ -24,15 +24,84 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v4/pgxpool"
-
 	"github.com/matryer/is"
 )
+
+var (
+	columns = []string{"id", "key", "column1", "column2", "column3"}
+	key     = "key"
+)
+
+func TestSnapshotIterator_Teardown(t *testing.T) {
+	is := is.New(t)
+	type args struct {
+		ctx context.Context
+	}
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T) *SnapshotIterator
+		args    args
+		wantErr bool
+		wanted  error
+	}{
+		{
+			name: "should return interrupt when next never called",
+			setup: func(t *testing.T) *SnapshotIterator {
+				s, _ := createTestSnapshotIterator(t, columns, key)
+				return s
+			},
+			args: args{
+				ctx: context.Background(),
+			},
+			wantErr: true,
+			wanted:  ErrSnapshotInterrupt,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := tt.setup(t)
+			if err := s.Teardown(tt.args.ctx); (err != nil) != tt.wantErr {
+				if tt.wantErr {
+					is.Equal(tt.wanted, err)
+				} else {
+					t.Errorf("SnapshotIterator.Teardown() error = %v, wantErr %v", err, tt.wantErr)
+				}
+			}
+		})
+	}
+}
+
+func TestSnapshotAtomicity(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+	pool := test.ConnectPool(ctx, t, test.RegularConnString)
+
+	// start our snapshot iterator
+	s, table := createTestSnapshotIterator(t, columns, key)
+	t.Cleanup(func() { s.Teardown(ctx) })
+	is.Equal(s.complete, false)
+
+	// add a record to our table after snapshot started
+	insertQuery := fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3)
+				VALUES (6, 'bizz', 456, false)`, table)
+	_, err := pool.Exec(ctx, insertQuery)
+	is.NoErr(err)
+
+	// assert record does not appear in snapshot
+	for i := 0; i < 4; i++ {
+		r, err := s.Next(ctx)
+		if err != nil {
+			is.Equal(err, ErrSnapshotComplete)
+			is.Equal(r, sdk.Record{})
+			is.Equal(s.complete, true)
+		}
+	}
+}
 
 func TestFullIteration(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
-	s, table := createTestSnapshotIterator(t)
-
+	s, table := createTestSnapshotIterator(t, []string{"id", "key"}, "key")
 	for i := 0; i < 4; i++ {
 		rec, err := s.Next(ctx)
 		log.Println(i)
@@ -44,11 +113,12 @@ func TestFullIteration(t *testing.T) {
 	is.Equal(err.Error(), ErrSnapshotComplete.Error())
 }
 
-func TestLifecycle(t *testing.T) {
+func TestLifecycleErrInterrupt(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 
-	s, table := createTestSnapshotIterator(t)
+	s, table := createTestSnapshotIterator(t,
+		[]string{"id", "key", "column1", "column2", "column3"}, "key")
 
 	now := time.Now()
 	rec, err := s.Next(ctx)
@@ -109,8 +179,9 @@ func createTestSnapshot(t *testing.T, pool *pgxpool.Pool) string {
 // createTestSnapshotIterator creates a new test table, starts a snapshot  tx
 // on it, and then creates a test SnapshotIterator with the ID of that snapshot.
 // It returns that SnapshotIterator and the string name of the test table.
-// This function handles its own pooled connection cleanup.
-func createTestSnapshotIterator(t *testing.T) (*SnapshotIterator, string) {
+// This function handles its own pooled connection cleanup, but _not_, the
+// SnapshotIterator's Teardown.
+func createTestSnapshotIterator(t *testing.T, columns []string, key string) (*SnapshotIterator, string) {
 	is := is.New(t)
 	ctx := context.Background()
 
@@ -123,8 +194,8 @@ func createTestSnapshotIterator(t *testing.T) (*SnapshotIterator, string) {
 	s, err := NewSnapshotIterator(context.Background(), conn.Conn(), SnapshotConfig{
 		SnapshotName: name,
 		Table:        table,
-		Columns:      []string{"id", "key", "column1", "column2", "column3"},
-		KeyColumn:    "key",
+		Columns:      columns,
+		KeyColumn:    key,
 	})
 	is.NoErr(err)
 	t.Cleanup(func() { conn.Release() })

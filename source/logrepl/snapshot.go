@@ -144,7 +144,6 @@ func (s *SnapshotIterator) Teardown(ctx context.Context) error {
 	if rowsErr := s.rows.Err(); rowsErr != nil {
 		sdk.Logger(ctx).Err(rowsErr).Msg("rows returned an error")
 	}
-
 	if !s.complete {
 		sdk.Logger(ctx).Warn().Msg("snapshot interrupted")
 		return ErrSnapshotInterrupt
