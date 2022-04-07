@@ -147,22 +147,25 @@ func TestLifecycleErrInterrupt(t *testing.T) {
 	is.Equal(ErrSnapshotInterrupt.Error(), s.Teardown(ctx).Error())
 }
 
-// createTestSnapshot starts a transaction that stays open while a snapshot run.
-// Otherwise, postgres deletes the snapshot as soon as this tx commits,
-// an our snapshot iterator won't find a snapshot at the specifiedname.
+// createTestSnapshot starts a transaction that stays open while a snapshot test
+// runs. Otherwise, Postgres deletes the snapshot as soon as the transaction
+// commits or rolls back, and our snapshot iterator won't find a snapshot with
+// the specified name.
 // https://www.postgresql.org/docs/current/sql-set-transaction.html
 func createTestSnapshot(t *testing.T, pool *pgxpool.Pool) string {
 	ctx := context.Background()
 	is := is.New(t)
+
 	conn, err := pool.Acquire(ctx)
 	is.NoErr(err)
+
 	tx, err := conn.Begin(ctx)
 	is.NoErr(err)
-	query := `SELECT * FROM pg_catalog.pg_export_snapshot();`
-	rows, err := tx.Query(context.Background(), query)
-	is.NoErr(err)
 
-	var name *string
+	query := `SELECT * FROM pg_catalog.pg_export_snapshot();`
+	rows, err := tx.Query(ctx, query)
+	is.NoErr(err)
+	var name string
 	is.True(rows.Next())
 	err = rows.Scan(&name)
 	is.NoErr(err)
@@ -173,7 +176,7 @@ func createTestSnapshot(t *testing.T, pool *pgxpool.Pool) string {
 		conn.Release()
 	})
 
-	return *name
+	return name
 }
 
 // createTestSnapshotIterator creates a new test table, starts a snapshot  tx
@@ -186,7 +189,7 @@ func createTestSnapshotIterator(t *testing.T, columns []string, key string) (*Sn
 	ctx := context.Background()
 
 	pool := test.ConnectPool(ctx, t, test.RegularConnString)
-	table := createTestTable(t, pool)
+	table := test.SetupTestTable(ctx, t, pool)
 	name := createTestSnapshot(t, pool)
 
 	conn, err := pool.Acquire(ctx)
@@ -200,15 +203,4 @@ func createTestSnapshotIterator(t *testing.T, columns []string, key string) (*Sn
 	is.NoErr(err)
 	t.Cleanup(func() { conn.Release() })
 	return s, table
-}
-
-// createTestTable sets up a test table and cleans up after itself.
-func createTestTable(t *testing.T, pool *pgxpool.Pool) string {
-	is := is.New(t)
-	ctx := context.Background()
-	tblConn, err := pool.Acquire(ctx)
-	is.NoErr(err)
-	table := test.SetupTestTable(ctx, t, tblConn.Conn())
-	t.Cleanup(func() { tblConn.Release() })
-	return table
 }

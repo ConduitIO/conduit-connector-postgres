@@ -69,6 +69,7 @@ func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, cfg SnapshotConfig
 
 	err = s.loadRows(ctx)
 	if err != nil {
+		defer s.tx.Rollback(ctx)
 		return nil, fmt.Errorf("failed to load rows: %w", err)
 	}
 
@@ -81,13 +82,11 @@ func (s *SnapshotIterator) loadRows(ctx context.Context) error {
 		From(s.config.Table).
 		ToSql()
 	if err != nil {
-		s.rows.Close()
 		return fmt.Errorf("failed to create read query: %w", err)
 	}
 
 	rows, err := s.tx.Query(ctx, query, args...)
 	if err != nil {
-		s.rows.Close()
 		return fmt.Errorf("failed to query rows: %w", err)
 	}
 	s.rows = rows
@@ -119,6 +118,10 @@ func (s *SnapshotIterator) startSnapshotTx(ctx context.Context, conn *pgx.Conn) 
 }
 
 func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
+	if err := ctx.Err(); err != nil {
+		return sdk.Record{}, fmt.Errorf("context err: %w", err)
+	}
+
 	if !s.rows.Next() {
 		if err := s.rows.Err(); err != nil {
 			return sdk.Record{}, fmt.Errorf("rows error: %w", err)
@@ -138,17 +141,19 @@ func (s *SnapshotIterator) Ack(ctx context.Context, pos sdk.Position) error {
 // Teardown attempts to gracefully teardown the iterator.
 func (s *SnapshotIterator) Teardown(ctx context.Context) error {
 	s.rows.Close()
+	var err error
 	if commitErr := s.tx.Commit(ctx); commitErr != nil {
-		sdk.Logger(ctx).Err(commitErr).Msg("teardown commit failed")
+		err = logOrReturnError(ctx, err, commitErr, "teardown commit failed")
 	}
 	if rowsErr := s.rows.Err(); rowsErr != nil {
-		sdk.Logger(ctx).Err(rowsErr).Msg("rows returned an error")
+		err = logOrReturnError(ctx, err, rowsErr, "rows returned an error")
 	}
 	if !s.complete {
 		sdk.Logger(ctx).Warn().Msg("snapshot interrupted")
 		return ErrSnapshotInterrupt
 	}
-	return nil
+
+	return err
 }
 
 func (s *SnapshotIterator) buildRecord(ctx context.Context) (sdk.Record, error) {
@@ -225,4 +230,13 @@ func oidToScannerValue(oid pgtype.OID) scannerValue {
 		return &pgtype.Unknown{}
 	}
 	return t
+}
+
+// logOrReturn
+func logOrReturnError(ctx context.Context, oldErr, newErr error, msg string) error {
+	if oldErr == nil {
+		return fmt.Errorf(msg+": %w", newErr)
+	}
+	sdk.Logger(ctx).Err(newErr).Msg(msg)
+	return oldErr
 }
