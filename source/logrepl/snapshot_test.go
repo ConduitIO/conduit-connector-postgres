@@ -78,17 +78,17 @@ func TestSnapshotAtomicity(t *testing.T) {
 
 	// start our snapshot iterator
 	s, table := createTestSnapshotIterator(t, columns, key)
-	t.Cleanup(func() { s.Teardown(ctx) })
+	t.Cleanup(func() { is.NoErr(s.Teardown(ctx)) })
 	is.Equal(s.complete, false)
 
 	// add a record to our table after snapshot started
 	insertQuery := fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3)
-				VALUES (6, 'bizz', 456, false)`, table)
+				VALUES (5, 'bizz', 456, false)`, table)
 	_, err := pool.Exec(ctx, insertQuery)
 	is.NoErr(err)
 
 	// assert record does not appear in snapshot
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 5; i++ {
 		r, err := s.Next(ctx)
 		if err != nil {
 			is.Equal(err, ErrSnapshotComplete)

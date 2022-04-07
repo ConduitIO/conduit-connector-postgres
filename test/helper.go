@@ -101,7 +101,7 @@ func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 
 func RandomIdentifier(t *testing.T) string {
 	return fmt.Sprintf("conduit_%v_%d",
-		strings.Replace(strings.ToLower(t.Name()), "/", "_", -1),
+		strings.ReplaceAll(strings.ToLower(t.Name()), "/", "_"),
 		time.Now().UnixMicro()%1000)
 }
 
