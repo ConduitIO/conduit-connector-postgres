@@ -44,7 +44,7 @@ func TestLifecycle(t *testing.T) {
 		KeyColumn:    "key",
 	})
 	is.NoErr(err)
-	t.Cleanup(func() { conn.Release() })
+	t.Cleanup(conn.Release)
 
 	now := time.Now()
 	rec, err := s.Next(ctx)
@@ -88,16 +88,14 @@ func createTestSnapshot(t *testing.T, pool *pgxpool.Pool) string {
 	tx, err := conn.Begin(ctx)
 	is.NoErr(err)
 
-	query := `SELECT * FROM pg_catalog.pg_export_snapshot();`
-	rows, err := tx.Query(ctx, query)
-	is.NoErr(err)
 	var name string
-	is.True(rows.Next())
-	err = rows.Scan(&name)
+	query := `SELECT * FROM pg_catalog.pg_export_snapshot();`
+	row := tx.QueryRow(ctx, query)
+	is.NoErr(err)
+	err = row.Scan(&name)
 	is.NoErr(err)
 
 	t.Cleanup(func() {
-		rows.Close()
 		is.NoErr(tx.Commit(ctx))
 		conn.Release()
 	})
