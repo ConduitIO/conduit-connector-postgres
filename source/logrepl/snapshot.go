@@ -69,6 +69,7 @@ func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, cfg SnapshotConfig
 
 	err = s.loadRows(ctx)
 	if err != nil {
+		defer s.tx.Rollback(ctx)
 		return nil, fmt.Errorf("failed to load rows: %w", err)
 	}
 
@@ -81,13 +82,11 @@ func (s *SnapshotIterator) loadRows(ctx context.Context) error {
 		From(s.config.Table).
 		ToSql()
 	if err != nil {
-		s.rows.Close()
 		return fmt.Errorf("failed to create read query: %w", err)
 	}
 
 	rows, err := s.tx.Query(ctx, query, args...)
 	if err != nil {
-		s.rows.Close()
 		return fmt.Errorf("failed to query rows: %w", err)
 	}
 	s.rows = rows
@@ -119,6 +118,10 @@ func (s *SnapshotIterator) startSnapshotTx(ctx context.Context, conn *pgx.Conn) 
 }
 
 func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
+	if err := ctx.Err(); err != nil {
+		return sdk.Record{}, fmt.Errorf("context err: %w", err)
+	}
+
 	if !s.rows.Next() {
 		if err := s.rows.Err(); err != nil {
 			return sdk.Record{}, fmt.Errorf("rows error: %w", err)
