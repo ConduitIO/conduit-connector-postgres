@@ -179,10 +179,10 @@ func createTestSnapshot(t *testing.T, pool *pgxpool.Pool) string {
 	return name
 }
 
-// createTestSnapshotIterator creates a new test table, starts a snapshot  tx
-// on it, and then creates a test SnapshotIterator with the ID of that snapshot.
-// It returns that SnapshotIterator and the string name of the test table.
-// This function handles its own pooled connection cleanup, but _not_, the
+// createTestSnapshotIterator creates a new test table, starts a snapshot
+// on it, then creates a test SnapshotIterator with the ID of that snapshot.
+// * It returns that SnapshotIterator and the string name of the test table.
+// * This function handles its own pooled connection cleanup, but _not_ the
 // SnapshotIterator's Teardown.
 func createTestSnapshotIterator(t *testing.T, columns []string, key string) (*SnapshotIterator, string) {
 	is := is.New(t)
