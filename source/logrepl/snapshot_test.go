@@ -17,7 +17,6 @@ package logrepl
 import (
 	"context"
 	"fmt"
-	"log"
 	"testing"
 	"time"
 
@@ -104,7 +103,6 @@ func TestFullIteration(t *testing.T) {
 	s, table := createTestSnapshotIterator(t, []string{"id", "key"}, "key")
 	for i := 0; i < 4; i++ {
 		rec, err := s.Next(ctx)
-		log.Println(i)
 		is.Equal(rec.Position, sdk.Position(fmt.Sprintf("%s:%d", table, i)))
 		is.NoErr(err)
 	}
