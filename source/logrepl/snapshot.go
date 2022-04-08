@@ -69,9 +69,8 @@ func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, cfg SnapshotConfig
 
 	err = s.loadRows(ctx)
 	if err != nil {
-		if rollErr := s.tx.Rollback(ctx); err != nil {
-			sdk.Logger(ctx).Err(err).Msg("load rows failed")
-			return nil, fmt.Errorf("rollback failed: %w", rollErr)
+		if rollErr := s.tx.Rollback(ctx); rollErr != nil {
+			sdk.Logger(ctx).Err(rollErr).Msg("rollback failed")
 		}
 		return nil, fmt.Errorf("failed to load rows: %w", err)
 	}
