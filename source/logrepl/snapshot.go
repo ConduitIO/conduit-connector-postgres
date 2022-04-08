@@ -150,6 +150,7 @@ func (s *SnapshotIterator) Teardown(ctx context.Context) error {
 	if rowsErr := s.rows.Err(); rowsErr != nil {
 		err = logOrReturnError(ctx, err, rowsErr, "rows returned an error")
 	}
+
 	if !s.complete {
 		err = logOrReturnError(ctx, err, ErrSnapshotInterrupt, "snapshot interrupted")
 	}
