@@ -16,6 +16,7 @@ package logrepl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -142,7 +143,7 @@ func TestLifecycleErrInterrupt(t *testing.T) {
 			"table":  table,
 		},
 	})
-	is.Equal(ErrSnapshotInterrupt.Error(), s.Teardown(ctx).Error())
+	is.True(errors.Is(s.Teardown(ctx), ErrSnapshotInterrupt))
 }
 
 // createTestSnapshot starts a transaction that stays open while a snapshot test

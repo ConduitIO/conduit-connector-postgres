@@ -31,10 +31,10 @@ import (
 )
 
 // ErrSnapshotComplete is returned by Next when a snapshot is finished
-var ErrSnapshotComplete = errors.New("ErrSnapshotComplete")
+var ErrSnapshotComplete = errors.New("snapshot complete")
 
 // ErrSnapshotInterrupt is returned by Teardown when a snapshot is interrupted
-var ErrSnapshotInterrupt = errors.New("ErrSnapshotInterrupt")
+var ErrSnapshotInterrupt = errors.New("snapshot interrupted")
 
 var psql = sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 
@@ -69,9 +69,8 @@ func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, cfg SnapshotConfig
 
 	err = s.loadRows(ctx)
 	if err != nil {
-		if rollErr := s.tx.Rollback(ctx); err != nil {
-			sdk.Logger(ctx).Err(err).Msg("load rows failed")
-			return nil, fmt.Errorf("rollback failed: %w", rollErr)
+		if rollErr := s.tx.Rollback(ctx); rollErr != nil {
+			sdk.Logger(ctx).Err(rollErr).Msg("rollback failed")
 		}
 		return nil, fmt.Errorf("failed to load rows: %w", err)
 	}
@@ -152,8 +151,7 @@ func (s *SnapshotIterator) Teardown(ctx context.Context) error {
 		err = logOrReturnError(ctx, err, rowsErr, "rows returned an error")
 	}
 	if !s.complete {
-		sdk.Logger(ctx).Warn().Msg("snapshot interrupted")
-		return ErrSnapshotInterrupt
+		err = logOrReturnError(ctx, err, ErrSnapshotInterrupt, "snapshot interrupted")
 	}
 
 	return err
