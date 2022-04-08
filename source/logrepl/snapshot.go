@@ -31,10 +31,10 @@ import (
 )
 
 // ErrSnapshotComplete is returned by Next when a snapshot is finished
-var ErrSnapshotComplete = errors.New("ErrSnapshotComplete")
+var ErrSnapshotComplete = errors.New("snapshot complete")
 
 // ErrSnapshotInterrupt is returned by Teardown when a snapshot is interrupted
-var ErrSnapshotInterrupt = errors.New("ErrSnapshotInterrupt")
+var ErrSnapshotInterrupt = errors.New("snapshot interrupted")
 
 var psql = sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 
@@ -152,8 +152,7 @@ func (s *SnapshotIterator) Teardown(ctx context.Context) error {
 	}
 
 	if !s.complete {
-		sdk.Logger(ctx).Warn().Msg("snapshot interrupted")
-		return ErrSnapshotInterrupt
+		err = logOrReturnError(ctx, err, ErrSnapshotInterrupt, "snapshot interrupted")
 	}
 
 	return err
