@@ -51,7 +51,8 @@ func TestSnapshotIterator_Teardown(t *testing.T) {
 			setup: func(t *testing.T) *SnapshotIterator {
 				ctx := context.Background()
 				table := test.SetupTestTable(ctx, t, pool)
-				s := createTestSnapshotIterator(t, pool, table, columns, key)
+				name := createTestSnapshot(ctx, t, pool)
+				s := createTestSnapshotIterator(t, pool, name, table, columns, key)
 				return s
 			},
 			args: args{
@@ -80,9 +81,10 @@ func TestSnapshotAtomicity(t *testing.T) {
 	ctx := context.Background()
 	pool := test.ConnectPool(ctx, t, test.RegularConnString)
 	table := test.SetupTestTable(ctx, t, pool)
+	name := createTestSnapshot(ctx, t, pool)
 
 	// start our snapshot iterator
-	s := createTestSnapshotIterator(t, pool, table, columns, key)
+	s := createTestSnapshotIterator(t, pool, name, table, columns, key)
 	t.Cleanup(func() { is.NoErr(s.Teardown(ctx)) })
 	is.Equal(s.complete, false)
 
@@ -108,8 +110,9 @@ func TestFullIteration(t *testing.T) {
 	is := is.New(t)
 	pool := test.ConnectPool(ctx, t, test.RegularConnString)
 	table := test.SetupTestTable(ctx, t, pool)
+	name := createTestSnapshot(ctx, t, pool)
 
-	s := createTestSnapshotIterator(t, pool, table, []string{"id", "key"}, "key")
+	s := createTestSnapshotIterator(t, pool, name, table, []string{"id", "key"}, "key")
 	for i := 0; i < 4; i++ {
 		rec, err := s.Next(ctx)
 		is.Equal(rec.Position, sdk.Position(fmt.Sprintf("%s:%d", table, i)))
@@ -126,8 +129,9 @@ func TestLifecycleErrInterrupt(t *testing.T) {
 	ctx := context.Background()
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
 	table := test.SetupTestTable(ctx, t, pool)
+	name := createTestSnapshot(ctx, t, pool)
 
-	s := createTestSnapshotIterator(t, pool, table,
+	s := createTestSnapshotIterator(t, pool, name, table,
 		[]string{"id", "key", "column1", "column2", "column3"}, "key")
 
 	now := time.Now()
@@ -190,16 +194,14 @@ func createTestSnapshot(ctx context.Context, t *testing.T, pool *pgxpool.Pool) s
 // * It returns that SnapshotIterator and the string name of the test table.
 // * This function handles its own pooled connection cleanup, but _not_ the
 // SnapshotIterator's Teardown.
-func createTestSnapshotIterator(t *testing.T, pool *pgxpool.Pool, table string, columns []string, key string) *SnapshotIterator {
+func createTestSnapshotIterator(t *testing.T, pool *pgxpool.Pool, snapshotName string, table string, columns []string, key string) *SnapshotIterator {
 	is := is.New(t)
 	ctx := context.Background()
-
-	name := createTestSnapshot(ctx, t, pool)
 
 	conn, err := pool.Acquire(ctx)
 	is.NoErr(err)
 	s, err := NewSnapshotIterator(context.Background(), conn.Conn(), SnapshotConfig{
-		SnapshotName: name,
+		SnapshotName: snapshotName,
 		Table:        table,
 		Columns:      columns,
 		KeyColumn:    key,
