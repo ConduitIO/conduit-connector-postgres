@@ -4,6 +4,7 @@ import (
 	"context"
 
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/jackc/pgx/v4"
 )
 
 const (
@@ -14,13 +15,11 @@ const (
 // CombinedIterator binds a CDCIterator and a SnapshotIterator together for
 // coordinating the hand-off from snapshot to CDC operation modes.
 type CombinedIterator struct {
-	// cdc holds a reference to a CDCIterator
-	cdc *CDCIterator
-	// snap holds a ref to a SnapshotIterator
+	cdc  *CDCIterator
 	snap *SnapshotIterator
 }
 
-func NewCombinedIterator() (*CombinedIterator, error) {
+func NewCombinedIterator(ctx context.Context, conn *pgx.Conn, cfg Config) (*CombinedIterator, error) {
 	return nil, sdk.ErrUnimplemented
 }
 
