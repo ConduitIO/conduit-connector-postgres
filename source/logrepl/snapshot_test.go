@@ -32,106 +32,98 @@ var (
 	key     = "key"
 )
 
-func TestTeardown(t *testing.T) {
+func TestAtomicSnapshot(t *testing.T) {
 	is := is.New(t)
 	pool := test.ConnectPool(context.Background(), t, test.RegularConnString)
-
-	t.Run("should return interrupt error if next never called", func(t *testing.T) {
-		ctx := context.Background()
-		table := test.SetupTestTable(ctx, t, pool)
-		name := createTestSnapshot(ctx, t, pool)
-		s := createTestSnapshotIterator(ctx, t, pool, name, table, columns, key)
-
-		err := s.Teardown(ctx)
-
-		is.True(errors.Is(err, ErrSnapshotInterrupt))
+	ctx := context.Background()
+	table := test.SetupTestTable(ctx, t, pool)
+	name := createTestSnapshot(ctx, t, pool)
+	s := createTestSnapshotIterator(ctx, t, pool, SnapshotConfig{
+		SnapshotName: name,
+		Table:        table,
+		Columns:      columns,
+		KeyColumn:    key,
 	})
+	t.Cleanup(func() { is.NoErr(s.Teardown(ctx)) })
+
+	// add a record to our table after snapshot started
+	insertQuery := fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3)
+				VALUES (5, 'bizz', 456, false)`, table)
+	_, err := pool.Exec(ctx, insertQuery)
+	is.NoErr(err)
+
+	// assert record does not appear in snapshot
+	for i := 0; i < 5; i++ {
+		r, err := s.Next(ctx)
+		if err != nil {
+			is.True(errors.Is(err, ErrSnapshotComplete))
+			is.Equal(r, sdk.Record{})
+		}
+	}
 }
 
-func TestSnapshot(t *testing.T) {
+func TestSnapshotInterrupted(t *testing.T) {
 	is := is.New(t)
 	pool := test.ConnectPool(context.Background(), t, test.RegularConnString)
+	ctx := context.Background()
+	table := test.SetupTestTable(ctx, t, pool)
+	name := createTestSnapshot(ctx, t, pool)
+	s := createTestSnapshotIterator(ctx, t, pool, SnapshotConfig{
+		SnapshotName: name,
+		Table:        table,
+		Columns:      columns,
+		KeyColumn:    key,
+	})
+	now := time.Now()
 
-	t.Run("should take atomic snapshot", func(t *testing.T) {
-		ctx := context.Background()
-		table := test.SetupTestTable(ctx, t, pool)
-		name := createTestSnapshot(ctx, t, pool)
+	rec, err := s.Next(ctx)
+	is.NoErr(err)
 
-		// start our snapshot iterator
-		s := createTestSnapshotIterator(ctx, t, pool, name, table, columns, key)
-		t.Cleanup(func() { is.NoErr(s.Teardown(ctx)) })
+	is.True(rec.CreatedAt.After(now))
+	is.Equal(rec.Metadata["action"], "snapshot")
+	rec.CreatedAt = time.Time{} // reset time for comparison
+	is.Equal(rec, sdk.Record{
+		Position: sdk.Position(fmt.Sprintf("%s:0", table)),
+		Key: sdk.StructuredData{
+			"key": []uint8("1"),
+		},
+		Payload: sdk.StructuredData{
+			"id":      int64(1),
+			"column1": "foo",
+			"column2": int32(123),
+			"column3": bool(false),
+		},
+		Metadata: map[string]string{
+			"action": actionSnapshot,
+			"table":  table,
+		},
+	})
+	is.True(errors.Is(s.Teardown(ctx), ErrSnapshotInterrupt))
+}
 
-		// add a record to our table after snapshot started
-		insertQuery := fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3)
-				VALUES (5, 'bizz', 456, false)`, table)
-		_, err := pool.Exec(ctx, insertQuery)
-		is.NoErr(err)
-
-		// assert record does not appear in snapshot
-		for i := 0; i < 5; i++ {
-			r, err := s.Next(ctx)
-			if err != nil {
-				is.Equal(err, ErrSnapshotComplete)
-				is.Equal(r, sdk.Record{})
-			}
-		}
+func TestFullIteration(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+	pool := test.ConnectPool(ctx, t, test.RegularConnString)
+	table := test.SetupTestTable(ctx, t, pool)
+	name := createTestSnapshot(ctx, t, pool)
+	s := createTestSnapshotIterator(ctx, t, pool, SnapshotConfig{
+		SnapshotName: name,
+		Table:        table,
+		Columns:      columns,
+		KeyColumn:    key,
 	})
 
-	t.Run("should iterate full snapshot", func(t *testing.T) {
-		ctx := context.Background()
-		pool := test.ConnectPool(ctx, t, test.RegularConnString)
-		table := test.SetupTestTable(ctx, t, pool)
-		name := createTestSnapshot(ctx, t, pool)
-
-		s := createTestSnapshotIterator(ctx, t, pool, name, table,
-			[]string{"id", "key"}, "key")
-
-		for i := 0; i < 4; i++ {
-			rec, err := s.Next(ctx)
-			is.Equal(rec.Position, sdk.Position(fmt.Sprintf("%s:%d", table, i)))
-			is.NoErr(err)
-		}
-
-		r, err := s.Next(ctx)
-		is.Equal(r, sdk.Record{})
-		is.Equal(err.Error(), ErrSnapshotComplete.Error())
-		is.NoErr(s.Teardown(ctx))
-	})
-
-	t.Run("should return interrupt error", func(t *testing.T) {
-		ctx := context.Background()
-		table := test.SetupTestTable(ctx, t, pool)
-		name := createTestSnapshot(ctx, t, pool)
-
-		s := createTestSnapshotIterator(ctx, t, pool, name, table,
-			[]string{"id", "key", "column1", "column2", "column3"}, "key")
-
-		now := time.Now()
+	for i := 0; i < 4; i++ {
 		rec, err := s.Next(ctx)
+		is.Equal(rec.Position, sdk.Position(fmt.Sprintf("%s:%d", table, i)))
 		is.NoErr(err)
+	}
 
-		is.True(rec.CreatedAt.After(now))
-		is.Equal(rec.Metadata["action"], "snapshot")
-		rec.CreatedAt = time.Time{} // reset time for comparison
-
-		is.Equal(rec, sdk.Record{
-			Position: sdk.Position(fmt.Sprintf("%s:0", table)),
-			Key: sdk.StructuredData{
-				"key": []uint8("1"),
-			},
-			Payload: sdk.StructuredData{
-				"id":      int64(1),
-				"column1": "foo",
-				"column2": int32(123),
-				"column3": bool(false),
-			},
-			Metadata: map[string]string{
-				"action": actionSnapshot,
-				"table":  table,
-			},
-		})
-		is.True(errors.Is(s.Teardown(ctx), ErrSnapshotInterrupt))
-	})
+	r, err := s.Next(ctx)
+	is.Equal(r, sdk.Record{})
+	is.True(errors.Is(err, ErrSnapshotComplete))
+	is.NoErr(s.Teardown(ctx))
 }
 
 // createTestSnapshot starts a transaction that stays open while a snapshot test
@@ -162,24 +154,20 @@ func createTestSnapshot(ctx context.Context, t *testing.T, pool *pgxpool.Pool) s
 	return name
 }
 
-// createTestSnapshotIterator creates a new test table, starts a snapshot
-// on it, then creates a test SnapshotIterator with the ID of that snapshot.
-// * It returns that SnapshotIterator and the string name of the test table.
-// * This function handles its own pooled connection cleanup, but _not_ the
-// SnapshotIterator's Teardown.
+// creates a snapshot iterator for testing that hands its connection's cleanup.
 func createTestSnapshotIterator(ctx context.Context, t *testing.T,
-	pool *pgxpool.Pool, snapshotName string, table string, columns []string,
-	key string) *SnapshotIterator {
+	pool *pgxpool.Pool, cfg SnapshotConfig) *SnapshotIterator {
 	is := is.New(t)
+
 	conn, err := pool.Acquire(ctx)
 	is.NoErr(err)
 	s, err := NewSnapshotIterator(context.Background(), conn.Conn(), SnapshotConfig{
-		SnapshotName: snapshotName,
-		Table:        table,
-		Columns:      columns,
-		KeyColumn:    key,
+		SnapshotName: cfg.SnapshotName,
+		Table:        cfg.Table,
+		Columns:      cfg.Columns,
+		KeyColumn:    cfg.KeyColumn,
 	})
 	is.NoErr(err)
-	t.Cleanup(func() { conn.Release() })
+	t.Cleanup(conn.Release)
 	return s
 }
