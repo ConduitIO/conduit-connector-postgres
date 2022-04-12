@@ -25,8 +25,8 @@ import (
 )
 
 var (
+	_ Iterator = (*logrepl.Iterator)(nil)
 	_ Iterator = (*logrepl.CDCIterator)(nil)
-	_ Iterator = (*logrepl.CombinedIterator)(nil)
 	_ Iterator = (*longpoll.SnapshotIterator)(nil)
 )
 
@@ -65,9 +65,12 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		fallthrough
 	case CDCModeLogrepl:
 		if s.config.SnapshotMode == SnapshotModeInitial {
-			// TODO create snapshot iterator for logical replication and pass
-			//  the snapshot mode in the config
-			sdk.Logger(ctx).Warn().Msg("snapshot not supported in logical replication mode")
+			i, err := logrepl.NewIterator(ctx, s.conn, logrepl.Config{})
+			if err != nil {
+				return fmt.Errorf("failed to create logrepl iterator: %w", err)
+			}
+			s.iterator = i
+			return nil
 		}
 
 		i, err := logrepl.NewCDCIterator(ctx, s.conn, logrepl.Config{

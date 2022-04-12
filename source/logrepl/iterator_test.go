@@ -1,3 +1,17 @@
+// Copyright © 2022 Meroxa, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package logrepl
 
 import (
@@ -21,8 +35,7 @@ func TestCombinedIterator(t *testing.T) {
 		conn, err := pool.Acquire(ctx)
 		is.NoErr(err)
 
-		// NB: combined iterator should have no concept of SnapshotIterator.
-		ci, err := NewCombinedIterator(ctx, conn.Conn(), Config{
+		ci, err := NewIterator(ctx, conn.Conn(), Config{
 			Position:        nil,
 			Columns:         []string{"id", "key", "column1", "column2", "column3"},
 			KeyColumnName:   "key",
