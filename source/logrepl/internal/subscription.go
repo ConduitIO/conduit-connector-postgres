@@ -38,6 +38,7 @@ type Subscription struct {
 	SlotName      string
 	Publication   string
 	Tables        []string
+	SnapshotName  string
 	StartLSN      pglogrepl.LSN
 	Handler       Handler
 	StatusTimeout time.Duration
@@ -348,7 +349,9 @@ func (s *Subscription) createReplicationSlot(ctx context.Context, conn *pgconn.P
 			return err
 		}
 	}
-	_ = result // TODO use returned snapshot name to start snapshot iterator
+
+	s.SnapshotName = result.SnapshotName
+
 	return nil
 }
 
