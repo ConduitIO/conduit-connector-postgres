@@ -68,7 +68,7 @@ func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, cfg Config) (*Snap
 		return nil, err
 	}
 
-	s.withSnapshot(ctx, pool, func(snapshotName string) error {
+	err = s.withSnapshot(ctx, pool, func(snapshotName string) error {
 		err = s.setCurrentLSN(ctx, pool)
 		if err != nil {
 			return fmt.Errorf("failed to set current LSN: %w", err)
@@ -86,6 +86,9 @@ func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, cfg Config) (*Snap
 
 		return nil
 	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to export snapshot: %w", err)
+	}
 
 	return s, nil
 }
@@ -237,16 +240,14 @@ func (s *SnapshotIterator) buildRecord(ctx context.Context) (sdk.Record, error) 
 		"action": actionSnapshot,
 		"table":  s.config.TableName,
 	}
-	r.Position = s.SnapshotPosition()
+	r.Position = s.snapshotPosition()
 	return r, nil
 }
 
-// withPosition adds a position to a record that contains the table name and
-// the record's position in the current snapshot, aka it's number.
-func (s *SnapshotIterator) SnapshotPosition() sdk.Position {
+func (s *SnapshotIterator) snapshotPosition() sdk.Position {
 	pos := SnapshotPosition(s.config.TableName, s.internalPos)
 	s.internalPos++
-	return sdk.Position(pos)
+	return pos
 }
 
 // withPayloadAndKey builds a record's payload from *sql.Rows. It calls
