@@ -37,12 +37,10 @@ func TestAtomicSnapshot(t *testing.T) {
 	pool := test.ConnectPool(context.Background(), t, test.RegularConnString)
 	ctx := context.Background()
 	table := test.SetupTestTable(ctx, t, pool)
-	name := createTestSnapshot(ctx, t, pool)
-	s := createTestSnapshotIterator(ctx, t, pool, SnapshotConfig{
-		SnapshotName: name,
-		Table:        table,
-		Columns:      columns,
-		KeyColumn:    key,
+	s := createTestSnapshotIterator(ctx, t, pool, Config{
+		TableName:     table,
+		Columns:       columns,
+		KeyColumnName: key,
 	})
 	t.Cleanup(func() { is.NoErr(s.Teardown(ctx)) })
 
@@ -53,7 +51,7 @@ func TestAtomicSnapshot(t *testing.T) {
 	is.NoErr(err)
 
 	// assert record does not appear in snapshot
-	for i := 0; i < 5; i++ {
+	for i := 0; i <= 4; i++ {
 		r, err := s.Next(ctx)
 		if err != nil {
 			is.True(errors.Is(err, ErrSnapshotComplete))
@@ -67,12 +65,10 @@ func TestSnapshotInterrupted(t *testing.T) {
 	pool := test.ConnectPool(context.Background(), t, test.RegularConnString)
 	ctx := context.Background()
 	table := test.SetupTestTable(ctx, t, pool)
-	name := createTestSnapshot(ctx, t, pool)
-	s := createTestSnapshotIterator(ctx, t, pool, SnapshotConfig{
-		SnapshotName: name,
-		Table:        table,
-		Columns:      columns,
-		KeyColumn:    key,
+	s := createTestSnapshotIterator(ctx, t, pool, Config{
+		TableName:     table,
+		Columns:       columns,
+		KeyColumnName: key,
 	})
 	now := time.Now()
 
@@ -80,10 +76,10 @@ func TestSnapshotInterrupted(t *testing.T) {
 	is.NoErr(err)
 
 	is.True(rec.CreatedAt.After(now))
-	is.Equal(rec.Metadata["action"], "snapshot")
 	rec.CreatedAt = time.Time{} // reset time for comparison
+	is.Equal(rec.Metadata["action"], "snapshot")
 	is.Equal(rec, sdk.Record{
-		Position: sdk.Position(fmt.Sprintf("%s:0", table)),
+		Position: sdk.Position(fmt.Sprintf("s:%s:0", table)),
 		Key: sdk.StructuredData{
 			"key": []uint8("1"),
 		},
@@ -106,17 +102,15 @@ func TestFullIteration(t *testing.T) {
 	ctx := context.Background()
 	pool := test.ConnectPool(ctx, t, test.RegularConnString)
 	table := test.SetupTestTable(ctx, t, pool)
-	name := createTestSnapshot(ctx, t, pool)
-	s := createTestSnapshotIterator(ctx, t, pool, SnapshotConfig{
-		SnapshotName: name,
-		Table:        table,
-		Columns:      columns,
-		KeyColumn:    key,
+	s := createTestSnapshotIterator(ctx, t, pool, Config{
+		TableName:     table,
+		Columns:       columns,
+		KeyColumnName: key,
 	})
 
 	for i := 0; i < 4; i++ {
 		rec, err := s.Next(ctx)
-		is.Equal(rec.Position, sdk.Position(fmt.Sprintf("%s:%d", table, i)))
+		is.Equal(rec.Position, sdk.Position(fmt.Sprintf("s:%s:%d", table, i)))
 		is.NoErr(err)
 	}
 
@@ -126,46 +120,46 @@ func TestFullIteration(t *testing.T) {
 	is.NoErr(s.Teardown(ctx))
 }
 
-// createTestSnapshot starts a transaction that stays open while a snapshot test
-// runs. Otherwise, Postgres deletes the snapshot as soon as the transaction
-// commits or rolls back, and our snapshot iterator won't find a snapshot with
-// the specified name.
-// https://www.postgresql.org/docs/current/sql-set-transaction.html
-func createTestSnapshot(ctx context.Context, t *testing.T, pool *pgxpool.Pool) string {
+func TestInitialSnapshot(t *testing.T) {
 	is := is.New(t)
-	conn, err := pool.Acquire(ctx)
-	is.NoErr(err)
+	ctx := context.Background()
+	pool := test.ConnectPool(ctx, t, test.RegularConnString)
+	table := test.SetupTestTable(ctx, t, pool)
 
-	tx, err := conn.Begin(ctx)
-	is.NoErr(err)
-
-	var name string
-	query := `SELECT * FROM pg_catalog.pg_export_snapshot();`
-	row := tx.QueryRow(ctx, query)
-	is.NoErr(err)
-	err = row.Scan(&name)
-	is.NoErr(err)
-
-	t.Cleanup(func() {
-		is.NoErr(tx.Commit(ctx))
-		conn.Release()
+	s := createTestSnapshotIterator(ctx, t, pool, Config{
+		TableName:     table,
+		Columns:       columns,
+		KeyColumnName: key,
 	})
 
-	return name
+	is.True(s.LSN() != "")
+
+	count := 0
+	for {
+		_, err := s.Next(ctx)
+		if err != nil {
+			if errors.Is(err, ErrSnapshotComplete) {
+				break
+			}
+		}
+		count++
+	}
+
+	is.Equal(count, 4)
+	is.NoErr(s.Teardown(ctx))
 }
 
 // creates a snapshot iterator for testing that hands its connection's cleanup.
 func createTestSnapshotIterator(ctx context.Context, t *testing.T,
-	pool *pgxpool.Pool, cfg SnapshotConfig) *SnapshotIterator {
+	pool *pgxpool.Pool, cfg Config) *SnapshotIterator {
 	is := is.New(t)
 
 	conn, err := pool.Acquire(ctx)
 	is.NoErr(err)
-	s, err := NewSnapshotIterator(context.Background(), conn.Conn(), SnapshotConfig{
-		SnapshotName: cfg.SnapshotName,
-		Table:        cfg.Table,
-		Columns:      cfg.Columns,
-		KeyColumn:    cfg.KeyColumn,
+	s, err := NewSnapshotIterator(context.Background(), conn.Conn(), Config{
+		TableName:     cfg.TableName,
+		Columns:       cfg.Columns,
+		KeyColumnName: cfg.KeyColumnName,
 	})
 	is.NoErr(err)
 	t.Cleanup(conn.Release)

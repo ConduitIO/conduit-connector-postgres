@@ -15,6 +15,9 @@
 package logrepl
 
 import (
+	"fmt"
+	"strconv"
+
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
 )
@@ -27,4 +30,12 @@ func LSNToPosition(lsn pglogrepl.LSN) sdk.Position {
 // PositionToLSN converts a Conduit position to a Postgres LSN.
 func PositionToLSN(pos sdk.Position) (pglogrepl.LSN, error) {
 	return pglogrepl.ParseLSN(string(pos))
+}
+
+func SnapshotPosition(table string, inpos int64) sdk.Position {
+	position := fmt.Sprintf("%s:%s:%s",
+		snapshotPrefix,
+		table,
+		strconv.FormatInt(inpos, 10))
+	return sdk.Position(position)
 }

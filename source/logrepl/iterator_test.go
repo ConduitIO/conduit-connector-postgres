@@ -37,6 +37,8 @@ func TestIterator_Next(t *testing.T) {
 		is.NoErr(i.Teardown(ctx))
 	})
 
+	// assume no snapshot to isolate subscription features for test
+	i.snap.finished = true
 	// wait for subscription to be ready
 	<-i.sub.Ready()
 
@@ -126,9 +128,42 @@ func TestIterator_Next(t *testing.T) {
 	}
 }
 
-func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string) *CDCIterator {
+func TestSnapshotTransition(t *testing.T) {
+	ctx := context.Background()
+	is := is.New(t)
+
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupTestTable(ctx, t, pool)
+	i := testIterator(ctx, t, pool, table)
+	t.Cleanup(func() {
+		is.NoErr(i.Teardown(ctx))
+	})
+
+	go func() {
+		count := 0
+		for {
+			_, err := i.Next(ctx)
+			is.NoErr(err)
+			count++
+			if count == 5 {
+				break
+			}
+		}
+	}()
+
+	<-i.sub.Ready()
+	setupQuery := `INSERT INTO %s (id, column1, column2, column3)
+		VALUES (5, 'bizz', 456, false)`
+	query := fmt.Sprintf(setupQuery, table)
+	_, err := pool.Exec(ctx, query)
+	is.NoErr(err)
+	time.Sleep(100 * time.Millisecond)
+}
+
+func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string) *Iterator {
 	is := is.New(t)
 	config := Config{
+		Columns:         []string{"id", "key", "column1", "column2", "column3"},
 		TableName:       table,
 		PublicationName: table, // table is random, reuse for publication name
 		SlotName:        table, // table is random, reuse for slot name
@@ -141,7 +176,7 @@ func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table s
 		conn.Release()
 	})
 
-	i, err := NewCDCIterator(ctx, conn.Conn(), config)
+	i, err := NewIterator(ctx, conn.Conn(), config)
 	is.NoErr(err)
 	return i
 }

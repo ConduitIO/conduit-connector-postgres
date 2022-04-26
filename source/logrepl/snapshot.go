@@ -19,7 +19,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/pgutil"
@@ -28,6 +27,7 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/jackc/pgtype"
 	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/pgxpool"
 )
 
 // ErrSnapshotComplete is returned by Next when a snapshot is finished
@@ -36,87 +36,58 @@ var ErrSnapshotComplete = errors.New("snapshot complete")
 // ErrSnapshotInterrupt is returned by Teardown when a snapshot is interrupted
 var ErrSnapshotInterrupt = errors.New("snapshot interrupted")
 
+// snapshotPrefix prefixes all Positions that originate from a snapshot
+const snapshotPrefix = "s"
+
 var psql = sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 
 const actionSnapshot string = "snapshot"
 
-type SnapshotConfig struct {
-	SnapshotName string
-	Table        string
-	Columns      []string
-	KeyColumn    string
-}
-
 type SnapshotIterator struct {
-	config SnapshotConfig
-
-	tx   pgx.Tx
-	rows pgx.Rows
-
-	complete    bool
+	config      Config
+	currentLSN  string
+	finished    bool
 	internalPos int64
+
+	rows pgx.Rows
+	done chan struct{}
 }
 
-func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, cfg SnapshotConfig) (*SnapshotIterator, error) {
+func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, cfg Config) (*SnapshotIterator, error) {
 	s := &SnapshotIterator{
 		config: cfg,
+		done:   make(chan struct{}),
 	}
 
-	err := s.startSnapshotTx(ctx, conn)
+	poolcfg, err := pgxpool.ParseConfig(conn.Config().ConnString())
 	if err != nil {
-		return nil, fmt.Errorf("failed to start snapshot tx: %w", err)
+		return nil, err
+	}
+	pool, err := pgxpool.ConnectConfig(ctx, poolcfg)
+	if err != nil {
+		return nil, err
 	}
 
-	err = s.loadRows(ctx)
-	if err != nil {
-		if rollErr := s.tx.Rollback(ctx); rollErr != nil {
-			sdk.Logger(ctx).Err(rollErr).Msg("rollback failed")
+	s.withSnapshot(ctx, pool, func(snapshotName string) error {
+		err = s.setCurrentLSN(ctx, pool)
+		if err != nil {
+			return fmt.Errorf("failed to set current LSN: %w", err)
 		}
-		return nil, fmt.Errorf("failed to load rows: %w", err)
-	}
+
+		err = s.setSnapshotTx(ctx, pool, snapshotName)
+		if err != nil {
+			return fmt.Errorf("failed to set snapshot transaction id: %w", err)
+		}
+
+		err = s.setRows(ctx, pool)
+		if err != nil {
+			return fmt.Errorf("failed to get rows: %w", err)
+		}
+
+		return nil
+	})
 
 	return s, nil
-}
-
-func (s *SnapshotIterator) loadRows(ctx context.Context) error {
-	query, args, err := psql.
-		Select(s.config.Columns...).
-		From(s.config.Table).
-		ToSql()
-	if err != nil {
-		return fmt.Errorf("failed to create read query: %w", err)
-	}
-
-	rows, err := s.tx.Query(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("failed to query rows: %w", err)
-	}
-	s.rows = rows
-
-	return nil
-}
-
-func (s *SnapshotIterator) startSnapshotTx(ctx context.Context, conn *pgx.Conn) error {
-	tx, err := conn.BeginTx(ctx, pgx.TxOptions{
-		IsoLevel:   pgx.RepeatableRead,
-		AccessMode: pgx.ReadOnly,
-	})
-	if err != nil {
-		return err
-	}
-
-	s.tx = tx
-
-	snapshotTx := fmt.Sprintf(`SET TRANSACTION SNAPSHOT '%s'`, s.config.SnapshotName)
-	_, err = tx.Exec(ctx, snapshotTx)
-	if err != nil {
-		if rollErr := s.tx.Rollback(ctx); rollErr != nil {
-			sdk.Logger(ctx).Err(rollErr).Msg("set transaction rollback failed")
-		}
-		return fmt.Errorf("failed to set transaction snapshot id: %w", err)
-	}
-
-	return nil
 }
 
 func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
@@ -128,7 +99,8 @@ func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 		if err := s.rows.Err(); err != nil {
 			return sdk.Record{}, fmt.Errorf("rows error: %w", err)
 		}
-		s.complete = true
+		s.finished = true
+		close(s.done)
 		return sdk.Record{}, ErrSnapshotComplete
 	}
 
@@ -142,51 +114,149 @@ func (s *SnapshotIterator) Ack(ctx context.Context, pos sdk.Position) error {
 
 // Teardown attempts to gracefully teardown the iterator.
 func (s *SnapshotIterator) Teardown(ctx context.Context) error {
-	s.rows.Close()
+	defer s.rows.Close()
+
 	var err error
-	if commitErr := s.tx.Commit(ctx); commitErr != nil {
-		err = logOrReturnError(ctx, err, commitErr, "teardown commit failed")
-	}
-	if rowsErr := s.rows.Err(); rowsErr != nil {
+	rowsErr := s.rows.Err()
+	if rowsErr != nil {
 		err = logOrReturnError(ctx, err, rowsErr, "rows returned an error")
 	}
 
-	if !s.complete {
-		err = logOrReturnError(ctx, err, ErrSnapshotInterrupt, "snapshot interrupted")
+	if !s.finished {
+		err = logOrReturnError(ctx, rowsErr, ErrSnapshotInterrupt, "snapshot interrupted")
 	}
 
 	return err
 }
 
+// LSN returns the transactions's current LSN for anchoring replication
+func (s *SnapshotIterator) LSN() string {
+	return s.currentLSN
+}
+
+// Finished returns whether or not the snapshot iterator has returned all of its
+// rows or not.
+func (s *SnapshotIterator) Finished() bool {
+	return s.finished
+}
+
+// Done signals when the snapshot is finished.
+func (s *SnapshotIterator) Done() <-chan struct{} {
+	return s.done
+}
+
+func (s *SnapshotIterator) withSnapshot(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	fn func(snapshotName string) error,
+) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := tx.Commit(ctx); err != nil {
+			sdk.Logger(ctx).Err(err).Msg("transaction failed to commit")
+		}
+	}()
+	var name string
+	row := tx.QueryRow(ctx, "select pg_export_snapshot();")
+	if err := row.Scan(&name); err != nil {
+		return err
+	}
+	return fn(name)
+}
+
+func (s *SnapshotIterator) setRows(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+) error {
+	query, args, err := psql.
+		Select(s.config.Columns...).
+		From(s.config.TableName).
+		ToSql()
+	if err != nil {
+		return fmt.Errorf("failed to create read query: %w", err)
+	}
+	rows, err := pool.Query(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to query rows: %w", err)
+	}
+	s.rows = rows
+	go func() {
+		<-s.Done()
+		s.rows.Close()
+	}()
+	return nil
+}
+
+func (s *SnapshotIterator) setSnapshotTx(ctx context.Context, pool *pgxpool.Pool, snapshotName string) error {
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return err
+	}
+	snapshotTx := fmt.Sprintf(`SET TRANSACTION SNAPSHOT '%s'`, snapshotName)
+	_, err = tx.Exec(ctx, snapshotTx)
+	if err != nil {
+		if rollErr := tx.Rollback(ctx); rollErr != nil {
+			sdk.Logger(ctx).Err(rollErr).Msg("set transaction rollback failed")
+		}
+		return fmt.Errorf("failed to set transaction snapshot id: %w", err)
+	}
+	go func() {
+		<-s.Done()
+		if err := tx.Commit(ctx); err != nil {
+			sdk.Logger(ctx).Err(err).Msg("failed to commit snapshot tx")
+		}
+	}()
+
+	return nil
+}
+
+func (s *SnapshotIterator) setCurrentLSN(ctx context.Context, pool *pgxpool.Pool) error {
+	var lsn string
+	row := pool.QueryRow(ctx, "SELECT pg_current_wal_lsn();")
+	if err := row.Scan(&lsn); err != nil {
+		return fmt.Errorf("failed to retrieve current lsn: %w", err)
+	}
+	sdk.Logger(ctx).Info().Msgf("")
+	s.currentLSN = lsn
+	return nil
+}
+
 func (s *SnapshotIterator) buildRecord(ctx context.Context) (sdk.Record, error) {
-	r, err := withPayloadAndKey(sdk.Record{}, s.rows, s.config.Columns, s.config.KeyColumn)
+	r, err := withPayloadAndKey(sdk.Record{}, s.rows, s.config.Columns, s.config.KeyColumnName)
 	if err != nil {
 		return sdk.Record{}, err
 	}
-
 	r.CreatedAt = time.Now()
-
 	r.Metadata = map[string]string{
 		"action": actionSnapshot,
-		"table":  s.config.Table,
+		"table":  s.config.TableName,
 	}
-
-	r.Position = s.formatPosition()
-
+	r.Position = s.SnapshotPosition()
 	return r, nil
 }
 
 // withPosition adds a position to a record that contains the table name and
 // the record's position in the current snapshot, aka it's number.
-func (s *SnapshotIterator) formatPosition() sdk.Position {
-	position := fmt.Sprintf("%s:%s", s.config.Table, strconv.FormatInt(s.internalPos, 10))
+func (s *SnapshotIterator) SnapshotPosition() sdk.Position {
+	pos := SnapshotPosition(s.config.TableName, s.internalPos)
 	s.internalPos++
-	return sdk.Position(position)
+	return sdk.Position(pos)
 }
 
 // withPayloadAndKey builds a record's payload from *sql.Rows. It calls
 // Scan so it assumes that Next has been checked previously.
-func withPayloadAndKey(rec sdk.Record, rows pgx.Rows, columns []string, key string) (sdk.Record, error) {
+func withPayloadAndKey(
+	rec sdk.Record,
+	rows pgx.Rows,
+	columns []string,
+	key string,
+) (sdk.Record, error) {
 	colTypes := rows.FieldDescriptions()
 
 	vals := make([]interface{}, len(columns))
