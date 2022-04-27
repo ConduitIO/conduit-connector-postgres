@@ -135,10 +135,10 @@ func TestSnapshotTransition(t *testing.T) {
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
 	table := test.SetupTestTable(ctx, t, pool)
 	i := testIterator(ctx, t, pool, table)
+	i.config.SnapshotMode = "initial"
 	t.Cleanup(func() {
 		is.NoErr(i.Teardown(ctx))
 	})
-
 	go func() {
 		count := 0
 		for {

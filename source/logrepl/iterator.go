@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -142,9 +143,13 @@ func (i *Iterator) Next(ctx context.Context) (sdk.Record, error) {
 
 // Ack forwards the acknowledgment to the subscription.
 func (i *Iterator) Ack(ctx context.Context, pos sdk.Position) error {
+	// TODO: Handle position with our own type for distinct CDC and snapshot positions
+	if strings.HasPrefix(string(pos), "s:") {
+		return i.snap.Ack(ctx, pos)
+	}
 	lsn, err := PositionToLSN(pos)
 	if err != nil {
-		return fmt.Errorf("failed to parse position: %w", err)
+		return fmt.Errorf("failed to ack: %w", err)
 	}
 	i.sub.Ack(lsn)
 	return nil
