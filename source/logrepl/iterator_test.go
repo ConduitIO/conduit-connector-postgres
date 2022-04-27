@@ -135,10 +135,10 @@ func TestSnapshotTransition(t *testing.T) {
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
 	table := test.SetupTestTable(ctx, t, pool)
 	i := testIterator(ctx, t, pool, table)
-	i.config.SnapshotMode = "initial"
 	t.Cleanup(func() {
 		is.NoErr(i.Teardown(ctx))
 	})
+	<-i.sub.Ready()
 	go func() {
 		count := 0
 		for {
@@ -151,7 +151,6 @@ func TestSnapshotTransition(t *testing.T) {
 		}
 	}()
 
-	<-i.sub.Ready()
 	setupQuery := `INSERT INTO %s (id, column1, column2, column3)
 		VALUES (5, 'bizz', 456, false)`
 	query := fmt.Sprintf(setupQuery, table)
@@ -167,6 +166,7 @@ func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table s
 		TableName:       table,
 		PublicationName: table, // table is random, reuse for publication name
 		SlotName:        table, // table is random, reuse for slot name
+		SnapshotMode:    "initial",
 	}
 
 	// acquire connection for the time of the test

@@ -80,10 +80,6 @@ func NewIterator(ctx context.Context, conn *pgx.Conn, config Config) (*Iterator,
 // if snapshot mode is set to `initial`, this waits for the snapshot to complete
 // before starting the subscription.
 func (i *Iterator) listen(ctx context.Context) {
-	if i.config.SnapshotMode == "initial" {
-		<-i.snap.Done()
-	}
-
 	sdk.Logger(ctx).Info().
 		Str("slot", i.config.SlotName).
 		Str("publication", i.config.PublicationName).
