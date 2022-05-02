@@ -54,10 +54,36 @@ func TestRelationSetAllTypes(t *testing.T) {
 	_, messages := setupSubscription(ctx, t, conn.Config().Config, table)
 	insertRowAllTypes(ctx, t, conn, table)
 
-	<-messages                                       // skip first message, it's a begin message
-	rel := (<-messages).(*pglogrepl.RelationMessage) // second message is a relation
-	ins := (<-messages).(*pglogrepl.InsertMessage)   // third one is the insert
-	<-messages                                       // fourth one is the commit
+	var rel *pglogrepl.RelationMessage
+	var ins *pglogrepl.InsertMessage
+
+	// loop through messages and allow for empty transactions to be received
+	for {
+		// first message needs to be a begin message
+		msg := <-messages
+		if _, ok := msg.(*pglogrepl.BeginMessage); !ok {
+			t.Fatalf("expected begin message, got %s", msg.Type())
+		}
+
+		// second message can be either commit (we can catch empty transactions)
+		// or relation (that's what we are actually interested in)
+		msg = <-messages
+		if _, ok := msg.(*pglogrepl.CommitMessage); ok {
+			continue // empty transaction, skip it
+		}
+
+		// not an empty transaction, these have to be the messages we are looking for
+		rel = msg.(*pglogrepl.RelationMessage)        // second message is a relation
+		ins = (<-messages).(*pglogrepl.InsertMessage) // third one is the insert
+
+		// last one needs to be commit
+		msg = <-messages
+		if _, ok := msg.(*pglogrepl.CommitMessage); !ok {
+			t.Fatalf("expected commit message, got %s", msg.Type())
+		}
+
+		break
+	}
 
 	rs := NewRelationSet(conn.ConnInfo())
 
