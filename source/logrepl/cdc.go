@@ -58,14 +58,18 @@ func NewCDCIterator(ctx context.Context, conn *pgx.Conn, config Config) (*CDCIte
 		return nil, fmt.Errorf("failed to setup subscription: %w", err)
 	}
 
-	go i.listen(ctx)
-
 	return i, nil
 }
 
-// listen should be called in a goroutine. It starts the subscription and keeps
+// StartReplication starts the Subscription's replication slot at the configured
+// LSN or returns an error.
+func (s *CDCIterator) StartReplication(ctx context.Context, conn *pgx.Conn) error {
+	return s.sub.StartReplication(ctx, conn.PgConn())
+}
+
+// Listen should be called in a goroutine. It starts the subscription and keeps
 // it running until the subscription is stopped or the context is canceled.
-func (i *CDCIterator) listen(ctx context.Context) {
+func (i *CDCIterator) Listen(ctx context.Context) {
 	sdk.Logger(ctx).Info().
 		Str("slot", i.config.SlotName).
 		Str("publication", i.config.PublicationName).

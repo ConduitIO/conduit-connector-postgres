@@ -109,15 +109,17 @@ func (s *Subscription) Start(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
-	err = s.createPublication(ctx, conn)
+
+	err = s.CreatePublication(ctx, conn)
 	if err != nil {
 		return err
 	}
-	err = s.createReplicationSlot(ctx, conn)
+	err = s.CreateReplicationSlot(ctx, conn)
 	if err != nil {
 		return err
 	}
-	err = s.startReplication(ctx, conn)
+
+	err = s.StartReplication(ctx, conn)
 	if err != nil {
 		return err
 	}
@@ -128,11 +130,12 @@ func (s *Subscription) Start(ctx context.Context) (err error) {
 	s.walWritten = s.StartLSN
 	s.walFlushed = s.StartLSN
 
+	return s.Listen(lctx, conn)
 	return s.listen(lctx, conn)
 }
 
-// listen runs until context is cancelled or an error is encountered.
-func (s *Subscription) listen(ctx context.Context, conn *pgconn.PgConn) error {
+// Listen runs until context is cancelled or an error is encountered.
+func (s *Subscription) Listen(ctx context.Context, conn *pgconn.PgConn) error {
 	// signal that the subscription is ready and is receiving messages
 	close(s.ready)
 	nextStatusUpdateAt := time.Now().Add(s.StatusTimeout)
@@ -295,11 +298,11 @@ func (s *Subscription) connect(ctx context.Context) (*pgconn.PgConn, error) {
 	return conn, nil
 }
 
-// createPublication creates a publication if it doesn't exist yet. If a
+// CreatePublication creates a publication if it doesn't exist yet. If a
 // publication with that name already exists it returns no error. If a
 // publication is created a cleanup function is added which deletes the
 // publication afterwards.
-func (s *Subscription) createPublication(ctx context.Context, conn *pgconn.PgConn) error {
+func (s *Subscription) CreatePublication(ctx context.Context, conn *pgconn.PgConn) error {
 	if err := CreatePublication(
 		ctx,
 		conn,
@@ -325,11 +328,11 @@ func (s *Subscription) createPublication(ctx context.Context, conn *pgconn.PgCon
 	return nil
 }
 
-// createReplicationSlot creates a temporary replication slot which will be
+// CreateReplicationSlot creates a temporary replication slot which will be
 // deleted once the connection is closed. If a replication slot with that name
 // already exists it returns no error.
-func (s *Subscription) createReplicationSlot(ctx context.Context, conn *pgconn.PgConn) error {
-	result, err := pglogrepl.CreateReplicationSlot(
+func (s *Subscription) CreateReplicationSlot(ctx context.Context, conn *pgconn.PgConn) error {
+	_, err := pglogrepl.CreateReplicationSlot(
 		ctx,
 		conn,
 		s.SlotName,
@@ -348,14 +351,15 @@ func (s *Subscription) createReplicationSlot(ctx context.Context, conn *pgconn.P
 			return err
 		}
 	}
-	_ = result // TODO use returned snapshot name to start snapshot iterator
+	return nil
+}
 	return nil
 }
 
-// startReplication starts replication with a specific start LSN and adds two
+// StartReplication starts replication with a specific start LSN and adds two
 // cleanup functions, one for sending the last status update and one for sending
 // the standby copy done signal.
-func (s *Subscription) startReplication(ctx context.Context, conn *pgconn.PgConn) error {
+func (s *Subscription) StartReplication(ctx context.Context, conn *pgconn.PgConn) error {
 	pluginArgs := []string{
 		`"proto_version" '1'`,
 		fmt.Sprintf(`"publication_names" '%s'`, s.Publication),
