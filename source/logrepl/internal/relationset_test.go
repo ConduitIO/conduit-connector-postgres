@@ -61,9 +61,7 @@ func TestRelationSetAllTypes(t *testing.T) {
 	for {
 		// first message needs to be a begin message
 		msg := <-messages
-		if _, ok := msg.(*pglogrepl.BeginMessage); !ok {
-			t.Fatalf("expected begin message, got %s", msg.Type())
-		}
+		_ = msg.(*pglogrepl.BeginMessage)
 
 		// second message can be either commit (we can catch empty transactions)
 		// or relation (that's what we are actually interested in)
@@ -75,13 +73,7 @@ func TestRelationSetAllTypes(t *testing.T) {
 		// not an empty transaction, these have to be the messages we are looking for
 		rel = msg.(*pglogrepl.RelationMessage)        // second message is a relation
 		ins = (<-messages).(*pglogrepl.InsertMessage) // third one is the insert
-
-		// last one needs to be commit
-		msg = <-messages
-		if _, ok := msg.(*pglogrepl.CommitMessage); !ok {
-			t.Fatalf("expected commit message, got %s", msg.Type())
-		}
-
+		_ = (<-messages).(*pglogrepl.CommitMessage)   // fourth one is the commit
 		break
 	}
 
