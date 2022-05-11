@@ -37,7 +37,7 @@ func TestIterator_Next(t *testing.T) {
 		is.NoErr(i.Teardown(ctx))
 	})
 
-	go i.Listen(ctx)
+	go i.Start(ctx)
 	// wait for subscription to be ready
 	<-i.sub.Ready()
 

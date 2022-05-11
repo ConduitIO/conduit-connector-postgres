@@ -33,6 +33,7 @@ type Config struct {
 	TableName       string
 	KeyColumnName   string
 	Columns         []string
+	SnapshotMode    string // TODO: add typing to snapshot mode handling
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -67,9 +68,19 @@ func (s *CDCIterator) StartReplication(ctx context.Context, conn *pgx.Conn) erro
 	return s.sub.StartReplication(ctx, conn.PgConn())
 }
 
-// Listen should be called in a goroutine. It starts the subscription and keeps
+// Listen will listen for events from an already started replication slot.
+func (i *CDCIterator) Listen(ctx context.Context, conn *pgx.Conn) error {
+	return i.sub.Listen(ctx, conn.PgConn())
+}
+
+// Ready returns when the subscription is ready.
+func (i *CDCIterator) Ready() <-chan struct{} {
+	return i.sub.Ready()
+}
+
+// Start should be called in a goroutine. It starts the subscription and keeps
 // it running until the subscription is stopped or the context is canceled.
-func (i *CDCIterator) Listen(ctx context.Context) {
+func (i *CDCIterator) Start(ctx context.Context) {
 	sdk.Logger(ctx).Info().
 		Str("slot", i.config.SlotName).
 		Str("publication", i.config.PublicationName).
@@ -138,6 +149,14 @@ func (i *CDCIterator) Teardown(ctx context.Context) error {
 		}
 		return nil
 	}
+}
+
+func (i *CDCIterator) CreatePublication(ctx context.Context, conn *pgx.Conn) error {
+	return i.sub.CreatePublication(ctx, conn.PgConn())
+}
+
+func (i *CDCIterator) CreateSnapshotReplicationSlot(ctx context.Context, conn *pgx.Conn) error {
+	return i.sub.CreateSnapshotReplicationSlot(ctx, conn.PgConn())
 }
 
 // attachSubscription determines the starting LSN and key column of the source

@@ -57,28 +57,55 @@ type SnapshotIterator struct {
 	internalPos int64
 }
 
+// TODO: remove conn from args here
 func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, cfg SnapshotConfig) (*SnapshotIterator, error) {
 	s := &SnapshotIterator{
 		config: cfg,
 	}
+	return s, nil
+}
 
-	err := s.startSnapshotTx(ctx, conn)
+func (s *SnapshotIterator) Start(ctx context.Context, conn *pgx.Conn) error {
+	err := s.StartSnapshotTx(ctx, conn)
 	if err != nil {
-		return nil, fmt.Errorf("failed to start snapshot tx: %w", err)
+		return fmt.Errorf("failed to start snapshot tx: %w", err)
 	}
 
-	err = s.loadRows(ctx)
+	err = s.LoadRows(ctx)
 	if err != nil {
 		if rollErr := s.tx.Rollback(ctx); rollErr != nil {
 			sdk.Logger(ctx).Err(rollErr).Msg("rollback failed")
 		}
-		return nil, fmt.Errorf("failed to load rows: %w", err)
+		return fmt.Errorf("failed to load rows: %w", err)
 	}
 
-	return s, nil
+	return nil
 }
 
-func (s *SnapshotIterator) loadRows(ctx context.Context) error {
+// LoadRowsConn allows a user to pass a custom postgres connection to the
+// rows query for snapshots.
+// TODO: This should be a SetRows function that both Start and an external
+// user could use to set the snapshotter's rows manually.
+func (s *SnapshotIterator) LoadRowsConn(ctx context.Context, conn *pgx.Conn) error {
+	query, args, err := psql.
+		Select(s.config.Columns...).
+		From(s.config.Table).
+		ToSql()
+	if err != nil {
+		return fmt.Errorf("failed to create read query: %w", err)
+	}
+
+	rows, err := conn.Query(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to query rows: %w", err)
+	}
+	s.rows = rows
+
+	return nil
+}
+
+// LoadRows uses the SnapshotIterator's own connection
+func (s *SnapshotIterator) LoadRows(ctx context.Context) error {
 	query, args, err := psql.
 		Select(s.config.Columns...).
 		From(s.config.Table).
@@ -96,7 +123,20 @@ func (s *SnapshotIterator) loadRows(ctx context.Context) error {
 	return nil
 }
 
-func (s *SnapshotIterator) startSnapshotTx(ctx context.Context, conn *pgx.Conn) error {
+// SetSnapshot sets the current connection's snapshot to the configured snapshot
+func (s *SnapshotIterator) SetSnapshot(ctx context.Context, conn *pgx.Conn) error {
+	snapshotTx := fmt.Sprintf(`SET TRANSACTION SNAPSHOT '%s'`, s.config.SnapshotName)
+	_, err := conn.Exec(ctx, snapshotTx)
+	if err != nil {
+		if rollErr := s.tx.Rollback(ctx); rollErr != nil {
+			sdk.Logger(ctx).Err(rollErr).Msg("set transaction rollback failed")
+		}
+		return fmt.Errorf("failed to set transaction snapshot id: %w", err)
+	}
+	return nil
+}
+
+func (s *SnapshotIterator) StartSnapshotTx(ctx context.Context, conn *pgx.Conn) error {
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{
 		IsoLevel:   pgx.RepeatableRead,
 		AccessMode: pgx.ReadOnly,
@@ -104,9 +144,7 @@ func (s *SnapshotIterator) startSnapshotTx(ctx context.Context, conn *pgx.Conn) 
 	if err != nil {
 		return err
 	}
-
 	s.tx = tx
-
 	snapshotTx := fmt.Sprintf(`SET TRANSACTION SNAPSHOT '%s'`, s.config.SnapshotName)
 	_, err = tx.Exec(ctx, snapshotTx)
 	if err != nil {
@@ -144,9 +182,14 @@ func (s *SnapshotIterator) Ack(ctx context.Context, pos sdk.Position) error {
 func (s *SnapshotIterator) Teardown(ctx context.Context) error {
 	s.rows.Close()
 	var err error
-	if commitErr := s.tx.Commit(ctx); commitErr != nil {
-		err = logOrReturnError(ctx, err, commitErr, "teardown commit failed")
+
+	// TODO: Handle this gracefully instead of just a nil check
+	if s.tx != nil {
+		if commitErr := s.tx.Commit(ctx); commitErr != nil {
+			err = logOrReturnError(ctx, err, commitErr, "teardown commit failed")
+		}
 	}
+
 	if rowsErr := s.rows.Err(); rowsErr != nil {
 		err = logOrReturnError(ctx, err, rowsErr, "rows returned an error")
 	}

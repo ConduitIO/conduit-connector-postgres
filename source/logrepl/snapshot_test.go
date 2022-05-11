@@ -169,5 +169,7 @@ func createTestSnapshotIterator(ctx context.Context, t *testing.T,
 	})
 	is.NoErr(err)
 	t.Cleanup(conn.Release)
+	err = s.Start(ctx, conn.Conn())
+	is.NoErr(err)
 	return s
 }

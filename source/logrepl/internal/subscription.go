@@ -131,7 +131,20 @@ func (s *Subscription) Start(ctx context.Context) (err error) {
 	s.walFlushed = s.StartLSN
 
 	return s.Listen(lctx, conn)
-	return s.listen(lctx, conn)
+}
+
+// PrepareReplication prepares a publication and a replication slot to consume
+// that publication.
+func (s *Subscription) PrepareReplicationForSnapshot(ctx context.Context, conn *pgconn.PgConn) error {
+	err := s.CreatePublication(ctx, conn)
+	if err != nil {
+		return err
+	}
+	err = s.CreateSnapshotReplicationSlot(ctx, conn)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // Listen runs until context is cancelled or an error is encountered.
@@ -353,6 +366,41 @@ func (s *Subscription) CreateReplicationSlot(ctx context.Context, conn *pgconn.P
 	}
 	return nil
 }
+
+func (s *Subscription) CreateSnapshotReplicationSlot(ctx context.Context, conn *pgconn.PgConn) error {
+	result, err := pglogrepl.CreateReplicationSlot(
+		ctx,
+		conn,
+		s.SlotName,
+		pgOutputPlugin,
+		pglogrepl.CreateReplicationSlotOptions{
+			Temporary:      true, // replication slot is dropped when we disconnect
+			SnapshotAction: "USE_SNAPSHOT",
+			Mode:           pglogrepl.LogicalReplication,
+		},
+	)
+	if err != nil {
+		// If creating the replication slot fails with code 42710, this means
+		// the replication slot already exists.
+		var pgerr *pgconn.PgError
+		if !errors.As(err, &pgerr) || pgerr.Code != pgDuplicateObjectErrorCode {
+			return err
+		}
+	}
+
+	// set the Subscription's start point to the consistent point acquired by
+	// the replication slot
+	lsn, err := pglogrepl.ParseLSN(result.ConsistentPoint)
+	if err != nil {
+		return err
+	}
+
+	sdk.Logger(ctx).Info().
+		Msgf("starting snapshot replication at consistent point %s", lsn.String())
+
+	s.walFlushed = lsn
+	s.walWritten = lsn
+
 	return nil
 }
 

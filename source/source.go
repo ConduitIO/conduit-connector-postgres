@@ -25,7 +25,7 @@ import (
 )
 
 var (
-	_ Iterator = (*logrepl.CDCIterator)(nil)
+	_ Iterator = (*logrepl.Hybrid)(nil)
 	_ Iterator = (*longpoll.SnapshotIterator)(nil)
 )
 
