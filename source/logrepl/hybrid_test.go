@@ -21,42 +21,48 @@ import (
 	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/test"
+
 	"github.com/jackc/pgx/v4"
 	"github.com/matryer/is"
 )
 
-func TestNewHybridIterator(t *testing.T) {
-	ctx := context.Background()
-	is := is.New(t)
-
-	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTable(ctx, t, conn)
-
-	_, err := NewHybridIterator(ctx, conn, Config{
-		TableName:     table,
-		KeyColumnName: "key",
-		SlotName:      table,
-		Columns:       []string{"id", "key", "column1", "column2", "column3"},
-	})
-	is.NoErr(err)
-}
-
 func TestHybridTransition(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
+	dctx, cancel := context.WithDeadline(ctx, time.Now().Add(time.Second*3))
+	t.Cleanup(cancel)
 
-	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	h := createTestHybridIterator(ctx, t)
 
-	// TODO: clean up connection configuration
+	count := 0
+	go func() {
+		<-dctx.Done()
+		// check the count after deadline reached.
+		is.True(count == 8)
+	}()
+
+	for {
+		rec, err := h.Next(ctx)
+		is.NoErr(err)
+		count++
+		fmt.Printf("rec: %v\n", rec)
+	}
+}
+
+func createTestHybridIterator(ctx context.Context, t *testing.T) *Hybrid {
+	is := is.New(t)
+
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 	cfg := conn.Config()
 	cfg.RuntimeParams["replication"] = "database"
 	conn, err := pgx.ConnectConfig(ctx, cfg)
 	is.NoErr(err)
-	table := test.SetupTestTable(ctx, t, conn)
+
 	t.Cleanup(func() {
-		// is.NoErr(conn.Close(ctx))
+		is.NoErr(conn.Close(ctx))
 	})
+
+	table := test.SetupTestTable(ctx, t, conn)
 
 	h, err := NewHybridIterator(ctx, conn, Config{
 		TableName:       table,
@@ -72,8 +78,9 @@ func TestHybridTransition(t *testing.T) {
 	})
 
 	go func() {
-		i := 0
-		for i <= 4 {
+		pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+		count := 4
+		for i := 0; i < count; i++ {
 			query := `INSERT INTO %s (key, column1, column2, column3)
 				VALUES ('5', 'bazz', 123, false),
 				('6', 'bizz', 456, true),
@@ -88,18 +95,5 @@ func TestHybridTransition(t *testing.T) {
 		}
 	}()
 
-	count := 0
-	dctx, cancel := context.WithDeadline(ctx, time.Now().Add(time.Second*3))
-	t.Cleanup(cancel)
-	go func() {
-		<-dctx.Done()
-		// check the count after deadline reached.
-		is.True(count == 8)
-	}()
-	for {
-		rec, err := h.Next(ctx)
-		is.NoErr(err)
-		count++
-		t.Logf("- position: %s\n - record: %v\n", string(rec.Position), rec)
-	}
+	return h
 }

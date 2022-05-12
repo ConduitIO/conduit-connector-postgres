@@ -367,6 +367,8 @@ func (s *Subscription) CreateReplicationSlot(ctx context.Context, conn *pgconn.P
 	return nil
 }
 
+// CreateSnapshotReplicationSlot creates a replication slot with USE_SNAPSHOT
+// and anchors the Subscription's StartLSN to its consistent point.
 func (s *Subscription) CreateSnapshotReplicationSlot(ctx context.Context, conn *pgconn.PgConn) error {
 	result, err := pglogrepl.CreateReplicationSlot(
 		ctx,
@@ -400,6 +402,7 @@ func (s *Subscription) CreateSnapshotReplicationSlot(ctx context.Context, conn *
 
 	s.walFlushed = lsn
 	s.walWritten = lsn
+	s.StartLSN = lsn
 
 	return nil
 }

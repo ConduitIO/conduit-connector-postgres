@@ -13,10 +13,12 @@ const SnapshotInitial = "initial"
 const SnapshotNever = "never"
 
 type Hybrid struct {
-	config   Config
-	conn     *pgx.Conn
+	config Config
+
 	snapshot *SnapshotIterator
 	cdc      *CDCIterator
+
+	conn *pgx.Conn
 }
 
 func NewHybridIterator(ctx context.Context, conn *pgx.Conn, cfg Config) (*Hybrid, error) {
@@ -65,7 +67,6 @@ func (h *Hybrid) initialSnapshot(ctx context.Context, conn *pgx.Conn) (*Hybrid, 
 		return nil, err
 	}
 	defer func() {
-		fmt.Printf("LOUDLY CLEANING UP THE SNAPSHOT TRANSACTION: %v\n", h)
 		if err := tx.Commit(ctx); err != nil {
 			// Okay so this conn is busy when we try to close it.
 			// Why is that?
@@ -131,29 +132,34 @@ func (i *Hybrid) attachCDCIterator(ctx context.Context, conn *pgx.Conn) error {
 }
 
 func (i *Hybrid) Ack(ctx context.Context, pos sdk.Position) error {
-	// TODO: Handle cdc vs snapshot positions here
+	// TODO: Handle cdc vs snapshot positions here.
 	if i.snapshot != nil {
-		// naively return nil if snapshot is still present
 		return nil
 	}
-	return i.cdc.Ack(ctx, pos)
+	if i.cdc != nil {
+		return i.cdc.Ack(ctx, pos)
+	}
+
+	return nil
 }
 
 func (i *Hybrid) Next(ctx context.Context) (sdk.Record, error) {
 	if i.snapshot != nil {
 		next, err := i.snapshot.Next(ctx)
 		if err != nil {
-			// TODO: check if err snapshot complete
 			if errors.Is(err, ErrSnapshotComplete) {
-				// TODO: This fails. We should figure out why.
 				if err := i.snapshot.Teardown(ctx); err != nil {
 					return sdk.Record{}, err
 				}
 				i.snapshot = nil
+
 				go i.StartCDC(ctx, i.conn)
+
+				<-i.cdc.Ready()
 				return i.cdc.Next(ctx)
 			}
-			return sdk.Record{}, err
+
+			return sdk.Record{}, fmt.Errorf("snapshot failed: %w", err)
 		}
 		return next, nil
 	}

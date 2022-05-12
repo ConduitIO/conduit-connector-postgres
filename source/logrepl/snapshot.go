@@ -104,6 +104,11 @@ func (s *SnapshotIterator) LoadRowsConn(ctx context.Context, conn *pgx.Conn) err
 	return nil
 }
 
+func (s *SnapshotIterator) SetRows(ctx context.Context, rows pgx.Rows) error {
+	s.rows = rows
+	return nil
+}
+
 // LoadRows uses the SnapshotIterator's own connection
 func (s *SnapshotIterator) LoadRows(ctx context.Context) error {
 	query, args, err := psql.
@@ -284,4 +289,19 @@ func logOrReturnError(ctx context.Context, oldErr, newErr error, msg string) err
 	}
 	sdk.Logger(ctx).Err(newErr).Msg(msg)
 	return oldErr
+}
+
+// SnapshotQueryString formats a Postgresql query string for the given columns
+// and table.
+// TODO: refactor other snapshot query formatting to use this function.
+func SnapshotQueryString(columns []string, table string) (string, []interface{}, error) {
+	query, args, err := psql.
+		Select(columns...).
+		From(table).
+		ToSql()
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to create read query: %w", err)
+	}
+
+	return query, args, nil
 }
