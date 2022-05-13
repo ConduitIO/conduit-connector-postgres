@@ -133,20 +133,6 @@ func (s *Subscription) Start(ctx context.Context) (err error) {
 	return s.Listen(lctx, conn)
 }
 
-// PrepareReplication prepares a publication and a replication slot to consume
-// that publication.
-func (s *Subscription) PrepareReplicationForSnapshot(ctx context.Context, conn *pgconn.PgConn) error {
-	err := s.CreatePublication(ctx, conn)
-	if err != nil {
-		return err
-	}
-	err = s.CreateSnapshotReplicationSlot(ctx, conn)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
 // Listen runs until context is cancelled or an error is encountered.
 func (s *Subscription) Listen(ctx context.Context, conn *pgconn.PgConn) error {
 	// signal that the subscription is ready and is receiving messages

@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/test"
 
@@ -29,16 +28,31 @@ import (
 func TestHybridTransition(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
-	dctx, cancel := context.WithDeadline(ctx, time.Now().Add(time.Second*3))
-	t.Cleanup(cancel)
 
 	h := createTestHybridIterator(ctx, t)
 
 	count := 0
 	go func() {
-		<-dctx.Done()
-		// check the count after deadline reached.
-		is.True(count == 8)
+		<-ctx.Done()
+		// TODO assert on count
+	}()
+
+	go func() {
+		pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+		count := 4
+		for i := 0; i < count; i++ {
+			query := `INSERT INTO %s (key, column1, column2, column3)
+				VALUES ('5', 'foo', 123, false),
+				('6', 'bar', 456, true),
+				('7', 'baz', 789, false),
+				('8', null, null, null)`
+			query = fmt.Sprintf(query, h.config.TableName)
+			c, err := pool.Acquire(ctx)
+			is.NoErr(err)
+			_, err = c.Exec(ctx, query)
+			is.NoErr(err)
+			i++
+		}
 	}()
 
 	for {
@@ -76,24 +90,6 @@ func createTestHybridIterator(ctx context.Context, t *testing.T) *Hybrid {
 	t.Cleanup(func() {
 		is.NoErr(h.Teardown(ctx))
 	})
-
-	go func() {
-		pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-		count := 4
-		for i := 0; i < count; i++ {
-			query := `INSERT INTO %s (key, column1, column2, column3)
-				VALUES ('5', 'bazz', 123, false),
-				('6', 'bizz', 456, true),
-				('7', 'buzz', 789, false),
-				('8', null, null, null)`
-			query = fmt.Sprintf(query, table)
-			c, err := pool.Acquire(ctx)
-			is.NoErr(err)
-			_, err = c.Exec(ctx, query)
-			is.NoErr(err)
-			i++
-		}
-	}()
 
 	return h
 }

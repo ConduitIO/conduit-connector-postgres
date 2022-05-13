@@ -68,8 +68,6 @@ func (h *Hybrid) initialSnapshot(ctx context.Context, conn *pgx.Conn) (*Hybrid, 
 	}
 	defer func() {
 		if err := tx.Commit(ctx); err != nil {
-			// Okay so this conn is busy when we try to close it.
-			// Why is that?
 			fmt.Printf("failed to commit replication slot tx: %v", err)
 		}
 	}()
@@ -79,33 +77,42 @@ func (h *Hybrid) initialSnapshot(ctx context.Context, conn *pgx.Conn) (*Hybrid, 
 		return nil, err
 	}
 
-	// Okay I think this might be a problem that makes this more complicated
-	// and yet again another pain in my ass.
-	// I'm not sure what this new connection does for transaction guarantees.
-	// Neither connection is compatible with the other.
-
-	// TODO: Handle this conn setup in a function to keep it cleaner
 	config := conn.Config()
+
+	// Deleting this line will not allow us to query rows.
+	// Extended query protocol not supported in replication connections.
 	delete(config.RuntimeParams, "replication")
-	newconn, err := pgx.ConnectConfig(ctx, config)
+
+	snapconn, err := pgx.ConnectConfig(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := snapconn.Close(ctx); err != nil {
+			fmt.Printf("SNAPCONN FAILED TO CLOSE: %v", err)
+		}
+	}()
+
+	snaptx, err := snapconn.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel: pgx.RepeatableRead,
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	snap, err := NewSnapshotIterator(ctx, newconn, SnapshotConfig{
+	snap := &SnapshotIterator{config: SnapshotConfig{
 		Table:     h.config.TableName,
 		Columns:   h.config.Columns,
 		KeyColumn: h.config.KeyColumnName,
-	})
+	}}
+	err = snap.LoadRowsConn(ctx, snaptx.Conn())
 	if err != nil {
 		return nil, err
 	}
 	h.snapshot = snap
 
-	// this sets the h.snapshot.rows to its newconn
-	err = snap.LoadRowsConn(ctx, newconn)
-	if err != nil {
-		return nil, err
+	if err := snaptx.Commit(ctx); err != nil {
+		fmt.Printf("SNAPTX failed to commit up snaptx: %v", err)
 	}
 
 	return h, nil
@@ -116,9 +123,8 @@ func (h *Hybrid) StartCDC(ctx context.Context, conn *pgx.Conn) error {
 	if err != nil {
 		return err
 	}
-
 	go h.cdc.Listen(ctx, conn)
-
+	<-h.cdc.Ready()
 	return nil
 }
 
