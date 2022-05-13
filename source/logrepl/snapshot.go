@@ -188,7 +188,6 @@ func (s *SnapshotIterator) Teardown(ctx context.Context) error {
 	s.rows.Close()
 	var err error
 
-	// TODO: Handle this gracefully instead of just a nil check
 	if s.tx != nil {
 		if commitErr := s.tx.Commit(ctx); commitErr != nil {
 			err = logOrReturnError(ctx, err, commitErr, "teardown commit failed")

@@ -383,9 +383,9 @@ func (s *Subscription) CreateSnapshotReplicationSlot(ctx context.Context, conn *
 		return err
 	}
 
-	sdk.Logger(ctx).Info().
-		Msgf("starting snapshot replication at consistent point %s", lsn.String())
-
+	// TODO: Maybe this should be extracted out to a function and used elsewhere
+	// And I think we should consider refactoring CreateReplicationSlot
+	// to accept snapshot mode options instead of a whole new function.
 	s.walFlushed = lsn
 	s.walWritten = lsn
 	s.StartLSN = lsn

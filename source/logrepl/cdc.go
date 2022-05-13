@@ -64,8 +64,8 @@ func NewCDCIterator(ctx context.Context, conn *pgx.Conn, config Config) (*CDCIte
 
 // StartReplication starts the Subscription's replication slot at the configured
 // LSN or returns an error.
-func (s *CDCIterator) StartReplication(ctx context.Context, conn *pgx.Conn) error {
-	return s.sub.StartReplication(ctx, conn.PgConn())
+func (i *CDCIterator) StartReplication(ctx context.Context, conn *pgx.Conn) error {
+	return i.sub.StartReplication(ctx, conn.PgConn())
 }
 
 // Listen will listen for events from an already started replication slot.

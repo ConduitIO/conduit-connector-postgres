@@ -1,3 +1,17 @@
+// Copyright © 2022 Meroxa, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package logrepl
 
 import (
@@ -128,64 +142,72 @@ func (h *Hybrid) StartCDC(ctx context.Context, conn *pgx.Conn) error {
 	return nil
 }
 
-func (i *Hybrid) attachCDCIterator(ctx context.Context, conn *pgx.Conn) error {
-	cdc, err := NewCDCIterator(ctx, conn, i.config)
+func (h *Hybrid) attachCDCIterator(ctx context.Context, conn *pgx.Conn) error {
+	cdc, err := NewCDCIterator(ctx, conn, h.config)
 	if err != nil {
 		return fmt.Errorf("failed to create CDC iterator: %w", err)
 	}
-	i.cdc = cdc
+	h.cdc = cdc
 	return nil
 }
 
-func (i *Hybrid) Ack(ctx context.Context, pos sdk.Position) error {
+func (h *Hybrid) Ack(ctx context.Context, pos sdk.Position) error {
 	// TODO: Handle cdc vs snapshot positions here.
-	if i.snapshot != nil {
+	if h.snapshot != nil {
 		return nil
 	}
-	if i.cdc != nil {
-		return i.cdc.Ack(ctx, pos)
+	if h.cdc != nil {
+		return h.cdc.Ack(ctx, pos)
 	}
 
 	return nil
 }
 
-func (i *Hybrid) Next(ctx context.Context) (sdk.Record, error) {
-	if i.snapshot != nil {
-		next, err := i.snapshot.Next(ctx)
+func (h *Hybrid) Next(ctx context.Context) (sdk.Record, error) {
+	if h.snapshot != nil {
+		next, err := h.snapshot.Next(ctx)
 		if err != nil {
 			if errors.Is(err, ErrSnapshotComplete) {
-				if err := i.snapshot.Teardown(ctx); err != nil {
-					return sdk.Record{}, err
+				err := h.switchToCDC(ctx)
+				if err != nil {
+					return sdk.Record{}, fmt.Errorf("failed to switch to cdc mode: %w", err)
 				}
-				i.snapshot = nil
-
-				go i.StartCDC(ctx, i.conn)
-
-				<-i.cdc.Ready()
-				return i.cdc.Next(ctx)
+				return h.cdc.Next(ctx)
 			}
-
 			return sdk.Record{}, fmt.Errorf("snapshot failed: %w", err)
 		}
 		return next, nil
 	}
-	return i.cdc.Next(ctx)
+	return h.cdc.Next(ctx)
 }
 
-func (i *Hybrid) Teardown(ctx context.Context) error {
+func (h *Hybrid) Teardown(ctx context.Context) error {
 	var err error
-	if i.snapshot != nil {
+	if h.snapshot != nil {
 		err = logOrReturnError(
 			ctx,
 			err,
-			i.snapshot.Teardown(ctx),
+			h.snapshot.Teardown(ctx),
 			"failed to teardown snapshot iterator")
 	}
 	err = logOrReturnError(
 		ctx,
 		err,
-		i.cdc.Teardown(ctx),
+		h.cdc.Teardown(ctx),
 		"failed to teardown cdc iterator")
 
 	return err
+}
+
+func (h *Hybrid) switchToCDC(ctx context.Context) error {
+	if err := h.snapshot.Teardown(ctx); err != nil {
+		return err
+	}
+	h.snapshot = nil
+	err := h.StartCDC(ctx, h.conn)
+	if err != nil {
+		return fmt.Errorf("failed to switch to cdc: %w", err)
+	}
+	<-h.cdc.Ready()
+	return nil
 }
