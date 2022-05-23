@@ -3,7 +3,7 @@ module github.com/conduitio/conduit-connector-postgres
 go 1.18
 
 require (
-	github.com/Masterminds/squirrel v1.5.2
+	github.com/Masterminds/squirrel v1.5.3
 	github.com/conduitio/conduit-connector-sdk v0.2.0
 	github.com/jackc/pgconn v1.12.1
 	github.com/jackc/pglogrepl v0.0.0-20220305000529-420b8467887a
