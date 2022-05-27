@@ -33,6 +33,7 @@ type Config struct {
 	TableName       string
 	KeyColumnName   string
 	Columns         []string
+	SnapshotMode    string // TODO: add typing to snapshot mode handling
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -58,14 +59,12 @@ func NewCDCIterator(ctx context.Context, conn *pgx.Conn, config Config) (*CDCIte
 		return nil, fmt.Errorf("failed to setup subscription: %w", err)
 	}
 
-	go i.listen(ctx)
-
 	return i, nil
 }
 
 // listen should be called in a goroutine. It starts the subscription and keeps
 // it running until the subscription is stopped or the context is canceled.
-func (i *CDCIterator) listen(ctx context.Context) {
+func (i *CDCIterator) Listen(ctx context.Context) {
 	sdk.Logger(ctx).Info().
 		Str("slot", i.config.SlotName).
 		Str("publication", i.config.PublicationName).
