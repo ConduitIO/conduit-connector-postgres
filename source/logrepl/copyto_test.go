@@ -57,7 +57,7 @@ func TestCopyTo(t *testing.T) {
 
 	w, err := NewCopyDataWriter(ctx, conn, Config{TableName: "foo"})
 	is.NoErr(err)
-	t.Cleanup(func() { w.Teardown(ctx) })
+	t.Cleanup(func() { is.NoErr(w.Teardown(ctx)) })
 
 	go w.Copy(ctx)
 
@@ -90,7 +90,7 @@ func TestCopyWriter_Copy(t *testing.T) {
 		AccessMode: "READ",
 	})
 	is.NoErr(err)
-	defer tx.Commit(ctx)
+	defer is.NoErr(tx.Commit(ctx))
 
 	w, err := NewCopyDataWriter(ctx, tx.Conn(), Config{TableName: "foo"})
 	is.NoErr(err)
