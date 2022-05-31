@@ -16,6 +16,7 @@ package logrepl
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/conduitio/conduit-connector-postgres/test"
@@ -24,38 +25,41 @@ import (
 )
 
 func TestHybridSnapshot(t *testing.T) {
-	ctx := context.Background()
 	is := is.New(t)
+	ctx := context.Background()
+
 	h := createTestHybridIterator(ctx, t)
 
+	go func() {
+		conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
+		_, err := conn.Exec(ctx, fmt.Sprintf(`insert into %s values ( 4, null, null,
+		null, null, null, '{"biz":"baz"}')`, h.config.TableName))
+		is.NoErr(err)
+		_, err = conn.Exec(ctx, fmt.Sprintf(`insert into %s values ( 5, null, null,
+		null, null, null, '{"fiz":"buzz"}')`, h.config.TableName))
+		is.NoErr(err)
+	}()
+
 	count := 0
-	for count < 2 {
+	for count < 4 {
 		rec, err := h.Next(ctx)
 		is.NoErr(err)
 		count++
-		t.Logf("\n%v\n", rec)
+		t.Logf("%v\n", rec)
 	}
 }
 
 func createTestHybridIterator(ctx context.Context, t *testing.T) *Hybrid {
 	is := is.New(t)
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-
-	_, err := conn.Exec(ctx, `create temporary table foo( a int2, b int4, c int8, d varchar, e text, f date, g json)`)
-	is.NoErr(err)
-
-	_, err = conn.Exec(context.Background(), `insert into foo values (0, 1, 2, 'abc	', 'efg', '2000-01-01', '{"abc":"def","foo":"bar"}')`)
-	is.NoErr(err)
-
-	_, err = conn.Exec(context.Background(), `insert into foo values (3, null, null, null, null, null, '{"foo":"bar"}')`)
-	is.NoErr(err)
+	table := test.SetupTestTableV2(ctx, t, conn)
 
 	h, err := NewHybridIterator(ctx, conn, Config{
-		TableName:       "foo",
-		SlotName:        "foo",
-		PublicationName: "foo",
-		KeyColumnName:   "key",
-		Columns:         []string{"a", "b", "c", "d", "e", "f", "g"},
+		TableName:       table,
+		SlotName:        table,
+		PublicationName: table,
+		KeyColumnName:   "h",
+		Columns:         []string{"a", "b", "c", "d", "e", "f", "g", "h"},
 		SnapshotMode:    "initial",
 	})
 	is.NoErr(err)

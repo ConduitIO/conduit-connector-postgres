@@ -58,7 +58,7 @@ func NewCopyDataWriter(ctx context.Context, conn *pgx.Conn, config Config) (*Cop
 		decoders:          decoders,
 		connInfo:          conn.ConnInfo(),
 		messages:          make(chan sdk.Record, 1),
-		done:              make(chan struct{}, 1),
+		done:              make(chan struct{}),
 	}
 
 	return c, nil
@@ -71,12 +71,14 @@ func (c *CopyDataWriter) Copy(ctx context.Context, conn *pgx.Conn) {
 	if err != nil {
 		fmt.Printf("failed to copy data from table: %v", err)
 	}
-	c.done <- struct{}{}
+	close(c.done)
 }
 
 func (c *CopyDataWriter) Write(line []byte) (n int, err error) {
 	tokens := bytes.Split(line, []byte{'\t'})
+
 	rec := sdk.Record{}
+	rec.CreatedAt = time.Now()
 	payload := sdk.StructuredData{}
 
 	for i, decoder := range c.decoders {
@@ -90,13 +92,18 @@ func (c *CopyDataWriter) Write(line []byte) (n int, err error) {
 			return 0, fmt.Errorf("failed to decode text: %v", err)
 		}
 
-		key := c.fieldDescriptions[i].Name
-		payload[string(key)] = decoder.Get()
+		key := string(c.fieldDescriptions[i].Name)
+		val := decoder.Get()
+		payload[key] = val
+
+		if key == c.config.KeyColumnName {
+			rec.Key = sdk.StructuredData{
+				key: val,
+			}
+		}
 	}
 
-	rec.CreatedAt = time.Now()
 	rec.Payload = payload
-	rec.Key = sdk.StructuredData{}         // TODO
 	rec.Metadata = make(map[string]string) // TODO
 
 	c.messages <- rec
@@ -119,6 +126,7 @@ func (c *CopyDataWriter) Next(ctx context.Context) (sdk.Record, error) {
 
 // Teardown closes the messages channel and returns.
 func (c *CopyDataWriter) Teardown(ctx context.Context) error {
+	// TODO: handle case where messages is not empty.
 	close(c.messages)
 	return nil
 }

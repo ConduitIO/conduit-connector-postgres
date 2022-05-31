@@ -99,18 +99,15 @@ func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 	return table
 }
 
-// SetupTestTableV2 returns a set of test data with different
+// SetupTestTableV2 returns a test table with a random identifier and two
+// test records that have int2, int4, int8, varchar, text, date, json, and a
+// bigserial primary key column.
 func SetupTestTableV2(ctx context.Context, t *testing.T, conn Querier) string {
 	is := is.New(t)
 
 	table := RandomIdentifier(t)
 
-	_, err := conn.Exec(ctx, fmt.Sprintf(`create table %s (a int2, b int4, 
-		c int8, d varchar, e text, f date, g json)`, table))
-	is.NoErr(err)
-
-	_, err = conn.Exec(ctx, fmt.Sprintf(`insert into %s values ( 0, 1, 2, 
-		'abc	', 'efg', '2000-01-01', '{"abc":"def","foo":"bar"}')`, table))
+	_, err := conn.Exec(ctx, fmt.Sprintf(`create table %s (a int2, b int4, c int8, d varchar, e text, f date, g json, h bigserial primary key)`, table))
 	is.NoErr(err)
 
 	t.Cleanup(func() {
@@ -120,8 +117,10 @@ func SetupTestTableV2(ctx context.Context, t *testing.T, conn Querier) string {
 		is.NoErr(err)
 	})
 
-	_, err = conn.Exec(ctx, fmt.Sprintf(`insert into %s values ( 3, null, null,
-		null, null, null, '{"foo":"bar"}')`, table))
+	_, err = conn.Exec(ctx, fmt.Sprintf(`insert into %s values (0, 1, 2, 'abc	', 'efg', '2000-01-01', '{"abc":"def","foo":"bar"}')`, table))
+	is.NoErr(err)
+
+	_, err = conn.Exec(ctx, fmt.Sprintf(`insert into %s values ( 3, null, null, null, null, null, '{"foo":"bar"}')`, table))
 	is.NoErr(err)
 
 	return table

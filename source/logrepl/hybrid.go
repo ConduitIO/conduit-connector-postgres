@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v4"
 )
@@ -43,18 +44,47 @@ func NewHybridIterator(ctx context.Context, conn *pgx.Conn, cfg Config) (*Hybrid
 
 	switch h.config.SnapshotMode {
 	case SnapshotInitial:
-		err := h.attachCopier(ctx, conn)
+		records := make(chan sdk.Record)
+
+		handler := NewCDCHandler(
+			internal.NewRelationSet(conn.ConnInfo()),
+			h.config.KeyColumnName,
+			h.config.Columns,
+			records,
+		).Handle
+
+		sub := internal.NewSubscription(conn.Config().Config, h.config.SlotName,
+			h.config.PublicationName, []string{h.config.TableName}, 0, handler)
+
+		h.cdc = &CDCIterator{
+			config:  h.config,
+			records: records,
+			sub:     sub,
+		}
+
+		err := sub.CreatePublication(ctx, conn.PgConn())
+		if err != nil {
+			return nil, err
+		}
+
+		tx, err := conn.Begin(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		point, err := sub.CreateReplicationSlot(ctx, conn.PgConn())
+		if err != nil {
+			return nil, err
+		}
+		fmt.Printf("point: %v\n", point)
+
+		err = h.attachCopier(ctx, tx.Conn())
 		if err != nil {
 			return nil, fmt.Errorf("failed to attach copier: %w", err)
 		}
-		go func() {
-			<-h.copy.Done()
-			fmt.Printf("done listening %v", h)
-			err = h.attachCDCIterator(ctx, conn)
-			if err != nil {
-				fmt.Printf("error attaching cdc iterator: %v", err)
-			}
-		}()
+
+		go h.copy.Copy(ctx, conn)
+
 		return h, nil
 	case SnapshotNever:
 		err := h.attachCDCIterator(ctx, conn)
@@ -117,7 +147,6 @@ func (h *Hybrid) attachCopier(ctx context.Context, conn *pgx.Conn) error {
 		return err
 	}
 	h.copy = w
-	go w.Copy(ctx, conn)
 	return nil
 }
 
