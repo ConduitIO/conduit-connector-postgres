@@ -54,6 +54,9 @@ func TestCopyTo(t *testing.T) {
 		is.True(rec.CreatedAt.After(now))
 		count++
 	}
+
+	<-w.done
+	is.NoErr(w.Teardown(ctx))
 }
 
 func TestCopyWriter_Copy(t *testing.T) {
@@ -90,6 +93,9 @@ func TestCopyWriter_Copy(t *testing.T) {
 		is.True(rec.CreatedAt.After(now))
 		count++
 	}
+
+	<-w.done
+	is.NoErr(w.Teardown(ctx))
 }
 
 func TestCopyDataWriter_Next(t *testing.T) {
@@ -161,6 +167,9 @@ func TestCopyDataWriter_Next(t *testing.T) {
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("wanted: %v - got: %v", tt.want, got)
 			}
+
+			<-w.done
+			is.NoErr(w.Teardown(ctx))
 		})
 	}
 }
