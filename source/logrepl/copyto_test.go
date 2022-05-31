@@ -30,7 +30,7 @@ import (
 func TestCopyTo(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
-	conn := test.ConnectSimple(ctx, t, "postgres://repmgr:repmgrmeroxa@localhost:5432/meroxadb?sslmode=disable&replication=database")
+	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 
 	_, err := conn.Exec(ctx, `create temporary table foo( a int2, b int4, c int8, d varchar, e text, f date, g json)`)
 	is.NoErr(err)
@@ -41,25 +41,10 @@ func TestCopyTo(t *testing.T) {
 	_, err = conn.Exec(context.Background(), `insert into foo values (3, null, null, null, null, null, '{"foo":"bar"}')`)
 	is.NoErr(err)
 
-	// --------------
-	// TODO make sure to filter by table_schema
-	// rows, err := conn.Query(ctx, "SELECT column_name, udt_name FROM information_schema.columns WHERE table_name = 'foo' ORDER BY ordinal_position")
-	// is.NoErr(err)
-	// --------------
-
-	tx, err := conn.BeginTx(ctx, pgx.TxOptions{
-		IsoLevel:       "REPEATABLE",
-		AccessMode:     "READ",
-		DeferrableMode: "",
-	})
-	is.NoErr(err)
-	t.Cleanup(func() { is.NoErr(tx.Commit(ctx)) })
-
 	w, err := NewCopyDataWriter(ctx, conn, Config{TableName: "foo"})
 	is.NoErr(err)
-	t.Cleanup(func() { w.Teardown(ctx) })
 
-	go w.Copy(ctx)
+	go w.Copy(ctx, conn)
 
 	now := time.Now()
 	count := 0
@@ -69,12 +54,15 @@ func TestCopyTo(t *testing.T) {
 		is.True(rec.CreatedAt.After(now))
 		count++
 	}
+
+	<-w.done
+	is.NoErr(w.Teardown(ctx))
 }
 
 func TestCopyWriter_Copy(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
-	conn := test.ConnectSimple(ctx, t, "postgres://repmgr:repmgrmeroxa@localhost:5432/meroxadb?sslmode=disable&replication=database")
+	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 
 	_, err := conn.Exec(ctx, `create temporary table foo( a int2, b int4, c int8, d varchar, e text, f date, g json)`)
 	is.NoErr(err)
@@ -90,12 +78,12 @@ func TestCopyWriter_Copy(t *testing.T) {
 		AccessMode: "READ",
 	})
 	is.NoErr(err)
-	defer tx.Commit(ctx)
+	defer is.NoErr(tx.Commit(ctx))
 
 	w, err := NewCopyDataWriter(ctx, tx.Conn(), Config{TableName: "foo"})
 	is.NoErr(err)
 
-	go w.Copy(ctx)
+	go w.Copy(ctx, conn)
 
 	now := time.Now()
 	count := 0
@@ -105,6 +93,9 @@ func TestCopyWriter_Copy(t *testing.T) {
 		is.True(rec.CreatedAt.After(now))
 		count++
 	}
+
+	<-w.done
+	is.NoErr(w.Teardown(ctx))
 }
 
 func TestCopyDataWriter_Next(t *testing.T) {
@@ -162,7 +153,8 @@ func TestCopyDataWriter_Next(t *testing.T) {
 
 			w, err := NewCopyDataWriter(ctx, conn, tt.args.config)
 			is.NoErr(err)
-			go w.Copy(ctx)
+
+			go w.Copy(ctx, conn)
 
 			got, err := w.Next(ctx)
 			if (err != nil) != tt.wantErr {
@@ -175,6 +167,9 @@ func TestCopyDataWriter_Next(t *testing.T) {
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("wanted: %v - got: %v", tt.want, got)
 			}
+
+			<-w.done
+			is.NoErr(w.Teardown(ctx))
 		})
 	}
 }

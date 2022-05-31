@@ -32,7 +32,6 @@ import (
 
 type CopyDataWriter struct {
 	config            Config
-	conn              *pgx.Conn
 	fieldDescriptions []pgproto3.FieldDescription
 	decoders          []decoderValue
 	connInfo          *pgtype.ConnInfo
@@ -53,7 +52,6 @@ func NewCopyDataWriter(ctx context.Context, conn *pgx.Conn, config Config) (*Cop
 	}
 
 	c := &CopyDataWriter{
-		conn:              conn,
 		config:            config,
 		fieldDescriptions: fds,
 		decoders:          decoders,
@@ -66,13 +64,13 @@ func NewCopyDataWriter(ctx context.Context, conn *pgx.Conn, config Config) (*Cop
 }
 
 // Copy is meant to be called concurrently after a writer is created.
-func (c *CopyDataWriter) Copy(ctx context.Context) {
+func (c *CopyDataWriter) Copy(ctx context.Context, conn *pgx.Conn) {
 	copyquery := fmt.Sprintf("COPY %s TO STDOUT", c.config.TableName)
-	_, err := c.conn.PgConn().CopyTo(ctx, c, copyquery)
+	_, err := conn.PgConn().CopyTo(ctx, c, copyquery)
 	if err != nil {
 		fmt.Printf("failed to copy data from table: %v", err)
 	}
-	close(c.done)
+	c.done <- struct{}{}
 }
 
 func (c *CopyDataWriter) Write(line []byte) (n int, err error) {
