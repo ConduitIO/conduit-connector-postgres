@@ -99,6 +99,34 @@ func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 	return table
 }
 
+// SetupTestTableV2 returns a set of test data with different
+func SetupTestTableV2(ctx context.Context, t *testing.T, conn Querier) string {
+	is := is.New(t)
+
+	table := RandomIdentifier(t)
+
+	_, err := conn.Exec(ctx, fmt.Sprintf(`create table %s (a int2, b int4, 
+		c int8, d varchar, e text, f date, g json)`, table))
+	is.NoErr(err)
+
+	_, err = conn.Exec(ctx, fmt.Sprintf(`insert into %s values ( 0, 1, 2, 
+		'abc	', 'efg', '2000-01-01', '{"abc":"def","foo":"bar"}')`, table))
+	is.NoErr(err)
+
+	t.Cleanup(func() {
+		query := `DROP TABLE %s`
+		query = fmt.Sprintf(query, table)
+		_, err := conn.Exec(ctx, query)
+		is.NoErr(err)
+	})
+
+	_, err = conn.Exec(ctx, fmt.Sprintf(`insert into %s values ( 3, null, null,
+		null, null, null, '{"foo":"bar"}')`, table))
+	is.NoErr(err)
+
+	return table
+}
+
 func RandomIdentifier(t *testing.T) string {
 	return fmt.Sprintf("conduit_%v_%d",
 		strings.ReplaceAll(strings.ToLower(t.Name()), "/", "_"),
