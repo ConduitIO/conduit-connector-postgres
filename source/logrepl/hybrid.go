@@ -117,7 +117,7 @@ func (h *Hybrid) attachCopier(ctx context.Context, conn *pgx.Conn) error {
 		return err
 	}
 	h.copy = w
-	go w.Copy(ctx)
+	go w.Copy(ctx, conn)
 	return nil
 }
 
