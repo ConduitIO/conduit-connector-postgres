@@ -31,17 +31,9 @@ func TestCopyTo(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
+	table := test.SetupTestTableV2(ctx, t, conn)
 
-	_, err := conn.Exec(ctx, `create temporary table foo( a int2, b int4, c int8, d varchar, e text, f date, g json)`)
-	is.NoErr(err)
-
-	_, err = conn.Exec(context.Background(), `insert into foo values (0, 1, 2, 'abc	', 'efg', '2000-01-01', '{"abc":"def","foo":"bar"}')`)
-	is.NoErr(err)
-
-	_, err = conn.Exec(context.Background(), `insert into foo values (3, null, null, null, null, null, '{"foo":"bar"}')`)
-	is.NoErr(err)
-
-	w, err := NewCopyDataWriter(ctx, conn, Config{TableName: "foo"})
+	w, err := NewCopyDataWriter(ctx, conn, Config{TableName: table})
 	is.NoErr(err)
 
 	go w.Copy(ctx, conn)
@@ -63,15 +55,7 @@ func TestCopyWriter_Copy(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-
-	_, err := conn.Exec(ctx, `create temporary table foo( a int2, b int4, c int8, d varchar, e text, f date, g json)`)
-	is.NoErr(err)
-
-	_, err = conn.Exec(context.Background(), `insert into foo values (0, 1, 2, 'abc	', 'efg', '2000-01-01', '{"abc":"def","foo":"bar"}')`)
-	is.NoErr(err)
-
-	_, err = conn.Exec(context.Background(), `insert into foo values (3, null, null, null, null, null, '{"foo":"bar"}')`)
-	is.NoErr(err)
+	table := test.SetupTestTableV2(ctx, t, conn)
 
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{
 		IsoLevel:   "REPEATABLE",
@@ -80,7 +64,7 @@ func TestCopyWriter_Copy(t *testing.T) {
 	is.NoErr(err)
 	defer is.NoErr(tx.Commit(ctx))
 
-	w, err := NewCopyDataWriter(ctx, tx.Conn(), Config{TableName: "foo"})
+	w, err := NewCopyDataWriter(ctx, tx.Conn(), Config{TableName: table})
 	is.NoErr(err)
 
 	go w.Copy(ctx, conn)

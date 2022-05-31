@@ -40,6 +40,7 @@ type CopyDataWriter struct {
 }
 
 // NewCopyDataWriter builds a new CopyDataWriter from a postgres connection.
+// It does not acquire a transaction or offer atomicity guarantees.
 func NewCopyDataWriter(ctx context.Context, conn *pgx.Conn, config Config) (*CopyDataWriter, error) {
 	fds, err := getFieldDescriptions(ctx, conn.PgConn(), []string{config.TableName})
 	if err != nil {
