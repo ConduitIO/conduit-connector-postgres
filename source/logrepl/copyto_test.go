@@ -22,7 +22,6 @@ import (
 
 	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/google/go-cmp/cmp"
 
 	"github.com/jackc/pgx/v4"
 	"github.com/matryer/is"
@@ -112,6 +111,22 @@ func TestCopyDataWriter_Next(t *testing.T) {
 				},
 			},
 		},
+
+		{
+			name: "should fail on a binary column",
+			args: args{
+				config: Config{
+					TableName: "foo",
+				},
+			},
+			setupQuery: func(conn *pgx.Conn) {
+				_, err := conn.Exec(context.Background(), `create temporary table foo(a bytea)`)
+				is.NoErr(err)
+				_, err = conn.Exec(context.Background(), `insert into foo(a) values('bar');`)
+				is.NoErr(err)
+			},
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -131,13 +146,13 @@ func TestCopyDataWriter_Next(t *testing.T) {
 				return
 			}
 
-			is.True(got.CreatedAt.After(now))
-			got.CreatedAt = time.Time{} // TODO
+			if !tt.wantErr {
+				is.True(got.CreatedAt.After(now))
+				got.CreatedAt = time.Time{}
+			}
+
 			if !reflect.DeepEqual(got, tt.want) {
-				if diff := cmp.Diff(got, tt.want); diff != "" {
-					t.Errorf("%s", diff)
-				}
-				// t.Errorf("wanted: %v \n got: %v", tt.want, got)
+				t.Errorf("wanted: %v \n got: %v", tt.want, got)
 			}
 
 			<-w.Done()
