@@ -20,6 +20,8 @@ import (
 	"testing"
 
 	"github.com/conduitio/conduit-connector-postgres/test"
+	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/jackc/pgx/v4"
 
 	"github.com/matryer/is"
 )
@@ -27,7 +29,6 @@ import (
 func TestHybridSnapshot(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
-
 	h := createTestHybridIterator(ctx, t)
 
 	go func() {
@@ -41,30 +42,42 @@ func TestHybridSnapshot(t *testing.T) {
 	}()
 
 	count := 0
+	records := []sdk.Record{}
 	for count < 4 {
 		rec, err := h.Next(ctx)
 		is.NoErr(err)
 		count++
-		t.Logf("%v\n", rec)
+		records = append(records, rec)
 	}
+
+	is.True(len(records) == 4)
 }
 
+// createTestHybridIterator creates a hybrid iterator with a replication
+// capable connection to Postgres and a prepared test table and handles closing
+// its connection and test cleanup.
 func createTestHybridIterator(ctx context.Context, t *testing.T) *Hybrid {
 	is := is.New(t)
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTableV2(ctx, t, conn)
-
-	h, err := NewHybridIterator(ctx, conn, Config{
+	cfg := conn.Config()
+	cfg.RuntimeParams["replication"] = "database"
+	replconn, err := pgx.ConnectConfig(ctx, cfg)
+	is.NoErr(err)
+	t.Cleanup(func() { is.NoErr(replconn.Close(ctx)) })
+	table := test.SetupTestTableV2(ctx, t, replconn)
+	h, err := NewHybridIterator(ctx, replconn, Config{
 		TableName:       table,
 		SlotName:        table,
 		PublicationName: table,
 		KeyColumnName:   "h",
-		Columns:         []string{"a", "b", "c", "d", "e", "f", "g", "h"},
+		Columns:         []string{"a", "b", "c", "d", "e", "f", "g"},
 		SnapshotMode:    "initial",
 	})
 	is.NoErr(err)
 	t.Cleanup(func() {
-		is.NoErr(h.Teardown(ctx))
+		if err := h.Teardown(ctx); err != nil {
+			t.Errorf("t.Cleanup failed to teardown: %v", err)
+		}
 	})
 	return h
 }

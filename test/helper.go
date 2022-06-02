@@ -107,7 +107,7 @@ func SetupTestTableV2(ctx context.Context, t *testing.T, conn Querier) string {
 
 	table := RandomIdentifier(t)
 
-	_, err := conn.Exec(ctx, fmt.Sprintf(`create table %s (a int2, b int4, c int8, d varchar, e text, f date, g json, h bigserial primary key)`, table))
+	_, err := conn.Exec(ctx, fmt.Sprintf(`create table %s (a int2, b int4, c int8, d varchar, e text, f date, g json)`, table))
 	is.NoErr(err)
 
 	t.Cleanup(func() {
