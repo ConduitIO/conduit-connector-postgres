@@ -38,7 +38,7 @@ func TestCopyWriter_Copy(t *testing.T) {
 	cfg.RuntimeParams["replication"] = "database"
 	replconn, err := pgx.ConnectConfig(ctx, cfg)
 	is.NoErr(err)
-	// t.Cleanup(func() { is.NoErr(replconn.Close(ctx)) })
+	t.Cleanup(func() { is.NoErr(replconn.Close(ctx)) })
 
 	table := test.SetupTestTableV2(ctx, t, replconn)
 
