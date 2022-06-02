@@ -128,11 +128,29 @@ func (s *Subscription) Start(ctx context.Context) (err error) {
 	s.walWritten = s.StartLSN
 	s.walFlushed = s.StartLSN
 
-	return s.listen(lctx, conn)
+	return s.Listen(lctx, conn)
 }
 
-// listen runs until context is cancelled or an error is encountered.
-func (s *Subscription) listen(ctx context.Context, conn *pgconn.PgConn) error {
+// Listen runs until context is cancelled or an error is encountered.
+func (s *Subscription) Listen(ctx context.Context, conn *pgconn.PgConn) error {
+	// assign a context here if one doesn't exist because there is no other
+	// place where it could be injected before stopping.
+	ctx, cancel := context.WithCancel(ctx)
+	s.stop = cancel
+
+	defer func() {
+		select {
+		case <-s.ready:
+			// ready is already closed
+		default:
+			close(s.ready)
+		}
+		close(s.done)
+		if err := conn.Close(ctx); err != nil {
+			fmt.Printf("error closing connection: %v", err)
+		}
+	}()
+
 	// signal that the subscription is ready and is receiving messages
 	close(s.ready)
 	nextStatusUpdateAt := time.Now().Add(s.StatusTimeout)
@@ -150,6 +168,11 @@ func (s *Subscription) listen(ctx context.Context, conn *pgconn.PgConn) error {
 			if errors.Is(err, context.DeadlineExceeded) {
 				sdk.Logger(ctx).Trace().Msg("deadline exceeded while receiving message")
 				continue
+			}
+			// this is a controlled stop
+			if errors.Is(err, context.Canceled) {
+				sdk.Logger(ctx).Trace().Msg("context canceled while receiving message")
+				return err
 			}
 			return err
 		}
