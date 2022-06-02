@@ -48,6 +48,7 @@ func TestHybridSnapshot(t *testing.T) {
 		is.NoErr(err)
 		count++
 		records = append(records, rec)
+		t.Logf("%d ----- %v\n", count, rec)
 	}
 
 	is.True(len(records) == 4)
@@ -74,10 +75,6 @@ func createTestHybridIterator(ctx context.Context, t *testing.T) *Hybrid {
 		SnapshotMode:    "initial",
 	})
 	is.NoErr(err)
-	t.Cleanup(func() {
-		if err := h.Teardown(ctx); err != nil {
-			t.Errorf("t.Cleanup failed to teardown: %v", err)
-		}
-	})
+	t.Cleanup(func() { is.NoErr(h.Teardown(ctx)) })
 	return h
 }

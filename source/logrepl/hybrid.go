@@ -55,36 +55,9 @@ func NewHybridIterator(ctx context.Context, conn *pgx.Conn, cfg Config) (*Hybrid
 			return nil, err
 		}
 
-		point, err := h.createReplicationSlot(ctx, tx.Conn())
+		err = h.attachSnapshotReplication(ctx, conn)
 		if err != nil {
-			return nil, err
-		}
-		lsn, err := pglogrepl.ParseLSN(point)
-		if err != nil {
-			return nil, err
-		}
-		h.config.Position = LSNToPosition(lsn)
-
-		records := make(chan sdk.Record)
-		handler := NewCDCHandler(
-			internal.NewRelationSet(tx.Conn().ConnInfo()),
-			h.config.KeyColumnName,
-			h.config.Columns,
-			records,
-		).Handle
-
-		sub := internal.NewSubscription(
-			tx.Conn().Config().Config,
-			h.config.SlotName,
-			h.config.PublicationName,
-			[]string{h.config.TableName},
-			lsn,
-			handler)
-
-		h.cdc = &CDCIterator{
-			config:  h.config,
-			records: records,
-			sub:     sub,
+			return nil, fmt.Errorf("failed to attach snapshot replication slot: %w", err)
 		}
 
 		err = h.attachCopier(ctx, tx.Conn())
@@ -97,21 +70,7 @@ func NewHybridIterator(ctx context.Context, conn *pgx.Conn, cfg Config) (*Hybrid
 			if err := tx.Commit(ctx); err != nil {
 				fmt.Printf("failed to commit: %v", err)
 			}
-
-			err = sub.CreatePublication(ctx, conn.PgConn())
-			if err != nil {
-				fmt.Printf("failed to attach copier: %v", err)
-			}
-
-			if err := sub.StartReplication(ctx, conn.PgConn()); err != nil {
-				fmt.Printf("failed to start replication: %v", err)
-			}
-
-			if err := sub.Listen(ctx, conn.PgConn()); err != nil {
-				if !errors.Is(err, context.Canceled) {
-					fmt.Printf("failed to listen: %v", err)
-				}
-			}
+			h.switchToCDC(ctx, conn)
 		}()
 
 		return h, nil
@@ -127,7 +86,7 @@ func NewHybridIterator(ctx context.Context, conn *pgx.Conn, cfg Config) (*Hybrid
 		if err != nil {
 			return nil, err
 		}
-		return nil, sdk.ErrUnimplemented
+		return h, nil
 	}
 }
 
@@ -180,6 +139,43 @@ func (h *Hybrid) attachCDCIterator(ctx context.Context, conn *pgx.Conn) error {
 	return nil
 }
 
+func (h *Hybrid) attachSnapshotReplication(ctx context.Context, conn *pgx.Conn) error {
+	// TODO: refactor this down into the Subscription library.
+	point, err := h.createReplicationSlot(ctx, conn)
+	if err != nil {
+		return err
+	}
+	lsn, err := pglogrepl.ParseLSN(point)
+	if err != nil {
+		return err
+	}
+	h.config.Position = LSNToPosition(lsn)
+
+	records := make(chan sdk.Record)
+	handler := NewCDCHandler(
+		internal.NewRelationSet(conn.ConnInfo()),
+		h.config.KeyColumnName,
+		h.config.Columns,
+		records,
+	).Handle
+
+	sub := internal.NewSubscription(
+		conn.Config().Config,
+		h.config.SlotName,
+		h.config.PublicationName,
+		[]string{h.config.TableName},
+		lsn,
+		handler)
+
+	h.cdc = &CDCIterator{
+		config:  h.config,
+		records: records,
+		sub:     sub,
+	}
+
+	return nil
+}
+
 func (h *Hybrid) createReplicationSlot(ctx context.Context, conn *pgx.Conn) (string, error) {
 	result, err := pglogrepl.CreateReplicationSlot(
 		ctx,
@@ -201,4 +197,24 @@ func (h *Hybrid) createReplicationSlot(ctx context.Context, conn *pgx.Conn) (str
 		}
 	}
 	return result.ConsistentPoint, nil
+}
+
+func (h *Hybrid) switchToCDC(ctx context.Context, conn *pgx.Conn) error {
+	err := h.cdc.sub.CreatePublication(ctx, conn.PgConn())
+	if err != nil {
+		return err
+	}
+
+	if err := h.cdc.sub.StartReplication(ctx, conn.PgConn()); err != nil {
+		return err
+	}
+
+	if err := h.cdc.sub.Listen(ctx, conn.PgConn()); err != nil {
+		if !errors.Is(err, context.Canceled) {
+			return nil
+		}
+		return err
+	}
+
+	return nil
 }

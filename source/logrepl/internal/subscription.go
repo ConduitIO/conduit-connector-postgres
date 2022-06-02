@@ -133,24 +133,6 @@ func (s *Subscription) Start(ctx context.Context) (err error) {
 
 // Listen runs until context is cancelled or an error is encountered.
 func (s *Subscription) Listen(ctx context.Context, conn *pgconn.PgConn) error {
-	// assign a context here if one doesn't exist because there is no other
-	// place where it could be injected before stopping.
-	ctx, cancel := context.WithCancel(ctx)
-	s.stop = cancel
-
-	defer func() {
-		select {
-		case <-s.ready:
-			// ready is already closed
-		default:
-			close(s.ready)
-		}
-		close(s.done)
-		if err := conn.Close(ctx); err != nil {
-			fmt.Printf("error closing connection: %v", err)
-		}
-	}()
-
 	// signal that the subscription is ready and is receiving messages
 	close(s.ready)
 	nextStatusUpdateAt := time.Now().Add(s.StatusTimeout)
@@ -348,6 +330,33 @@ func (s *Subscription) CreatePublication(ctx context.Context, conn *pgconn.PgCon
 	return nil
 }
 
+// CreateSnapshotReplicationSlot creates a replication slot which will be
+// deleted once the connection is closed. If a replication slot with that name
+// already exists it returns no error.
+func (s *Subscription) CreateSnapshotReplicationSlot(ctx context.Context, conn *pgconn.PgConn) (string, error) {
+	result, err := pglogrepl.CreateReplicationSlot(
+		ctx,
+		conn,
+		s.SlotName,
+		pgOutputPlugin,
+		pglogrepl.CreateReplicationSlotOptions{
+			Temporary:      true, // replication slot is dropped when we disconnect
+			SnapshotAction: "USE_SNAPSHOT",
+			Mode:           pglogrepl.LogicalReplication,
+		},
+	)
+	if err != nil {
+		// If creating the replication slot fails with code 42710, this means
+		// the replication slot already exists.
+		var pgerr *pgconn.PgError
+		if !errors.As(err, &pgerr) || pgerr.Code != pgDuplicateObjectErrorCode {
+			return "", err
+		}
+	}
+
+	return result.ConsistentPoint, nil
+}
+
 // CreateReplicationSlot creates a temporary replication slot which will be
 // deleted once the connection is closed. If a replication slot with that name
 // already exists it returns no error.
@@ -359,7 +368,7 @@ func (s *Subscription) CreateReplicationSlot(ctx context.Context, conn *pgconn.P
 		pgOutputPlugin,
 		pglogrepl.CreateReplicationSlotOptions{
 			Temporary:      true, // replication slot is dropped when we disconnect
-			SnapshotAction: "USE_SNAPSHOT",
+			SnapshotAction: "NOEXPORT_SNAPSHOT",
 			Mode:           pglogrepl.LogicalReplication,
 		},
 	)

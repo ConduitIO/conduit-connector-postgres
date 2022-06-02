@@ -22,42 +22,27 @@ import (
 
 	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/google/go-cmp/cmp"
 
 	"github.com/jackc/pgx/v4"
 	"github.com/matryer/is"
 )
 
-func TestCopyTo(t *testing.T) {
-	is := is.New(t)
-	ctx := context.Background()
-	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTableV2(ctx, t, conn)
-
-	w, err := NewCopyDataWriter(ctx, conn, Config{TableName: table})
-	is.NoErr(err)
-
-	go w.Copy(ctx, conn)
-
-	now := time.Now()
-	count := 0
-	for count < 2 {
-		rec, err := w.Next(ctx)
-		is.NoErr(err)
-		is.True(rec.CreatedAt.After(now))
-		count++
-	}
-
-	<-w.done
-	is.NoErr(w.Teardown(ctx))
-}
-
 func TestCopyWriter_Copy(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTableV2(ctx, t, conn)
 
-	tx, err := conn.BeginTx(ctx, pgx.TxOptions{
+	// must have a replication capable connection or else you'll get syntax errors
+	cfg := conn.Config()
+	cfg.RuntimeParams["replication"] = "database"
+	replconn, err := pgx.ConnectConfig(ctx, cfg)
+	is.NoErr(err)
+	// t.Cleanup(func() { is.NoErr(replconn.Close(ctx)) })
+
+	table := test.SetupTestTableV2(ctx, t, replconn)
+
+	tx, err := replconn.BeginTx(ctx, pgx.TxOptions{
 		IsoLevel:   "REPEATABLE",
 		AccessMode: "READ",
 	})
@@ -78,7 +63,7 @@ func TestCopyWriter_Copy(t *testing.T) {
 		count++
 	}
 
-	<-w.done
+	<-w.Done()
 	is.NoErr(w.Teardown(ctx))
 }
 
@@ -149,10 +134,13 @@ func TestCopyDataWriter_Next(t *testing.T) {
 			is.True(got.CreatedAt.After(now))
 			got.CreatedAt = time.Time{} // TODO
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("wanted: %v - got: %v", tt.want, got)
+				if diff := cmp.Diff(got, tt.want); diff != "" {
+					t.Errorf("%s", diff)
+				}
+				// t.Errorf("wanted: %v \n got: %v", tt.want, got)
 			}
 
-			<-w.done
+			<-w.Done()
 			is.NoErr(w.Teardown(ctx))
 		})
 	}

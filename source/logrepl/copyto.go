@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/pgutil"
@@ -36,6 +37,7 @@ type CopyDataWriter struct {
 	decoders          []decoderValue
 	connInfo          *pgtype.ConnInfo
 	messages          chan sdk.Record
+	wg                sync.WaitGroup
 	done              chan struct{}
 }
 
@@ -58,28 +60,37 @@ func NewCopyDataWriter(ctx context.Context, conn *pgx.Conn, config Config) (*Cop
 		decoders:          decoders,
 		connInfo:          conn.ConnInfo(),
 		messages:          make(chan sdk.Record, 1),
+		wg:                sync.WaitGroup{},
 		done:              make(chan struct{}),
 	}
 
 	return c, nil
 }
 
-// Copy is meant to be called concurrently after a writer is created.
+// Copy is meant to be called in a goroutine. It waits for all messages to be
+// consumed before closing the done channel to signal completion.
 func (c *CopyDataWriter) Copy(ctx context.Context, conn *pgx.Conn) {
 	copyquery := fmt.Sprintf("COPY %s TO STDOUT", c.config.TableName)
 	_, err := conn.PgConn().CopyTo(ctx, c, copyquery)
 	if err != nil {
 		fmt.Printf("failed to copy data from table: %v", err)
 	}
+	c.wg.Wait() // ensure messages is empty before closing done
 	close(c.done)
 }
 
 func (c *CopyDataWriter) Write(line []byte) (n int, err error) {
 	tokens := bytes.Split(line, []byte{'\t'})
 
-	rec := sdk.Record{}
-	rec.CreatedAt = time.Now()
+	rec := sdk.Record{
+		Key:       sdk.StructuredData{},
+		CreatedAt: time.Now(),
+		Metadata:  map[string]string{
+			// TODO
+		},
+	}
 	payload := sdk.StructuredData{}
+	key := sdk.StructuredData{}
 
 	for i, decoder := range c.decoders {
 		token := tokens[i]
@@ -92,20 +103,22 @@ func (c *CopyDataWriter) Write(line []byte) (n int, err error) {
 			return 0, fmt.Errorf("failed to decode text: %v", err)
 		}
 
-		key := string(c.fieldDescriptions[i].Name)
-		val := decoder.Get()
-		payload[key] = val
+		k := string(c.fieldDescriptions[i].Name)
+		v := decoder.Get()
+		payload[k] = v
 
-		if key == c.config.KeyColumnName {
-			rec.Key = sdk.StructuredData{
-				key: val,
+		if k == c.config.KeyColumnName {
+			key = sdk.StructuredData{
+				k: v,
 			}
 		}
 	}
 
+	rec.Key = key
 	rec.Payload = payload
 	rec.Metadata = make(map[string]string) // TODO
 
+	c.wg.Add(1)
 	c.messages <- rec
 
 	return len(line), nil
@@ -117,17 +130,18 @@ func (c *CopyDataWriter) Next(ctx context.Context) (sdk.Record, error) {
 	for {
 		select {
 		case msg := <-c.messages:
+			defer c.wg.Done()
 			return msg, nil
 		case <-ctx.Done():
 			return sdk.Record{}, ctx.Err()
+		case <-c.Done():
+			return sdk.Record{}, ErrSnapshotComplete
 		}
 	}
 }
 
 // Teardown closes the messages channel and returns.
 func (c *CopyDataWriter) Teardown(ctx context.Context) error {
-	// TODO: handle case where messages is not empty.
-	close(c.messages)
 	return nil
 }
 
