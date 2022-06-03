@@ -142,14 +142,12 @@ func (h *Hybrid) attachCDCIterator(ctx context.Context, conn *pgx.Conn) error {
 }
 
 func (h *Hybrid) switchToCDC(ctx context.Context, conn *pgx.Conn) error {
-
-	// TODO: Refactor these two down onto CDC Iterator instead as well.
-	err := h.cdc.sub.CreatePublication(ctx, conn.PgConn())
+	err := h.cdc.CreatePublication(ctx, conn)
 	if err != nil {
 		return err
 	}
 
-	if err := h.cdc.sub.StartReplication(ctx, conn.PgConn()); err != nil {
+	if err := h.cdc.StartReplication(ctx, conn); err != nil {
 		return err
 	}
 

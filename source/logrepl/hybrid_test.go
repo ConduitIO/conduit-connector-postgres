@@ -20,13 +20,12 @@ import (
 	"testing"
 
 	"github.com/conduitio/conduit-connector-postgres/test"
-	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v4"
 
 	"github.com/matryer/is"
 )
 
-func TestHybridSnapshot(t *testing.T) {
+func TestHybridSnapshotTransition(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 	h := createTestHybridIterator(ctx, t)
@@ -42,18 +41,26 @@ func TestHybridSnapshot(t *testing.T) {
 	}()
 
 	count := 0
-	records := []sdk.Record{}
 	for count < 4 {
-		rec, err := h.Next(ctx)
+		_, err := h.Next(ctx)
 		is.NoErr(err)
 		count++
-		records = append(records, rec)
-		t.Logf("\n%d ----- %v\n", count, rec)
 	}
-
-	is.True(len(records) == 4)
 	is.NoErr(h.Teardown(ctx))
 }
+
+// func TestHybridContextCancellation(t *testing.T) {
+// 	ctx, cancel := context.WithCancel(context.Background())
+// 	is := is.New(t)
+
+// 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
+// 	table := test.SetupTestTable(ctx, t, conn)
+
+// 	h := createTestHybridIterator(ctx, t)
+
+// 	err := h.Listen(ctx)
+// 	cancel()
+// }
 
 // createTestHybridIterator creates a hybrid iterator with a replication
 // capable connection to Postgres and a prepared test table and handles closing

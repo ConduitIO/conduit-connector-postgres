@@ -201,6 +201,14 @@ func (i *CDCIterator) AttachSubscription(ctx context.Context, conn *pgx.Conn) er
 	return nil
 }
 
+func (i *CDCIterator) CreatePublication(ctx context.Context, conn *pgx.Conn) error {
+	return i.sub.CreatePublication(ctx, conn.PgConn())
+}
+
+func (i *CDCIterator) StartReplication(ctx context.Context, conn *pgx.Conn) error {
+	return i.sub.StartReplication(ctx, conn.PgConn())
+}
+
 // getKeyColumn queries the db for the name of the primary key column for a
 // table if one exists and returns it.
 func (i *CDCIterator) getKeyColumn(ctx context.Context, conn *pgx.Conn) (string, error) {
