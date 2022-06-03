@@ -19,10 +19,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/jackc/pgconn"
-	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v4"
 )
 
@@ -36,6 +33,7 @@ type Hybrid struct {
 	copy *CopyDataWriter
 	conn *pgx.Conn
 
+	killswitch       context.CancelFunc
 	snapshotComplete bool
 }
 
@@ -55,9 +53,9 @@ func NewHybridIterator(ctx context.Context, conn *pgx.Conn, cfg Config) (*Hybrid
 			return nil, err
 		}
 
-		err = h.attachSnapshotReplication(ctx, conn)
+		err = h.attachCDCIterator(ctx, conn)
 		if err != nil {
-			return nil, fmt.Errorf("failed to attach snapshot replication slot: %w", err)
+			return nil, fmt.Errorf("failed to attach cdc iterator: %w", err)
 		}
 
 		err = h.attachCopier(ctx, tx.Conn())
@@ -67,10 +65,11 @@ func NewHybridIterator(ctx context.Context, conn *pgx.Conn, cfg Config) (*Hybrid
 
 		go func() {
 			<-h.copy.Done()
+			fmt.Printf("DONE WITH COPYING")
 			if err := tx.Commit(ctx); err != nil {
 				fmt.Printf("failed to commit: %v", err)
 			}
-			h.switchToCDC(ctx, conn)
+			go h.switchToCDC(ctx, conn)
 		}()
 
 		return h, nil
@@ -103,7 +102,7 @@ func (h *Hybrid) Next(ctx context.Context) (sdk.Record, error) {
 		if err != nil {
 			if errors.Is(err, ErrSnapshotComplete) {
 				h.snapshotComplete = true
-				return h.cdc.Next(ctx)
+				return h.Next(ctx)
 			}
 			return sdk.Record{}, fmt.Errorf("copy error: %w", err)
 		}
@@ -136,67 +135,11 @@ func (h *Hybrid) attachCDCIterator(ctx context.Context, conn *pgx.Conn) error {
 		return fmt.Errorf("failed to create CDC iterator: %w", err)
 	}
 	h.cdc = cdc
+	err = h.cdc.AttachSnapshotSubscription(ctx, conn)
+	if err != nil {
+		return fmt.Errorf("failed to attach snapshot replication slot: %w", err)
+	}
 	return nil
-}
-
-func (h *Hybrid) attachSnapshotReplication(ctx context.Context, conn *pgx.Conn) error {
-	// TODO: refactor this down into the Subscription library.
-	point, err := h.createReplicationSlot(ctx, conn)
-	if err != nil {
-		return err
-	}
-	lsn, err := pglogrepl.ParseLSN(point)
-	if err != nil {
-		return err
-	}
-	h.config.Position = LSNToPosition(lsn)
-
-	records := make(chan sdk.Record)
-	handler := NewCDCHandler(
-		internal.NewRelationSet(conn.ConnInfo()),
-		h.config.KeyColumnName,
-		h.config.Columns,
-		records,
-	).Handle
-
-	sub := internal.NewSubscription(
-		conn.Config().Config,
-		h.config.SlotName,
-		h.config.PublicationName,
-		[]string{h.config.TableName},
-		lsn,
-		handler)
-
-	h.cdc = &CDCIterator{
-		config:  h.config,
-		records: records,
-		sub:     sub,
-	}
-
-	return nil
-}
-
-func (h *Hybrid) createReplicationSlot(ctx context.Context, conn *pgx.Conn) (string, error) {
-	result, err := pglogrepl.CreateReplicationSlot(
-		ctx,
-		conn.PgConn(),
-		h.config.SlotName,
-		"pgoutput",
-		pglogrepl.CreateReplicationSlotOptions{
-			Temporary:      true, // replication slot is dropped when we disconnect
-			SnapshotAction: "USE_SNAPSHOT",
-			Mode:           pglogrepl.LogicalReplication,
-		},
-	)
-	if err != nil {
-		// If creating the replication slot fails with code 42710, this means
-		// the replication slot already exists.
-		var pgerr *pgconn.PgError
-		if !errors.As(err, &pgerr) || pgerr.Code != "42710" {
-			return "", err
-		}
-	}
-	return result.ConsistentPoint, nil
 }
 
 func (h *Hybrid) switchToCDC(ctx context.Context, conn *pgx.Conn) error {
@@ -209,12 +152,11 @@ func (h *Hybrid) switchToCDC(ctx context.Context, conn *pgx.Conn) error {
 		return err
 	}
 
-	if err := h.cdc.sub.Listen(ctx, conn.PgConn()); err != nil {
-		if !errors.Is(err, context.Canceled) {
-			return nil
-		}
-		return err
-	}
+	lctx, cancel := context.WithCancel(ctx)
+	h.killswitch = cancel
 
+	go h.cdc.sub.Listen(lctx, conn.PgConn())
+
+	<-h.cdc.sub.Ready()
 	return nil
 }

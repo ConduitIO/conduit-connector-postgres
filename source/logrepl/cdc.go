@@ -54,7 +54,7 @@ func NewCDCIterator(ctx context.Context, conn *pgx.Conn, config Config) (*CDCIte
 		records: make(chan sdk.Record),
 	}
 
-	err := i.attachSubscription(ctx, conn)
+	err := i.AttachSubscription(ctx, conn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to setup subscription: %w", err)
 	}
@@ -135,9 +135,40 @@ func (i *CDCIterator) Teardown(ctx context.Context) error {
 	}
 }
 
-// attachSubscription determines the starting LSN and key column of the source
+func (i *CDCIterator) AttachSnapshotSubscription(ctx context.Context, conn *pgx.Conn) error {
+	handler := NewCDCHandler(
+		internal.NewRelationSet(conn.ConnInfo()),
+		i.config.KeyColumnName,
+		i.config.Columns,
+		i.records,
+	).Handle
+
+	sub := internal.NewSubscription(
+		conn.Config().Config,
+		i.config.SlotName,
+		i.config.PublicationName,
+		[]string{i.config.TableName},
+		pglogrepl.LSN(0), // to be overridden later.
+		handler)
+
+	point, err := sub.CreateSnapshotReplicationSlot(ctx, conn.PgConn())
+	if err != nil {
+		return err
+	}
+
+	lsn, err := pglogrepl.ParseLSN(point)
+	if err != nil {
+		return err
+	}
+
+	sub.StartLSN = lsn
+	i.sub = sub
+	return nil
+}
+
+// AttachSubscription determines the starting LSN and key column of the source
 // table and prepares a subscription.
-func (i *CDCIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) error {
+func (i *CDCIterator) AttachSubscription(ctx context.Context, conn *pgx.Conn) error {
 	var lsn pglogrepl.LSN
 	if i.config.Position != nil && string(i.config.Position) != "" {
 		var err error

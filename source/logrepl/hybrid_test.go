@@ -52,6 +52,7 @@ func TestHybridSnapshot(t *testing.T) {
 	}
 
 	is.True(len(records) == 4)
+	is.NoErr(h.Teardown(ctx))
 }
 
 // createTestHybridIterator creates a hybrid iterator with a replication
@@ -75,6 +76,5 @@ func createTestHybridIterator(ctx context.Context, t *testing.T) *Hybrid {
 		SnapshotMode:    "initial",
 	})
 	is.NoErr(err)
-	t.Cleanup(func() { is.NoErr(h.Teardown(ctx)) })
 	return h
 }

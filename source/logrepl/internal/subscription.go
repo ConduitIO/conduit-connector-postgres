@@ -113,7 +113,7 @@ func (s *Subscription) Start(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
-	_, err = s.CreateReplicationSlot(ctx, conn)
+	err = s.CreateReplicationSlot(ctx, conn)
 	if err != nil {
 		return err
 	}
@@ -360,8 +360,8 @@ func (s *Subscription) CreateSnapshotReplicationSlot(ctx context.Context, conn *
 // CreateReplicationSlot creates a temporary replication slot which will be
 // deleted once the connection is closed. If a replication slot with that name
 // already exists it returns no error.
-func (s *Subscription) CreateReplicationSlot(ctx context.Context, conn *pgconn.PgConn) (string, error) {
-	result, err := pglogrepl.CreateReplicationSlot(
+func (s *Subscription) CreateReplicationSlot(ctx context.Context, conn *pgconn.PgConn) error {
+	_, err := pglogrepl.CreateReplicationSlot(
 		ctx,
 		conn,
 		s.SlotName,
@@ -377,11 +377,11 @@ func (s *Subscription) CreateReplicationSlot(ctx context.Context, conn *pgconn.P
 		// the replication slot already exists.
 		var pgerr *pgconn.PgError
 		if !errors.As(err, &pgerr) || pgerr.Code != pgDuplicateObjectErrorCode {
-			return "", err
+			return err
 		}
 	}
 
-	return result.ConsistentPoint, nil
+	return nil
 }
 
 // StartReplication starts replication with a specific start LSN and adds two
