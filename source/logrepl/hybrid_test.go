@@ -48,7 +48,7 @@ func TestHybridSnapshot(t *testing.T) {
 		is.NoErr(err)
 		count++
 		records = append(records, rec)
-		t.Logf("%d ----- %v\n", count, rec)
+		t.Logf("\n%d ----- %v\n", count, rec)
 	}
 
 	is.True(len(records) == 4)
