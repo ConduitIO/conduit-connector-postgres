@@ -54,11 +54,6 @@ func NewCDCIterator(ctx context.Context, conn *pgx.Conn, config Config) (*CDCIte
 		records: make(chan sdk.Record),
 	}
 
-	err := i.AttachSubscription(ctx, conn)
-	if err != nil {
-		return nil, fmt.Errorf("failed to setup subscription: %w", err)
-	}
-
 	return i, nil
 }
 
