@@ -82,32 +82,8 @@ func NewSubscription(
 	}
 }
 
-func (s *Subscription) handleCleanup(ctx context.Context) (err error) {
-	// use fresh context for cleanup
-	cleanupErr := s.cleanup(context.Background())
-	if err == nil {
-		// return close connection error
-		err = cleanupErr
-	} else if cleanupErr != nil {
-		// an error is already returned, let's log this one instead
-		sdk.Logger(ctx).Err(cleanupErr).Msg("failed to cleanup subscription")
-	}
-	s.doneErr = err // store error so it can be retrieved later
-
-	select {
-	case <-s.ready:
-		// ready is already closed
-	default:
-		close(s.ready)
-	}
-	close(s.done)
-	return nil
-}
-
 // Start replication and block until error or ctx is canceled.
 func (s *Subscription) Start(ctx context.Context) (err error) {
-	defer s.handleCleanup(ctx)
-
 	conn, err := s.connect(ctx)
 	if err != nil {
 		return err
@@ -125,23 +101,41 @@ func (s *Subscription) Start(ctx context.Context) (err error) {
 		return err
 	}
 
-	lctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	s.stop = cancel
 	s.walWritten = s.StartLSN
 	s.walFlushed = s.StartLSN
 
-	return s.Listen(lctx, conn)
+	return s.Listen(ctx, conn)
 }
 
 // Listen runs until context is cancelled or an error is encountered.
-func (s *Subscription) Listen(c context.Context, conn *pgconn.PgConn) error {
+func (s *Subscription) Listen(c context.Context, conn *pgconn.PgConn) (err error) {
 	ctx, cancel := context.WithCancel(c)
-	defer cancel()
 	s.stop = cancel
-	defer s.handleCleanup(ctx)
-	// signal that the subscription is ready and is receiving messages
+	defer cancel()
+
+	defer func() {
+		// use fresh context for cleanup
+		cleanupErr := s.cleanup(context.Background())
+		if err == nil {
+			// return close connection error
+			err = cleanupErr
+		} else if cleanupErr != nil {
+			// an error is already returned, let's log this one instead
+			sdk.Logger(ctx).Err(cleanupErr).Msg("failed to cleanup subscription")
+		}
+		s.doneErr = err // store error so it can be retrieved later
+
+		select {
+		case <-s.ready:
+			// ready is already closed
+		default:
+			close(s.ready)
+		}
+		close(s.done)
+	}()
+
 	close(s.ready)
+
 	nextStatusUpdateAt := time.Now().Add(s.StatusTimeout)
 	for {
 		if time.Now().After(nextStatusUpdateAt) {
