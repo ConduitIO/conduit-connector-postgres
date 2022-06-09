@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/jackc/pgx/v4"
@@ -26,7 +25,7 @@ import (
 	"github.com/matryer/is"
 )
 
-func TestHybridContextCancellation(t *testing.T) {
+func TestHybridCDCContextCancellation(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 
@@ -48,10 +47,6 @@ func TestHybridContextCancellation(t *testing.T) {
 		SnapshotMode:    "initial",
 	})
 	is.NoErr(err)
-	t.Cleanup(func() {
-		err := h.Teardown(ctx)
-		is.True(errors.Is(err, context.Canceled))
-	})
 
 	count := 0
 	for count < 2 {
@@ -60,13 +55,7 @@ func TestHybridContextCancellation(t *testing.T) {
 		count++
 	}
 
-	go func() {
-		cancel()
-	}()
+	cancel()
 
-	select {
-	case <-h.Done(ctx):
-	case <-time.After(time.Millisecond * 500):
-		is.Fail()
-	}
+	is.True(errors.Is(h.Wait(ctx), context.Canceled))
 }

@@ -126,6 +126,7 @@ func (s *Source) Teardown(ctx context.Context) error {
 		}
 	}
 	if s.conn != nil {
+		// TODO: this Close is not called if the earlier return happens.
 		if err := s.conn.Close(ctx); err != nil {
 			return fmt.Errorf("failed to close DB connection: %w", err)
 		}

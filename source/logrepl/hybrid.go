@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	sdk "github.com/conduitio/conduit-connector-sdk"
+
 	"github.com/jackc/pgx/v4"
 )
 
@@ -63,6 +64,7 @@ func NewHybridIterator(ctx context.Context, conn *pgx.Conn, cfg Config) (*Hybrid
 		}
 
 		go func() {
+			// Wait for copy to finish or handle context cancellation
 			select {
 			case <-h.copy.Done():
 				if err := tx.Commit(ctx); err != nil {
@@ -74,8 +76,8 @@ func NewHybridIterator(ctx context.Context, conn *pgx.Conn, cfg Config) (*Hybrid
 					}
 				}
 			case <-ctx.Done():
-				fmt.Printf("context done: %v", ctx.Err())
-				return
+				fmt.Printf("context cancellation: %v", ctx.Err())
+				fmt.Printf("cdc cancellation: %v", h.cdc.Err(ctx))
 			}
 		}()
 
@@ -104,6 +106,15 @@ func (h *Hybrid) Ack(ctx context.Context, pos sdk.Position) error {
 }
 
 func (h *Hybrid) Next(ctx context.Context) (sdk.Record, error) {
+	select {
+	case <-ctx.Done():
+		return sdk.Record{}, ctx.Err()
+	default:
+		return h.next(ctx)
+	}
+}
+
+func (h *Hybrid) next(ctx context.Context) (sdk.Record, error) {
 	if !h.snapshotComplete {
 		rec, err := h.copy.Next(ctx)
 		if err != nil {
@@ -139,9 +150,15 @@ func (h *Hybrid) Teardown(ctx context.Context) error {
 	return nil
 }
 
+// Wait will wait for CDC or context to signal Done, but not copy's Done.
+// Copy's done is ignored to handle transition behavior.
 func (h *Hybrid) Wait(ctx context.Context) error {
-	<-h.copy.Done()
-	return h.cdc.Wait(ctx)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-h.cdc.Done():
+		return h.cdc.Err(ctx)
+	}
 }
 
 func (h *Hybrid) Done(ctx context.Context) <-chan struct{} {

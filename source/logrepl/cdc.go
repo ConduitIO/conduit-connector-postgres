@@ -130,6 +130,10 @@ func (i *CDCIterator) Teardown(ctx context.Context) error {
 	}
 }
 
+func (i *CDCIterator) Err(ctx context.Context) error {
+	return i.sub.Err()
+}
+
 func (i *CDCIterator) Wait(ctx context.Context) error {
 	return i.sub.Wait(ctx)
 }
