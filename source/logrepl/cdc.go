@@ -48,7 +48,7 @@ type CDCIterator struct {
 // NewCDCIterator sets up the subscription to a logical replication slot and
 // starts a goroutine that listens to events. The goroutine will keep running
 // until either the context is canceled or Teardown is called.
-func NewCDCIterator(ctx context.Context, conn *pgx.Conn, config Config) (*CDCIterator, error) {
+func NewCDCIterator(ctx context.Context, config Config) (*CDCIterator, error) {
 	i := &CDCIterator{
 		config:  config,
 		records: make(chan sdk.Record),
@@ -128,6 +128,14 @@ func (i *CDCIterator) Teardown(ctx context.Context) error {
 		}
 		return nil
 	}
+}
+
+func (i *CDCIterator) Wait(ctx context.Context) error {
+	return i.sub.Wait(ctx)
+}
+
+func (i *CDCIterator) Done() <-chan struct{} {
+	return i.sub.Done()
 }
 
 func (i *CDCIterator) AttachSnapshotSubscription(ctx context.Context, conn *pgx.Conn) error {

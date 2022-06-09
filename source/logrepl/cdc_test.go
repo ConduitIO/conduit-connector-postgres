@@ -142,7 +142,7 @@ func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table s
 		conn.Release()
 	})
 
-	i, err := NewCDCIterator(ctx, conn.Conn(), config)
+	i, err := NewCDCIterator(ctx, config)
 	is.NoErr(err)
 
 	err = i.AttachSubscription(ctx, conn.Conn())

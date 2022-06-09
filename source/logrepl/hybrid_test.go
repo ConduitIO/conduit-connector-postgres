@@ -16,8 +16,9 @@ package logrepl
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/jackc/pgx/v4"
@@ -25,55 +26,19 @@ import (
 	"github.com/matryer/is"
 )
 
-func TestHybridSnapshotTransition(t *testing.T) {
+func TestHybridContextCancellation(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
-	h := createTestHybridIterator(ctx, t)
 
-	go func() {
-		conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-		_, err := conn.Exec(ctx, fmt.Sprintf(`insert into %s values ( 4, null, null,
-		null, null, null, '{"biz":"baz"}')`, h.config.TableName))
-		is.NoErr(err)
-		_, err = conn.Exec(ctx, fmt.Sprintf(`insert into %s values ( 5, null, null,
-		null, null, null, '{"fiz":"buzz"}')`, h.config.TableName))
-		is.NoErr(err)
-	}()
-
-	count := 0
-	for count < 4 {
-		_, err := h.Next(ctx)
-		is.NoErr(err)
-		count++
-	}
-	is.NoErr(h.Teardown(ctx))
-}
-
-// func TestHybridContextCancellation(t *testing.T) {
-// 	ctx, cancel := context.WithCancel(context.Background())
-// 	is := is.New(t)
-
-// 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-// 	table := test.SetupTestTable(ctx, t, conn)
-
-// 	h := createTestHybridIterator(ctx, t)
-
-// 	err := h.Listen(ctx)
-// 	cancel()
-// }
-
-// createTestHybridIterator creates a hybrid iterator with a replication
-// capable connection to Postgres and a prepared test table and handles closing
-// its connection and test cleanup.
-func createTestHybridIterator(ctx context.Context, t *testing.T) *Hybrid {
-	is := is.New(t)
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 	cfg := conn.Config()
 	cfg.RuntimeParams["replication"] = "database"
 	replconn, err := pgx.ConnectConfig(ctx, cfg)
 	is.NoErr(err)
-	t.Cleanup(func() { is.NoErr(replconn.Close(ctx)) })
-	table := test.SetupTestTableV2(ctx, t, replconn)
+
+	table := test.SetupTestTableV2(ctx, t, conn)
+	ctx, cancel := context.WithCancel(ctx)
+
 	h, err := NewHybridIterator(ctx, replconn, Config{
 		TableName:       table,
 		SlotName:        table,
@@ -83,5 +48,25 @@ func createTestHybridIterator(ctx context.Context, t *testing.T) *Hybrid {
 		SnapshotMode:    "initial",
 	})
 	is.NoErr(err)
-	return h
+	t.Cleanup(func() {
+		err := h.Teardown(ctx)
+		is.True(errors.Is(err, context.Canceled))
+	})
+
+	count := 0
+	for count < 2 {
+		_, err = h.Next(ctx)
+		is.NoErr(err)
+		count++
+	}
+
+	go func() {
+		cancel()
+	}()
+
+	select {
+	case <-h.Done(ctx):
+	case <-time.After(time.Millisecond * 500):
+		is.Fail()
+	}
 }

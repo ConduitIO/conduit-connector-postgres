@@ -37,6 +37,7 @@ type CopyDataWriter struct {
 	decoders          []decoderValue
 	connInfo          *pgtype.ConnInfo
 	messages          chan sdk.Record
+	err               error
 	wg                sync.WaitGroup
 	done              chan struct{}
 }
@@ -73,8 +74,17 @@ func (c *CopyDataWriter) Copy(ctx context.Context, conn *pgx.Conn) {
 	copyquery := fmt.Sprintf("COPY %s TO STDOUT", c.config.TableName)
 	_, err := conn.PgConn().CopyTo(ctx, c, copyquery)
 	if err != nil {
-		fmt.Printf("failed to copy data from table: %v", err)
+		if errors.Is(err, context.Canceled) {
+			// controlled stop; check context error and call done.
+			c.err = ctx.Err()
+			close(c.done)
+			return
+		}
+		// unexpected error
+		// TODO: ctx.Err() could be hidden here.
+		c.err = fmt.Errorf("failed to copy to stdout: %w", err)
 	}
+
 	c.wg.Wait() // ensure messages is empty before closing done
 	close(c.done)
 }
@@ -135,7 +145,7 @@ func (c *CopyDataWriter) Next(ctx context.Context) (sdk.Record, error) {
 		case <-ctx.Done():
 			return sdk.Record{}, ctx.Err()
 		case <-c.Done():
-			return sdk.Record{}, ErrSnapshotComplete
+			return sdk.Record{}, c.err
 		}
 	}
 }
@@ -147,6 +157,11 @@ func (c *CopyDataWriter) Teardown(ctx context.Context) error {
 
 func (c *CopyDataWriter) Ack(ctx context.Context, pos sdk.Position) error {
 	return nil // noop in copy writer terms
+}
+
+// Returns error collected during Copying, if any.
+func (c *CopyDataWriter) Err() error {
+	return c.err
 }
 
 func (c *CopyDataWriter) Done() <-chan struct{} {

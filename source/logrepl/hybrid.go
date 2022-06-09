@@ -33,7 +33,6 @@ type Hybrid struct {
 	copy *CopyDataWriter
 	conn *pgx.Conn
 
-	killswitch       context.CancelFunc
 	snapshotComplete bool
 }
 
@@ -53,7 +52,7 @@ func NewHybridIterator(ctx context.Context, conn *pgx.Conn, cfg Config) (*Hybrid
 			return nil, err
 		}
 
-		err = h.attachCDCIterator(ctx, conn)
+		err = h.attachCDCIterator(ctx, tx.Conn())
 		if err != nil {
 			return nil, fmt.Errorf("failed to attach cdc iterator: %w", err)
 		}
@@ -64,11 +63,20 @@ func NewHybridIterator(ctx context.Context, conn *pgx.Conn, cfg Config) (*Hybrid
 		}
 
 		go func() {
-			<-h.copy.Done()
-			if err := tx.Commit(ctx); err != nil {
-				fmt.Printf("failed to commit: %v", err)
+			select {
+			case <-h.copy.Done():
+				if err := tx.Commit(ctx); err != nil {
+					fmt.Printf("failed to commit: %v", err)
+				}
+				if err := h.switchToCDC(ctx, conn); err != nil {
+					if !errors.Is(err, context.Canceled) {
+						fmt.Printf("failed to switch to cdc: %v", err)
+					}
+				}
+			case <-ctx.Done():
+				fmt.Printf("context done: %v", ctx.Err())
+				return
 			}
-			go h.switchToCDC(ctx, conn)
 		}()
 
 		return h, nil
@@ -101,7 +109,7 @@ func (h *Hybrid) Next(ctx context.Context) (sdk.Record, error) {
 		if err != nil {
 			if errors.Is(err, ErrSnapshotComplete) {
 				h.snapshotComplete = true
-				return h.Next(ctx)
+				return h.cdc.Next(ctx)
 			}
 			return sdk.Record{}, fmt.Errorf("copy error: %w", err)
 		}
@@ -112,10 +120,33 @@ func (h *Hybrid) Next(ctx context.Context) (sdk.Record, error) {
 }
 
 func (h *Hybrid) Teardown(ctx context.Context) error {
-	if err := h.cdc.Teardown(ctx); err != nil {
-		return fmt.Errorf("failed to teardown cdc iterator: %w", err)
+	if h.copy != nil {
+		if err := h.copy.Teardown(ctx); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return ctx.Err()
+			}
+			return fmt.Errorf("failed to teardown copy iterator: %w", err)
+		}
+	}
+	if h.cdc != nil {
+		if err := h.cdc.Teardown(ctx); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return ctx.Err()
+			}
+			return fmt.Errorf("failed to teardown cdc iterator: %w", err)
+		}
 	}
 	return nil
+}
+
+func (h *Hybrid) Wait(ctx context.Context) error {
+	<-h.copy.Done()
+	return h.cdc.Wait(ctx)
+}
+
+func (h *Hybrid) Done(ctx context.Context) <-chan struct{} {
+	<-h.copy.Done()
+	return h.cdc.Done()
 }
 
 func (h *Hybrid) attachCopier(ctx context.Context, conn *pgx.Conn) error {
@@ -129,7 +160,7 @@ func (h *Hybrid) attachCopier(ctx context.Context, conn *pgx.Conn) error {
 }
 
 func (h *Hybrid) attachCDCIterator(ctx context.Context, conn *pgx.Conn) error {
-	cdc, err := NewCDCIterator(ctx, conn, h.config)
+	cdc, err := NewCDCIterator(ctx, h.config)
 	if err != nil {
 		return fmt.Errorf("failed to create CDC iterator: %w", err)
 	}
@@ -146,15 +177,8 @@ func (h *Hybrid) switchToCDC(ctx context.Context, conn *pgx.Conn) error {
 	if err != nil {
 		return err
 	}
-
 	if err := h.cdc.StartReplication(ctx, conn); err != nil {
 		return err
 	}
-
-	lctx, cancel := context.WithCancel(ctx)
-	h.killswitch = cancel
-	go h.cdc.sub.Listen(lctx, conn.PgConn())
-	<-h.cdc.sub.Ready()
-
 	return nil
 }

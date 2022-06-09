@@ -69,7 +69,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			sdk.Logger(ctx).Warn().Msg("snapshot not supported in logical replication mode")
 		}
 
-		i, err := logrepl.NewCDCIterator(ctx, s.conn, logrepl.Config{
+		i, err := logrepl.NewCDCIterator(ctx, logrepl.Config{
 			Position:        pos,
 			SlotName:        s.config.LogreplSlotName,
 			PublicationName: s.config.LogreplPublicationName,
@@ -81,6 +81,11 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			return fmt.Errorf("failed to create logical replication iterator: %w", err)
 		}
 		s.iterator = i
+		if err := i.AttachSubscription(ctx, conn); err != nil {
+			return fmt.Errorf("failed to attach subscription: %w", err)
+		}
+		go i.Listen(ctx) // This requires a config.URL to be set
+		return nil
 	case CDCModeLongPolling:
 		sdk.Logger(ctx).Warn().Msg("long polling not supported yet, only snapshot is supported")
 		if s.config.SnapshotMode != SnapshotModeInitial {
