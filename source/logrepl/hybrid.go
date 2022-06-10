@@ -65,19 +65,14 @@ func NewHybridIterator(ctx context.Context, conn *pgx.Conn, cfg Config) (*Hybrid
 
 		go func() {
 			// Wait for copy to finish or handle context cancellation
-			select {
-			case <-h.copy.Done():
-				if err := tx.Commit(ctx); err != nil {
-					fmt.Printf("failed to commit: %v", err)
+			<-h.copy.Done()
+			if err := tx.Commit(ctx); err != nil {
+				fmt.Printf("failed to commit: %v", err)
+			}
+			if err := h.switchToCDC(ctx, conn); err != nil {
+				if !errors.Is(err, context.Canceled) {
+					fmt.Printf("failed to switch to cdc: %v", err)
 				}
-				if err := h.switchToCDC(ctx, conn); err != nil {
-					if !errors.Is(err, context.Canceled) {
-						fmt.Printf("failed to switch to cdc: %v", err)
-					}
-				}
-			case <-ctx.Done():
-				fmt.Printf("context cancellation: %v", ctx.Err())
-				fmt.Printf("cdc cancellation: %v", h.cdc.Err(ctx))
 			}
 		}()
 

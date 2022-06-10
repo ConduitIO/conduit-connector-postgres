@@ -74,15 +74,9 @@ func (c *CopyDataWriter) Copy(ctx context.Context, conn *pgx.Conn) {
 	copyquery := fmt.Sprintf("COPY %s TO STDOUT", c.config.TableName)
 	_, err := conn.PgConn().CopyTo(ctx, c, copyquery)
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			// controlled stop; check context error and call done.
-			c.err = ctx.Err()
-			close(c.done)
-			return
+		if !errors.Is(err, context.Canceled) {
+			c.err = fmt.Errorf("failed to copy to stdout: %w", err)
 		}
-		// unexpected error
-		// TODO: ctx.Err() could be hidden here.
-		c.err = fmt.Errorf("failed to copy to stdout: %w", err)
 	}
 
 	c.wg.Wait() // ensure messages is empty before closing done

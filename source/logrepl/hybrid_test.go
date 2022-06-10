@@ -25,7 +25,7 @@ import (
 	"github.com/matryer/is"
 )
 
-func TestHybridCDCContextCancellation(t *testing.T) {
+func TestHybridContextCancellation(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 
