@@ -25,7 +25,7 @@ import (
 	"github.com/matryer/is"
 )
 
-func TestHybridContextCancellation(t *testing.T) {
+func TestHybridIterator_Next_ContextCancellation(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 
@@ -48,14 +48,52 @@ func TestHybridContextCancellation(t *testing.T) {
 	})
 	is.NoErr(err)
 
-	count := 0
-	for count < 2 {
-		_, err = h.Next(ctx)
-		is.NoErr(err)
-		count++
-	}
+	go func() {
+		count := 0
+		for count < 2 {
+			_, err = h.Next(ctx)
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("failed to detect context cancellation: %v", err)
+			}
+			count++
+		}
+	}()
 
 	cancel()
 
 	is.True(errors.Is(h.Wait(ctx), context.Canceled))
+}
+
+func TestHybridIterator_Transition(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+
+	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
+	cfg := conn.Config()
+	cfg.RuntimeParams["replication"] = "database"
+	replconn, err := pgx.ConnectConfig(ctx, cfg)
+	is.NoErr(err)
+
+	table := test.SetupTestTableV2(ctx, t, conn)
+	// ctx, cancel := context.WithCancel(ctx)
+
+	h, err := NewHybridIterator(ctx, replconn, Config{
+		TableName:       table,
+		SlotName:        table,
+		PublicationName: table,
+		KeyColumnName:   "h",
+		Columns:         []string{"a", "b", "c", "d", "e", "f", "g"},
+		SnapshotMode:    "initial",
+	})
+	is.NoErr(err)
+
+	// gather four records and bail out
+	count := 0
+	for count < 4 {
+		rec, err := h.Next(ctx)
+		is.NoErr(err)
+		count++
+		t.Logf("%+v", rec)
+	}
+	// cancel()
 }

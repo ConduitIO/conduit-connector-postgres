@@ -64,8 +64,11 @@ func NewHybridIterator(ctx context.Context, conn *pgx.Conn, cfg Config) (*Hybrid
 		}
 
 		go func() {
-			// Wait for copy to finish or handle context cancellation
-			<-h.copy.Done()
+			if err := h.waitForCopy(ctx); err != nil {
+				if !errors.Is(err, context.Canceled) {
+					fmt.Printf("wait for copy received an error: %v", err)
+				}
+			}
 			if err := tx.Commit(ctx); err != nil {
 				fmt.Printf("failed to commit: %v", err)
 			}
@@ -153,6 +156,15 @@ func (h *Hybrid) Wait(ctx context.Context) error {
 		return ctx.Err()
 	case <-h.cdc.Done():
 		return h.cdc.Err(ctx)
+	}
+}
+
+func (h *Hybrid) waitForCopy(ctx context.Context) error {
+	select {
+	case <-h.copy.Done():
+		return h.copy.Err()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
