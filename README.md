@@ -24,9 +24,6 @@ listens to changes in the configured table. Every detected change is converted i
 `Read`. If there is no record available at the moment `Read` is called, it blocks until a record is available or the
 connector receives a stop signal.
 
-If logical replication isn't available on the PostgreSQL instance, the connector can be configured to use long polling
-by adding `"cdcMode":"longPolling"` to the Source configuration.
-
 ### Logical Replication Configuration
 
 When the connector switches to CDC mode, it attempts to run the initial setup commands to create its logical replication
