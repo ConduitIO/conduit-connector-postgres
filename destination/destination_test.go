@@ -25,7 +25,7 @@ import (
 	"github.com/matryer/is"
 )
 
-func TestAdapter_Write(t *testing.T) {
+func TestDestination_Write(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
@@ -45,7 +45,7 @@ func TestAdapter_Write(t *testing.T) {
 		record: sdk.Record{
 			Position:  sdk.Position("foo"),
 			Operation: sdk.OperationSnapshot,
-			Metadata:  map[string]string{"table": tableName},
+			Metadata:  map[string]string{MetadataTable: tableName},
 			After: sdk.Entity{
 				Key: sdk.StructuredData{"id": 5000},
 				Payload: sdk.StructuredData{
@@ -60,7 +60,7 @@ func TestAdapter_Write(t *testing.T) {
 		record: sdk.Record{
 			Position:  sdk.Position("foo"),
 			Operation: sdk.OperationCreate,
-			Metadata:  map[string]string{"table": tableName},
+			Metadata:  map[string]string{MetadataTable: tableName},
 			After: sdk.Entity{
 				Key: sdk.StructuredData{"id": 5},
 				Payload: sdk.StructuredData{
@@ -75,7 +75,7 @@ func TestAdapter_Write(t *testing.T) {
 		record: sdk.Record{
 			Position:  sdk.Position("foo"),
 			Operation: sdk.OperationUpdate,
-			Metadata:  map[string]string{"table": tableName},
+			Metadata:  map[string]string{MetadataTable: tableName},
 			Before: sdk.Entity{
 				Key: sdk.StructuredData{"id": 6},
 			},
@@ -93,7 +93,7 @@ func TestAdapter_Write(t *testing.T) {
 		record: sdk.Record{
 			Position:  sdk.Position("foo"),
 			Operation: sdk.OperationUpdate,
-			Metadata:  map[string]string{"table": tableName},
+			Metadata:  map[string]string{MetadataTable: tableName},
 			Before: sdk.Entity{
 				Key: sdk.StructuredData{"id": 1},
 			},
@@ -110,7 +110,7 @@ func TestAdapter_Write(t *testing.T) {
 		name: "delete",
 		record: sdk.Record{
 			Position:  sdk.Position("foo"),
-			Metadata:  map[string]string{"table": tableName},
+			Metadata:  map[string]string{MetadataTable: tableName},
 			Operation: sdk.OperationDelete,
 			Before: sdk.Entity{
 				Key: sdk.StructuredData{"id": 4},
@@ -120,6 +120,7 @@ func TestAdapter_Write(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Log(string(tt.record.Bytes()))
 			is = is.New(t)
 			var id any
 			switch tt.record.Operation {
