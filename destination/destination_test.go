@@ -36,6 +36,10 @@ func TestDestination_Write(t *testing.T) {
 	is.NoErr(err)
 	err = d.Open(ctx)
 	is.NoErr(err)
+	defer func() {
+		err := d.Teardown(ctx)
+		is.NoErr(err)
+	}()
 
 	tests := []struct {
 		name   string
