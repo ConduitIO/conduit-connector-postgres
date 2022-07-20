@@ -46,9 +46,9 @@ func TestDestination_Write(t *testing.T) {
 			Position:  sdk.Position("foo"),
 			Operation: sdk.OperationSnapshot,
 			Metadata:  map[string]string{MetadataTable: tableName},
-			After: sdk.Entity{
-				Key: sdk.StructuredData{"id": 5000},
-				Payload: sdk.StructuredData{
+			Key:       sdk.StructuredData{"id": 5000},
+			Payload: sdk.Change{
+				After: sdk.StructuredData{
 					"column1": "foo",
 					"column2": 123,
 					"column3": true,
@@ -61,9 +61,9 @@ func TestDestination_Write(t *testing.T) {
 			Position:  sdk.Position("foo"),
 			Operation: sdk.OperationCreate,
 			Metadata:  map[string]string{MetadataTable: tableName},
-			After: sdk.Entity{
-				Key: sdk.StructuredData{"id": 5},
-				Payload: sdk.StructuredData{
+			Key:       sdk.StructuredData{"id": 5},
+			Payload: sdk.Change{
+				After: sdk.StructuredData{
 					"column1": "foo",
 					"column2": 456,
 					"column3": false,
@@ -76,12 +76,9 @@ func TestDestination_Write(t *testing.T) {
 			Position:  sdk.Position("foo"),
 			Operation: sdk.OperationUpdate,
 			Metadata:  map[string]string{MetadataTable: tableName},
-			Before: sdk.Entity{
-				Key: sdk.StructuredData{"id": 6},
-			},
-			After: sdk.Entity{
-				Key: sdk.StructuredData{"id": 6},
-				Payload: sdk.StructuredData{
+			Key:       sdk.StructuredData{"id": 6},
+			Payload: sdk.Change{
+				After: sdk.StructuredData{
 					"column1": "bar",
 					"column2": 567,
 					"column3": true,
@@ -94,12 +91,9 @@ func TestDestination_Write(t *testing.T) {
 			Position:  sdk.Position("foo"),
 			Operation: sdk.OperationUpdate,
 			Metadata:  map[string]string{MetadataTable: tableName},
-			Before: sdk.Entity{
-				Key: sdk.StructuredData{"id": 1},
-			},
-			After: sdk.Entity{
-				Key: sdk.StructuredData{"id": 1},
-				Payload: sdk.StructuredData{
+			Key:       sdk.StructuredData{"id": 1},
+			Payload: sdk.Change{
+				After: sdk.StructuredData{
 					"column1": "foobar",
 					"column2": 567,
 					"column3": true,
@@ -112,23 +106,14 @@ func TestDestination_Write(t *testing.T) {
 			Position:  sdk.Position("foo"),
 			Metadata:  map[string]string{MetadataTable: tableName},
 			Operation: sdk.OperationDelete,
-			Before: sdk.Entity{
-				Key: sdk.StructuredData{"id": 4},
-			},
+			Key:       sdk.StructuredData{"id": 4},
 		},
 	},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Log(string(tt.record.Bytes()))
 			is = is.New(t)
-			var id any
-			switch tt.record.Operation {
-			case sdk.OperationCreate, sdk.OperationSnapshot, sdk.OperationUpdate:
-				id = tt.record.After.Key.(sdk.StructuredData)["id"]
-			case sdk.OperationDelete:
-				id = tt.record.Before.Key.(sdk.StructuredData)["id"]
-			}
+			id := tt.record.Key.(sdk.StructuredData)["id"]
 
 			err = d.Write(ctx, tt.record)
 			is.NoErr(err)
@@ -137,7 +122,7 @@ func TestDestination_Write(t *testing.T) {
 			switch tt.record.Operation {
 			case sdk.OperationCreate, sdk.OperationSnapshot, sdk.OperationUpdate:
 				is.NoErr(err)
-				is.Equal(tt.record.After.Payload, got)
+				is.Equal(tt.record.Payload.After, got)
 			case sdk.OperationDelete:
 				is.Equal(err, pgx.ErrNoRows)
 			}

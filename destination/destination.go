@@ -75,16 +75,12 @@ func (d *Destination) Open(ctx context.Context) error {
 // Write routes incoming records to their appropriate handler based on the
 // operation.
 func (d *Destination) Write(ctx context.Context, r sdk.Record) error {
-	switch r.Operation {
-	case sdk.OperationCreate, sdk.OperationSnapshot:
-		return d.handleInsert(ctx, r)
-	case sdk.OperationUpdate:
-		return d.handleUpdate(ctx, r)
-	case sdk.OperationDelete:
-		return d.handleDelete(ctx, r)
-	default:
-		return fmt.Errorf("invalid record operation %q", r.Operation)
-	}
+	return d.Util.Route(ctx, r,
+		d.handleInsert,
+		d.handleUpdate,
+		d.handleDelete,
+		d.handleInsert,
+	)
 }
 
 func (d *Destination) Flush(context.Context) error {
@@ -102,7 +98,7 @@ func (d *Destination) Teardown(ctx context.Context) error {
 // plainly insert the data. If a key exists, but no key column name is
 // configured, it attempts a plain insert to that database.
 func (d *Destination) handleInsert(ctx context.Context, r sdk.Record) error {
-	if !d.hasKey(r.After) || d.config.keyColumnName == "" {
+	if !d.hasKey(r) || d.config.keyColumnName == "" {
 		return d.insert(ctx, r)
 	}
 	return d.upsert(ctx, r)
@@ -110,7 +106,7 @@ func (d *Destination) handleInsert(ctx context.Context, r sdk.Record) error {
 
 // handleUpdate assumes the record has a key and will fail if one is not present
 func (d *Destination) handleUpdate(ctx context.Context, r sdk.Record) error {
-	if !d.hasKey(r.Before) {
+	if !d.hasKey(r) {
 		return fmt.Errorf("key must be provided on update actions")
 	}
 	// TODO handle case if the key was updated
@@ -118,19 +114,19 @@ func (d *Destination) handleUpdate(ctx context.Context, r sdk.Record) error {
 }
 
 func (d *Destination) handleDelete(ctx context.Context, r sdk.Record) error {
-	if !d.hasKey(r.Before) {
+	if !d.hasKey(r) {
 		return fmt.Errorf("key must be provided on delete actions")
 	}
 	return d.remove(ctx, r)
 }
 
 func (d *Destination) upsert(ctx context.Context, r sdk.Record) error {
-	payload, err := d.getPayload(r.After)
+	payload, err := d.getPayload(r)
 	if err != nil {
 		return fmt.Errorf("failed to get payload: %w", err)
 	}
 
-	key, err := d.getKey(r.After)
+	key, err := d.getKey(r)
 	if err != nil {
 		return fmt.Errorf("failed to get key: %w", err)
 	}
@@ -156,7 +152,7 @@ func (d *Destination) upsert(ctx context.Context, r sdk.Record) error {
 }
 
 func (d *Destination) remove(ctx context.Context, r sdk.Record) error {
-	key, err := d.getKey(r.Before)
+	key, err := d.getKey(r)
 	if err != nil {
 		return err
 	}
@@ -184,11 +180,11 @@ func (d *Destination) insert(ctx context.Context, r sdk.Record) error {
 	if err != nil {
 		return err
 	}
-	key, err := d.getKey(r.After)
+	key, err := d.getKey(r)
 	if err != nil {
 		return err
 	}
-	payload, err := d.getPayload(r.After)
+	payload, err := d.getPayload(r)
 	if err != nil {
 		return err
 	}
@@ -205,30 +201,38 @@ func (d *Destination) insert(ctx context.Context, r sdk.Record) error {
 	return err
 }
 
-func (d *Destination) getPayload(e sdk.Entity) (sdk.StructuredData, error) {
-	if e.Payload == nil {
+func (d *Destination) getPayload(r sdk.Record) (sdk.StructuredData, error) {
+	if r.Payload.After == nil {
 		return sdk.StructuredData{}, nil
 	}
-	return d.structuredDataFormatter(e.Payload.Bytes())
+	return d.structuredDataFormatter(r.Payload.After)
 }
 
-func (d *Destination) getKey(e sdk.Entity) (sdk.StructuredData, error) {
-	if e.Key == nil {
+func (d *Destination) getKey(r sdk.Record) (sdk.StructuredData, error) {
+	if r.Key == nil {
 		return sdk.StructuredData{}, nil
 	}
-	return d.structuredDataFormatter(e.Key.Bytes())
+	return d.structuredDataFormatter(r.Key)
 }
 
-func (d *Destination) structuredDataFormatter(raw []byte) (sdk.StructuredData, error) {
+func (d *Destination) structuredDataFormatter(data sdk.Data) (sdk.StructuredData, error) {
+	if data == nil {
+		return sdk.StructuredData{}, nil
+	}
+	if sdata, ok := data.(sdk.StructuredData); ok {
+		return sdata, nil
+	}
+	raw := data.Bytes()
 	if len(raw) == 0 {
 		return sdk.StructuredData{}, nil
 	}
-	data := make(map[string]interface{})
-	err := json.Unmarshal(raw, &data)
+
+	m := make(map[string]interface{})
+	err := json.Unmarshal(raw, &m)
 	if err != nil {
 		return nil, err
 	}
-	return data, nil
+	return m, nil
 }
 
 // formatUpsertQuery manually formats the UPSERT and ON CONFLICT query statements.
@@ -326,6 +330,6 @@ func (d *Destination) getKeyColumnName(key sdk.StructuredData, defaultKeyName st
 	return defaultKeyName
 }
 
-func (d *Destination) hasKey(e sdk.Entity) bool {
+func (d *Destination) hasKey(e sdk.Record) bool {
 	return e.Key != nil && len(e.Key.Bytes()) > 0
 }
