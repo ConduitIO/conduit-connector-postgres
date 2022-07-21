@@ -24,7 +24,7 @@ import (
 	"github.com/matryer/is"
 )
 
-func TestSnapshotterReads(t *testing.T) {
+func TestSnapshotIterator_Next(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
 
@@ -48,7 +48,7 @@ func TestSnapshotterReads(t *testing.T) {
 	is.True(s.snapshotComplete == true) // failed to mark snapshot complete
 }
 
-func TestSnapshotterTeardown(t *testing.T) {
+func TestSnapshotIterator_Teardown(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
 

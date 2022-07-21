@@ -31,8 +31,6 @@ var ErrSnapshotComplete = errors.New("snapshot complete")
 // ErrSnapshotInterrupt is returned by Teardown when a snapshot is interrupted
 var ErrSnapshotInterrupt = errors.New("snapshot interrupted")
 
-var psql = sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
-
 type SnapshotConfig struct {
 	SnapshotName string
 	Table        string
@@ -44,19 +42,21 @@ type SnapshotIterator struct {
 	sdk.SourceUtil
 	config SnapshotConfig
 
-	tx   pgx.Tx
-	rows pgx.Rows
+	tx          pgx.Tx
+	rows        pgx.Rows
+	stmtBuilder sq.StatementBuilderType
 
 	complete    bool
 	internalPos int64
 
-	keyColumnPosition int
+	keyColumnIndex int
 }
 
 func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, cfg SnapshotConfig) (*SnapshotIterator, error) {
 	s := &SnapshotIterator{
-		config:            cfg,
-		keyColumnPosition: -1,
+		config:         cfg,
+		keyColumnIndex: -1,
+		stmtBuilder:    sq.StatementBuilder.PlaceholderFormat(sq.Dollar),
 	}
 
 	err := s.startSnapshotTx(ctx, conn)
@@ -74,7 +74,7 @@ func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, cfg SnapshotConfig
 
 	for i, col := range cfg.Columns {
 		if col == cfg.KeyColumn {
-			s.keyColumnPosition = i
+			s.keyColumnIndex = i
 		}
 	}
 
@@ -82,7 +82,7 @@ func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, cfg SnapshotConfig
 }
 
 func (s *SnapshotIterator) loadRows(ctx context.Context) error {
-	query, args, err := psql.
+	query, args, err := s.stmtBuilder.
 		Select(s.config.Columns...).
 		From(s.config.Table).
 		ToSql()
@@ -124,7 +124,7 @@ func (s *SnapshotIterator) startSnapshotTx(ctx context.Context, conn *pgx.Conn) 
 
 func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 	if err := ctx.Err(); err != nil {
-		return sdk.Record{}, fmt.Errorf("context err: %w", err)
+		return sdk.Record{}, err
 	}
 
 	if !s.rows.Next() {
@@ -139,15 +139,14 @@ func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 	if err != nil {
 		return sdk.Record{}, fmt.Errorf("could not scan row values: %w", err)
 	}
+
+	s.internalPos++ // increment internal position
 	rec := s.NewRecordSnapshot(
-		s.currentPosition(),
-		map[string]string{
-			MetadataPostgresTable: s.config.Table,
-		},
+		s.buildRecordPosition(),
+		s.buildRecordMetadata(),
 		s.buildRecordKey(vals),
 		s.buildRecordPayload(vals),
 	)
-	s.internalPos++ // increment internal position
 
 	return rec, nil
 }
@@ -175,9 +174,9 @@ func (s *SnapshotIterator) Teardown(ctx context.Context) error {
 	return err
 }
 
-// currentPosition returns the current position used to identify the current
+// buildRecordPosition returns the current position used to identify the current
 // record.
-func (s *SnapshotIterator) currentPosition() sdk.Position {
+func (s *SnapshotIterator) buildRecordPosition() sdk.Position {
 	position := fmt.Sprintf("%s:%s", s.config.Table, strconv.FormatInt(s.internalPos, 10))
 	return sdk.Position(position)
 }
@@ -190,12 +189,12 @@ func (s *SnapshotIterator) buildRecordMetadata() map[string]string {
 
 // buildRecordKey returns the key for the record.
 func (s *SnapshotIterator) buildRecordKey(values []interface{}) sdk.Data {
-	if s.keyColumnPosition == -1 {
+	if s.keyColumnIndex == -1 {
 		return nil
 	}
 	return sdk.StructuredData{
 		// TODO handle composite keys
-		s.config.KeyColumn: values[s.keyColumnPosition],
+		s.config.KeyColumn: values[s.keyColumnIndex],
 	}
 }
 

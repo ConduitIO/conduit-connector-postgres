@@ -16,16 +16,18 @@ package longpoll
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strconv"
-	"time"
 
 	sq "github.com/Masterminds/squirrel"
-	"github.com/conduitio/conduit-connector-postgres/pgutil"
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/jackc/pgtype"
 	"github.com/jackc/pgx/v4"
+)
+
+const (
+	// TODO same constant is defined in packages longpoll, logrepl and destination
+	//  use same constant everywhere
+	MetadataPostgresTable = "postgres.table"
 )
 
 // Declare Postgres $ placeholder format
@@ -44,6 +46,8 @@ var (
 // SnapshotIterator implements the Iterator interface for capturing an initial table
 // snapshot.
 type SnapshotIterator struct {
+	sdk.SourceUtil
+
 	// table is the table to snapshot
 	table string
 	// key is the name of the key column for the table snapshot
@@ -61,6 +65,9 @@ type SnapshotIterator struct {
 	// snapshotComplete keeps an internal record of whether the snapshot is
 	// complete yet
 	snapshotComplete bool
+
+	// keyColumnIndex stores the index of the key column in the columns slice
+	keyColumnIndex int
 }
 
 // NewSnapshotIterator returns a SnapshotIterator that is an Iterator.
@@ -77,12 +84,20 @@ func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, table string, colu
 		key:              key,
 		internalPos:      0,
 		snapshotComplete: false,
+		keyColumnIndex:   -1,
 	}
 	// load our initial set of rows into the iterator after we've set the db
 	err := s.loadRows(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get rows for snapshot: %w", err)
 	}
+
+	for i, col := range columns {
+		if col == key {
+			s.keyColumnIndex = i
+		}
+	}
+
 	return s, nil
 }
 
@@ -90,6 +105,10 @@ func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, table string, colu
 // * If Next is called after HasNext has returned false, it will
 // return an ErrNoRows error.
 func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
+	if err := ctx.Err(); err != nil {
+		return sdk.Record{}, ctx.Err()
+	}
+
 	if s.rows == nil {
 		return sdk.Record{}, ErrNoRows
 	}
@@ -97,17 +116,19 @@ func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 		s.snapshotComplete = true
 		return sdk.Record{}, ErrNoRows
 	}
-	s.internalPos++
 
-	rec := sdk.Record{}
-	rec, err := withPayload(rec, s.rows, s.columns, s.key)
+	vals, err := s.rows.Values()
 	if err != nil {
-		return sdk.Record{}, fmt.Errorf("failed to assign payload: %w",
-			err)
+		return sdk.Record{}, fmt.Errorf("could not scan row values: %w", err)
 	}
-	rec = withMetadata(rec, s.table, s.key)
-	rec = withTimestampNow(rec)
-	rec = withPosition(rec, s.internalPos)
+
+	s.internalPos++ // increment internal position
+	rec := s.NewRecordSnapshot(
+		s.buildRecordPosition(),
+		s.buildRecordMetadata(),
+		s.buildRecordKey(vals),
+		s.buildRecordPayload(vals),
+	)
 	return rec, nil
 }
 
@@ -154,75 +175,34 @@ func (s *SnapshotIterator) loadRows(ctx context.Context) error {
 	return nil
 }
 
-// sets an integer position to the correct stringed integer on
-func withPosition(rec sdk.Record, i int64) sdk.Record {
-	rec.Position = sdk.Position(strconv.FormatInt(i, 10))
-	return rec
+// buildRecordPosition returns the current position used to identify the current
+// record.
+func (s *SnapshotIterator) buildRecordPosition() sdk.Position {
+	position := fmt.Sprintf("%s:%s", s.table, strconv.FormatInt(s.internalPos, 10))
+	return sdk.Position(position)
 }
 
-// withMetadata sets the Metadata field on a Record.
-// Currently it adds the table name and key column of the Record.
-func withMetadata(rec sdk.Record, table string, key string) sdk.Record {
-	if rec.Metadata == nil {
-		rec.Metadata = make(map[string]string)
+func (s *SnapshotIterator) buildRecordMetadata() map[string]string {
+	return map[string]string{
+		MetadataPostgresTable: s.table,
 	}
-	rec.Metadata["table"] = table
-	rec.Metadata["key"] = key
-	return rec
 }
 
-// withTimestampNow is used when no column name for records' timestamp
-// field is set.
-func withTimestampNow(rec sdk.Record) sdk.Record {
-	rec.CreatedAt = time.Now()
-	return rec
+// buildRecordKey returns the key for the record.
+func (s *SnapshotIterator) buildRecordKey(values []interface{}) sdk.Data {
+	if s.keyColumnIndex == -1 {
+		return nil
+	}
+	return sdk.StructuredData{
+		// TODO handle composite keys
+		s.key: values[s.keyColumnIndex],
+	}
 }
 
-// withPayload builds a record's payload from *sql.Rows.
-func withPayload(rec sdk.Record, rows pgx.Rows, columns []string, key string) (sdk.Record, error) {
-	// get the column types for those rows and record them as well
-	colTypes := rows.FieldDescriptions()
-
-	// make a new slice of correct pgtypes to scan into
-	vals := make([]interface{}, len(columns))
-	for i := range columns {
-		vals[i] = oidToScannerValue(pgtype.OID(colTypes[i].DataTypeOID))
-	}
-
-	// build the payload from the row
-	err := rows.Scan(vals...)
-	if err != nil {
-		return sdk.Record{}, fmt.Errorf("failed to scan: %w", err)
-	}
-
+func (s *SnapshotIterator) buildRecordPayload(values []interface{}) sdk.Data {
 	payload := make(sdk.StructuredData)
-	for i, col := range columns {
-		val := vals[i].(pgtype.Value)
-
-		// handle and assign the record a Key
-		if key == col {
-			// TODO: Handle composite keys
-			rec.Key = sdk.StructuredData{
-				col: val.Get(),
-			}
-		}
-		payload[col] = val.Get()
+	for i, val := range values {
+		payload[s.columns[i]] = val
 	}
-
-	rec.Payload = payload
-	return rec, nil
-}
-
-type scannerValue interface {
-	pgtype.Value
-	sql.Scanner
-}
-
-func oidToScannerValue(oid pgtype.OID) scannerValue {
-	t, ok := pgutil.OIDToPgType(oid).(scannerValue)
-	if !ok {
-		// not all pg types implement pgtype.Value and sql.Scanner
-		return &pgtype.Unknown{}
-	}
-	return t
+	return payload
 }

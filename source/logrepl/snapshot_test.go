@@ -79,7 +79,7 @@ func TestSnapshotInterrupted(t *testing.T) {
 
 	is.Equal(rec, sdk.Record{
 		Operation: sdk.OperationSnapshot,
-		Position:  sdk.Position(fmt.Sprintf("%s:0", table)),
+		Position:  sdk.Position(fmt.Sprintf("%s:1", table)),
 		Key: sdk.StructuredData{
 			"key": []uint8("1"),
 		},
@@ -116,7 +116,7 @@ func TestFullIteration(t *testing.T) {
 
 	for i := 0; i < 4; i++ {
 		rec, err := s.Next(ctx)
-		is.Equal(rec.Position, sdk.Position(fmt.Sprintf("%s:%d", table, i)))
+		is.Equal(rec.Position, sdk.Position(fmt.Sprintf("%s:%d", table, i+1)))
 		is.NoErr(err)
 	}
 
