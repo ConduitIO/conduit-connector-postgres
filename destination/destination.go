@@ -31,7 +31,7 @@ const (
 	ConfigTable = "table"
 	ConfigKey   = "key"
 
-	MetadataTable = "postgres.table"
+	MetadataPostgresTable = "postgres.table"
 )
 
 type Destination struct {
@@ -306,7 +306,7 @@ func formatColumnsAndValues(key, payload sdk.StructuredData) ([]string, []interf
 // value for table. Otherwise it will error since we require some table to be
 // set to write into.
 func (d *Destination) getTableName(metadata map[string]string) (string, error) {
-	tableName, ok := metadata[MetadataTable]
+	tableName, ok := metadata[MetadataPostgresTable]
 	if !ok {
 		if d.config.tableName == "" {
 			return "", fmt.Errorf("no table provided for default writes")
