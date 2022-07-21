@@ -17,7 +17,6 @@ package logrepl
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -25,17 +24,14 @@ import (
 	"github.com/jackc/pgtype"
 )
 
-type action string
-
-var (
-	actionInsert action = "insert"
-	actionUpdate action = "update"
-	actionDelete action = "delete"
+const (
+	MetadataPostgresTable = "postgres.table"
 )
 
 // CDCHandler is responsible for handling logical replication messages,
 // converting them to a record and sending them to a channel.
 type CDCHandler struct {
+	sdk.SourceUtil
 	keyColumn   string
 	columns     map[string]bool // columns can be used to filter only specific columns
 	relationSet *internal.RelationSet
@@ -112,7 +108,12 @@ func (h *CDCHandler) handleInsert(
 		return fmt.Errorf("failed to decode new values: %w", err)
 	}
 
-	rec := h.buildRecord(actionInsert, rel, newValues, lsn)
+	rec := h.NewRecordCreate(
+		LSNToPosition(lsn),
+		h.buildRecordMetadata(rel),
+		h.buildRecordKey(newValues),
+		h.buildRecordPayload(newValues),
+	)
 	return h.send(ctx, rec)
 }
 
@@ -133,7 +134,20 @@ func (h *CDCHandler) handleUpdate(
 		return fmt.Errorf("failed to decode new values: %w", err)
 	}
 
-	rec := h.buildRecord(actionUpdate, rel, newValues, lsn)
+	oldValues, err := h.relationSet.Values(pgtype.OID(msg.RelationID), msg.OldTuple)
+	if err != nil {
+		// this is not a critical error, old values are optional, just log it
+		// we use level "trace" intentionally to not clog up the logs in production
+		sdk.Logger(ctx).Trace().Err(err).Msg("could not parse old values from UpdateMessage")
+	}
+
+	rec := h.NewRecordUpdate(
+		LSNToPosition(lsn),
+		h.buildRecordMetadata(rel),
+		h.buildRecordKey(newValues),
+		h.buildRecordPayload(oldValues),
+		h.buildRecordPayload(newValues),
+	)
 	return h.send(ctx, rec)
 }
 
@@ -154,10 +168,11 @@ func (h *CDCHandler) handleDelete(
 		return fmt.Errorf("failed to decode old values: %w", err)
 	}
 
-	rec := h.buildRecord(actionDelete, rel, oldValues, lsn)
-	// NB: Deletes shouldn't have payloads. Key + delete action is sufficient.
-	rec.Payload = nil
-
+	rec := h.NewRecordDelete(
+		LSNToPosition(lsn),
+		h.buildRecordMetadata(rel),
+		h.buildRecordKey(oldValues),
+	)
 	return h.send(ctx, rec)
 }
 
@@ -172,32 +187,20 @@ func (h *CDCHandler) send(ctx context.Context, rec sdk.Record) error {
 	}
 }
 
-// buildRecord parses the postgres values and returns a record.
-func (h *CDCHandler) buildRecord(
-	action action,
-	relation *pglogrepl.RelationMessage,
-	values map[string]pgtype.Value,
-	lsn pglogrepl.LSN,
-) sdk.Record {
-	return sdk.Record{
-		Position: LSNToPosition(lsn),
-		Metadata: map[string]string{
-			"action": string(action),
-			"table":  relation.RelationName,
-		},
-		CreatedAt: time.Now(),
-		Key:       h.buildRecordKey(values),
-		Payload:   h.buildRecordPayload(values),
+func (h *CDCHandler) buildRecordMetadata(relation *pglogrepl.RelationMessage) map[string]string {
+	return map[string]string{
+		MetadataPostgresTable: relation.RelationName,
 	}
 }
 
 // buildRecordKey takes the values from the message and extracts the key that
 // matches the configured keyColumnName.
 func (h *CDCHandler) buildRecordKey(values map[string]pgtype.Value) sdk.Data {
-	key := sdk.StructuredData{}
+	key := make(sdk.StructuredData)
 	for k, v := range values {
 		if h.keyColumn == k {
 			key[k] = v.Get()
+			break // TODO add support for composite keys
 		}
 	}
 	return key
@@ -206,7 +209,10 @@ func (h *CDCHandler) buildRecordKey(values map[string]pgtype.Value) sdk.Data {
 // buildRecordPayload takes the values from the message and extracts the payload
 // for the record.
 func (h *CDCHandler) buildRecordPayload(values map[string]pgtype.Value) sdk.Data {
-	payload := sdk.StructuredData{}
+	if len(values) == 0 {
+		return nil
+	}
+	payload := make(sdk.StructuredData)
 	for k, v := range values {
 		// filter columns if columns are specified
 		if h.columns == nil || h.columns[k] {

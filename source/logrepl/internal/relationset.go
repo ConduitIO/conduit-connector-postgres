@@ -15,6 +15,7 @@
 package internal
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/conduitio/conduit-connector-postgres/pgutil"
@@ -50,6 +51,10 @@ func (rs *RelationSet) Get(id pgtype.OID) (*pglogrepl.RelationMessage, error) {
 }
 
 func (rs *RelationSet) Values(id pgtype.OID, row *pglogrepl.TupleData) (map[string]pgtype.Value, error) {
+	if row == nil {
+		return nil, errors.New("no tuple data")
+	}
+
 	rel, err := rs.Get(id)
 	if err != nil {
 		return nil, fmt.Errorf("no relation for %d", id)

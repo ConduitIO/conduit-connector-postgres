@@ -16,17 +16,12 @@ package logrepl
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strconv"
-	"time"
-
-	"github.com/conduitio/conduit-connector-postgres/pgutil"
-	sdk "github.com/conduitio/conduit-connector-sdk"
 
 	sq "github.com/Masterminds/squirrel"
-	"github.com/jackc/pgtype"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v4"
 )
 
@@ -38,8 +33,6 @@ var ErrSnapshotInterrupt = errors.New("snapshot interrupted")
 
 var psql = sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 
-const actionSnapshot string = "snapshot"
-
 type SnapshotConfig struct {
 	SnapshotName string
 	Table        string
@@ -48,6 +41,7 @@ type SnapshotConfig struct {
 }
 
 type SnapshotIterator struct {
+	sdk.SourceUtil
 	config SnapshotConfig
 
 	tx   pgx.Tx
@@ -55,11 +49,14 @@ type SnapshotIterator struct {
 
 	complete    bool
 	internalPos int64
+
+	keyColumnPosition int
 }
 
 func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, cfg SnapshotConfig) (*SnapshotIterator, error) {
 	s := &SnapshotIterator{
-		config: cfg,
+		config:            cfg,
+		keyColumnPosition: -1,
 	}
 
 	err := s.startSnapshotTx(ctx, conn)
@@ -73,6 +70,12 @@ func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, cfg SnapshotConfig
 			sdk.Logger(ctx).Err(rollErr).Msg("rollback failed")
 		}
 		return nil, fmt.Errorf("failed to load rows: %w", err)
+	}
+
+	for i, col := range cfg.Columns {
+		if col == cfg.KeyColumn {
+			s.keyColumnPosition = i
+		}
 	}
 
 	return s, nil
@@ -132,7 +135,20 @@ func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 		return sdk.Record{}, ErrSnapshotComplete
 	}
 
-	return s.buildRecord(ctx)
+	vals, err := s.rows.Values()
+	if err != nil {
+		return sdk.Record{}, fmt.Errorf("could not scan row values: %w", err)
+	}
+	rec := s.NewRecordSnapshot(
+		s.currentPosition(),
+		map[string]string{
+			MetadataPostgresTable: s.config.Table,
+		},
+		s.buildRecordKey(vals),
+		s.buildRecordPayload(vals),
+	)
+
+	return rec, nil
 }
 
 // Ack is a noop for snapshots
@@ -158,80 +174,34 @@ func (s *SnapshotIterator) Teardown(ctx context.Context) error {
 	return err
 }
 
-func (s *SnapshotIterator) buildRecord(ctx context.Context) (sdk.Record, error) {
-	r, err := withPayloadAndKey(sdk.Record{}, s.rows, s.config.Columns, s.config.KeyColumn)
-	if err != nil {
-		return sdk.Record{}, err
-	}
-
-	r.CreatedAt = time.Now()
-
-	r.Metadata = map[string]string{
-		"action": actionSnapshot,
-		"table":  s.config.Table,
-	}
-
-	r.Position = s.formatPosition()
-
-	return r, nil
-}
-
-// withPosition adds a position to a record that contains the table name and
-// the record's position in the current snapshot, aka it's number.
-func (s *SnapshotIterator) formatPosition() sdk.Position {
+// currentPosition returns the current position used to identify the current
+// record.
+func (s *SnapshotIterator) currentPosition() sdk.Position {
 	position := fmt.Sprintf("%s:%s", s.config.Table, strconv.FormatInt(s.internalPos, 10))
 	s.internalPos++
 	return sdk.Position(position)
 }
 
-// withPayloadAndKey builds a record's payload from *sql.Rows. It calls
-// Scan so it assumes that Next has been checked previously.
-func withPayloadAndKey(rec sdk.Record, rows pgx.Rows, columns []string, key string) (sdk.Record, error) {
-	colTypes := rows.FieldDescriptions()
-
-	vals := make([]interface{}, len(columns))
-	for i := range columns {
-		vals[i] = oidToScannerValue(pgtype.OID(colTypes[i].DataTypeOID))
+// buildRecordKey returns the key for the record.
+func (s *SnapshotIterator) buildRecordKey(values []interface{}) sdk.Data {
+	if s.keyColumnPosition == -1 {
+		return nil
 	}
-
-	err := rows.Scan(vals...)
-	if err != nil {
-		return sdk.Record{}, fmt.Errorf("failed to scan: %w", err)
+	return sdk.StructuredData{
+		// TODO handle composite keys
+		s.config.KeyColumn: values[s.keyColumnPosition],
 	}
+}
 
+func (s *SnapshotIterator) buildRecordPayload(values []interface{}) sdk.Data {
 	payload := make(sdk.StructuredData)
-	for i, col := range columns {
-		val := vals[i].(pgtype.Value)
-
-		// handle and assign the record a Key
-		if key == col {
-			// TODO: Handle composite keys
-			rec.Key = sdk.StructuredData{
-				col: val.Get(),
-			}
-			// continue without assigning so payload doesn't duplicate key data
-			continue
+	for i, val := range values {
+		if i == s.keyColumnPosition {
+			continue // skip key column
 		}
-
-		payload[col] = val.Get()
+		payload[s.config.Columns[i]] = val
 	}
-
-	rec.Payload = payload
-	return rec, nil
-}
-
-type scannerValue interface {
-	pgtype.Value
-	sql.Scanner
-}
-
-func oidToScannerValue(oid pgtype.OID) scannerValue {
-	t, ok := pgutil.OIDToPgType(oid).(scannerValue)
-	if !ok {
-		// not all pg types implement pgtype.Value and sql.Scanner
-		return &pgtype.Unknown{}
-	}
-	return t
+	return payload
 }
 
 // logOrReturn
