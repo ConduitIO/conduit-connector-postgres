@@ -87,6 +87,7 @@ func TestSnapshotInterrupted(t *testing.T) {
 			Before: nil,
 			After: sdk.StructuredData{
 				"id":      int64(1),
+				"key":     []uint8("1"),
 				"column1": "foo",
 				"column2": int32(123),
 				"column3": false,

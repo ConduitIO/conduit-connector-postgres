@@ -24,10 +24,6 @@ import (
 	"github.com/jackc/pgtype"
 )
 
-const (
-	MetadataPostgresTable = "postgres.table"
-)
-
 // CDCHandler is responsible for handling logical replication messages,
 // converting them to a record and sending them to a channel.
 type CDCHandler struct {

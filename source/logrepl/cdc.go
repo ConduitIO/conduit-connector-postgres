@@ -25,6 +25,10 @@ import (
 	"github.com/jackc/pgx/v4"
 )
 
+const (
+	MetadataPostgresTable = "postgres.table"
+)
+
 // Config holds configuration values for CDCIterator.
 type Config struct {
 	Position        sdk.Position

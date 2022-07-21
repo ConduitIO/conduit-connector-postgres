@@ -147,6 +147,7 @@ func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 		s.buildRecordKey(vals),
 		s.buildRecordPayload(vals),
 	)
+	s.internalPos++ // increment internal position
 
 	return rec, nil
 }
@@ -178,8 +179,13 @@ func (s *SnapshotIterator) Teardown(ctx context.Context) error {
 // record.
 func (s *SnapshotIterator) currentPosition() sdk.Position {
 	position := fmt.Sprintf("%s:%s", s.config.Table, strconv.FormatInt(s.internalPos, 10))
-	s.internalPos++
 	return sdk.Position(position)
+}
+
+func (s *SnapshotIterator) buildRecordMetadata() map[string]string {
+	return map[string]string{
+		MetadataPostgresTable: s.config.Table,
+	}
 }
 
 // buildRecordKey returns the key for the record.
@@ -196,15 +202,11 @@ func (s *SnapshotIterator) buildRecordKey(values []interface{}) sdk.Data {
 func (s *SnapshotIterator) buildRecordPayload(values []interface{}) sdk.Data {
 	payload := make(sdk.StructuredData)
 	for i, val := range values {
-		if i == s.keyColumnPosition {
-			continue // skip key column
-		}
 		payload[s.config.Columns[i]] = val
 	}
 	return payload
 }
 
-// logOrReturn
 func logOrReturnError(ctx context.Context, oldErr, newErr error, msg string) error {
 	if oldErr == nil {
 		return fmt.Errorf(msg+": %w", newErr)
