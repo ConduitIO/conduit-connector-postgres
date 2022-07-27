@@ -77,7 +77,7 @@ func (d *Destination) Open(ctx context.Context) error {
 // Write routes incoming records to their appropriate handler based on the
 // operation.
 func (d *Destination) Write(ctx context.Context, r sdk.Record) error {
-	return d.Util.Route(ctx, r,
+	return sdk.Util.Destination.Route(ctx, r,
 		d.handleInsert,
 		d.handleUpdate,
 		d.handleDelete,

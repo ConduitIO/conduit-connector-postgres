@@ -46,8 +46,6 @@ var (
 // SnapshotIterator implements the Iterator interface for capturing an initial table
 // snapshot.
 type SnapshotIterator struct {
-	sdk.SourceUtil
-
 	// table is the table to snapshot
 	table string
 	// key is the name of the key column for the table snapshot
@@ -123,7 +121,7 @@ func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 	}
 
 	s.internalPos++ // increment internal position
-	rec := s.NewRecordSnapshot(
+	rec := sdk.Util.Source.NewRecordSnapshot(
 		s.buildRecordPosition(),
 		s.buildRecordMetadata(),
 		s.buildRecordKey(vals),

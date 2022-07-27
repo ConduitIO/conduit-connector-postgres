@@ -39,7 +39,6 @@ type SnapshotConfig struct {
 }
 
 type SnapshotIterator struct {
-	sdk.SourceUtil
 	config SnapshotConfig
 
 	tx          pgx.Tx
@@ -141,7 +140,7 @@ func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 	}
 
 	s.internalPos++ // increment internal position
-	rec := s.NewRecordSnapshot(
+	rec := sdk.Util.Source.NewRecordSnapshot(
 		s.buildRecordPosition(),
 		s.buildRecordMetadata(),
 		s.buildRecordKey(vals),

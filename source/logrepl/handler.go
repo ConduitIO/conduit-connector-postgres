@@ -27,7 +27,6 @@ import (
 // CDCHandler is responsible for handling logical replication messages,
 // converting them to a record and sending them to a channel.
 type CDCHandler struct {
-	sdk.SourceUtil
 	keyColumn   string
 	columns     map[string]bool // columns can be used to filter only specific columns
 	relationSet *internal.RelationSet
@@ -104,7 +103,7 @@ func (h *CDCHandler) handleInsert(
 		return fmt.Errorf("failed to decode new values: %w", err)
 	}
 
-	rec := h.NewRecordCreate(
+	rec := sdk.Util.Source.NewRecordCreate(
 		LSNToPosition(lsn),
 		h.buildRecordMetadata(rel),
 		h.buildRecordKey(newValues),
@@ -137,7 +136,7 @@ func (h *CDCHandler) handleUpdate(
 		sdk.Logger(ctx).Trace().Err(err).Msg("could not parse old values from UpdateMessage")
 	}
 
-	rec := h.NewRecordUpdate(
+	rec := sdk.Util.Source.NewRecordUpdate(
 		LSNToPosition(lsn),
 		h.buildRecordMetadata(rel),
 		h.buildRecordKey(newValues),
@@ -164,7 +163,7 @@ func (h *CDCHandler) handleDelete(
 		return fmt.Errorf("failed to decode old values: %w", err)
 	}
 
-	rec := h.NewRecordDelete(
+	rec := sdk.Util.Source.NewRecordDelete(
 		LSNToPosition(lsn),
 		h.buildRecordMetadata(rel),
 		h.buildRecordKey(oldValues),
