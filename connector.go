@@ -12,13 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package postgres
 
 import (
-	postgres "github.com/conduitio/conduit-connector-postgres"
+	"github.com/conduitio/conduit-connector-postgres/destination"
+	"github.com/conduitio/conduit-connector-postgres/source"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
-func main() {
-	sdk.Serve(postgres.Connector)
+var Connector = sdk.Connector{
+	NewSpecification: Specification,
+	NewSource:        source.NewSource,
+	NewDestination:   destination.NewDestination,
 }

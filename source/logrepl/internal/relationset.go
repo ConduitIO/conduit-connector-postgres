@@ -15,9 +15,9 @@
 package internal
 
 import (
+	"errors"
 	"fmt"
 
-	"github.com/conduitio/conduit-connector-postgres/pgutil"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgtype"
 )
@@ -50,6 +50,10 @@ func (rs *RelationSet) Get(id pgtype.OID) (*pglogrepl.RelationMessage, error) {
 }
 
 func (rs *RelationSet) Values(id pgtype.OID, row *pglogrepl.TupleData) (map[string]pgtype.Value, error) {
+	if row == nil {
+		return nil, errors.New("no tuple data")
+	}
+
 	rel, err := rs.Get(id)
 	if err != nil {
 		return nil, fmt.Errorf("no relation for %d", id)
@@ -60,7 +64,7 @@ func (rs *RelationSet) Values(id pgtype.OID, row *pglogrepl.TupleData) (map[stri
 	// assert same number of row and rel columns
 	for i, tuple := range row.Columns {
 		col := rel.Columns[i]
-		decoder := rs.oidToDecoderValue(pgtype.OID(col.DataType))
+		decoder := rs.oidToDecoderValue(col.DataType)
 
 		if err := decoder.DecodeText(rs.connInfo, tuple.Data); err != nil {
 			return nil, fmt.Errorf("failed to decode tuple %d: %w", i, err)
@@ -77,11 +81,16 @@ type decoderValue interface {
 	pgtype.TextDecoder
 }
 
-func (rs *RelationSet) oidToDecoderValue(id pgtype.OID) decoderValue {
-	t, ok := pgutil.OIDToPgType(id).(decoderValue)
+func (rs *RelationSet) oidToDecoderValue(id uint32) decoderValue {
+	dt, ok := rs.connInfo.DataTypeForOID(id)
 	if !ok {
-		// not all pg types implement pgtype.Value and pgtype.TextDecoder
-		return &pgtype.Unknown{}
+		return rs.oidToDecoderValue(pgtype.UnknownOID)
 	}
-	return t
+	value := pgtype.NewValue(dt.Value)
+
+	decoder, ok := value.(decoderValue)
+	if !ok {
+		return rs.oidToDecoderValue(pgtype.UnknownOID)
+	}
+	return decoder
 }
