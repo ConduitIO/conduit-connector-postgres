@@ -121,7 +121,7 @@ func TestIterator_Next(t *testing.T) {
 			got, err := i.Next(nextCtx)
 			is.NoErr(err)
 
-			readAt, err := sdk.GetMetadataReadAt(got.Metadata)
+			readAt, err := got.Metadata.GetReadAt()
 			is.NoErr(err)
 			is.True(readAt.After(now)) // ReadAt should be after now
 			is.True(len(got.Position) > 0)
