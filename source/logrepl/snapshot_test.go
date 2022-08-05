@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -74,28 +73,29 @@ func TestSnapshotInterrupted(t *testing.T) {
 		Columns:      columns,
 		KeyColumn:    key,
 	})
-	now := time.Now()
 
 	rec, err := s.Next(ctx)
 	is.NoErr(err)
 
-	is.True(rec.CreatedAt.After(now))
-	is.Equal(rec.Metadata["action"], "snapshot")
-	rec.CreatedAt = time.Time{} // reset time for comparison
 	is.Equal(rec, sdk.Record{
-		Position: sdk.Position(fmt.Sprintf("%s:0", table)),
+		Operation: sdk.OperationSnapshot,
+		Position:  sdk.Position(fmt.Sprintf("%s:1", table)),
 		Key: sdk.StructuredData{
 			"key": []uint8("1"),
 		},
-		Payload: sdk.StructuredData{
-			"id":      int64(1),
-			"column1": "foo",
-			"column2": int32(123),
-			"column3": bool(false),
+		Payload: sdk.Change{
+			Before: nil,
+			After: sdk.StructuredData{
+				"id":      int64(1),
+				"key":     []uint8("1"),
+				"column1": "foo",
+				"column2": int32(123),
+				"column3": false,
+			},
 		},
 		Metadata: map[string]string{
-			"action": actionSnapshot,
-			"table":  table,
+			MetadataPostgresTable: table,
+			sdk.MetadataReadAt:    rec.Metadata[sdk.MetadataReadAt],
 		},
 	})
 	is.True(errors.Is(s.Teardown(ctx), ErrSnapshotInterrupt))
@@ -116,7 +116,7 @@ func TestFullIteration(t *testing.T) {
 
 	for i := 0; i < 4; i++ {
 		rec, err := s.Next(ctx)
-		is.Equal(rec.Position, sdk.Position(fmt.Sprintf("%s:%d", table, i)))
+		is.Equal(rec.Position, sdk.Position(fmt.Sprintf("%s:%d", table, i+1)))
 		is.NoErr(err)
 	}
 

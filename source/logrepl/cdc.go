@@ -25,6 +25,12 @@ import (
 	"github.com/jackc/pgx/v4"
 )
 
+const (
+	// TODO same constant is defined in packages longpoll, logrepl and destination
+	//  use same constant everywhere
+	MetadataPostgresTable = "postgres.table"
+)
+
 // Config holds configuration values for CDCIterator.
 type Config struct {
 	Position        sdk.Position

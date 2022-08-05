@@ -52,17 +52,20 @@ func TestIterator_Next(t *testing.T) {
 				VALUES (6, 'bizz', 456, false)`,
 			wantErr: false,
 			want: sdk.Record{
-				Key: sdk.StructuredData{"id": int64(6)},
+				Operation: sdk.OperationCreate,
 				Metadata: map[string]string{
-					"table":  table,
-					"action": "insert",
+					MetadataPostgresTable: table,
 				},
-				Payload: sdk.StructuredData{
-					"id":      int64(6),
-					"column1": "bizz",
-					"column2": int32(456),
-					"column3": false,
-					"key":     nil,
+				Key: sdk.StructuredData{"id": int64(6)},
+				Payload: sdk.Change{
+					Before: nil,
+					After: sdk.StructuredData{
+						"id":      int64(6),
+						"column1": "bizz",
+						"column2": int32(456),
+						"column3": false,
+						"key":     nil,
+					},
 				},
 			},
 		},
@@ -73,17 +76,20 @@ func TestIterator_Next(t *testing.T) {
 				WHERE key = '1'`,
 			wantErr: false,
 			want: sdk.Record{
-				Key: sdk.StructuredData{"id": int64(1)},
+				Operation: sdk.OperationUpdate,
 				Metadata: map[string]string{
-					"table":  table,
-					"action": "update",
+					MetadataPostgresTable: table,
 				},
-				Payload: sdk.StructuredData{
-					"id":      int64(1),
-					"column1": "test cdc updates",
-					"column2": int32(123),
-					"column3": false,
-					"key":     []uint8("1"),
+				Key: sdk.StructuredData{"id": int64(1)},
+				Payload: sdk.Change{
+					Before: nil, // TODO
+					After: sdk.StructuredData{
+						"id":      int64(1),
+						"column1": "test cdc updates",
+						"column2": int32(123),
+						"column3": false,
+						"key":     []uint8("1"),
+					},
 				},
 			},
 		},
@@ -92,11 +98,11 @@ func TestIterator_Next(t *testing.T) {
 			setupQuery: `DELETE FROM %s WHERE id = 3`,
 			wantErr:    false,
 			want: sdk.Record{
-				Key: sdk.StructuredData{"id": int64(3)},
+				Operation: sdk.OperationDelete,
 				Metadata: map[string]string{
-					"table":  table,
-					"action": "delete",
+					MetadataPostgresTable: table,
 				},
+				Key: sdk.StructuredData{"id": int64(3)},
 			},
 		},
 	}
@@ -115,9 +121,11 @@ func TestIterator_Next(t *testing.T) {
 			got, err := i.Next(nextCtx)
 			is.NoErr(err)
 
-			is.True(got.CreatedAt.After(now)) // CreatedAt should be after now
+			readAt, err := got.Metadata.GetReadAt()
+			is.NoErr(err)
+			is.True(readAt.After(now)) // ReadAt should be after now
 			is.True(len(got.Position) > 0)
-			tt.want.CreatedAt = got.CreatedAt
+			tt.want.Metadata[sdk.MetadataReadAt] = got.Metadata[sdk.MetadataReadAt]
 			tt.want.Position = got.Position
 
 			is.Equal(got, tt.want)

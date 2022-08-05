@@ -16,200 +16,144 @@ package destination
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
+	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v4"
 	"github.com/matryer/is"
 )
 
-// DBURL is the URI to the Postgres instance that docker-compose starts
-const DBURL = "postgres://meroxauser:meroxapass@localhost:5432/meroxadb?sslmode=disable"
+func TestDestination_Write(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	tableName := test.SetupTestTable(ctx, t, conn)
 
-func TestAdapter_Write(t *testing.T) {
-	type fields struct {
-		UnimplementedDestination sdk.UnimplementedDestination
-		conn                     *pgx.Conn
-		config                   config
-	}
-	type args struct {
-		ctx    context.Context
-		record sdk.Record
-	}
+	d := NewDestination()
+	err := d.Configure(ctx, map[string]string{ConfigURL: test.RegularConnString})
+	is.NoErr(err)
+	err = d.Open(ctx)
+	is.NoErr(err)
+	defer func() {
+		err := d.Teardown(ctx)
+		is.NoErr(err)
+	}()
+
 	tests := []struct {
-		name    string
-		fields  fields
-		args    args
-		wantErr bool
-	}{
-		{
-			name: "should insert with default configs",
-			fields: fields{
-				conn:   getTestPostgres(t),
-				config: config{},
-			},
-			args: args{
-				ctx: context.Background(),
-				record: sdk.Record{
-					Position: sdk.Position("5"),
-					Metadata: map[string]string{
-						"action": "insert",
-						"table":  "keyed",
-					},
-					Key: sdk.StructuredData{
-						"key": "uuid-mimicking-key-1234",
-					},
-					Payload: sdk.StructuredData{
-						"column1": "foo",
-						"column2": 456,
-						"column3": false,
-					},
+		name   string
+		record sdk.Record
+	}{{
+		name: "snapshot",
+		record: sdk.Record{
+			Position:  sdk.Position("foo"),
+			Operation: sdk.OperationSnapshot,
+			Metadata:  map[string]string{MetadataPostgresTable: tableName},
+			Key:       sdk.StructuredData{"id": 5000},
+			Payload: sdk.Change{
+				After: sdk.StructuredData{
+					"column1": "foo",
+					"column2": 123,
+					"column3": true,
 				},
 			},
-			wantErr: false,
 		},
-		{
-			name: "should update on conflict",
-			fields: fields{
-				conn:   getTestPostgres(t),
-				config: config{},
-			},
-			args: args{
-				ctx: context.Background(),
-				record: sdk.Record{
-					Position: sdk.Position("5"),
-					Metadata: map[string]string{
-						"action": "update",
-						"table":  "keyed",
-					},
-					Key: sdk.StructuredData{
-						"key": "uuid-mimicking-key-1234",
-					},
-					Payload: sdk.StructuredData{
-						"column1": "updateonconflict",
-						"column2": 567,
-						"column3": true,
-					},
+	}, {
+		name: "create",
+		record: sdk.Record{
+			Position:  sdk.Position("foo"),
+			Operation: sdk.OperationCreate,
+			Metadata:  map[string]string{MetadataPostgresTable: tableName},
+			Key:       sdk.StructuredData{"id": 5},
+			Payload: sdk.Change{
+				After: sdk.StructuredData{
+					"column1": "foo",
+					"column2": 456,
+					"column3": false,
 				},
 			},
-			wantErr: false,
 		},
-		{
-			name: "insert only on table without key",
-			fields: fields{
-				conn: getTestPostgres(t),
-				config: config{
-					keyColumnName: "",
+	}, {
+		name: "insert on update (upsert)",
+		record: sdk.Record{
+			Position:  sdk.Position("foo"),
+			Operation: sdk.OperationUpdate,
+			Metadata:  map[string]string{MetadataPostgresTable: tableName},
+			Key:       sdk.StructuredData{"id": 6},
+			Payload: sdk.Change{
+				After: sdk.StructuredData{
+					"column1": "bar",
+					"column2": 567,
+					"column3": true,
 				},
 			},
-			args: args{
-				ctx: context.Background(),
-				record: sdk.Record{
-					Position: sdk.Position("28357"),
-					Metadata: map[string]string{
-						"table": "unkeyed",
-					},
-					Key: sdk.StructuredData{
-						"key": "appendonly",
-					},
-					Payload: sdk.StructuredData{
-						"column1": "biz",
-						"column2": 456,
-						"column3": false,
-					},
-				},
-			},
-			wantErr: false,
 		},
-		{
-			name: "update requires key",
-			fields: fields{
-				conn:   getTestPostgres(t),
-				config: config{},
-			},
-			args: args{
-				ctx: context.Background(),
-				record: sdk.Record{
-					Position: sdk.Position("617237"),
-					Metadata: map[string]string{
-						"table":  "keyed",
-						"action": "update",
-					},
-					Payload: sdk.StructuredData{
-						"column1": "foo",
-					},
+	}, {
+		name: "update on conflict",
+		record: sdk.Record{
+			Position:  sdk.Position("foo"),
+			Operation: sdk.OperationUpdate,
+			Metadata:  map[string]string{MetadataPostgresTable: tableName},
+			Key:       sdk.StructuredData{"id": 1},
+			Payload: sdk.Change{
+				After: sdk.StructuredData{
+					"column1": "foobar",
+					"column2": 567,
+					"column3": true,
 				},
 			},
-			wantErr: true,
 		},
-		{
-			name: "delete by key",
-			fields: fields{
-				conn:   getTestPostgres(t),
-				config: config{},
-			},
-			args: args{
-				ctx: context.Background(),
-				record: sdk.Record{
-					Position: sdk.Position("617237"),
-					Metadata: map[string]string{
-						"table":  "keyed",
-						"action": "delete",
-					},
-					Key: sdk.StructuredData{
-						"key": "3",
-					},
-				},
-			},
-			wantErr: false,
+	}, {
+		name: "delete",
+		record: sdk.Record{
+			Position:  sdk.Position("foo"),
+			Metadata:  map[string]string{MetadataPostgresTable: tableName},
+			Operation: sdk.OperationDelete,
+			Key:       sdk.StructuredData{"id": 4},
 		},
+	},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := &Destination{
-				UnimplementedDestination: tt.fields.UnimplementedDestination,
-				conn:                     tt.fields.conn,
-				config:                   tt.fields.config,
-			}
-			if err := d.Write(tt.args.ctx, tt.args.record); (err != nil) != tt.wantErr {
-				t.Errorf("Adapter.Write() error = %v, wantErr %v", err, tt.wantErr)
+			is = is.New(t)
+			id := tt.record.Key.(sdk.StructuredData)["id"]
+
+			err = d.Write(ctx, tt.record)
+			is.NoErr(err)
+
+			got, err := queryTestTable(ctx, conn, tableName, id)
+			switch tt.record.Operation {
+			case sdk.OperationCreate, sdk.OperationSnapshot, sdk.OperationUpdate:
+				is.NoErr(err)
+				is.Equal(tt.record.Payload.After, got)
+			case sdk.OperationDelete:
+				is.Equal(err, pgx.ErrNoRows)
 			}
 		})
 	}
 }
-func getTestPostgres(t *testing.T) *pgx.Conn {
-	is := is.New(t)
-	prepareDB := []string{
-		`DROP TABLE IF EXISTS keyed;`,
-		`CREATE TABLE IF NOT EXISTS keyed (
-		key bytea PRIMARY KEY,
-		column1 varchar(256),
-		column2 integer,
-		column3 boolean);`,
-		`INSERT INTO keyed(key, column1, column2, column3)
-		VALUES('1', 'foo', 123, false),
-		('2', 'bar', 456, true),
-		('3', 'baz', 789, false),
-		('4', null, null, null);`,
-		`DROP TABLE IF EXISTS unkeyed;`,
-		`CREATE TABLE IF NOT EXISTS unkeyed (
-		key bytea,
-		column1 varchar(256),
-		column2 integer,
-		column3 boolean);`,
-	}
-	db, err := pgx.Connect(context.Background(), DBURL)
-	is.NoErr(err)
-	db = migrate(t, db, prepareDB)
-	is.NoErr(err)
-	return db
-}
 
-func migrate(t *testing.T, db *pgx.Conn, migrations []string) *pgx.Conn {
-	is := is.New(t)
-	for _, migration := range migrations {
-		_, err := db.Exec(context.Background(), migration)
-		is.NoErr(err)
+func queryTestTable(ctx context.Context, conn test.Querier, tableName string, id any) (sdk.StructuredData, error) {
+	row := conn.QueryRow(
+		ctx,
+		fmt.Sprintf("SELECT column1, column2, column3 FROM %s WHERE id = $1", tableName),
+		id,
+	)
+
+	var (
+		col1 string
+		col2 int
+		col3 bool
+	)
+	err := row.Scan(&col1, &col2, &col3)
+	if err != nil {
+		return nil, err
 	}
-	return db
+
+	return sdk.StructuredData{
+		"column1": col1,
+		"column2": col2,
+		"column3": col3,
+	}, nil
 }

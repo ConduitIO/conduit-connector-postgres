@@ -26,21 +26,23 @@ import (
 	"github.com/jackc/pgx/v4"
 )
 
-// Postgres requires use of a different variable placeholder.
-var psql = sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
+const (
+	ConfigURL   = "url"
+	ConfigTable = "table"
+	ConfigKey   = "key"
+
+	// TODO same constant is defined in packages longpoll, logrepl and destination
+	//  use same constant everywhere
+	MetadataPostgresTable = "postgres.table"
+)
 
 type Destination struct {
 	sdk.UnimplementedDestination
 
-	conn   *pgx.Conn
-	config config
+	conn        *pgx.Conn
+	config      config
+	stmtBuilder sq.StatementBuilderType
 }
-
-const (
-	actionDelete = "delete"
-	actionInsert = "insert"
-	actionUpdate = "update"
-)
 
 type config struct {
 	url           string
@@ -49,27 +51,38 @@ type config struct {
 }
 
 func NewDestination() sdk.Destination {
-	return &Destination{}
+	return &Destination{
+		stmtBuilder: sq.StatementBuilder.PlaceholderFormat(sq.Dollar),
+	}
 }
 
 func (d *Destination) Configure(ctx context.Context, cfg map[string]string) error {
 	d.config = config{
-		url:           cfg["url"],
-		tableName:     cfg["table"],
-		keyColumnName: cfg["key"],
+		url:           cfg[ConfigURL],
+		tableName:     cfg[ConfigTable],
+		keyColumnName: cfg[ConfigKey],
 	}
 	return nil
 }
 
 func (d *Destination) Open(ctx context.Context) error {
-	if err := d.connect(ctx, d.config.url); err != nil {
-		return fmt.Errorf("failed to connecto to postgres: %w", err)
+	conn, err := pgx.Connect(ctx, d.config.url)
+	if err != nil {
+		return fmt.Errorf("failed to open connection: %w", err)
 	}
+	d.conn = conn
 	return nil
 }
 
-func (d *Destination) Write(ctx context.Context, record sdk.Record) error {
-	return d.write(ctx, record)
+// Write routes incoming records to their appropriate handler based on the
+// operation.
+func (d *Destination) Write(ctx context.Context, r sdk.Record) error {
+	return sdk.Util.Destination.Route(ctx, r,
+		d.handleInsert,
+		d.handleUpdate,
+		d.handleDelete,
+		d.handleInsert,
+	)
 }
 
 func (d *Destination) Flush(context.Context) error {
@@ -83,45 +96,11 @@ func (d *Destination) Teardown(ctx context.Context) error {
 	return nil
 }
 
-func (d *Destination) connect(ctx context.Context, uri string) error {
-	conn, err := pgx.Connect(ctx, uri)
-	if err != nil {
-		return fmt.Errorf("failed to open connection: %w", err)
-	}
-	d.conn = conn
-	return nil
-}
-
-// write routes incoming records to their appropriate handler based on the
-// action declared in the metadata.
-// Defaults to insert behavior if no action is specified.
-func (d *Destination) write(ctx context.Context, r sdk.Record) error {
-	action, ok := r.Metadata["action"]
-	if !ok {
-		return d.handleInsert(ctx, r)
-	}
-
-	switch action {
-	case actionInsert:
-		return d.handleInsert(ctx, r)
-	case actionUpdate:
-		return d.handleUpdate(ctx, r)
-	case actionDelete:
-		return d.handleDelete(ctx, r)
-	default:
-		return d.handleInsert(ctx, r)
-	}
-}
-
 // handleInsert checks for the existence of a key. If no key is present it will
-// plainly insert the data.
-// * If a key exists, but no key column name is configured, it attempts a plain
-// insert to that database.
+// plainly insert the data. If a key exists, but no key column name is
+// configured, it attempts a plain insert to that database.
 func (d *Destination) handleInsert(ctx context.Context, r sdk.Record) error {
-	if !hasKey(r) {
-		return d.insert(ctx, r)
-	}
-	if d.config.keyColumnName == "" {
+	if !d.hasKey(r) || d.config.keyColumnName == "" {
 		return d.insert(ctx, r)
 	}
 	return d.upsert(ctx, r)
@@ -129,38 +108,39 @@ func (d *Destination) handleInsert(ctx context.Context, r sdk.Record) error {
 
 // handleUpdate assumes the record has a key and will fail if one is not present
 func (d *Destination) handleUpdate(ctx context.Context, r sdk.Record) error {
-	if !hasKey(r) {
+	if !d.hasKey(r) {
 		return fmt.Errorf("key must be provided on update actions")
 	}
+	// TODO handle case if the key was updated
 	return d.upsert(ctx, r)
 }
 
 func (d *Destination) handleDelete(ctx context.Context, r sdk.Record) error {
-	if !hasKey(r) {
+	if !d.hasKey(r) {
 		return fmt.Errorf("key must be provided on delete actions")
 	}
 	return d.remove(ctx, r)
 }
 
 func (d *Destination) upsert(ctx context.Context, r sdk.Record) error {
-	payload, err := getPayload(r)
+	payload, err := d.getPayload(r)
 	if err != nil {
 		return fmt.Errorf("failed to get payload: %w", err)
 	}
 
-	key, err := getKey(r)
+	key, err := d.getKey(r)
 	if err != nil {
 		return fmt.Errorf("failed to get key: %w", err)
 	}
 
-	keyColumnName := getKeyColumnName(key, d.config.keyColumnName)
+	keyColumnName := d.getKeyColumnName(key, d.config.keyColumnName)
 
 	tableName, err := d.getTableName(r.Metadata)
 	if err != nil {
 		return fmt.Errorf("failed to get table name for write: %w", err)
 	}
 
-	query, args, err := formatUpsertQuery(key, payload, keyColumnName, tableName)
+	query, args, err := d.formatUpsertQuery(key, payload, keyColumnName, tableName)
 	if err != nil {
 		return fmt.Errorf("error formatting query: %w", err)
 	}
@@ -174,16 +154,16 @@ func (d *Destination) upsert(ctx context.Context, r sdk.Record) error {
 }
 
 func (d *Destination) remove(ctx context.Context, r sdk.Record) error {
-	key, err := getKey(r)
+	key, err := d.getKey(r)
 	if err != nil {
 		return err
 	}
-	keyColumnName := getKeyColumnName(key, d.config.keyColumnName)
+	keyColumnName := d.getKeyColumnName(key, d.config.keyColumnName)
 	tableName, err := d.getTableName(r.Metadata)
 	if err != nil {
 		return fmt.Errorf("failed to get table name for write: %w", err)
 	}
-	query, args, err := psql.
+	query, args, err := d.stmtBuilder.
 		Delete(tableName).
 		Where(sq.Eq{keyColumnName: key[keyColumnName]}).
 		ToSql()
@@ -202,16 +182,16 @@ func (d *Destination) insert(ctx context.Context, r sdk.Record) error {
 	if err != nil {
 		return err
 	}
-	key, err := getKey(r)
+	key, err := d.getKey(r)
 	if err != nil {
 		return err
 	}
-	payload, err := getPayload(r)
+	payload, err := d.getPayload(r)
 	if err != nil {
 		return err
 	}
 	colArgs, valArgs := formatColumnsAndValues(key, payload)
-	query, args, err := psql.
+	query, args, err := d.stmtBuilder.
 		Insert(tableName).
 		Columns(colArgs...).
 		Values(valArgs...).
@@ -223,30 +203,38 @@ func (d *Destination) insert(ctx context.Context, r sdk.Record) error {
 	return err
 }
 
-func getPayload(r sdk.Record) (sdk.StructuredData, error) {
-	if r.Payload == nil {
+func (d *Destination) getPayload(r sdk.Record) (sdk.StructuredData, error) {
+	if r.Payload.After == nil {
 		return sdk.StructuredData{}, nil
 	}
-	return structuredDataFormatter(r.Payload.Bytes())
+	return d.structuredDataFormatter(r.Payload.After)
 }
 
-func getKey(r sdk.Record) (sdk.StructuredData, error) {
+func (d *Destination) getKey(r sdk.Record) (sdk.StructuredData, error) {
 	if r.Key == nil {
 		return sdk.StructuredData{}, nil
 	}
-	return structuredDataFormatter(r.Key.Bytes())
+	return d.structuredDataFormatter(r.Key)
 }
 
-func structuredDataFormatter(raw []byte) (sdk.StructuredData, error) {
+func (d *Destination) structuredDataFormatter(data sdk.Data) (sdk.StructuredData, error) {
+	if data == nil {
+		return sdk.StructuredData{}, nil
+	}
+	if sdata, ok := data.(sdk.StructuredData); ok {
+		return sdata, nil
+	}
+	raw := data.Bytes()
 	if len(raw) == 0 {
 		return sdk.StructuredData{}, nil
 	}
-	data := make(map[string]interface{})
-	err := json.Unmarshal(raw, &data)
+
+	m := make(map[string]interface{})
+	err := json.Unmarshal(raw, &m)
 	if err != nil {
 		return nil, err
 	}
-	return data, nil
+	return m, nil
 }
 
 // formatUpsertQuery manually formats the UPSERT and ON CONFLICT query statements.
@@ -255,7 +243,7 @@ func structuredDataFormatter(raw []byte) (sdk.StructuredData, error) {
 // * In our case, we can only rely on the record.Key's parsed key value.
 // * If other schema constraints prevent a write, this won't upsert on
 // that conflict.
-func formatUpsertQuery(
+func (d *Destination) formatUpsertQuery(
 	key sdk.StructuredData,
 	payload sdk.StructuredData,
 	keyColumnName string,
@@ -281,7 +269,7 @@ func formatUpsertQuery(
 
 	colArgs, valArgs := formatColumnsAndValues(key, payload)
 
-	query, args, err := psql.
+	query, args, err := d.stmtBuilder.
 		Insert(tableName).
 		Columns(colArgs...).
 		Values(valArgs...).
@@ -316,11 +304,11 @@ func formatColumnsAndValues(key, payload sdk.StructuredData) ([]string, []interf
 	return colArgs, valArgs
 }
 
-// return either the records metadata value for table or the default configured
+// return either the record's metadata value for table or the default configured
 // value for table. Otherwise it will error since we require some table to be
 // set to write into.
 func (d *Destination) getTableName(metadata map[string]string) (string, error) {
-	tableName, ok := metadata["table"]
+	tableName, ok := metadata[MetadataPostgresTable]
 	if !ok {
 		if d.config.tableName == "" {
 			return "", fmt.Errorf("no table provided for default writes")
@@ -332,7 +320,7 @@ func (d *Destination) getTableName(metadata map[string]string) (string, error) {
 
 // getKeyColumnName will return the name of the first item in the key or the
 // connector-configured default name of the key column name.
-func getKeyColumnName(key sdk.StructuredData, defaultKeyName string) string {
+func (d *Destination) getKeyColumnName(key sdk.StructuredData, defaultKeyName string) string {
 	if len(key) > 1 {
 		// Go maps aren't order preserving, so anything over len 1 will have
 		// non deterministic results until we handle composite keys.
@@ -341,10 +329,9 @@ func getKeyColumnName(key sdk.StructuredData, defaultKeyName string) string {
 	for k := range key {
 		return k
 	}
-
 	return defaultKeyName
 }
 
-func hasKey(r sdk.Record) bool {
-	return r.Key != nil && len(r.Key.Bytes()) > 0
+func (d *Destination) hasKey(e sdk.Record) bool {
+	return e.Key != nil && len(e.Key.Bytes()) > 0
 }

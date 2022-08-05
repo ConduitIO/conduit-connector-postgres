@@ -16,17 +16,12 @@ package logrepl
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"strconv"
-	"time"
-
-	"github.com/conduitio/conduit-connector-postgres/pgutil"
-	sdk "github.com/conduitio/conduit-connector-sdk"
 
 	sq "github.com/Masterminds/squirrel"
-	"github.com/jackc/pgtype"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v4"
 )
 
@@ -35,10 +30,6 @@ var ErrSnapshotComplete = errors.New("snapshot complete")
 
 // ErrSnapshotInterrupt is returned by Teardown when a snapshot is interrupted
 var ErrSnapshotInterrupt = errors.New("snapshot interrupted")
-
-var psql = sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
-
-const actionSnapshot string = "snapshot"
 
 type SnapshotConfig struct {
 	SnapshotName string
@@ -50,16 +41,21 @@ type SnapshotConfig struct {
 type SnapshotIterator struct {
 	config SnapshotConfig
 
-	tx   pgx.Tx
-	rows pgx.Rows
+	tx          pgx.Tx
+	rows        pgx.Rows
+	stmtBuilder sq.StatementBuilderType
 
 	complete    bool
 	internalPos int64
+
+	keyColumnIndex int
 }
 
 func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, cfg SnapshotConfig) (*SnapshotIterator, error) {
 	s := &SnapshotIterator{
-		config: cfg,
+		config:         cfg,
+		keyColumnIndex: -1,
+		stmtBuilder:    sq.StatementBuilder.PlaceholderFormat(sq.Dollar),
 	}
 
 	err := s.startSnapshotTx(ctx, conn)
@@ -75,11 +71,17 @@ func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, cfg SnapshotConfig
 		return nil, fmt.Errorf("failed to load rows: %w", err)
 	}
 
+	for i, col := range cfg.Columns {
+		if col == cfg.KeyColumn {
+			s.keyColumnIndex = i
+		}
+	}
+
 	return s, nil
 }
 
 func (s *SnapshotIterator) loadRows(ctx context.Context) error {
-	query, args, err := psql.
+	query, args, err := s.stmtBuilder.
 		Select(s.config.Columns...).
 		From(s.config.Table).
 		ToSql()
@@ -121,7 +123,7 @@ func (s *SnapshotIterator) startSnapshotTx(ctx context.Context, conn *pgx.Conn) 
 
 func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 	if err := ctx.Err(); err != nil {
-		return sdk.Record{}, fmt.Errorf("context err: %w", err)
+		return sdk.Record{}, err
 	}
 
 	if !s.rows.Next() {
@@ -132,7 +134,20 @@ func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 		return sdk.Record{}, ErrSnapshotComplete
 	}
 
-	return s.buildRecord(ctx)
+	vals, err := s.rows.Values()
+	if err != nil {
+		return sdk.Record{}, fmt.Errorf("could not scan row values: %w", err)
+	}
+
+	s.internalPos++ // increment internal position
+	rec := sdk.Util.Source.NewRecordSnapshot(
+		s.buildRecordPosition(),
+		s.buildRecordMetadata(),
+		s.buildRecordKey(vals),
+		s.buildRecordPayload(vals),
+	)
+
+	return rec, nil
 }
 
 // Ack is a noop for snapshots
@@ -158,83 +173,38 @@ func (s *SnapshotIterator) Teardown(ctx context.Context) error {
 	return err
 }
 
-func (s *SnapshotIterator) buildRecord(ctx context.Context) (sdk.Record, error) {
-	r, err := withPayloadAndKey(sdk.Record{}, s.rows, s.config.Columns, s.config.KeyColumn)
-	if err != nil {
-		return sdk.Record{}, err
-	}
-
-	r.CreatedAt = time.Now()
-
-	r.Metadata = map[string]string{
-		"action": actionSnapshot,
-		"table":  s.config.Table,
-	}
-
-	r.Position = s.formatPosition()
-
-	return r, nil
-}
-
-// withPosition adds a position to a record that contains the table name and
-// the record's position in the current snapshot, aka it's number.
-func (s *SnapshotIterator) formatPosition() sdk.Position {
+// buildRecordPosition returns the current position used to identify the current
+// record.
+func (s *SnapshotIterator) buildRecordPosition() sdk.Position {
 	position := fmt.Sprintf("%s:%s", s.config.Table, strconv.FormatInt(s.internalPos, 10))
-	s.internalPos++
 	return sdk.Position(position)
 }
 
-// withPayloadAndKey builds a record's payload from *sql.Rows. It calls
-// Scan so it assumes that Next has been checked previously.
-func withPayloadAndKey(rec sdk.Record, rows pgx.Rows, columns []string, key string) (sdk.Record, error) {
-	colTypes := rows.FieldDescriptions()
-
-	vals := make([]interface{}, len(columns))
-	for i := range columns {
-		vals[i] = oidToScannerValue(pgtype.OID(colTypes[i].DataTypeOID))
+func (s *SnapshotIterator) buildRecordMetadata() map[string]string {
+	return map[string]string{
+		MetadataPostgresTable: s.config.Table,
 	}
+}
 
-	err := rows.Scan(vals...)
-	if err != nil {
-		return sdk.Record{}, fmt.Errorf("failed to scan: %w", err)
+// buildRecordKey returns the key for the record.
+func (s *SnapshotIterator) buildRecordKey(values []interface{}) sdk.Data {
+	if s.keyColumnIndex == -1 {
+		return nil
 	}
+	return sdk.StructuredData{
+		// TODO handle composite keys
+		s.config.KeyColumn: values[s.keyColumnIndex],
+	}
+}
 
+func (s *SnapshotIterator) buildRecordPayload(values []interface{}) sdk.Data {
 	payload := make(sdk.StructuredData)
-	for i, col := range columns {
-		val := vals[i].(pgtype.Value)
-
-		// handle and assign the record a Key
-		if key == col {
-			// TODO: Handle composite keys
-			rec.Key = sdk.StructuredData{
-				col: val.Get(),
-			}
-			// continue without assigning so payload doesn't duplicate key data
-			continue
-		}
-
-		payload[col] = val.Get()
+	for i, val := range values {
+		payload[s.config.Columns[i]] = val
 	}
-
-	rec.Payload = payload
-	return rec, nil
+	return payload
 }
 
-type scannerValue interface {
-	pgtype.Value
-	sql.Scanner
-}
-
-func oidToScannerValue(oid pgtype.OID) scannerValue {
-	t, ok := pgutil.OIDToPgType(oid).(scannerValue)
-	if !ok {
-		// not all pg types implement pgtype.Value and sql.Scanner
-		return &pgtype.Unknown{}
-	}
-	return t
-}
-
-// logOrReturn
 func logOrReturnError(ctx context.Context, oldErr, newErr error, msg string) error {
 	if oldErr == nil {
 		return fmt.Errorf(msg+": %w", newErr)
