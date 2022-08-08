@@ -7,7 +7,7 @@ require (
 	github.com/conduitio/conduit-connector-sdk v0.2.1-0.20220803121801-c861a0fb207c
 	github.com/jackc/pgconn v1.12.1
 	github.com/jackc/pglogrepl v0.0.0-20220305000529-420b8467887a
-	github.com/jackc/pgproto3/v2 v2.3.0
+	github.com/jackc/pgproto3/v2 v2.3.1
 	github.com/jackc/pgtype v1.11.0
 	github.com/jackc/pgx/v4 v4.16.1
 	github.com/matryer/is v1.4.0
@@ -17,7 +17,6 @@ require (
 	github.com/conduitio/conduit-connector-protocol v0.2.1-0.20220802135043-4b89a6c94401 // indirect
 	github.com/fatih/color v1.13.0 // indirect
 	github.com/gofrs/uuid v4.2.0+incompatible // indirect
-	github.com/golang/mock v1.6.0 // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/google/go-cmp v0.5.7 // indirect
 	github.com/hashicorp/go-hclog v1.2.0 // indirect
@@ -39,7 +38,6 @@ require (
 	github.com/oklog/run v1.1.0 // indirect
 	github.com/rs/zerolog v1.27.0 // indirect
 	go.buf.build/grpc/go/conduitio/conduit-connector-protocol v1.3.3 // indirect
-	go.buf.build/library/go-grpc/conduitio/conduit-connector-protocol v1.4.1 // indirect
 	go.uber.org/goleak v1.1.12 // indirect
 	golang.org/x/crypto v0.0.0-20211215165025-cf75a172585e // indirect
 	golang.org/x/net v0.0.0-20220403103023-749bd193bc2b // indirect
