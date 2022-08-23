@@ -51,9 +51,10 @@ type config struct {
 }
 
 func NewDestination() sdk.Destination {
-	return &Destination{
+	d := &Destination{
 		stmtBuilder: sq.StatementBuilder.PlaceholderFormat(sq.Dollar),
 	}
+	return sdk.DestinationWithMiddleware(d, sdk.DefaultDestinationMiddleware()...)
 }
 
 func (d *Destination) Parameters() map[string]sdk.Parameter {
