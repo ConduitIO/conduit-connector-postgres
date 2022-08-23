@@ -39,7 +39,52 @@ type Source struct {
 }
 
 func NewSource() sdk.Source {
-	return &Source{}
+	return sdk.SourceWithMiddleware(&Source{}, sdk.DefaultSourceMiddleware()...)
+}
+
+func (s *Source) Parameters() map[string]sdk.Parameter {
+	return map[string]sdk.Parameter{
+		ConfigKeyURL: {
+			Default:     "",
+			Required:    true,
+			Description: "Connection string for the Postgres database.",
+		},
+		ConfigKeyTable: {
+			Default:     "",
+			Required:    true,
+			Description: "The name of the table in Postgres that the connector should read.",
+		},
+		ConfigKeyColumns: {
+			Default:     "",
+			Required:    false,
+			Description: "Comma separated list of column names that should be included in each Record's payload.",
+		},
+		ConfigKeyKey: {
+			Default:     "",
+			Required:    false,
+			Description: "Column name that records should use for their `Key` fields.",
+		},
+		ConfigKeySnapshotMode: {
+			Default:     "initial",
+			Required:    false,
+			Description: "Whether or not the plugin will take a snapshot of the entire table before starting cdc mode (allowed values: `initial` or `never`).",
+		},
+		ConfigKeyCDCMode: {
+			Default:     "auto",
+			Required:    false,
+			Description: "Determines the CDC mode (allowed values: `auto`, `logrepl` or `long_polling`).",
+		},
+		ConfigKeyLogreplPublicationName: {
+			Default:     "conduitpub",
+			Required:    false,
+			Description: "Name of the publication to listen for WAL events.",
+		},
+		ConfigKeyLogreplSlotName: {
+			Default:     "conduitslot",
+			Required:    false,
+			Description: "Name of the slot opened for replication events.",
+		},
+	}
 }
 
 func (s *Source) Configure(ctx context.Context, cfgRaw map[string]string) error {

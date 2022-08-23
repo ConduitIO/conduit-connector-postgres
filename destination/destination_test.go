@@ -119,8 +119,9 @@ func TestDestination_Write(t *testing.T) {
 			is = is.New(t)
 			id := tt.record.Key.(sdk.StructuredData)["id"]
 
-			err = d.Write(ctx, tt.record)
+			i, err := d.Write(ctx, []sdk.Record{tt.record})
 			is.NoErr(err)
+			is.Equal(i, 1)
 
 			got, err := queryTestTable(ctx, conn, tableName, id)
 			switch tt.record.Operation {

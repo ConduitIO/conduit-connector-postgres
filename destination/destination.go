@@ -51,12 +51,34 @@ type config struct {
 }
 
 func NewDestination() sdk.Destination {
-	return &Destination{
+	d := &Destination{
 		stmtBuilder: sq.StatementBuilder.PlaceholderFormat(sq.Dollar),
+	}
+	return sdk.DestinationWithMiddleware(d, sdk.DefaultDestinationMiddleware()...)
+}
+
+func (d *Destination) Parameters() map[string]sdk.Parameter {
+	return map[string]sdk.Parameter{
+		ConfigURL: {
+			Default:     "",
+			Required:    true,
+			Description: "Connection string for the Postgres database.",
+		},
+		ConfigTable: {
+			Default:     "",
+			Required:    false,
+			Description: "The name of the table in Postgres that the connector should write to.",
+		},
+		ConfigKey: {
+			Default:     "",
+			Required:    false,
+			Description: "Column name used to detect if the target table already contains the record.",
+		},
 	}
 }
 
 func (d *Destination) Configure(ctx context.Context, cfg map[string]string) error {
+	// TODO validate required fields
 	d.config = config{
 		url:           cfg[ConfigURL],
 		tableName:     cfg[ConfigTable],
@@ -76,17 +98,20 @@ func (d *Destination) Open(ctx context.Context) error {
 
 // Write routes incoming records to their appropriate handler based on the
 // operation.
-func (d *Destination) Write(ctx context.Context, r sdk.Record) error {
-	return sdk.Util.Destination.Route(ctx, r,
-		d.handleInsert,
-		d.handleUpdate,
-		d.handleDelete,
-		d.handleInsert,
-	)
-}
-
-func (d *Destination) Flush(context.Context) error {
-	return nil
+func (d *Destination) Write(ctx context.Context, recs []sdk.Record) (int, error) {
+	for i, r := range recs {
+		// TODO send all queries to postgres in one round-trip
+		err := sdk.Util.Destination.Route(ctx, r,
+			d.handleInsert,
+			d.handleUpdate,
+			d.handleDelete,
+			d.handleInsert,
+		)
+		if err != nil {
+			return i, err
+		}
+	}
+	return len(recs), nil
 }
 
 func (d *Destination) Teardown(ctx context.Context) error {
