@@ -1,7 +1,7 @@
 .PHONY: build test lint
 
 build:
-	go build -o conduit-connector-postgres cmd/pg/main.go
+	go build -ldflags "-X 'github.com/conduitio-labs/conduit-connector-postgres.version=${VERSION}'" -o conduit-connector-postgres cmd/connector/main.go
 
 test:
 	# run required docker containers, execute integration tests, stop containers after tests
