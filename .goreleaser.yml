@@ -7,7 +7,7 @@ builds:
     env:
       - CGO_ENABLED=0
     ldflags:
-      - "-s -w -X 'github.com/conduitio-labs/conduit-connector-postgres.version={{ .Tag }}'"
+      - "-s -w -X 'github.com/conduitio/conduit-connector-postgres.version={{ .Tag }}'"
 checksum:
   name_template: checksums.txt
 archives:
