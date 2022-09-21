@@ -1,5 +1,7 @@
 .PHONY: build test lint
 
+VERSION=$(shell git describe --tags --dirty --always)
+
 build:
 	go build -ldflags "-X 'github.com/conduitio/conduit-connector-postgres.version=${VERSION}'" -o conduit-connector-postgres cmd/connector/main.go
 
