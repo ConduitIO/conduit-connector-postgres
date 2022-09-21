@@ -1,0 +1,29 @@
+builds:
+  - main: ./cmd/connector/main.go
+    goos:
+      - darwin
+      - linux
+      - windows
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - "-s -w -X 'github.com/conduitio/conduit-connector-postgres.version={{ .Tag }}'"
+checksum:
+  name_template: checksums.txt
+archives:
+  - replacements:
+      darwin: Darwin
+      linux: Linux
+      windows: Windows
+      386: i386
+      amd64: x86_64
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^go.mod:'
+      - '^.github:'
+      - Merge branch
