@@ -13,6 +13,9 @@ linters-settings:
     ignore-tests: true
   goheader:
     template-path: '.golangci.goheader.template'
+    values:
+      regexp:
+        copyright-year: 20[2-9]\d
 
 linters:
   # please, do not use `enable-all`: it's deprecated and will be removed soon.
