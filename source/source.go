@@ -19,14 +19,9 @@ import (
 	"fmt"
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
-	"github.com/conduitio/conduit-connector-postgres/source/longpoll"
+	"github.com/conduitio/conduit-connector-postgres/source/trigger"
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/jackc/pgx/v4"
-)
-
-var (
-	_ Iterator = (*logrepl.CDCIterator)(nil)
-	_ Iterator = (*longpoll.SnapshotIterator)(nil)
+	"github.com/jackc/pgx/v4/pgxpool"
 )
 
 // Source is a Postgres source plugin.
@@ -35,7 +30,7 @@ type Source struct {
 
 	iterator Iterator
 	config   Config
-	conn     *pgx.Conn
+	conn     *pgxpool.Pool
 }
 
 func NewSource() sdk.Source {
@@ -53,6 +48,12 @@ func (s *Source) Parameters() map[string]sdk.Parameter {
 			Default:     "",
 			Required:    true,
 			Description: "The name of the table in Postgres that the connector should read.",
+		},
+		ConfigKeyOrderingColumn: {
+			Default:  "",
+			Required: true,
+			Description: "Column name that the connector will use for ordering rows. Column must contain unique " +
+				"values and suitable for sorting, otherwise the snapshot won't work correctly.",
 		},
 		ConfigKeyColumns: {
 			Default:     "",
@@ -72,7 +73,12 @@ func (s *Source) Parameters() map[string]sdk.Parameter {
 		ConfigKeyCDCMode: {
 			Default:     "auto",
 			Required:    false,
-			Description: "Determines the CDC mode (allowed values: `auto`, `logrepl` or `long_polling`).",
+			Description: "Determines the CDC mode (allowed values: `auto`, `logrepl` or `trigger`).",
+		},
+		ConfigKeyBatchSize: {
+			Default:     "1000",
+			Required:    false,
+			Description: "Size of rows batch. Min is 1 and max is 100000.",
 		},
 		ConfigKeyLogreplPublicationName: {
 			Default:     "conduitpub",
@@ -96,16 +102,17 @@ func (s *Source) Configure(ctx context.Context, cfgRaw map[string]string) error 
 	return nil
 }
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
-	conn, err := pgx.Connect(ctx, s.config.URL)
+	var err error
+
+	s.conn, err = pgxpool.Connect(ctx, s.config.URL)
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
-	s.conn = conn
 
 	switch s.config.CDCMode {
 	case CDCModeAuto:
 		// TODO add logic that checks if the DB supports logical replication and
-		//  switches to long polling if it's not. For now use logical replication
+		//  switches to trigger if it's not. For now use logical replication
 		fallthrough
 	case CDCModeLogrepl:
 		if s.config.SnapshotMode == SnapshotModeInitial {
@@ -114,7 +121,12 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			sdk.Logger(ctx).Warn().Msg("snapshot not supported in logical replication mode")
 		}
 
-		i, err := logrepl.NewCDCIterator(ctx, s.conn, logrepl.Config{
+		conn, err := s.conn.Acquire(ctx)
+		if err != nil {
+			return fmt.Errorf("return a connection from the pool: %w", err)
+		}
+
+		s.iterator, err = logrepl.NewCDCIterator(ctx, conn.Conn(), logrepl.Config{
 			Position:        pos,
 			SlotName:        s.config.LogreplSlotName,
 			PublicationName: s.config.LogreplPublicationName,
@@ -123,27 +135,30 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			Columns:         s.config.Columns,
 		})
 		if err != nil {
-			return fmt.Errorf("failed to create logical replication iterator: %w", err)
-		}
-		s.iterator = i
-	case CDCModeLongPolling:
-		sdk.Logger(ctx).Warn().Msg("long polling not supported yet, only snapshot is supported")
-		if s.config.SnapshotMode != SnapshotModeInitial {
-			// TODO create long polling iterator and pass snapshot mode in the config
-			sdk.Logger(ctx).Warn().Msg("snapshot disabled, can't do anything right now")
-			return sdk.ErrUnimplemented
+			err = fmt.Errorf("failed to create logical replication iterator: %w", err)
+
+			if s.config.CDCMode != CDCModeAuto {
+				return err
+			}
+
+			sdk.Logger(ctx).Err(err)
 		}
 
-		snap, err := longpoll.NewSnapshotIterator(
-			ctx,
-			s.conn,
-			s.config.Table,
-			s.config.Columns,
-			s.config.Key)
+		fallthrough
+	case CDCModeTrigger:
+		s.iterator, err = trigger.New(ctx, trigger.Params{
+			Pos:            pos,
+			Conn:           s.conn,
+			Table:          s.config.Table,
+			OrderingColumn: s.config.OrderingColumn,
+			Key:            s.config.Key,
+			Snapshot:       s.config.SnapshotMode == SnapshotModeInitial,
+			Columns:        s.config.Columns,
+			BatchSize:      s.config.BatchSize,
+		})
 		if err != nil {
-			return fmt.Errorf("failed to create long polling iterator: %w", err)
+			return fmt.Errorf("create trigger iterator: %w", err)
 		}
-		s.iterator = snap
 	default:
 		// shouldn't happen, config was validated
 		return fmt.Errorf("%q contains unsupported value %q, expected one of %v", ConfigKeyCDCMode, s.config.CDCMode, cdcModeAll)
@@ -166,9 +181,7 @@ func (s *Source) Teardown(ctx context.Context) error {
 		}
 	}
 	if s.conn != nil {
-		if err := s.conn.Close(ctx); err != nil {
-			return fmt.Errorf("failed to close DB connection: %w", err)
-		}
+		s.conn.Close()
 	}
 	return nil
 }

@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/conduitio/conduit-connector-postgres/common"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
@@ -184,7 +185,7 @@ func (h *CDCHandler) send(ctx context.Context, rec sdk.Record) error {
 
 func (h *CDCHandler) buildRecordMetadata(relation *pglogrepl.RelationMessage) map[string]string {
 	return map[string]string{
-		MetadataPostgresTable: relation.RelationName,
+		common.MetadataPostgresTable: relation.RelationName,
 	}
 }
 
