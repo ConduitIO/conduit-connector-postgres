@@ -160,20 +160,22 @@ func New(ctx context.Context, params Params) (*Iterator, error) {
 		if err != nil {
 			return nil, fmt.Errorf("init snapshot iterator: %w", err)
 		}
-	} else {
-		iterator.cdc, err = NewCDC(ctx, CDCParams{
-			Conn:           iterator.conn,
-			Position:       iterator.position,
-			Table:          iterator.table,
-			OrderingColumn: iterator.orderingColumn,
-			Key:            iterator.key,
-			Columns:        iterator.columns,
-			BatchSize:      iterator.batchSize,
-			Conduit:        iterator.conduit,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("init cdc iterator: %w", err)
-		}
+
+		return iterator, nil
+	}
+
+	iterator.cdc, err = NewCDC(ctx, CDCParams{
+		Conn:           iterator.conn,
+		Position:       iterator.position,
+		Table:          iterator.table,
+		OrderingColumn: iterator.orderingColumn,
+		Key:            iterator.key,
+		Columns:        iterator.columns,
+		BatchSize:      iterator.batchSize,
+		Conduit:        iterator.conduit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("init cdc iterator: %w", err)
 	}
 
 	return iterator, nil

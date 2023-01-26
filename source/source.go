@@ -78,7 +78,7 @@ func (s *Source) Parameters() map[string]sdk.Parameter {
 		ConfigKeyBatchSize: {
 			Default:     "1000",
 			Required:    false,
-			Description: "Size of rows batch. Min is 1 and max is 100000.",
+			Description: "Size of rows batch (must be positive).",
 		},
 		ConfigKeyLogreplPublicationName: {
 			Default:     "conduitpub",

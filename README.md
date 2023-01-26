@@ -60,8 +60,9 @@ To configure CDC features via logical replication, see this example:
 
 The `trigger` CDC mode creates a tracking table and a trigger with a function to populate this table. The tracking
 table, trigger and a function name have the same names as a source table with a prefix of `conduit_` and a suffix of a
-creation time in `_hhmmss` format. The tracking table has all the same columns as the source table plus two additional
-columns:
+creation time in `_hhmmss` format, so if the name of the table is `users` and the first start of the pipeline was at 14:
+23:55, then the name of the tracking table, trigger and function will be `conduit_users_142355`. The tracking table has
+all the same columns as the source table plus two additional columns:
 
 | name                | description                                           |
 |---------------------|-------------------------------------------------------|
@@ -75,6 +76,9 @@ with `conduit_id` ordering column.
 
 The Ack method collects the `conduit_id` of those records that have been successfully applied, in order to remove them
 later in a batch from the tracking table (every 5 seconds or when the connector is closed).
+
+The tracking table, trigger and function will not be deleted automatically when the pipeline is stopped, but will
+continue to collect event data.
 
 ## Key Handling
 
@@ -97,7 +101,7 @@ returned.
 | `key`                     | Column name that records should use for their `Key` fields.                                                                                                                                     | false    | (primary key of table) |
 | `snapshotMode`            | Whether or not the plugin will take a snapshot of the entire table before starting cdc mode (allowed values: `initial` or `never`).                                                             | false    | `initial`              |
 | `cdcMode`                 | Determines the CDC mode (allowed values: `auto`, `logrepl` or `trigger`).                                                                                                                       | false    | `auto`                 |
-| `batchSize`               | Size of rows batch. Min is `1`.                                                                                                                                                                 | false    | `1000`                 |
+| `batchSize`               | Size of rows batch (must be positive).                                                                                                                                                          | false    | `1000`                 |
 | `logrepl.publicationName` | Name of the publication to listen for WAL events.                                                                                                                                               | false    | `conduitpub`           |
 | `logrepl.slotName`        | Name of the slot opened for replication events.                                                                                                                                                 | false    | `conduitslot`          |
 

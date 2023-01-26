@@ -26,8 +26,8 @@ import (
 type Mode string
 
 const (
-	ModeSnapshot = "snapshot"
-	ModeCDC      = "cdc"
+	ModeSnapshot Mode = "snapshot"
+	ModeCDC      Mode = "cdc"
 )
 
 // Position is a position.
@@ -37,13 +37,12 @@ type Position struct {
 	// LastProcessedVal is the most recently processed value of an orderingColumn column.
 	LastProcessedVal any `json:"lastProcessedVal"`
 	// CreatedAt is the time of the first connector start (in the format hhmmss).
+	// This is used in the tracking table, trigger and function names.
 	CreatedAt string `json:"createdAt"`
 }
 
 // ParseSDKPosition parses sdk.Position and returns Position.
 func ParseSDKPosition(position sdk.Position) (*Position, error) {
-	var pos Position
-
 	if position == nil {
 		return &Position{
 			Mode:      ModeSnapshot,
@@ -51,11 +50,12 @@ func ParseSDKPosition(position sdk.Position) (*Position, error) {
 		}, nil
 	}
 
-	if err := json.Unmarshal(position, &pos); err != nil {
+	pos := new(Position)
+	if err := json.Unmarshal(position, pos); err != nil {
 		return nil, fmt.Errorf("unmarshal sdk.Position into Position: %w", err)
 	}
 
-	return &pos, nil
+	return pos, nil
 }
 
 // marshal marshals Position and returns sdk.Position or an error.

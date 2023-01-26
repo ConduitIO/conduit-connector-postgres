@@ -31,8 +31,8 @@ import (
 )
 
 const (
-	timeoutBeforeCloseDBSec        = 20
-	timeoutToClearTrackingTableSec = 5
+	timeoutBeforeCloseDB        = 20 * time.Second
+	timeoutToClearTrackingTable = 5 * time.Second
 )
 
 var errWrongTrackingOperationType = errors.New("wrong tracking operation type")
@@ -88,8 +88,6 @@ type trackingTableService struct {
 
 // NewCDC creates a new instance of the CDC iterator.
 func NewCDC(ctx context.Context, params CDCParams) (*CDC, error) {
-	var err error
-
 	iterator := &CDC{
 		conn:           params.Conn,
 		position:       params.Position,
@@ -102,7 +100,7 @@ func NewCDC(ctx context.Context, params CDCParams) (*CDC, error) {
 		tableSrv:       newTrackingTableService(),
 	}
 
-	err = iterator.loadRows(ctx)
+	err := iterator.loadRows(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("load cdc rows: %w", err)
 	}
@@ -186,24 +184,15 @@ func (iter *CDC) Next(_ context.Context) (sdk.Record, error) {
 	switch operationType {
 	case actionInsert:
 		return sdk.Util.Source.NewRecordCreate(
-			convertedPosition,
-			metadata,
-			key,
-			sdk.RawData(rowBytes),
+			convertedPosition, metadata, key, sdk.RawData(rowBytes),
 		), nil
 	case actionUpdate:
 		return sdk.Util.Source.NewRecordUpdate(
-			convertedPosition,
-			metadata,
-			key,
-			nil,
-			sdk.RawData(rowBytes),
+			convertedPosition, metadata, key, nil, sdk.RawData(rowBytes),
 		), nil
 	case actionDelete:
 		return sdk.Util.Source.NewRecordDelete(
-			convertedPosition,
-			metadata,
-			key,
+			convertedPosition, metadata, key,
 		), nil
 	default:
 		return sdk.Record{}, errWrongTrackingOperationType
@@ -223,7 +212,7 @@ func (iter *CDC) Close() (err error) {
 	// wait until clearing tracking table will be finished
 	case <-iter.tableSrv.canCloseCh:
 	// or until time out
-	case <-time.After(timeoutBeforeCloseDBSec * time.Second):
+	case <-time.After(timeoutBeforeCloseDB):
 	}
 
 	iter.tableSrv.close()
@@ -258,16 +247,11 @@ func (iter *CDC) loadRows(ctx context.Context) error {
 
 // newTrackingTableService is a service to delete processed rows.
 func newTrackingTableService() *trackingTableService {
-	stopCh := make(chan struct{}, 1)
-	canCloseCh := make(chan struct{}, 1)
-	errCh := make(chan error, 1)
-	trackingIDsForRemoving := make([]any, 0)
-
 	return &trackingTableService{
-		stopCh:      stopCh,
-		canCloseCh:  canCloseCh,
-		errCh:       errCh,
-		idsToDelete: trackingIDsForRemoving,
+		stopCh:      make(chan struct{}, 1),
+		canCloseCh:  make(chan struct{}, 1),
+		errCh:       make(chan error, 1),
+		idsToDelete: make([]any, 0),
 	}
 }
 
@@ -317,7 +301,7 @@ func (iter *CDC) clearTrackingTable(ctx context.Context) {
 
 			return
 
-		case <-time.After(timeoutToClearTrackingTableSec * time.Second):
+		case <-time.After(timeoutToClearTrackingTable):
 			err := iter.deleteTrackingTableRows(ctx)
 			if err != nil {
 				iter.tableSrv.errCh <- err
