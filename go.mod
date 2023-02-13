@@ -8,7 +8,7 @@ require (
 	github.com/jackc/pgconn v1.13.0
 	github.com/jackc/pglogrepl v0.0.0-20220305000529-420b8467887a
 	github.com/jackc/pgproto3/v2 v2.3.1
-	github.com/jackc/pgtype v1.13.0
+	github.com/jackc/pgtype v1.14.0
 	github.com/jackc/pgx/v4 v4.17.2
 	github.com/matryer/is v1.4.0
 )
