@@ -48,7 +48,7 @@ const (
 	queryTriggerInsertPart                     = "INSERT INTO %s (%s, %s) VALUES (%s, TG_OP::conduit_operation_type);"
 	queryTrackingTableExtendWithConduitColumns = `
 		ALTER TABLE %s 
-		ADD COLUMN %s SERIAL PRIMARY KEY,
+		ADD COLUMN %s SERIAL,
 		ADD COLUMN %s conduit_operation_type NOT NULL;`
 	queryFunctionCreate = `
 		CREATE OR REPLACE
@@ -68,7 +68,7 @@ const (
 		TRIGGER %s
 		AFTER INSERT OR UPDATE OR DELETE ON %s
 		FOR EACH ROW EXECUTE PROCEDURE %s();`
-	queryTriggerDrop       = "DROP TRIGGER IF EXISTS %s;"
+	queryTriggerDrop       = "DROP TRIGGER IF EXISTS %s ON %s;"
 	queryColumnNamesSelect = "SELECT column_name FROM information_schema.columns WHERE table_name = $1;"
 	queryPrimaryKeySelect  = `
 		SELECT column_name
@@ -365,7 +365,7 @@ func (iter *Iterator) removeCDC(ctx context.Context) error {
 	defer tx.Rollback(ctx) // nolint:errcheck,nolintlint
 
 	// drop the trigger
-	_, err = tx.Exec(ctx, fmt.Sprintf(queryTriggerDrop, iter.conduit))
+	_, err = tx.Exec(ctx, fmt.Sprintf(queryTriggerDrop, iter.conduit, iter.table))
 	if err != nil {
 		return fmt.Errorf("drop trigger: %w", err)
 	}
@@ -382,15 +382,17 @@ func (iter *Iterator) removeCDC(ctx context.Context) error {
 		return fmt.Errorf("drop tracking table: %w", err)
 	}
 
-	// drop the enum type
-	_, err = tx.Exec(ctx, fmt.Sprintf(queryEnumTypeDrop, conduitOperationType))
-	if err != nil {
-		return fmt.Errorf("drop %q enum type: %w", conduitOperationType, err)
-	}
-
 	err = tx.Commit(ctx)
 	if err != nil {
 		return fmt.Errorf("commit db transaction: %w", err)
+	}
+
+	// trying to drop the enum type
+	// do not return an error because the type can be used by other tables
+	_, err = iter.conn.Exec(ctx, fmt.Sprintf(queryEnumTypeDrop, conduitOperationType))
+	if err != nil {
+		sdk.Logger(ctx).Warn().Err(fmt.Errorf("drop %q enum type: %w", conduitOperationType, err)).
+			Msg("the type wasn't dropped because it is used by other tables")
 	}
 
 	return nil
