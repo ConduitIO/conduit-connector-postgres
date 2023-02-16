@@ -134,7 +134,7 @@ func (iter *Snapshot) Next(_ context.Context) (sdk.Record, error) {
 		return sdk.Record{}, fmt.Errorf("marshal row: %w", err)
 	}
 
-	iter.position = position
+	iter.position.LastProcessedVal = row[iter.orderingColumn]
 
 	metadata := sdk.Metadata{
 		common.MetadataPostgresTable: iter.table,
