@@ -141,20 +141,6 @@ func (iter *CDC) Next(_ context.Context) (sdk.Record, error) {
 		return sdk.Record{}, errWrongTrackingOperationType
 	}
 
-	// set a new position into the variable,
-	// to avoid saving position into the struct until we marshal the position
-	position := &Position{
-		Mode: ModeCDC,
-		// set the value from columnTrackingID column of the tracking table
-		LastProcessedVal: row[colID],
-		CreatedAt:        iter.position.CreatedAt,
-	}
-
-	convertedPosition, err := position.marshal()
-	if err != nil {
-		return sdk.Record{}, fmt.Errorf("convert position %w", err)
-	}
-
 	key := make(sdk.StructuredData)
 	if iter.key != "" {
 		val, ok := row[iter.key]
@@ -165,6 +151,14 @@ func (iter *CDC) Next(_ context.Context) (sdk.Record, error) {
 		key[iter.key] = val
 	}
 
+	iter.position.Mode = ModeCDC
+	iter.position.LastProcessedVal = row[colID]
+
+	convertedPosition, err := iter.position.marshal()
+	if err != nil {
+		return sdk.Record{}, fmt.Errorf("convert position %w", err)
+	}
+
 	// delete tracking columns
 	delete(row, colOperation)
 	delete(row, colID)
@@ -173,8 +167,6 @@ func (iter *CDC) Next(_ context.Context) (sdk.Record, error) {
 	if err != nil {
 		return sdk.Record{}, fmt.Errorf("marshal row: %w", err)
 	}
-
-	iter.position.LastProcessedVal = row[colID]
 
 	metadata := sdk.Metadata{
 		common.MetadataPostgresTable: iter.table,
@@ -225,7 +217,7 @@ func (iter *CDC) Close() (err error) {
 func (iter *CDC) loadRows(ctx context.Context) error {
 	sb := psql.Select(iter.columns...).
 		From(iter.conduit).
-		OrderBy(colID).
+		OrderBy(colID + orderingASC).
 		Limit(iter.batchSize)
 
 	if iter.position.LastProcessedVal != nil {

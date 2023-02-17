@@ -35,6 +35,9 @@ const (
 	referencingNew = "NEW."
 	referencingOld = "OLD."
 
+	orderingASC  = " ASC"
+	orderingDESC = " DESC"
+
 	actionInsert = "INSERT"
 	actionUpdate = "UPDATE"
 	actionDelete = "DELETE"
@@ -302,6 +305,7 @@ func (iter *Iterator) switchToCDCIterator(ctx context.Context) error {
 	}
 
 	iter.snapshot = nil
+	iter.position.LastProcessedVal = nil
 
 	iter.cdc, err = NewCDC(ctx, CDCParams{
 		Conn:           iter.conn,

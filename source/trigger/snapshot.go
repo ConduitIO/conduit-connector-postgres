@@ -73,7 +73,12 @@ func NewSnapshot(ctx context.Context, params SnapshotParams) (*Snapshot, error) 
 		batchSize:      params.BatchSize,
 	}
 
-	err := iterator.loadRows(ctx)
+	err := iterator.populateLatestSnapshotValue(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("populate latest snapshot value: %w", err)
+	}
+
+	err = iterator.loadRows(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("load snapshot rows: %w", err)
 	}
@@ -106,19 +111,6 @@ func (iter *Snapshot) Next(_ context.Context) (sdk.Record, error) {
 		row[iter.columns[i]] = values[i]
 	}
 
-	// set a new position into the variable,
-	// to avoid saving position into the struct until we marshal the position
-	position := &Position{
-		Mode:             ModeSnapshot,
-		LastProcessedVal: row[iter.orderingColumn],
-		CreatedAt:        iter.position.CreatedAt,
-	}
-
-	convertedPosition, err := position.marshal()
-	if err != nil {
-		return sdk.Record{}, fmt.Errorf("convert position %w", err)
-	}
-
 	key := make(sdk.StructuredData)
 	if iter.key != "" {
 		val, ok := row[iter.key]
@@ -135,6 +127,11 @@ func (iter *Snapshot) Next(_ context.Context) (sdk.Record, error) {
 	}
 
 	iter.position.LastProcessedVal = row[iter.orderingColumn]
+
+	convertedPosition, err := iter.position.marshal()
+	if err != nil {
+		return sdk.Record{}, fmt.Errorf("convert position %w", err)
+	}
 
 	metadata := sdk.Metadata{
 		common.MetadataPostgresTable: iter.table,
@@ -163,7 +160,8 @@ func (iter *Snapshot) Close() error {
 func (iter *Snapshot) loadRows(ctx context.Context) error {
 	sb := psql.Select(iter.columns...).
 		From(iter.table).
-		OrderBy(iter.orderingColumn).
+		Where(sq.LtOrEq{iter.orderingColumn: iter.position.LatestSnapshotValue}).
+		OrderBy(iter.orderingColumn + orderingASC).
 		Limit(iter.batchSize)
 
 	if iter.position.LastProcessedVal != nil {
@@ -178,6 +176,30 @@ func (iter *Snapshot) loadRows(ctx context.Context) error {
 	iter.rows, err = iter.conn.Query(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("execute select query: %w", err)
+	}
+
+	return nil
+}
+
+// populateLatestSnapshotValue populates the position with the latests snapshot value.
+func (iter *Snapshot) populateLatestSnapshotValue(ctx context.Context) error {
+	if iter.position.LatestSnapshotValue != nil {
+		return nil
+	}
+
+	sb := psql.Select(iter.orderingColumn).
+		From(iter.table).
+		OrderBy(iter.orderingColumn + orderingDESC).
+		Limit(1)
+
+	query, _, err := sb.ToSql()
+	if err != nil {
+		return fmt.Errorf("create select query: %w", err)
+	}
+
+	err = iter.conn.QueryRow(ctx, query).Scan(&iter.position.LatestSnapshotValue)
+	if err != nil {
+		return fmt.Errorf("scan row: %w", err)
 	}
 
 	return nil

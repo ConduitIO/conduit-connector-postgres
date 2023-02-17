@@ -36,6 +36,9 @@ type Position struct {
 	Mode Mode `json:"mode"`
 	// LastProcessedVal is the most recently processed value of an orderingColumn column.
 	LastProcessedVal any `json:"lastProcessedVal"`
+	// LatestSnapshotValue is a value of the orderingColumn key
+	// of the most recent value item at the moment the iterator is initialised.
+	LatestSnapshotValue any `json:"latestSnapshotValue"`
 	// CreatedAt is the time of the first connector start (in the format hhmmss).
 	// This is used in the tracking table, trigger and function names.
 	CreatedAt string `json:"createdAt"`
