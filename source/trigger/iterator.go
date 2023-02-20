@@ -45,9 +45,7 @@ const (
 	queryIfTableExists                         = "SELECT 1 FROM information_schema.tables WHERE table_name=$1;"
 	queryIfTypeExists                          = "SELECT 1 FROM pg_type WHERE typname=$1;"
 	queryEnumTypeCreate                        = "CREATE TYPE %s AS ENUM ('%s', '%s', '%s');"
-	queryEnumTypeDrop                          = "DROP TYPE IF EXISTS %s;"
 	queryTableCopy                             = "CREATE TABLE %s (LIKE %s INCLUDING ALL);"
-	queryTableDrop                             = "DROP TABLE IF EXISTS %s;"
 	queryTriggerInsertPart                     = "INSERT INTO %s (%s, %s) VALUES (%s, TG_OP::conduit_operation_type);"
 	queryTrackingTableExtendWithConduitColumns = `
 		ALTER TABLE %s 
@@ -65,13 +63,11 @@ const (
 			RETURN NEW;
 		END;
 		$$`
-	queryFunctionDrop  = "DROP FUNCTION IF EXISTS %s"
 	queryTriggerCreate = `
 		CREATE OR REPLACE
 		TRIGGER %s
 		AFTER INSERT OR UPDATE OR DELETE ON %s
 		FOR EACH ROW EXECUTE PROCEDURE %s();`
-	queryTriggerDrop       = "DROP TRIGGER IF EXISTS %s ON %s;"
 	queryColumnNamesSelect = "SELECT column_name FROM information_schema.columns WHERE table_name = $1;"
 	queryPrimaryKeySelect  = `
 		SELECT column_name
@@ -245,11 +241,6 @@ func (iter *Iterator) Teardown(ctx context.Context) error {
 		err = multierr.Append(err, iter.cdc.Close())
 	}
 
-	// if the LastProcessedVal is nil - remove CDC tracking logic from DB
-	if iter.position.LastProcessedVal == nil {
-		err = multierr.Append(err, iter.removeCDC(ctx))
-	}
-
 	if err != nil {
 		return fmt.Errorf("teardown iterator: %w", err)
 	}
@@ -355,48 +346,6 @@ func (iter *Iterator) setupCDC(ctx context.Context) error {
 	err = tx.Commit(ctx)
 	if err != nil {
 		return fmt.Errorf("commit db transaction: %w", err)
-	}
-
-	return nil
-}
-
-// removeCDC drops a type, a tracking table, a function and a trigger.
-func (iter *Iterator) removeCDC(ctx context.Context) error {
-	tx, err := iter.conn.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin db transaction: %w", err)
-	}
-	defer tx.Rollback(ctx) // nolint:errcheck,nolintlint
-
-	// drop the trigger
-	_, err = tx.Exec(ctx, fmt.Sprintf(queryTriggerDrop, iter.conduit, iter.table))
-	if err != nil {
-		return fmt.Errorf("drop trigger: %w", err)
-	}
-
-	// drop the function
-	_, err = tx.Exec(ctx, fmt.Sprintf(queryFunctionDrop, iter.conduit))
-	if err != nil {
-		return fmt.Errorf("drop function: %w", err)
-	}
-
-	// drop the tracking table
-	_, err = tx.Exec(ctx, fmt.Sprintf(queryTableDrop, iter.conduit))
-	if err != nil {
-		return fmt.Errorf("drop tracking table: %w", err)
-	}
-
-	err = tx.Commit(ctx)
-	if err != nil {
-		return fmt.Errorf("commit db transaction: %w", err)
-	}
-
-	// trying to drop the enum type
-	// do not return an error because the type can be used by other tables
-	_, err = iter.conn.Exec(ctx, fmt.Sprintf(queryEnumTypeDrop, conduitOperationType))
-	if err != nil {
-		sdk.Logger(ctx).Warn().Err(fmt.Errorf("drop %q enum type: %w", conduitOperationType, err)).
-			Msg("the type wasn't dropped because it is used by other tables")
 	}
 
 	return nil
