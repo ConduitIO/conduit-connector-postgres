@@ -45,7 +45,7 @@ const (
 	queryIfTableExists                         = "SELECT 1 FROM information_schema.tables WHERE table_name=$1;"
 	queryIfTypeExists                          = "SELECT 1 FROM pg_type WHERE typname=$1;"
 	queryEnumTypeCreate                        = "CREATE TYPE %s AS ENUM ('%s', '%s', '%s');"
-	queryTableCopy                             = "CREATE TABLE %s (LIKE %s INCLUDING ALL);"
+	queryTableCopy                             = "CREATE TABLE %s (LIKE %s);"
 	queryTriggerInsertPart                     = "INSERT INTO %s (%s, %s) VALUES (%s, TG_OP::conduit_operation_type);"
 	queryTrackingTableExtendWithConduitColumns = `
 		ALTER TABLE %s 
