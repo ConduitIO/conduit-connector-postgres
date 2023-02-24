@@ -10,7 +10,7 @@ require (
 	github.com/jackc/pgproto3/v2 v2.3.2
 	github.com/jackc/pgtype v1.14.0
 	github.com/jackc/pgx/v4 v4.18.0
-	github.com/matryer/is v1.4.0
+	github.com/matryer/is v1.4.1
 )
 
 require (
