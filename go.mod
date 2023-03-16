@@ -1,6 +1,6 @@
 module github.com/conduitio/conduit-connector-postgres
 
-go 1.18
+go 1.20
 
 require (
 	github.com/Masterminds/squirrel v1.5.3
