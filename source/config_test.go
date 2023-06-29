@@ -74,12 +74,12 @@ func TestParseConfig(t *testing.T) {
 			cfg.CDCMode = CDCModeLogrepl
 		},
 	}, {
-		name: "cdc mode = long_polling",
+		name: "cdc mode = trigger",
 		setupGiven: func(cfg map[string]string) {
-			cfg[ConfigKeyCDCMode] = "long_polling"
+			cfg[ConfigKeyCDCMode] = "trigger"
 		},
 		setupWant: func(cfg *Config) {
-			cfg.CDCMode = CDCModeLongPolling
+			cfg.CDCMode = CDCModeTrigger
 		},
 	}, {
 		name: "publication name",
@@ -96,6 +96,14 @@ func TestParseConfig(t *testing.T) {
 		},
 		setupWant: func(cfg *Config) {
 			cfg.LogreplSlotName = "myslotname"
+		},
+	}, {
+		name: "batch size",
+		setupGiven: func(cfg map[string]string) {
+			cfg[ConfigKeyBatchSize] = "10000"
+		},
+		setupWant: func(cfg *Config) {
+			cfg.BatchSize = 10000
 		},
 	}, {
 		name: "empty url",
@@ -120,15 +128,22 @@ func TestParseConfig(t *testing.T) {
 		setupGiven: func(cfg map[string]string) {
 			cfg[ConfigKeyCDCMode] = "invalid"
 		},
-		wantErr: errors.New(`"cdcMode" contains unsupported value "invalid", expected one of [auto logrepl long_polling]`),
+		wantErr: errors.New(`"cdcMode" contains unsupported value "invalid", expected one of [auto logrepl trigger]`),
+	}, {
+		name: "batch size = invalid",
+		setupGiven: func(cfg map[string]string) {
+			cfg[ConfigKeyBatchSize] = "invalid"
+		},
+		wantErr: errors.New(`parse "batchSize": strconv.ParseUint: parsing "invalid": invalid syntax`),
 	}}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// given is a basic valid config
 			given := map[string]string{
-				ConfigKeyURL:   "postgres://user:pass@localhost:5432/testdb?sslmode=disable",
-				ConfigKeyTable: "my_table",
+				ConfigKeyURL:            "postgres://user:pass@localhost:5432/testdb?sslmode=disable",
+				ConfigKeyTable:          "my_table",
+				ConfigKeyOrderingColumn: "col1",
 			}
 			tc.setupGiven(given)
 
@@ -140,15 +155,17 @@ func TestParseConfig(t *testing.T) {
 				want := Config{
 					URL:                    "postgres://user:pass@localhost:5432/testdb?sslmode=disable",
 					Table:                  "my_table",
+					OrderingColumn:         "col1",
 					SnapshotMode:           SnapshotModeInitial,
 					CDCMode:                CDCModeAuto,
+					BatchSize:              DefaultBatchSize,
 					LogreplPublicationName: DefaultPublicationName,
 					LogreplSlotName:        DefaultSlotName,
 				}
 				tc.setupWant(&want)
 				is.Equal(got, want)
 			} else {
-				is.Equal(err, tc.wantErr)
+				errors.Is(err, tc.wantErr)
 				is.Equal(got, Config{})
 			}
 		})
