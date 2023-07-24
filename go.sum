@@ -15,8 +15,8 @@ github.com/cockroachdb/apd v1.1.0 h1:3LFP3629v+1aKXU5Q37mxmRxX/pIu1nijXydLShEq5I
 github.com/cockroachdb/apd v1.1.0/go.mod h1:8Sl8LxpKi29FqWXR16WEFZRNSz3SoPzUzeMeY4+DwBQ=
 github.com/conduitio/conduit-connector-protocol v0.5.0 h1:Rr2SsDAvWDryQArvonwPoXBELQA2wRXr49xBLrAtBaM=
 github.com/conduitio/conduit-connector-protocol v0.5.0/go.mod h1:UIhHWxq52hvwwbkvQDaRgZRHfbpDDmU7tZaw0mwLdd4=
-github.com/conduitio/conduit-connector-sdk v0.7.0 h1:aS0IpzwlM/e/oHr4TTNYapqfEXwvmkR5LeEQDJcBlHo=
-github.com/conduitio/conduit-connector-sdk v0.7.0/go.mod h1:OakeXjAsPyHotUBRXXDlrV+/v/1zMkoEgozPNiNJo9Q=
+github.com/conduitio/conduit-connector-sdk v0.7.1 h1:5VX5/p7FxIeOw31rHfJUUdwBVu0xCATbz2xmMAAFDAM=
+github.com/conduitio/conduit-connector-sdk v0.7.1/go.mod h1:OakeXjAsPyHotUBRXXDlrV+/v/1zMkoEgozPNiNJo9Q=
 github.com/coreos/go-systemd v0.0.0-20190321100706-95778dfbb74e/go.mod h1:F5haX7vjVVG0kc13fIWeqUViNPyEJxv/OmvnBo0Yme4=
 github.com/coreos/go-systemd v0.0.0-20190719114852-fd7a80b32e1f/go.mod h1:F5haX7vjVVG0kc13fIWeqUViNPyEJxv/OmvnBo0Yme4=
 github.com/coreos/go-systemd/v22 v22.5.0/go.mod h1:Y58oyj3AT4RCenI/lSvhwexgC+NSVTIJ3seZv2GcEnc=
