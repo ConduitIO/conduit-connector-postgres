@@ -125,7 +125,8 @@ func (d *Destination) Write(ctx context.Context, recs []sdk.Record) (int, error)
 	for i := range recs {
 		_, err := br.Exec()
 		if err != nil {
-			return i, fmt.Errorf("failed to execute query for record %d: %w", i, err)
+			// the batch is executed in a transaction, if one failed all failed
+			return 0, fmt.Errorf("failed to execute query for record %d: %w", i, err)
 		}
 	}
 	return len(recs), nil
