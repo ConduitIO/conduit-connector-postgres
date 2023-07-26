@@ -15,12 +15,11 @@
 package postgres
 
 import (
-	"github.com/conduitio/conduit-connector-postgres/source"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
 var Connector = sdk.Connector{
 	NewSpecification: Specification,
-	NewSource:        source.NewSource,
+	NewSource:        NewSource,
 	NewDestination:   NewDestination,
 }

@@ -113,7 +113,7 @@ func (i *CDCIterator) Next(ctx context.Context) (sdk.Record, error) {
 }
 
 // Ack forwards the acknowledgment to the subscription.
-func (i *CDCIterator) Ack(ctx context.Context, pos sdk.Position) error {
+func (i *CDCIterator) Ack(_ context.Context, pos sdk.Position) error {
 	lsn, err := PositionToLSN(pos)
 	if err != nil {
 		return fmt.Errorf("failed to parse position: %w", err)

@@ -11,7 +11,7 @@ func (DestinationConfig) Parameters() map[string]sdk.Parameter {
 	return map[string]sdk.Parameter{
 		"key": {
 			Default:     "",
-			Description: "key represents the column name for the key.",
+			Description: "key represents the column name for the key used to identify and update existing rows.",
 			Type:        sdk.ParameterTypeString,
 			Validations: []sdk.Validation{},
 		},
@@ -23,7 +23,7 @@ func (DestinationConfig) Parameters() map[string]sdk.Parameter {
 		},
 		"url": {
 			Default:     "",
-			Description: "url is the connection string for the postgres database.",
+			Description: "url is the connection string for the Postgres database.",
 			Type:        sdk.ParameterTypeString,
 			Validations: []sdk.Validation{
 				sdk.ValidationRequired{},

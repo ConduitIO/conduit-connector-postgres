@@ -1,4 +1,4 @@
-// Copyright © 2022 Meroxa, Inc.
+// Copyright © 2023 Meroxa, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,44 +13,6 @@
 // limitations under the License.
 
 package source
-
-import (
-	"fmt"
-	"strings"
-)
-
-const (
-	ConfigKeyURL                    = "url"
-	ConfigKeyTable                  = "table"
-	ConfigKeyColumns                = "columns"
-	ConfigKeyKey                    = "key"
-	ConfigKeySnapshotMode           = "snapshotMode"
-	ConfigKeyCDCMode                = "cdcMode"
-	ConfigKeyLogreplPublicationName = "logrepl.publicationName"
-	ConfigKeyLogreplSlotName        = "logrepl.slotName"
-
-	DefaultPublicationName = "conduitpub"
-	DefaultSlotName        = "conduitslot"
-)
-
-type Config struct {
-	URL     string
-	Table   string
-	Columns []string
-	Key     string
-
-	// SnapshotMode determines if and when a snapshot is made.
-	SnapshotMode SnapshotMode
-	// CDCMode determines how the connector should listen to changes.
-	CDCMode CDCMode
-
-	// LogreplPublicationName determines the publication name in case the
-	// connector uses logical replication to listen to changes (see CDCMode).
-	LogreplPublicationName string
-	// LogreplSlotName determines the replication slot name in case the
-	// connector uses logical replication to listen to changes (see CDCMode).
-	LogreplSlotName string
-}
 
 type SnapshotMode string
 
@@ -72,71 +34,3 @@ const (
 	// CDCModeLongPolling uses long polling to listen to changes.
 	CDCModeLongPolling CDCMode = "long_polling"
 )
-
-var snapshotModeAll = []SnapshotMode{SnapshotModeInitial, SnapshotModeNever}
-var cdcModeAll = []CDCMode{CDCModeAuto, CDCModeLogrepl, CDCModeLongPolling}
-
-func ParseConfig(cfgRaw map[string]string) (Config, error) {
-	cfg := Config{
-		URL:                    cfgRaw[ConfigKeyURL],
-		Table:                  cfgRaw[ConfigKeyTable],
-		Columns:                nil, // default
-		Key:                    cfgRaw[ConfigKeyKey],
-		SnapshotMode:           SnapshotModeInitial,
-		CDCMode:                CDCModeAuto,
-		LogreplPublicationName: DefaultPublicationName,
-		LogreplSlotName:        DefaultSlotName,
-	}
-
-	if cfg.URL == "" {
-		return Config{}, requiredConfigErr(ConfigKeyURL)
-	}
-	if cfg.Table == "" {
-		return Config{}, requiredConfigErr(ConfigKeyTable)
-	}
-	if colsRaw := cfgRaw[ConfigKeyColumns]; colsRaw != "" {
-		cfg.Columns = strings.Split(colsRaw, ",")
-	}
-	if modeRaw := cfgRaw[ConfigKeySnapshotMode]; modeRaw != "" {
-		if !isSnapshotModeSupported(modeRaw) {
-			return Config{}, fmt.Errorf("%q contains unsupported value %q, expected one of %v", ConfigKeySnapshotMode, modeRaw, snapshotModeAll)
-		}
-		cfg.SnapshotMode = SnapshotMode(modeRaw)
-	}
-	if modeRaw := cfgRaw[ConfigKeyCDCMode]; modeRaw != "" {
-		if !isCDCModeSupported(modeRaw) {
-			return Config{}, fmt.Errorf("%q contains unsupported value %q, expected one of %v", ConfigKeyCDCMode, modeRaw, cdcModeAll)
-		}
-		cfg.CDCMode = CDCMode(modeRaw)
-	}
-	if cfgRaw[ConfigKeyLogreplPublicationName] != "" {
-		cfg.LogreplPublicationName = cfgRaw[ConfigKeyLogreplPublicationName]
-	}
-	if cfgRaw[ConfigKeyLogreplSlotName] != "" {
-		cfg.LogreplSlotName = cfgRaw[ConfigKeyLogreplSlotName]
-	}
-
-	return cfg, nil
-}
-
-func isSnapshotModeSupported(modeRaw string) bool {
-	for _, m := range snapshotModeAll {
-		if string(m) == modeRaw {
-			return true
-		}
-	}
-	return false
-}
-
-func isCDCModeSupported(modeRaw string) bool {
-	for _, m := range cdcModeAll {
-		if string(m) == modeRaw {
-			return true
-		}
-	}
-	return false
-}
-
-func requiredConfigErr(name string) error {
-	return fmt.Errorf("%q config value must be set", name)
-}

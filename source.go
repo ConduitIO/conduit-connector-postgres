@@ -1,4 +1,4 @@
-// Copyright © 2022 Meroxa, Inc.
+// Copyright © 2023 Meroxa, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,30 +12,51 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package source
+//go:generate paramgen -output=paramgen_src.go SourceConfig
+
+package postgres
 
 import (
 	"context"
 	"fmt"
 
+	"github.com/conduitio/conduit-connector-postgres/source"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	"github.com/conduitio/conduit-connector-postgres/source/longpoll"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v4"
 )
 
-var (
-	_ Iterator = (*logrepl.CDCIterator)(nil)
-	_ Iterator = (*longpoll.SnapshotIterator)(nil)
-)
-
 // Source is a Postgres source plugin.
 type Source struct {
 	sdk.UnimplementedSource
 
-	iterator Iterator
-	config   Config
+	iterator source.Iterator
+	config   SourceConfig
 	conn     *pgx.Conn
+}
+
+type SourceConfig struct {
+	// URL is the connection string for the Postgres database.
+	URL string `json:"url" validate:"required"`
+	// The name of the table in Postgres that the connector should read.
+	Table string `json:"table" validate:"required"`
+	// Comma separated list of column names that should be included in each Record's payload.
+	Columns []string `json:"columns"`
+	// Column name that records should use for their `Key` fields.
+	Key string `json:"key"`
+
+	// Whether or not the plugin will take a snapshot of the entire table before starting cdc mode.
+	SnapshotMode source.SnapshotMode `json:"snapshotMode" validate:"inclusion=initial|never" default:"initial"`
+	// CDCMode determines how the connector should listen to changes.
+	CDCMode source.CDCMode `json:"cdcMode" validate:"inclusion=auto|logrepl|long_polling" default:"auto"`
+
+	// LogreplPublicationName determines the publication name in case the
+	// connector uses logical replication to listen to changes (see CDCMode).
+	LogreplPublicationName string `json:"logrepl.publicationName" default:"conduitpub"`
+	// LogreplSlotName determines the replication slot name in case the
+	// connector uses logical replication to listen to changes (see CDCMode).
+	LogreplSlotName string `json:"logrepl.slotName" default:"conduitslot"`
 }
 
 func NewSource() sdk.Source {
@@ -43,56 +64,19 @@ func NewSource() sdk.Source {
 }
 
 func (s *Source) Parameters() map[string]sdk.Parameter {
-	return map[string]sdk.Parameter{
-		ConfigKeyURL: {
-			Default:     "",
-			Required:    true,
-			Description: "Connection string for the Postgres database.",
-		},
-		ConfigKeyTable: {
-			Default:     "",
-			Required:    true,
-			Description: "The name of the table in Postgres that the connector should read.",
-		},
-		ConfigKeyColumns: {
-			Default:     "",
-			Required:    false,
-			Description: "Comma separated list of column names that should be included in each Record's payload.",
-		},
-		ConfigKeyKey: {
-			Default:     "",
-			Required:    false,
-			Description: "Column name that records should use for their `Key` fields.",
-		},
-		ConfigKeySnapshotMode: {
-			Default:     "initial",
-			Required:    false,
-			Description: "Whether or not the plugin will take a snapshot of the entire table before starting cdc mode (allowed values: `initial` or `never`).",
-		},
-		ConfigKeyCDCMode: {
-			Default:     "auto",
-			Required:    false,
-			Description: "Determines the CDC mode (allowed values: `auto`, `logrepl` or `long_polling`).",
-		},
-		ConfigKeyLogreplPublicationName: {
-			Default:     "conduitpub",
-			Required:    false,
-			Description: "Name of the publication to listen for WAL events.",
-		},
-		ConfigKeyLogreplSlotName: {
-			Default:     "conduitslot",
-			Required:    false,
-			Description: "Name of the slot opened for replication events.",
-		},
-	}
+	return nil
 }
 
-func (s *Source) Configure(ctx context.Context, cfgRaw map[string]string) error {
-	cfg, err := ParseConfig(cfgRaw)
+func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
+	err := sdk.Util.ParseConfig(cfg, &s.config)
 	if err != nil {
 		return err
 	}
-	s.config = cfg
+	// try parsing the url
+	_, err = pgx.ParseConfig(s.config.URL)
+	if err != nil {
+		return fmt.Errorf("invalid url: %w", err)
+	}
 	return nil
 }
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
@@ -103,12 +87,12 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 	s.conn = conn
 
 	switch s.config.CDCMode {
-	case CDCModeAuto:
+	case source.CDCModeAuto:
 		// TODO add logic that checks if the DB supports logical replication and
 		//  switches to long polling if it's not. For now use logical replication
 		fallthrough
-	case CDCModeLogrepl:
-		if s.config.SnapshotMode == SnapshotModeInitial {
+	case source.CDCModeLogrepl:
+		if s.config.SnapshotMode == source.SnapshotModeInitial {
 			// TODO create snapshot iterator for logical replication and pass
 			//  the snapshot mode in the config
 			sdk.Logger(ctx).Warn().Msg("snapshot not supported in logical replication mode")
@@ -126,9 +110,9 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			return fmt.Errorf("failed to create logical replication iterator: %w", err)
 		}
 		s.iterator = i
-	case CDCModeLongPolling:
+	case source.CDCModeLongPolling:
 		sdk.Logger(ctx).Warn().Msg("long polling not supported yet, only snapshot is supported")
-		if s.config.SnapshotMode != SnapshotModeInitial {
+		if s.config.SnapshotMode != source.SnapshotModeInitial {
 			// TODO create long polling iterator and pass snapshot mode in the config
 			sdk.Logger(ctx).Warn().Msg("snapshot disabled, can't do anything right now")
 			return sdk.ErrUnimplemented
@@ -146,7 +130,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		s.iterator = snap
 	default:
 		// shouldn't happen, config was validated
-		return fmt.Errorf("%q contains unsupported value %q, expected one of %v", ConfigKeyCDCMode, s.config.CDCMode, cdcModeAll)
+		return fmt.Errorf("unsupported CDC mode %q", s.config.CDCMode)
 	}
 	return nil
 }

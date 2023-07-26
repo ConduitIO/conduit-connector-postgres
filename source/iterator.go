@@ -17,6 +17,9 @@ package source
 import (
 	"context"
 
+	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
+	"github.com/conduitio/conduit-connector-postgres/source/longpoll"
+
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
@@ -31,3 +34,8 @@ type Iterator interface {
 	// Teardown attempts to gracefully teardown the iterator.
 	Teardown(context.Context) error
 }
+
+var (
+	_ Iterator = (*logrepl.CDCIterator)(nil)
+	_ Iterator = (*longpoll.SnapshotIterator)(nil)
+)

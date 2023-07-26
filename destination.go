@@ -42,7 +42,7 @@ type Destination struct {
 }
 
 type DestinationConfig struct {
-	// URL is the connection string for the postgres database.
+	// URL is the connection string for the Postgres database.
 	URL string `json:"url" validate:"required"`
 	// Table is used as the target table into which records are inserted.
 	Table string `json:"table"`
