@@ -1,4 +1,4 @@
-// Copyright © 2022 Meroxa, Inc.
+// Copyright © 2023 Meroxa, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package destination
+//go:generate paramgen -output=paramgen_dest.go DestinationConfig
+
+package postgres
 
 import (
 	"context"
@@ -20,17 +22,12 @@ import (
 	"fmt"
 	"strings"
 
-	sdk "github.com/conduitio/conduit-connector-sdk"
-
 	sq "github.com/Masterminds/squirrel"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v4"
 )
 
 const (
-	ConfigURL   = "url"
-	ConfigTable = "table"
-	ConfigKey   = "key"
-
 	// TODO same constant is defined in packages longpoll, logrepl and destination
 	//  use same constant everywhere
 	MetadataPostgresTable = "postgres.table"
@@ -40,14 +37,17 @@ type Destination struct {
 	sdk.UnimplementedDestination
 
 	conn        *pgx.Conn
-	config      config
+	config      DestinationConfig
 	stmtBuilder sq.StatementBuilderType
 }
 
-type config struct {
-	url           string
-	tableName     string
-	keyColumnName string
+type DestinationConfig struct {
+	// URL is the connection string for the postgres database.
+	URL string `json:"url" validate:"required"`
+	// Table is used as the target table into which records are inserted.
+	Table string `json:"table"`
+	// Key represents the column name for the key used to identify and update existing rows.
+	Key string `json:"key"`
 }
 
 func NewDestination() sdk.Destination {
@@ -58,37 +58,24 @@ func NewDestination() sdk.Destination {
 }
 
 func (d *Destination) Parameters() map[string]sdk.Parameter {
-	return map[string]sdk.Parameter{
-		ConfigURL: {
-			Default:     "",
-			Required:    true,
-			Description: "Connection string for the Postgres database.",
-		},
-		ConfigTable: {
-			Default:     "",
-			Required:    false,
-			Description: "The name of the table in Postgres that the connector should write to.",
-		},
-		ConfigKey: {
-			Default:     "",
-			Required:    false,
-			Description: "Column name used to detect if the target table already contains the record.",
-		},
-	}
+	return DestinationConfig{}.Parameters()
 }
 
-func (d *Destination) Configure(ctx context.Context, cfg map[string]string) error {
-	// TODO validate required fields
-	d.config = config{
-		url:           cfg[ConfigURL],
-		tableName:     cfg[ConfigTable],
-		keyColumnName: cfg[ConfigKey],
+func (d *Destination) Configure(_ context.Context, cfg map[string]string) error {
+	err := sdk.Util.ParseConfig(cfg, &d.config)
+	if err != nil {
+		return err
+	}
+	// try parsing the url
+	_, err = pgx.ParseConfig(d.config.URL)
+	if err != nil {
+		return fmt.Errorf("invalid url: %w", err)
 	}
 	return nil
 }
 
 func (d *Destination) Open(ctx context.Context) error {
-	conn, err := pgx.Connect(ctx, d.config.url)
+	conn, err := pgx.Connect(ctx, d.config.URL)
 	if err != nil {
 		return fmt.Errorf("failed to open connection: %w", err)
 	}
@@ -123,6 +110,7 @@ func (d *Destination) Write(ctx context.Context, recs []sdk.Record) (int, error)
 	defer br.Close()
 
 	for i := range recs {
+		// fetch error for each statement
 		_, err := br.Exec()
 		if err != nil {
 			// the batch is executed in a transaction, if one failed all failed
@@ -144,7 +132,7 @@ func (d *Destination) Teardown(ctx context.Context) error {
 // exists and no key column name is configured, it will plainly insert the data.
 // Otherwise it upserts the record.
 func (d *Destination) handleInsert(r sdk.Record, b *pgx.Batch) error {
-	if !d.hasKey(r) || d.config.keyColumnName == "" {
+	if !d.hasKey(r) || d.config.Key == "" {
 		return d.insert(r, b)
 	}
 	return d.upsert(r, b)
@@ -180,7 +168,7 @@ func (d *Destination) upsert(r sdk.Record, b *pgx.Batch) error {
 		return fmt.Errorf("failed to get key: %w", err)
 	}
 
-	keyColumnName := d.getKeyColumnName(key, d.config.keyColumnName)
+	keyColumnName := d.getKeyColumnName(key, d.config.Key)
 
 	tableName, err := d.getTableName(r.Metadata)
 	if err != nil {
@@ -201,7 +189,7 @@ func (d *Destination) remove(r sdk.Record, b *pgx.Batch) error {
 	if err != nil {
 		return err
 	}
-	keyColumnName := d.getKeyColumnName(key, d.config.keyColumnName)
+	keyColumnName := d.getKeyColumnName(key, d.config.Key)
 	tableName, err := d.getTableName(r.Metadata)
 	if err != nil {
 		return fmt.Errorf("failed to get table name for write: %w", err)
@@ -234,7 +222,7 @@ func (d *Destination) insert(r sdk.Record, b *pgx.Batch) error {
 	if err != nil {
 		return err
 	}
-	colArgs, valArgs := formatColumnsAndValues(key, payload)
+	colArgs, valArgs := d.formatColumnsAndValues(key, payload)
 	query, args, err := d.stmtBuilder.
 		Insert(tableName).
 		Columns(colArgs...).
@@ -312,7 +300,7 @@ func (d *Destination) formatUpsertQuery(
 	// we have to manually append a semi colon to the upsert sql;
 	upsertQuery += ";"
 
-	colArgs, valArgs := formatColumnsAndValues(key, payload)
+	colArgs, valArgs := d.formatColumnsAndValues(key, payload)
 
 	return d.stmtBuilder.
 		Insert(tableName).
@@ -324,7 +312,7 @@ func (d *Destination) formatUpsertQuery(
 
 // formatColumnsAndValues turns the key and payload into a slice of ordered
 // columns and values for upserting into Postgres.
-func formatColumnsAndValues(key, payload sdk.StructuredData) ([]string, []interface{}) {
+func (d *Destination) formatColumnsAndValues(key, payload sdk.StructuredData) ([]string, []interface{}) {
 	var colArgs []string
 	var valArgs []interface{}
 
@@ -350,10 +338,10 @@ func formatColumnsAndValues(key, payload sdk.StructuredData) ([]string, []interf
 func (d *Destination) getTableName(metadata map[string]string) (string, error) {
 	tableName, ok := metadata[MetadataPostgresTable]
 	if !ok {
-		if d.config.tableName == "" {
+		if d.config.Table == "" {
 			return "", fmt.Errorf("no table provided for default writes")
 		}
-		return d.config.tableName, nil
+		return d.config.Table, nil
 	}
 	return tableName, nil
 }
