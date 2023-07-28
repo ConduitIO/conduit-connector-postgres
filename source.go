@@ -1,4 +1,4 @@
-// Copyright © 2023 Meroxa, Inc.
+// Copyright © 2022 Meroxa, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -11,8 +11,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
-//go:generate paramgen -output=paramgen_src.go SourceConfig
 
 package postgres
 
@@ -32,31 +30,8 @@ type Source struct {
 	sdk.UnimplementedSource
 
 	iterator source.Iterator
-	config   SourceConfig
+	config   source.Config
 	conn     *pgx.Conn
-}
-
-type SourceConfig struct {
-	// URL is the connection string for the Postgres database.
-	URL string `json:"url" validate:"required"`
-	// The name of the table in Postgres that the connector should read.
-	Table string `json:"table" validate:"required"`
-	// Comma separated list of column names that should be included in each Record's payload.
-	Columns []string `json:"columns"`
-	// Column name that records should use for their `Key` fields.
-	Key string `json:"key"`
-
-	// Whether or not the plugin will take a snapshot of the entire table before starting cdc mode.
-	SnapshotMode source.SnapshotMode `json:"snapshotMode" validate:"inclusion=initial|never" default:"initial"`
-	// CDCMode determines how the connector should listen to changes.
-	CDCMode source.CDCMode `json:"cdcMode" validate:"inclusion=auto|logrepl|long_polling" default:"auto"`
-
-	// LogreplPublicationName determines the publication name in case the
-	// connector uses logical replication to listen to changes (see CDCMode).
-	LogreplPublicationName string `json:"logrepl.publicationName" default:"conduitpub"`
-	// LogreplSlotName determines the replication slot name in case the
-	// connector uses logical replication to listen to changes (see CDCMode).
-	LogreplSlotName string `json:"logrepl.slotName" default:"conduitslot"`
 }
 
 func NewSource() sdk.Source {
@@ -64,7 +39,7 @@ func NewSource() sdk.Source {
 }
 
 func (s *Source) Parameters() map[string]sdk.Parameter {
-	return nil
+	return s.config.Parameters()
 }
 
 func (s *Source) Configure(_ context.Context, cfg map[string]string) error {

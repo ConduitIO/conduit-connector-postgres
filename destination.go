@@ -1,4 +1,4 @@
-// Copyright © 2023 Meroxa, Inc.
+// Copyright © 2022 Meroxa, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:generate paramgen -output=paramgen_dest.go DestinationConfig
-
 package postgres
 
 import (
@@ -23,6 +21,7 @@ import (
 	"strings"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/conduitio/conduit-connector-postgres/destination"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v4"
 )
@@ -37,17 +36,8 @@ type Destination struct {
 	sdk.UnimplementedDestination
 
 	conn        *pgx.Conn
-	config      DestinationConfig
+	config      destination.Config
 	stmtBuilder sq.StatementBuilderType
-}
-
-type DestinationConfig struct {
-	// URL is the connection string for the Postgres database.
-	URL string `json:"url" validate:"required"`
-	// Table is used as the target table into which records are inserted.
-	Table string `json:"table"`
-	// Key represents the column name for the key used to identify and update existing rows.
-	Key string `json:"key"`
 }
 
 func NewDestination() sdk.Destination {
@@ -58,7 +48,7 @@ func NewDestination() sdk.Destination {
 }
 
 func (d *Destination) Parameters() map[string]sdk.Parameter {
-	return DestinationConfig{}.Parameters()
+	return d.config.Parameters()
 }
 
 func (d *Destination) Configure(_ context.Context, cfg map[string]string) error {
