@@ -4,7 +4,7 @@ go 1.20
 
 require (
 	github.com/Masterminds/squirrel v1.5.4
-	github.com/conduitio/conduit-connector-sdk v0.7.1
+	github.com/conduitio/conduit-connector-sdk v0.7.2
 	github.com/jackc/pgconn v1.14.1
 	github.com/jackc/pglogrepl v0.0.0-20220305000529-420b8467887a
 	github.com/jackc/pgproto3/v2 v2.3.2
