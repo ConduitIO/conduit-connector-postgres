@@ -21,6 +21,7 @@ import (
 	"strconv"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/conduitio/conduit-connector-postgres/common"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v4"
 )
@@ -182,7 +183,7 @@ func (s *SnapshotIterator) buildRecordPosition() sdk.Position {
 
 func (s *SnapshotIterator) buildRecordMetadata() map[string]string {
 	return map[string]string{
-		MetadataPostgresTable: s.config.Table,
+		common.MetadataPostgresTable: s.config.Table,
 	}
 }
 

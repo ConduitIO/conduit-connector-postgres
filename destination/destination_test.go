@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/conduitio/conduit-connector-postgres/common"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v4"
@@ -28,7 +29,7 @@ import (
 func TestDestination_Write(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
-	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	conn := test.ConnectPool(ctx, t, test.RegularConnString)
 	tableName := test.SetupTestTable(ctx, t, conn)
 
 	d := NewDestination()
@@ -49,7 +50,7 @@ func TestDestination_Write(t *testing.T) {
 		record: sdk.Record{
 			Position:  sdk.Position("foo"),
 			Operation: sdk.OperationSnapshot,
-			Metadata:  map[string]string{MetadataPostgresTable: tableName},
+			Metadata:  map[string]string{common.MetadataPostgresTable: tableName},
 			Key:       sdk.StructuredData{"id": 5000},
 			Payload: sdk.Change{
 				After: sdk.StructuredData{
@@ -64,7 +65,7 @@ func TestDestination_Write(t *testing.T) {
 		record: sdk.Record{
 			Position:  sdk.Position("foo"),
 			Operation: sdk.OperationCreate,
-			Metadata:  map[string]string{MetadataPostgresTable: tableName},
+			Metadata:  map[string]string{common.MetadataPostgresTable: tableName},
 			Key:       sdk.StructuredData{"id": 5},
 			Payload: sdk.Change{
 				After: sdk.StructuredData{
@@ -79,7 +80,7 @@ func TestDestination_Write(t *testing.T) {
 		record: sdk.Record{
 			Position:  sdk.Position("foo"),
 			Operation: sdk.OperationUpdate,
-			Metadata:  map[string]string{MetadataPostgresTable: tableName},
+			Metadata:  map[string]string{common.MetadataPostgresTable: tableName},
 			Key:       sdk.StructuredData{"id": 6},
 			Payload: sdk.Change{
 				After: sdk.StructuredData{
@@ -94,7 +95,7 @@ func TestDestination_Write(t *testing.T) {
 		record: sdk.Record{
 			Position:  sdk.Position("foo"),
 			Operation: sdk.OperationUpdate,
-			Metadata:  map[string]string{MetadataPostgresTable: tableName},
+			Metadata:  map[string]string{common.MetadataPostgresTable: tableName},
 			Key:       sdk.StructuredData{"id": 1},
 			Payload: sdk.Change{
 				After: sdk.StructuredData{
@@ -108,7 +109,7 @@ func TestDestination_Write(t *testing.T) {
 		name: "delete",
 		record: sdk.Record{
 			Position:  sdk.Position("foo"),
-			Metadata:  map[string]string{MetadataPostgresTable: tableName},
+			Metadata:  map[string]string{common.MetadataPostgresTable: tableName},
 			Operation: sdk.OperationDelete,
 			Key:       sdk.StructuredData{"id": 4},
 		},

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/conduitio/conduit-connector-postgres/common"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 
 	sq "github.com/Masterminds/squirrel"
@@ -30,10 +31,6 @@ const (
 	ConfigURL   = "url"
 	ConfigTable = "table"
 	ConfigKey   = "key"
-
-	// TODO same constant is defined in packages longpoll, logrepl and destination
-	//  use same constant everywhere
-	MetadataPostgresTable = "postgres.table"
 )
 
 type Destination struct {
@@ -333,7 +330,7 @@ func formatColumnsAndValues(key, payload sdk.StructuredData) ([]string, []interf
 // value for table. Otherwise it will error since we require some table to be
 // set to write into.
 func (d *Destination) getTableName(metadata map[string]string) (string, error) {
-	tableName, ok := metadata[MetadataPostgresTable]
+	tableName, ok := metadata[common.MetadataPostgresTable]
 	if !ok {
 		if d.config.tableName == "" {
 			return "", fmt.Errorf("no table provided for default writes")

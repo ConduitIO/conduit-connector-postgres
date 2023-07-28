@@ -11,6 +11,7 @@ require (
 	github.com/jackc/pgtype v1.14.0
 	github.com/jackc/pgx/v4 v4.18.1
 	github.com/matryer/is v1.4.1
+	go.uber.org/multierr v1.11.0
 )
 
 require (
@@ -48,7 +49,6 @@ require (
 	github.com/shopspring/decimal v1.2.0 // indirect
 	github.com/spf13/cast v1.3.1 // indirect
 	go.uber.org/goleak v1.2.1 // indirect
-	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/crypto v0.6.0 // indirect
 	golang.org/x/exp v0.0.0-20221114191408-850992195362 // indirect
 	golang.org/x/net v0.7.0 // indirect

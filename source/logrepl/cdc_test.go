@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-connector-postgres/common"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v4/pgxpool"
@@ -54,7 +55,7 @@ func TestIterator_Next(t *testing.T) {
 			want: sdk.Record{
 				Operation: sdk.OperationCreate,
 				Metadata: map[string]string{
-					MetadataPostgresTable: table,
+					common.MetadataPostgresTable: table,
 				},
 				Key: sdk.StructuredData{"id": int64(6)},
 				Payload: sdk.Change{
@@ -78,7 +79,7 @@ func TestIterator_Next(t *testing.T) {
 			want: sdk.Record{
 				Operation: sdk.OperationUpdate,
 				Metadata: map[string]string{
-					MetadataPostgresTable: table,
+					common.MetadataPostgresTable: table,
 				},
 				Key: sdk.StructuredData{"id": int64(1)},
 				Payload: sdk.Change{
@@ -100,7 +101,7 @@ func TestIterator_Next(t *testing.T) {
 			want: sdk.Record{
 				Operation: sdk.OperationDelete,
 				Metadata: map[string]string{
-					MetadataPostgresTable: table,
+					common.MetadataPostgresTable: table,
 				},
 				Key: sdk.StructuredData{"id": int64(3)},
 			},
