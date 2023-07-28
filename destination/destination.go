@@ -139,9 +139,10 @@ func (d *Destination) Teardown(ctx context.Context) error {
 	return nil
 }
 
-// handleInsert checks for the existence of a key. If no key is present it will
-// plainly insert the data. If a key exists, but no key column name is
-// configured, it attempts a plain insert to that database.
+// handleInsert adds a query to the batch that stores the record in the target
+// table. It checks for the existence of a key. If no key is present or a key
+// exists and no key column name is configured, it will plainly insert the data.
+// Otherwise it upserts the record.
 func (d *Destination) handleInsert(r sdk.Record, b *pgx.Batch) error {
 	if !d.hasKey(r) || d.config.keyColumnName == "" {
 		return d.insert(r, b)
@@ -149,7 +150,8 @@ func (d *Destination) handleInsert(r sdk.Record, b *pgx.Batch) error {
 	return d.upsert(r, b)
 }
 
-// handleUpdate assumes the record has a key and will fail if one is not present
+// handleUpdate adds a query to the batch that updates the record in the target
+// table. It assumes the record has a key and fails if one is not present.
 func (d *Destination) handleUpdate(r sdk.Record, b *pgx.Batch) error {
 	if !d.hasKey(r) {
 		return fmt.Errorf("key must be provided on update actions")
@@ -158,6 +160,8 @@ func (d *Destination) handleUpdate(r sdk.Record, b *pgx.Batch) error {
 	return d.upsert(r, b)
 }
 
+// handleDelete adds a query to the batch that deletes the record from the
+// target table. It assumes the record has a key and fails if one is not present.
 func (d *Destination) handleDelete(r sdk.Record, b *pgx.Batch) error {
 	if !d.hasKey(r) {
 		return fmt.Errorf("key must be provided on delete actions")
