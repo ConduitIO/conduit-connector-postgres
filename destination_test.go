@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package destination
+package postgres
 
 import (
 	"context"
@@ -32,7 +32,7 @@ func TestDestination_Write(t *testing.T) {
 	tableName := test.SetupTestTable(ctx, t, conn)
 
 	d := NewDestination()
-	err := d.Configure(ctx, map[string]string{ConfigURL: test.RegularConnString})
+	err := d.Configure(ctx, map[string]string{"url": test.RegularConnString})
 	is.NoErr(err)
 	err = d.Open(ctx)
 	is.NoErr(err)

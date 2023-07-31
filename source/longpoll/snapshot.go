@@ -142,7 +142,7 @@ func (s *SnapshotIterator) Ack(context.Context, sdk.Position) error {
 // when the snapshot is completed.
 // * Teardown handles all of its manual cleanup first then calls cancel to
 // stop any unhandled contexts that we've received.
-func (s *SnapshotIterator) Teardown(ctx context.Context) error {
+func (s *SnapshotIterator) Teardown(_ context.Context) error {
 	// throw interrupt error if we're not finished with snapshot
 	var interruptErr error
 	if !s.snapshotComplete {

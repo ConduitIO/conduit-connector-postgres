@@ -151,7 +151,7 @@ func (s *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 }
 
 // Ack is a noop for snapshots
-func (s *SnapshotIterator) Ack(ctx context.Context, pos sdk.Position) error {
+func (s *SnapshotIterator) Ack(context.Context, sdk.Position) error {
 	return nil // noop for snapshots
 }
 

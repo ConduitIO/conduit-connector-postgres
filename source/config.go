@@ -12,45 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:generate paramgen Config
+
 package source
-
-import (
-	"fmt"
-	"strings"
-)
-
-const (
-	ConfigKeyURL                    = "url"
-	ConfigKeyTable                  = "table"
-	ConfigKeyColumns                = "columns"
-	ConfigKeyKey                    = "key"
-	ConfigKeySnapshotMode           = "snapshotMode"
-	ConfigKeyCDCMode                = "cdcMode"
-	ConfigKeyLogreplPublicationName = "logrepl.publicationName"
-	ConfigKeyLogreplSlotName        = "logrepl.slotName"
-
-	DefaultPublicationName = "conduitpub"
-	DefaultSlotName        = "conduitslot"
-)
-
-type Config struct {
-	URL     string
-	Table   string
-	Columns []string
-	Key     string
-
-	// SnapshotMode determines if and when a snapshot is made.
-	SnapshotMode SnapshotMode
-	// CDCMode determines how the connector should listen to changes.
-	CDCMode CDCMode
-
-	// LogreplPublicationName determines the publication name in case the
-	// connector uses logical replication to listen to changes (see CDCMode).
-	LogreplPublicationName string
-	// LogreplSlotName determines the replication slot name in case the
-	// connector uses logical replication to listen to changes (see CDCMode).
-	LogreplSlotName string
-}
 
 type SnapshotMode string
 
@@ -73,70 +37,25 @@ const (
 	CDCModeLongPolling CDCMode = "long_polling"
 )
 
-var snapshotModeAll = []SnapshotMode{SnapshotModeInitial, SnapshotModeNever}
-var cdcModeAll = []CDCMode{CDCModeAuto, CDCModeLogrepl, CDCModeLongPolling}
+type Config struct {
+	// URL is the connection string for the Postgres database.
+	URL string `json:"url" validate:"required"`
+	// The name of the table in Postgres that the connector should read.
+	Table string `json:"table" validate:"required"`
+	// Comma separated list of column names that should be included in each Record's payload.
+	Columns []string `json:"columns"`
+	// Column name that records should use for their `Key` fields.
+	Key string `json:"key"`
 
-func ParseConfig(cfgRaw map[string]string) (Config, error) {
-	cfg := Config{
-		URL:                    cfgRaw[ConfigKeyURL],
-		Table:                  cfgRaw[ConfigKeyTable],
-		Columns:                nil, // default
-		Key:                    cfgRaw[ConfigKeyKey],
-		SnapshotMode:           SnapshotModeInitial,
-		CDCMode:                CDCModeAuto,
-		LogreplPublicationName: DefaultPublicationName,
-		LogreplSlotName:        DefaultSlotName,
-	}
+	// Whether or not the plugin will take a snapshot of the entire table before starting cdc mode.
+	SnapshotMode SnapshotMode `json:"snapshotMode" validate:"inclusion=initial|never" default:"initial"`
+	// CDCMode determines how the connector should listen to changes.
+	CDCMode CDCMode `json:"cdcMode" validate:"inclusion=auto|logrepl|long_polling" default:"auto"`
 
-	if cfg.URL == "" {
-		return Config{}, requiredConfigErr(ConfigKeyURL)
-	}
-	if cfg.Table == "" {
-		return Config{}, requiredConfigErr(ConfigKeyTable)
-	}
-	if colsRaw := cfgRaw[ConfigKeyColumns]; colsRaw != "" {
-		cfg.Columns = strings.Split(colsRaw, ",")
-	}
-	if modeRaw := cfgRaw[ConfigKeySnapshotMode]; modeRaw != "" {
-		if !isSnapshotModeSupported(modeRaw) {
-			return Config{}, fmt.Errorf("%q contains unsupported value %q, expected one of %v", ConfigKeySnapshotMode, modeRaw, snapshotModeAll)
-		}
-		cfg.SnapshotMode = SnapshotMode(modeRaw)
-	}
-	if modeRaw := cfgRaw[ConfigKeyCDCMode]; modeRaw != "" {
-		if !isCDCModeSupported(modeRaw) {
-			return Config{}, fmt.Errorf("%q contains unsupported value %q, expected one of %v", ConfigKeyCDCMode, modeRaw, cdcModeAll)
-		}
-		cfg.CDCMode = CDCMode(modeRaw)
-	}
-	if cfgRaw[ConfigKeyLogreplPublicationName] != "" {
-		cfg.LogreplPublicationName = cfgRaw[ConfigKeyLogreplPublicationName]
-	}
-	if cfgRaw[ConfigKeyLogreplSlotName] != "" {
-		cfg.LogreplSlotName = cfgRaw[ConfigKeyLogreplSlotName]
-	}
-
-	return cfg, nil
-}
-
-func isSnapshotModeSupported(modeRaw string) bool {
-	for _, m := range snapshotModeAll {
-		if string(m) == modeRaw {
-			return true
-		}
-	}
-	return false
-}
-
-func isCDCModeSupported(modeRaw string) bool {
-	for _, m := range cdcModeAll {
-		if string(m) == modeRaw {
-			return true
-		}
-	}
-	return false
-}
-
-func requiredConfigErr(name string) error {
-	return fmt.Errorf("%q config value must be set", name)
+	// LogreplPublicationName determines the publication name in case the
+	// connector uses logical replication to listen to changes (see CDCMode).
+	LogreplPublicationName string `json:"logrepl.publicationName" default:"conduitpub"`
+	// LogreplSlotName determines the replication slot name in case the
+	// connector uses logical replication to listen to changes (see CDCMode).
+	LogreplSlotName string `json:"logrepl.slotName" default:"conduitslot"`
 }

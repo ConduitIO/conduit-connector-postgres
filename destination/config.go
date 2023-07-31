@@ -1,4 +1,4 @@
-// Copyright © 2022 Meroxa, Inc.
+// Copyright © 2023 Meroxa, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,14 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package postgres
+//go:generate paramgen Config
 
-import (
-	sdk "github.com/conduitio/conduit-connector-sdk"
-)
+package destination
 
-var Connector = sdk.Connector{
-	NewSpecification: Specification,
-	NewSource:        NewSource,
-	NewDestination:   NewDestination,
+type Config struct {
+	// URL is the connection string for the Postgres database.
+	URL string `json:"url" validate:"required"`
+	// Table is used as the target table into which records are inserted.
+	Table string `json:"table"`
+	// Key represents the column name for the key used to identify and update existing rows.
+	Key string `json:"key"`
 }
