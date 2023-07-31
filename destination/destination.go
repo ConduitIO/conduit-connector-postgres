@@ -99,16 +99,34 @@ func (d *Destination) Open(ctx context.Context) error {
 // Write routes incoming records to their appropriate handler based on the
 // operation.
 func (d *Destination) Write(ctx context.Context, recs []sdk.Record) (int, error) {
-	for i, r := range recs {
-		// TODO send all queries to postgres in one round-trip
-		err := sdk.Util.Destination.Route(ctx, r,
-			d.handleInsert,
-			d.handleUpdate,
-			d.handleDelete,
-			d.handleInsert,
-		)
+	b := &pgx.Batch{}
+	for _, rec := range recs {
+		var err error
+		switch rec.Operation {
+		case sdk.OperationCreate:
+			err = d.handleInsert(rec, b)
+		case sdk.OperationUpdate:
+			err = d.handleUpdate(rec, b)
+		case sdk.OperationDelete:
+			err = d.handleDelete(rec, b)
+		case sdk.OperationSnapshot:
+			err = d.handleInsert(rec, b)
+		default:
+			return 0, fmt.Errorf("invalid operation %q", rec.Operation)
+		}
 		if err != nil {
-			return i, err
+			return 0, err
+		}
+	}
+
+	br := d.conn.SendBatch(ctx, b)
+	defer br.Close()
+
+	for i := range recs {
+		_, err := br.Exec()
+		if err != nil {
+			// the batch is executed in a transaction, if one failed all failed
+			return 0, fmt.Errorf("failed to execute query for record %d: %w", i, err)
 		}
 	}
 	return len(recs), nil
@@ -121,33 +139,37 @@ func (d *Destination) Teardown(ctx context.Context) error {
 	return nil
 }
 
-// handleInsert checks for the existence of a key. If no key is present it will
-// plainly insert the data. If a key exists, but no key column name is
-// configured, it attempts a plain insert to that database.
-func (d *Destination) handleInsert(ctx context.Context, r sdk.Record) error {
+// handleInsert adds a query to the batch that stores the record in the target
+// table. It checks for the existence of a key. If no key is present or a key
+// exists and no key column name is configured, it will plainly insert the data.
+// Otherwise it upserts the record.
+func (d *Destination) handleInsert(r sdk.Record, b *pgx.Batch) error {
 	if !d.hasKey(r) || d.config.keyColumnName == "" {
-		return d.insert(ctx, r)
+		return d.insert(r, b)
 	}
-	return d.upsert(ctx, r)
+	return d.upsert(r, b)
 }
 
-// handleUpdate assumes the record has a key and will fail if one is not present
-func (d *Destination) handleUpdate(ctx context.Context, r sdk.Record) error {
+// handleUpdate adds a query to the batch that updates the record in the target
+// table. It assumes the record has a key and fails if one is not present.
+func (d *Destination) handleUpdate(r sdk.Record, b *pgx.Batch) error {
 	if !d.hasKey(r) {
 		return fmt.Errorf("key must be provided on update actions")
 	}
 	// TODO handle case if the key was updated
-	return d.upsert(ctx, r)
+	return d.upsert(r, b)
 }
 
-func (d *Destination) handleDelete(ctx context.Context, r sdk.Record) error {
+// handleDelete adds a query to the batch that deletes the record from the
+// target table. It assumes the record has a key and fails if one is not present.
+func (d *Destination) handleDelete(r sdk.Record, b *pgx.Batch) error {
 	if !d.hasKey(r) {
 		return fmt.Errorf("key must be provided on delete actions")
 	}
-	return d.remove(ctx, r)
+	return d.remove(r, b)
 }
 
-func (d *Destination) upsert(ctx context.Context, r sdk.Record) error {
+func (d *Destination) upsert(r sdk.Record, b *pgx.Batch) error {
 	payload, err := d.getPayload(r)
 	if err != nil {
 		return fmt.Errorf("failed to get payload: %w", err)
@@ -170,15 +192,11 @@ func (d *Destination) upsert(ctx context.Context, r sdk.Record) error {
 		return fmt.Errorf("error formatting query: %w", err)
 	}
 
-	_, err = d.conn.Exec(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("insert exec failed: %w", err)
-	}
-
+	b.Queue(query, args...)
 	return nil
 }
 
-func (d *Destination) remove(ctx context.Context, r sdk.Record) error {
+func (d *Destination) remove(r sdk.Record, b *pgx.Batch) error {
 	key, err := d.getKey(r)
 	if err != nil {
 		return err
@@ -195,14 +213,15 @@ func (d *Destination) remove(ctx context.Context, r sdk.Record) error {
 	if err != nil {
 		return fmt.Errorf("error formatting delete query: %w", err)
 	}
-	_, err = d.conn.Exec(ctx, query, args...)
-	return err
+
+	b.Queue(query, args...)
+	return nil
 }
 
 // insert is an append-only operation that doesn't care about keys, but
 // can error on constraints violations so should only be used when no table
 // key or unique constraints are otherwise present.
-func (d *Destination) insert(ctx context.Context, r sdk.Record) error {
+func (d *Destination) insert(r sdk.Record, b *pgx.Batch) error {
 	tableName, err := d.getTableName(r.Metadata)
 	if err != nil {
 		return err
@@ -224,8 +243,9 @@ func (d *Destination) insert(ctx context.Context, r sdk.Record) error {
 	if err != nil {
 		return fmt.Errorf("error formatting insert query: %w", err)
 	}
-	_, err = d.conn.Exec(ctx, query, args...)
-	return err
+
+	b.Queue(query, args...)
+	return nil
 }
 
 func (d *Destination) getPayload(r sdk.Record) (sdk.StructuredData, error) {
@@ -294,17 +314,12 @@ func (d *Destination) formatUpsertQuery(
 
 	colArgs, valArgs := formatColumnsAndValues(key, payload)
 
-	query, args, err := d.stmtBuilder.
+	return d.stmtBuilder.
 		Insert(tableName).
 		Columns(colArgs...).
 		Values(valArgs...).
 		SuffixExpr(sq.Expr(upsertQuery)).
 		ToSql()
-	if err != nil {
-		return "", nil, fmt.Errorf("error formatting query: %w", err)
-	}
-
-	return query, args, nil
 }
 
 // formatColumnsAndValues turns the key and payload into a slice of ordered

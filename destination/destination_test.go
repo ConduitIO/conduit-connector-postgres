@@ -135,6 +135,68 @@ func TestDestination_Write(t *testing.T) {
 	}
 }
 
+func TestDestination_Batch(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	tableName := test.SetupTestTable(ctx, t, conn)
+
+	d := NewDestination()
+	err := d.Configure(ctx, map[string]string{"url": test.RegularConnString, "table": tableName})
+	is.NoErr(err)
+	err = d.Open(ctx)
+	is.NoErr(err)
+	defer func() {
+		err := d.Teardown(ctx)
+		is.NoErr(err)
+	}()
+
+	records := []sdk.Record{{
+		Position:  sdk.Position("foo1"),
+		Operation: sdk.OperationCreate,
+		Key:       sdk.StructuredData{"id": 5},
+		Payload: sdk.Change{
+			After: sdk.StructuredData{
+				"column1": "foo1",
+				"column2": 1,
+				"column3": false,
+			},
+		},
+	}, {
+		Position:  sdk.Position("foo2"),
+		Operation: sdk.OperationCreate,
+		Key:       sdk.StructuredData{"id": 6},
+		Payload: sdk.Change{
+			After: sdk.StructuredData{
+				"column1": "foo2",
+				"column2": 2,
+				"column3": true,
+			},
+		},
+	}, {
+		Position:  sdk.Position("foo3"),
+		Operation: sdk.OperationCreate,
+		Key:       sdk.StructuredData{"id": 7},
+		Payload: sdk.Change{
+			After: sdk.StructuredData{
+				"column1": "foo3",
+				"column2": 3,
+				"column3": false,
+			},
+		},
+	}}
+
+	i, err := d.Write(ctx, records)
+	is.NoErr(err)
+	is.Equal(i, len(records))
+
+	for _, rec := range records {
+		got, err := queryTestTable(ctx, conn, tableName, rec.Key.(sdk.StructuredData)["id"])
+		is.NoErr(err)
+		is.Equal(rec.Payload.After, got)
+	}
+}
+
 func queryTestTable(ctx context.Context, conn test.Querier, tableName string, id any) (sdk.StructuredData, error) {
 	row := conn.QueryRow(
 		ctx,
