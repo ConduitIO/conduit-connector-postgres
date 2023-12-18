@@ -36,7 +36,7 @@ type Config struct {
 	Position        sdk.Position
 	SlotName        string
 	PublicationName string
-	TableName       string
+	Tables          []string
 	KeyColumnName   string
 	Columns         []string
 }
@@ -154,21 +154,26 @@ func (i *CDCIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) er
 		}
 	}
 
-	keyColumn, err := i.getKeyColumn(ctx, conn)
-	if err != nil {
-		return fmt.Errorf("failed to find key for table %s (try specifying it manually): %w", i.config.TableName, err)
+	var err error
+	keyColumnMp := make(map[string]string, len(i.config.Tables))
+	for _, tableName := range i.config.Tables {
+		// Call function and store the result in the map
+		keyColumnMp[tableName], err = i.getKeyColumn(ctx, conn, tableName)
+		if err != nil {
+			return fmt.Errorf("failed to find key for table %s (try specifying it manually): %w", tableName, err)
+		}
 	}
 
 	sub := internal.NewSubscription(
 		conn.Config().Config,
 		i.config.SlotName,
 		i.config.PublicationName,
-		[]string{i.config.TableName},
+		i.config.Tables,
 		lsn,
 		NewCDCHandler(
 			internal.NewRelationSet(conn.ConnInfo()),
-			keyColumn,
-			i.config.Columns,
+			keyColumnMp,
+			i.config.Columns, // todo, delete this option, use processors instead
 			i.records,
 		).Handle,
 	)
@@ -179,7 +184,7 @@ func (i *CDCIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) er
 
 // getKeyColumn queries the db for the name of the primary key column for a
 // table if one exists and returns it.
-func (i *CDCIterator) getKeyColumn(ctx context.Context, conn *pgx.Conn) (string, error) {
+func (i *CDCIterator) getKeyColumn(ctx context.Context, conn *pgx.Conn, tableName string) (string, error) {
 	if i.config.KeyColumnName != "" {
 		return i.config.KeyColumnName, nil
 	}
@@ -188,7 +193,7 @@ func (i *CDCIterator) getKeyColumn(ctx context.Context, conn *pgx.Conn) (string,
 		FROM information_schema.key_column_usage
 		WHERE table_name = $1 AND constraint_name LIKE '%_pkey'
 		LIMIT 1;`
-	row := conn.QueryRow(ctx, query, i.config.TableName)
+	row := conn.QueryRow(ctx, query, tableName)
 
 	var colName string
 	err := row.Scan(&colName)

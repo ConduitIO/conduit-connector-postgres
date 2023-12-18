@@ -77,7 +77,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			Position:        pos,
 			SlotName:        s.config.LogreplSlotName,
 			PublicationName: s.config.LogreplPublicationName,
-			TableName:       s.config.Table,
+			Tables:          s.config.Table,
 			KeyColumnName:   s.config.Key,
 			Columns:         s.config.Columns,
 		})
@@ -96,7 +96,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		snap, err := longpoll.NewSnapshotIterator(
 			ctx,
 			s.conn,
-			s.config.Table,
+			s.config.Table[0], //todo: only the first table for now
 			s.config.Columns,
 			s.config.Key)
 		if err != nil {

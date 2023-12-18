@@ -40,11 +40,11 @@ const (
 type Config struct {
 	// URL is the connection string for the Postgres database.
 	URL string `json:"url" validate:"required"`
-	// The name of the table in Postgres that the connector should read.
-	Table string `json:"table" validate:"required"`
-	// Comma separated list of column names that should be included in each Record's payload.
+	// List of table names to read from, separated by a comma.
+	Table []string `json:"table" validate:"required"`
+	// todo: reove param, Comma separated list of column names that should be included in each Record's payload.
 	Columns []string `json:"columns"`
-	// Column name that records should use for their `Key` fields.
+	// todo: remove param, Column name that records should use for their `Key` fields.
 	Key string `json:"key"`
 
 	// Whether or not the plugin will take a snapshot of the entire table before starting cdc mode.

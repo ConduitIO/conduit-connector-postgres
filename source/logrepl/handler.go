@@ -27,7 +27,7 @@ import (
 // CDCHandler is responsible for handling logical replication messages,
 // converting them to a record and sending them to a channel.
 type CDCHandler struct {
-	keyColumn   string
+	keyColumnMp map[string]string
 	columns     map[string]bool // columns can be used to filter only specific columns
 	relationSet *internal.RelationSet
 	out         chan<- sdk.Record
@@ -35,7 +35,7 @@ type CDCHandler struct {
 
 func NewCDCHandler(
 	rs *internal.RelationSet,
-	keyColumn string,
+	keyColumnMp map[string]string,
 	columns []string,
 	out chan<- sdk.Record,
 ) *CDCHandler {
@@ -47,7 +47,7 @@ func NewCDCHandler(
 		}
 	}
 	return &CDCHandler{
-		keyColumn:   keyColumn,
+		keyColumnMp: keyColumnMp,
 		columns:     columnSet,
 		relationSet: rs,
 		out:         out,
@@ -106,7 +106,7 @@ func (h *CDCHandler) handleInsert(
 	rec := sdk.Util.Source.NewRecordCreate(
 		LSNToPosition(lsn),
 		h.buildRecordMetadata(rel),
-		h.buildRecordKey(newValues),
+		h.buildRecordKey(newValues, rel.RelationName),
 		h.buildRecordPayload(newValues),
 	)
 	return h.send(ctx, rec)
@@ -139,7 +139,7 @@ func (h *CDCHandler) handleUpdate(
 	rec := sdk.Util.Source.NewRecordUpdate(
 		LSNToPosition(lsn),
 		h.buildRecordMetadata(rel),
-		h.buildRecordKey(newValues),
+		h.buildRecordKey(newValues, rel.RelationName),
 		h.buildRecordPayload(oldValues),
 		h.buildRecordPayload(newValues),
 	)
@@ -166,7 +166,7 @@ func (h *CDCHandler) handleDelete(
 	rec := sdk.Util.Source.NewRecordDelete(
 		LSNToPosition(lsn),
 		h.buildRecordMetadata(rel),
-		h.buildRecordKey(oldValues),
+		h.buildRecordKey(oldValues, rel.RelationName),
 	)
 	return h.send(ctx, rec)
 }
@@ -190,10 +190,11 @@ func (h *CDCHandler) buildRecordMetadata(relation *pglogrepl.RelationMessage) ma
 
 // buildRecordKey takes the values from the message and extracts the key that
 // matches the configured keyColumnName.
-func (h *CDCHandler) buildRecordKey(values map[string]pgtype.Value) sdk.Data {
+func (h *CDCHandler) buildRecordKey(values map[string]pgtype.Value, table string) sdk.Data {
+	keyColumn := h.keyColumnMp[table]
 	key := make(sdk.StructuredData)
 	for k, v := range values {
-		if h.keyColumn == k {
+		if keyColumn == k {
 			key[k] = v.Get()
 			break // TODO add support for composite keys
 		}
