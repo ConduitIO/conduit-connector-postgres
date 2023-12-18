@@ -305,7 +305,6 @@ func (s *Subscription) createPublication(ctx context.Context, conn *pgconn.PgCon
 		conn,
 		s.Publication,
 		CreatePublicationOptions{Tables: s.Tables},
-		//CreatePublicationOptions{AllTables: true},
 	); err != nil {
 		// If creating the publication fails with code 42710, this means
 		// the publication already exists.
