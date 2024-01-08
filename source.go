@@ -52,10 +52,18 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 	if err != nil {
 		return fmt.Errorf("invalid url: %w", err)
 	}
+	// todo: when cdcMode "auto" is implemented, change this check
+	if len(s.config.Table) > 1 && s.config.CDCMode == source.CDCModeLongPolling {
+		return fmt.Errorf("multi tables are only supported for logrepl CDCMode, please provide only one table")
+	}
 	return nil
 }
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 	conn, err := pgx.Connect(ctx, s.config.URL)
+	if err != nil {
+		return fmt.Errorf("failed to connect to database: %w", err)
+	}
+	columns, err := s.getTableColumns(conn)
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
@@ -79,7 +87,6 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			PublicationName: s.config.LogreplPublicationName,
 			Tables:          s.config.Table,
 			KeyColumnName:   s.config.Key,
-			Columns:         s.config.Columns,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create logical replication iterator: %w", err)
@@ -97,7 +104,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			ctx,
 			s.conn,
 			s.config.Table[0], //todo: only the first table for now
-			s.config.Columns,
+			columns,
 			s.config.Key)
 		if err != nil {
 			return fmt.Errorf("failed to create long polling iterator: %w", err)
@@ -130,4 +137,26 @@ func (s *Source) Teardown(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Source) getTableColumns(conn *pgx.Conn) ([]string, error) {
+	query := fmt.Sprintf("SELECT column_name FROM information_schema.columns WHERE table_name = '%s'", s.config.Table[0])
+
+	rows, err := conn.Query(context.Background(), query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var columns []string
+	for rows.Next() {
+		var columnName string
+		err := rows.Scan(&columnName)
+		if err != nil {
+			return nil, err
+		}
+		columns = append(columns, columnName)
+	}
+
+	return columns, nil
 }

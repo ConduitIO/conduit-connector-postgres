@@ -17,12 +17,6 @@ func (Config) Parameters() map[string]sdk.Parameter {
 				sdk.ValidationInclusion{List: []string{"auto", "logrepl", "long_polling"}},
 			},
 		},
-		"columns": {
-			Default:     "",
-			Description: "todo: reove param, Comma separated list of column names that should be included in each Record's payload.",
-			Type:        sdk.ParameterTypeString,
-			Validations: []sdk.Validation{},
-		},
 		"key": {
 			Default:     "",
 			Description: "todo: remove param, Column name that records should use for their `key` fields.",

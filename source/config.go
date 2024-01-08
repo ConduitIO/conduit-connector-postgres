@@ -42,8 +42,6 @@ type Config struct {
 	URL string `json:"url" validate:"required"`
 	// List of table names to read from, separated by a comma.
 	Table []string `json:"table" validate:"required"`
-	// todo: reove param, Comma separated list of column names that should be included in each Record's payload.
-	Columns []string `json:"columns"`
 	// todo: remove param, Column name that records should use for their `Key` fields.
 	Key string `json:"key"`
 

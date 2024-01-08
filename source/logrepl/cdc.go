@@ -38,7 +38,6 @@ type Config struct {
 	PublicationName string
 	Tables          []string
 	KeyColumnName   string
-	Columns         []string
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -173,7 +172,6 @@ func (i *CDCIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) er
 		NewCDCHandler(
 			internal.NewRelationSet(conn.ConnInfo()),
 			keyColumnMp,
-			i.config.Columns, // todo, delete this option, use processors instead
 			i.records,
 		).Handle,
 	)

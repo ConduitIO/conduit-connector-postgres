@@ -28,7 +28,6 @@ import (
 // converting them to a record and sending them to a channel.
 type CDCHandler struct {
 	keyColumnMp map[string]string
-	columns     map[string]bool // columns can be used to filter only specific columns
 	relationSet *internal.RelationSet
 	out         chan<- sdk.Record
 }
@@ -36,19 +35,10 @@ type CDCHandler struct {
 func NewCDCHandler(
 	rs *internal.RelationSet,
 	keyColumnMp map[string]string,
-	columns []string,
 	out chan<- sdk.Record,
 ) *CDCHandler {
-	var columnSet map[string]bool
-	if len(columns) > 0 {
-		columnSet = make(map[string]bool)
-		for _, col := range columns {
-			columnSet[col] = true
-		}
-	}
 	return &CDCHandler{
 		keyColumnMp: keyColumnMp,
-		columns:     columnSet,
 		relationSet: rs,
 		out:         out,
 	}
@@ -210,11 +200,8 @@ func (h *CDCHandler) buildRecordPayload(values map[string]pgtype.Value) sdk.Data
 	}
 	payload := make(sdk.StructuredData)
 	for k, v := range values {
-		// filter columns if columns are specified
-		if h.columns == nil || h.columns[k] {
-			value := v.Get()
-			payload[k] = value
-		}
+		value := v.Get()
+		payload[k] = value
 	}
 	return payload
 }
