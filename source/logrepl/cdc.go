@@ -37,7 +37,7 @@ type Config struct {
 	SlotName        string
 	PublicationName string
 	Tables          []string
-	KeyColumnName   string
+	KeyColumnMp     map[string]string
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -154,12 +154,16 @@ func (i *CDCIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) er
 	}
 
 	var err error
-	keyColumnMp := make(map[string]string, len(i.config.Tables))
+	if i.config.KeyColumnMp == nil {
+		i.config.KeyColumnMp = make(map[string]string, len(i.config.Tables))
+	}
 	for _, tableName := range i.config.Tables {
-		// Call function and store the result in the map
-		keyColumnMp[tableName], err = i.getKeyColumn(ctx, conn, tableName)
-		if err != nil {
-			return fmt.Errorf("failed to find key for table %s (try specifying it manually): %w", tableName, err)
+		// get unprovided table keys
+		if _, ok := i.config.KeyColumnMp[tableName]; !ok {
+			i.config.KeyColumnMp[tableName], err = i.getKeyColumn(ctx, conn, tableName)
+			if err != nil {
+				return fmt.Errorf("failed to find key for table %s (try specifying it manually): %w", tableName, err)
+			}
 		}
 	}
 
@@ -171,7 +175,7 @@ func (i *CDCIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) er
 		lsn,
 		NewCDCHandler(
 			internal.NewRelationSet(conn.ConnInfo()),
-			keyColumnMp,
+			i.config.KeyColumnMp,
 			i.records,
 		).Handle,
 	)
@@ -183,8 +187,8 @@ func (i *CDCIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) er
 // getKeyColumn queries the db for the name of the primary key column for a
 // table if one exists and returns it.
 func (i *CDCIterator) getKeyColumn(ctx context.Context, conn *pgx.Conn, tableName string) (string, error) {
-	if i.config.KeyColumnName != "" {
-		return i.config.KeyColumnName, nil
+	if i.config.KeyColumnMp[tableName] != "" {
+		return i.config.KeyColumnMp[tableName], nil
 	}
 
 	query := `SELECT column_name

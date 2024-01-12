@@ -42,8 +42,8 @@ type Config struct {
 	URL string `json:"url" validate:"required"`
 	// List of table names to read from, separated by a comma.
 	Table []string `json:"table" validate:"required"`
-	// todo: remove param, Column name that records should use for their `Key` fields.
-	Key string `json:"key"`
+	// list of Key column names per table ex:"table1:key1,table2:key2", records should use the key values for their `Key` fields.
+	Key []string `json:"key"`
 
 	// Whether or not the plugin will take a snapshot of the entire table before starting cdc mode.
 	SnapshotMode SnapshotMode `json:"snapshotMode" validate:"inclusion=initial|never" default:"initial"`
