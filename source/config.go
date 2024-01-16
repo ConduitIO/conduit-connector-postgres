@@ -16,6 +16,13 @@
 
 package source
 
+import (
+	"fmt"
+	"strings"
+
+	"github.com/jackc/pgx/v4"
+)
+
 type SnapshotMode string
 
 const (
@@ -56,4 +63,27 @@ type Config struct {
 	// LogreplSlotName determines the replication slot name in case the
 	// connector uses logical replication to listen to changes (see CDCMode).
 	LogreplSlotName string `json:"logrepl.slotName" default:"conduitslot"`
+}
+
+// Validate validates the provided config values.
+func (c Config) Validate() (map[string]string, error) {
+	// try parsing the url
+	_, err := pgx.ParseConfig(c.URL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid url: %w", err)
+	}
+	// todo: when cdcMode "auto" is implemented, change this check
+	if len(c.Table) != 1 && c.CDCMode == CDCModeLongPolling {
+		return nil, fmt.Errorf("multi tables are only supported for logrepl CDCMode, please provide only one table")
+	}
+	tableKeys := make(map[string]string, len(c.Table))
+	for _, pair := range c.Key {
+		// Split each pair into key and value
+		parts := strings.Split(pair, ":")
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("wrong format for the configuration %q, use comma separated pairs of tables and keys, example: table1:key1,table2:key2", "key")
+		}
+		tableKeys[parts[0]] = parts[1]
+	}
+	return tableKeys, nil
 }

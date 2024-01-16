@@ -17,7 +17,6 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/conduitio/conduit-connector-postgres/source"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
@@ -49,23 +48,9 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 	if err != nil {
 		return err
 	}
-	// try parsing the url
-	_, err = pgx.ParseConfig(s.config.URL)
+	s.tableKeys, err = s.config.Validate()
 	if err != nil {
-		return fmt.Errorf("invalid url: %w", err)
-	}
-	// todo: when cdcMode "auto" is implemented, change this check
-	if len(s.config.Table) != 1 && s.config.CDCMode == source.CDCModeLongPolling {
-		return fmt.Errorf("multi tables are only supported for logrepl CDCMode, please provide only one table")
-	}
-	s.tableKeys = make(map[string]string, len(s.config.Table))
-	for _, pair := range s.config.Key {
-		// Split each pair into key and value
-		parts := strings.Split(pair, ":")
-		if len(parts) != 2 {
-			return fmt.Errorf("wrong format for the configuration %q, use comma separated pairs of tables and keys, example: table1:key1,table2:key2", "key")
-		}
-		s.tableKeys[parts[0]] = parts[1]
+		return err
 	}
 	return nil
 }
