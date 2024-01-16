@@ -159,11 +159,12 @@ func (i *CDCIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) er
 	}
 	for _, tableName := range i.config.Tables {
 		// get unprovided table keys
-		if _, ok := i.config.TableKeys[tableName]; !ok {
-			i.config.TableKeys[tableName], err = i.getTableKeys(ctx, conn, tableName)
-			if err != nil {
-				return fmt.Errorf("failed to find key for table %s (try specifying it manually): %w", tableName, err)
-			}
+		if _, ok := i.config.TableKeys[tableName]; ok {
+			continue // key was provided manually
+		}
+		i.config.TableKeys[tableName], err = i.getTableKeys(ctx, conn, tableName)
+		if err != nil {
+			return fmt.Errorf("failed to find key for table %s (try specifying it manually): %w", tableName, err)
 		}
 	}
 
@@ -187,10 +188,6 @@ func (i *CDCIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) er
 // getTableKeys queries the db for the name of the primary key column for a
 // table if one exists and returns it.
 func (i *CDCIterator) getTableKeys(ctx context.Context, conn *pgx.Conn, tableName string) (string, error) {
-	if i.config.TableKeys[tableName] != "" {
-		return i.config.TableKeys[tableName], nil
-	}
-
 	query := `SELECT column_name
 		FROM information_schema.key_column_usage
 		WHERE table_name = $1 AND constraint_name LIKE '%_pkey'

@@ -200,8 +200,7 @@ func (h *CDCHandler) buildRecordPayload(values map[string]pgtype.Value) sdk.Data
 	}
 	payload := make(sdk.StructuredData)
 	for k, v := range values {
-		value := v.Get()
-		payload[k] = value
+		payload[k] = v.Get()
 	}
 	return payload
 }

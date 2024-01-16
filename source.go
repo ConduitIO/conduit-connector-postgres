@@ -74,7 +74,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
-	columns, err := s.getTableColumns(conn)
+	columns, err := s.getTableColumns(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
@@ -150,10 +150,10 @@ func (s *Source) Teardown(ctx context.Context) error {
 	return nil
 }
 
-func (s *Source) getTableColumns(conn *pgx.Conn) ([]string, error) {
-	query := fmt.Sprintf("SELECT column_name FROM information_schema.columns WHERE table_name = '%s'", s.config.Table[0])
+func (s *Source) getTableColumns(ctx context.Context, conn *pgx.Conn) ([]string, error) {
+	query := "SELECT column_name FROM information_schema.columns WHERE table_name = ?"
 
-	rows, err := conn.Query(context.Background(), query)
+	rows, err := conn.Query(ctx, query, s.config.Table[0])
 	if err != nil {
 		return nil, err
 	}
@@ -168,6 +168,8 @@ func (s *Source) getTableColumns(conn *pgx.Conn) ([]string, error) {
 		}
 		columns = append(columns, columnName)
 	}
-
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
 	return columns, nil
 }
