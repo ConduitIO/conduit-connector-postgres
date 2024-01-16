@@ -40,12 +40,12 @@ const (
 type Config struct {
 	// URL is the connection string for the Postgres database.
 	URL string `json:"url" validate:"required"`
-	// List of table names to read from, separated by a comma.
+	// Table is a List of table names to read from, separated by a comma.
 	Table []string `json:"table" validate:"required"`
-	// list of Key column names per table ex:"table1:key1,table2:key2", records should use the key values for their `Key` fields.
+	// Key is a list of Key column names per table, ex:"table1:key1,table2:key2", records should use the key values for their `Key` fields.
 	Key []string `json:"key"`
 
-	// Whether or not the plugin will take a snapshot of the entire table before starting cdc mode.
+	// SnapshotMode is whether the plugin will take a snapshot of the entire table before starting cdc mode.
 	SnapshotMode SnapshotMode `json:"snapshotMode" validate:"inclusion=initial|never" default:"initial"`
 	// CDCMode determines how the connector should listen to changes.
 	CDCMode CDCMode `json:"cdcMode" validate:"inclusion=auto|logrepl|long_polling" default:"auto"`
