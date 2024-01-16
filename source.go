@@ -30,10 +30,10 @@ import (
 type Source struct {
 	sdk.UnimplementedSource
 
-	iterator    source.Iterator
-	config      source.Config
-	conn        *pgx.Conn
-	KeyColumnMp map[string]string
+	iterator  source.Iterator
+	config    source.Config
+	conn      *pgx.Conn
+	tableKeys map[string]string
 }
 
 func NewSource() sdk.Source {
@@ -58,14 +58,14 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 	if len(s.config.Table) != 1 && s.config.CDCMode == source.CDCModeLongPolling {
 		return fmt.Errorf("multi tables are only supported for logrepl CDCMode, please provide only one table")
 	}
-	s.KeyColumnMp = make(map[string]string, len(s.config.Table))
+	s.tableKeys = make(map[string]string, len(s.config.Table))
 	for _, pair := range s.config.Key {
 		// Split each pair into key and value
 		parts := strings.Split(pair, ":")
 		if len(parts) != 2 {
 			return fmt.Errorf("wrong format for the configuration %q, use comma separated pairs of tables and keys, example: table1:key1,table2:key2", "key")
 		}
-		s.KeyColumnMp[parts[0]] = parts[1]
+		s.tableKeys[parts[0]] = parts[1]
 	}
 	return nil
 }
@@ -97,7 +97,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			SlotName:        s.config.LogreplSlotName,
 			PublicationName: s.config.LogreplPublicationName,
 			Tables:          s.config.Table,
-			KeyColumnMp:     s.KeyColumnMp,
+			TableKeys:       s.tableKeys,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create logical replication iterator: %w", err)
@@ -116,7 +116,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			s.conn,
 			s.config.Table[0], //todo: only the first table for now
 			columns,
-			s.KeyColumnMp[s.config.Table[0]])
+			s.tableKeys[s.config.Table[0]])
 		if err != nil {
 			return fmt.Errorf("failed to create long polling iterator: %w", err)
 		}

@@ -27,18 +27,18 @@ import (
 // CDCHandler is responsible for handling logical replication messages,
 // converting them to a record and sending them to a channel.
 type CDCHandler struct {
-	keyColumnMp map[string]string
+	tableKeys   map[string]string
 	relationSet *internal.RelationSet
 	out         chan<- sdk.Record
 }
 
 func NewCDCHandler(
 	rs *internal.RelationSet,
-	keyColumnMp map[string]string,
+	tableKeys map[string]string,
 	out chan<- sdk.Record,
 ) *CDCHandler {
 	return &CDCHandler{
-		keyColumnMp: keyColumnMp,
+		tableKeys:   tableKeys,
 		relationSet: rs,
 		out:         out,
 	}
@@ -181,7 +181,7 @@ func (h *CDCHandler) buildRecordMetadata(relation *pglogrepl.RelationMessage) ma
 // buildRecordKey takes the values from the message and extracts the key that
 // matches the configured keyColumnName.
 func (h *CDCHandler) buildRecordKey(values map[string]pgtype.Value, table string) sdk.Data {
-	keyColumn := h.keyColumnMp[table]
+	keyColumn := h.tableKeys[table]
 	key := make(sdk.StructuredData)
 	for k, v := range values {
 		if keyColumn == k {
