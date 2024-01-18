@@ -64,7 +64,6 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
 	s.conn = conn
-	fmt.Println("COLUMNS: ", columns)
 
 	switch s.config.CDCMode {
 	case source.CDCModeAuto:
