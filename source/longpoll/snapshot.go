@@ -72,7 +72,7 @@ type SnapshotIterator struct {
 // * NewSnapshotIterator attempts to load the sql rows into the SnapshotIterator and will
 // immediately begin to return them to subsequent Read calls.
 // * It acquires a read only transaction lock before reading the table.
-// * If Teardown is called while a snpashot is in progress, it will return an
+// * If Teardown is called while a snapshot is in progress, it will return an
 // ErrSnapshotInterrupt error.
 func NewSnapshotIterator(ctx context.Context, conn *pgx.Conn, table string, columns []string, key string) (*SnapshotIterator, error) {
 	s := &SnapshotIterator{

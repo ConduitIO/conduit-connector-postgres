@@ -29,9 +29,10 @@ import (
 type Source struct {
 	sdk.UnimplementedSource
 
-	iterator source.Iterator
-	config   source.Config
-	conn     *pgx.Conn
+	iterator  source.Iterator
+	config    source.Config
+	conn      *pgx.Conn
+	tableKeys map[string]string
 }
 
 func NewSource() sdk.Source {
@@ -47,15 +48,18 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 	if err != nil {
 		return err
 	}
-	// try parsing the url
-	_, err = pgx.ParseConfig(s.config.URL)
+	s.tableKeys, err = s.config.Validate()
 	if err != nil {
-		return fmt.Errorf("invalid url: %w", err)
+		return err
 	}
 	return nil
 }
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 	conn, err := pgx.Connect(ctx, s.config.URL)
+	if err != nil {
+		return fmt.Errorf("failed to connect to database: %w", err)
+	}
+	columns, err := s.getTableColumns(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
@@ -77,9 +81,8 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			Position:        pos,
 			SlotName:        s.config.LogreplSlotName,
 			PublicationName: s.config.LogreplPublicationName,
-			TableName:       s.config.Table,
-			KeyColumnName:   s.config.Key,
-			Columns:         s.config.Columns,
+			Tables:          s.config.Table,
+			TableKeys:       s.tableKeys,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create logical replication iterator: %w", err)
@@ -96,9 +99,9 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		snap, err := longpoll.NewSnapshotIterator(
 			ctx,
 			s.conn,
-			s.config.Table,
-			s.config.Columns,
-			s.config.Key)
+			s.config.Table[0], //todo: only the first table for now
+			columns,
+			s.tableKeys[s.config.Table[0]])
 		if err != nil {
 			return fmt.Errorf("failed to create long polling iterator: %w", err)
 		}
@@ -130,4 +133,28 @@ func (s *Source) Teardown(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Source) getTableColumns(ctx context.Context, conn *pgx.Conn) ([]string, error) {
+	query := "SELECT column_name FROM information_schema.columns WHERE table_name = $1"
+
+	rows, err := conn.Query(ctx, query, s.config.Table[0])
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var columns []string
+	for rows.Next() {
+		var columnName string
+		err := rows.Scan(&columnName)
+		if err != nil {
+			return nil, err
+		}
+		columns = append(columns, columnName)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+	return columns, nil
 }

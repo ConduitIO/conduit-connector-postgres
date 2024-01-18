@@ -17,15 +17,9 @@ func (Config) Parameters() map[string]sdk.Parameter {
 				sdk.ValidationInclusion{List: []string{"auto", "logrepl", "long_polling"}},
 			},
 		},
-		"columns": {
-			Default:     "",
-			Description: "Comma separated list of column names that should be included in each Record's payload.",
-			Type:        sdk.ParameterTypeString,
-			Validations: []sdk.Validation{},
-		},
 		"key": {
 			Default:     "",
-			Description: "Column name that records should use for their `key` fields.",
+			Description: "todo: remove param, Column name that records should use for their `key` fields.",
 			Type:        sdk.ParameterTypeString,
 			Validations: []sdk.Validation{},
 		},
@@ -51,7 +45,7 @@ func (Config) Parameters() map[string]sdk.Parameter {
 		},
 		"table": {
 			Default:     "",
-			Description: "The name of the table in Postgres that the connector should read.",
+			Description: "List of table names to read from, separated by a comma.",
 			Type:        sdk.ParameterTypeString,
 			Validations: []sdk.Validation{
 				sdk.ValidationRequired{},

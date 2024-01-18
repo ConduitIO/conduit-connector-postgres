@@ -36,9 +36,8 @@ type Config struct {
 	Position        sdk.Position
 	SlotName        string
 	PublicationName string
-	TableName       string
-	KeyColumnName   string
-	Columns         []string
+	Tables          []string
+	TableKeys       map[string]string
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -154,21 +153,30 @@ func (i *CDCIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) er
 		}
 	}
 
-	keyColumn, err := i.getKeyColumn(ctx, conn)
-	if err != nil {
-		return fmt.Errorf("failed to find key for table %s (try specifying it manually): %w", i.config.TableName, err)
+	var err error
+	if i.config.TableKeys == nil {
+		i.config.TableKeys = make(map[string]string, len(i.config.Tables))
+	}
+	for _, tableName := range i.config.Tables {
+		// get unprovided table keys
+		if _, ok := i.config.TableKeys[tableName]; ok {
+			continue // key was provided manually
+		}
+		i.config.TableKeys[tableName], err = i.getTableKeys(ctx, conn, tableName)
+		if err != nil {
+			return fmt.Errorf("failed to find key for table %s (try specifying it manually): %w", tableName, err)
+		}
 	}
 
 	sub := internal.NewSubscription(
 		conn.Config().Config,
 		i.config.SlotName,
 		i.config.PublicationName,
-		[]string{i.config.TableName},
+		i.config.Tables,
 		lsn,
 		NewCDCHandler(
 			internal.NewRelationSet(conn.ConnInfo()),
-			keyColumn,
-			i.config.Columns,
+			i.config.TableKeys,
 			i.records,
 		).Handle,
 	)
@@ -177,23 +185,19 @@ func (i *CDCIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) er
 	return nil
 }
 
-// getKeyColumn queries the db for the name of the primary key column for a
+// getTableKeys queries the db for the name of the primary key column for a
 // table if one exists and returns it.
-func (i *CDCIterator) getKeyColumn(ctx context.Context, conn *pgx.Conn) (string, error) {
-	if i.config.KeyColumnName != "" {
-		return i.config.KeyColumnName, nil
-	}
-
+func (i *CDCIterator) getTableKeys(ctx context.Context, conn *pgx.Conn, tableName string) (string, error) {
 	query := `SELECT column_name
 		FROM information_schema.key_column_usage
 		WHERE table_name = $1 AND constraint_name LIKE '%_pkey'
 		LIMIT 1;`
-	row := conn.QueryRow(ctx, query, i.config.TableName)
+	row := conn.QueryRow(ctx, query, tableName)
 
 	var colName string
 	err := row.Scan(&colName)
 	if err != nil {
-		return "", fmt.Errorf("getKeyColumn query failed: %w", err)
+		return "", fmt.Errorf("getTableKeys query failed: %w", err)
 	}
 
 	return colName, nil

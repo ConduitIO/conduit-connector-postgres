@@ -20,7 +20,7 @@ configuration.
 ## Change Data Capture
 
 This connector implements CDC features for PostgreSQL by creating a logical replication slot and a publication that
-listens to changes in the configured table. Every detected change is converted into a record and returned in the call to
+listens to changes in the configured tables. Every detected change is converted into a record and returned in the call to
 `Read`. If there is no record available at the moment `Read` is called, it blocks until a record is available or the
 connector receives a stop signal.
 
@@ -58,16 +58,15 @@ returned.
 
 ## Configuration Options
 
-| name                      | description                                                                                                                         | required | default                |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | -------- | ---------------------- |
-| `url`                     | Connection string for the Postgres database.                                                                                        | true     |                        |
-| `table`                   | The name of the table in Postgres that the connector should read.                                                                   | true     |                        |
-| `columns`                 | Comma separated list of column names that should be included in each Record's payload.                                              | false    | (all columns)          |
-| `key`                     | Column name that records should use for their `Key` fields.                                                                         | false    | (primary key of table) |
-| `snapshotMode`            | Whether or not the plugin will take a snapshot of the entire table before starting cdc mode (allowed values: `initial` or `never`). | false    | `initial`              |
-| `cdcMode`                 | Determines the CDC mode (allowed values: `auto`, `logrepl` or `long_polling`).                                                      | false    | `auto`                 |
-| `logrepl.publicationName` | Name of the publication to listen for WAL events.                                                                                   | false    | `conduitpub`           |
-| `logrepl.slotName`        | Name of the slot opened for replication events.                                                                                     | false    | `conduitslot`          |
+| name                      | description                                                                                                                                                                            | required | default       |
+|---------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------|---------------|
+| `url`                     | Connection string for the Postgres database.                                                                                                                                           | true     |               |
+| `table`                   | List of table names to read from, separated by comma. example: `"employees,offices,payments"`                                                                                          | true     |               |
+| `key`                     | List of Key column names per table, separated by comma. example:`"table1:key1,table2:key2"`, if not supplied, the table primary key will be used as the `'Key'` field for the records. | false    |               |
+| `snapshotMode`            | Whether or not the plugin will take a snapshot of the entire table before starting cdc mode (allowed values: `initial` or `never`).                                                    | false    | `initial`     |
+| `cdcMode`                 | Determines the CDC mode (allowed values: `auto`, `logrepl` or `long_polling`).                                                                                                         | false    | `auto`        |
+| `logrepl.publicationName` | Name of the publication to listen for WAL events.                                                                                                                                      | false    | `conduitpub`  |
+| `logrepl.slotName`        | Name of the slot opened for replication events.                                                                                                                                        | false    | `conduitslot` |
 
 # Destination
 
@@ -91,7 +90,7 @@ If there is no key, the record will be simply appended.
 ## Configuration Options
 
 | name    | description                                                                 | required | default |
-| ------- | --------------------------------------------------------------------------- | -------- | ------- |
+|---------|-----------------------------------------------------------------------------|----------|---------|
 | `url`   | Connection string for the Postgres database.                                | true     |         |
 | `table` | The name of the table in Postgres that the connector should write to.       | false    |         |
 | `key`   | Column name used to detect if the target table already contains the record. | false    |         |

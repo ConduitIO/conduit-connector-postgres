@@ -16,6 +16,13 @@
 
 package source
 
+import (
+	"fmt"
+	"strings"
+
+	"github.com/jackc/pgx/v4"
+)
+
 type SnapshotMode string
 
 const (
@@ -40,14 +47,12 @@ const (
 type Config struct {
 	// URL is the connection string for the Postgres database.
 	URL string `json:"url" validate:"required"`
-	// The name of the table in Postgres that the connector should read.
-	Table string `json:"table" validate:"required"`
-	// Comma separated list of column names that should be included in each Record's payload.
-	Columns []string `json:"columns"`
-	// Column name that records should use for their `Key` fields.
-	Key string `json:"key"`
+	// Table is a List of table names to read from, separated by a comma.
+	Table []string `json:"table" validate:"required"`
+	// Key is a list of Key column names per table, ex:"table1:key1,table2:key2", records should use the key values for their `Key` fields.
+	Key []string `json:"key"`
 
-	// Whether or not the plugin will take a snapshot of the entire table before starting cdc mode.
+	// SnapshotMode is whether the plugin will take a snapshot of the entire table before starting cdc mode.
 	SnapshotMode SnapshotMode `json:"snapshotMode" validate:"inclusion=initial|never" default:"initial"`
 	// CDCMode determines how the connector should listen to changes.
 	CDCMode CDCMode `json:"cdcMode" validate:"inclusion=auto|logrepl|long_polling" default:"auto"`
@@ -58,4 +63,27 @@ type Config struct {
 	// LogreplSlotName determines the replication slot name in case the
 	// connector uses logical replication to listen to changes (see CDCMode).
 	LogreplSlotName string `json:"logrepl.slotName" default:"conduitslot"`
+}
+
+// Validate validates the provided config values.
+func (c Config) Validate() (map[string]string, error) {
+	// try parsing the url
+	_, err := pgx.ParseConfig(c.URL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid url: %w", err)
+	}
+	// todo: when cdcMode "auto" is implemented, change this check
+	if len(c.Table) != 1 && c.CDCMode == CDCModeLongPolling {
+		return nil, fmt.Errorf("multi tables are only supported for logrepl CDCMode, please provide only one table")
+	}
+	tableKeys := make(map[string]string, len(c.Table))
+	for _, pair := range c.Key {
+		// Split each pair into key and value
+		parts := strings.Split(pair, ":")
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("wrong format for the configuration %q, use comma separated pairs of tables and keys, example: table1:key1,table2:key2", "key")
+		}
+		tableKeys[parts[0]] = parts[1]
+	}
+	return tableKeys, nil
 }

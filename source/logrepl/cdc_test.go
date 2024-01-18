@@ -137,7 +137,7 @@ func TestIterator_Next(t *testing.T) {
 func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string) *CDCIterator {
 	is := is.New(t)
 	config := Config{
-		TableName:       table,
+		Tables:          []string{table},
 		PublicationName: table, // table is random, reuse for publication name
 		SlotName:        table, // table is random, reuse for slot name
 	}
