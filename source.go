@@ -64,6 +64,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
 	s.conn = conn
+	fmt.Println("COLUMNS: ", columns)
 
 	switch s.config.CDCMode {
 	case source.CDCModeAuto:
@@ -136,7 +137,7 @@ func (s *Source) Teardown(ctx context.Context) error {
 }
 
 func (s *Source) getTableColumns(ctx context.Context, conn *pgx.Conn) ([]string, error) {
-	query := "SELECT column_name FROM information_schema.columns WHERE table_name = ?"
+	query := "SELECT column_name FROM information_schema.columns WHERE table_name = $1"
 
 	rows, err := conn.Query(ctx, query, s.config.Table[0])
 	if err != nil {

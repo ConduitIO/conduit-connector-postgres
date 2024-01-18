@@ -15,7 +15,6 @@
 package source
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/matryer/is"
@@ -68,7 +67,6 @@ func TestConfig_Validate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			is := is.New(t)
 			_, err := tc.cfg.Validate()
-			fmt.Println(err)
 			if tc.wantErr {
 				is.True(err != nil)
 				return
