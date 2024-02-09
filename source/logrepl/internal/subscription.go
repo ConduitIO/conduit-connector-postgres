@@ -78,7 +78,7 @@ func NewSubscription(
 		ready: make(chan struct{}),
 		done:  make(chan struct{}),
 		// cleanup does nothing by default
-		cleanup: func(ctx context.Context) error { return nil },
+		cleanup: func(context.Context) error { return nil },
 	}
 }
 

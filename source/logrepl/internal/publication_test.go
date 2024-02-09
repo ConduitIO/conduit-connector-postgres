@@ -27,7 +27,6 @@ import (
 
 func TestCreatePublication(t *testing.T) {
 	ctx := context.Background()
-	is := is.New(t)
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 
 	pubNames := []string{"testpub", "123", "test-hyphen", "test=equal"}
@@ -43,6 +42,7 @@ func TestCreatePublication(t *testing.T) {
 			for i, givenPubParams := range pubParams {
 				testName := fmt.Sprintf("%s_%v_%d", givenPubName, givenAllTables, i)
 				t.Run(testName, func(t *testing.T) {
+					is := is.New(t)
 					err := CreatePublication(
 						ctx,
 						conn.PgConn(),
@@ -63,7 +63,6 @@ func TestCreatePublication(t *testing.T) {
 
 func TestCreatePublicationForTables(t *testing.T) {
 	ctx := context.Background()
-	is := is.New(t)
 	pub := test.RandomIdentifier(t)
 	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
 
@@ -79,6 +78,7 @@ func TestCreatePublicationForTables(t *testing.T) {
 	for _, givenTables := range tables {
 		testName := strings.Join(givenTables, ",")
 		t.Run(testName, func(t *testing.T) {
+			is := is.New(t)
 			err := CreatePublication(
 				ctx,
 				conn.PgConn(),
