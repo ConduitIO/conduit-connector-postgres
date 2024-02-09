@@ -42,7 +42,6 @@ func TestSubscriptionRegularUser(t *testing.T) {
 
 func TestSubscriptionRepmgr(t *testing.T) {
 	ctx := context.Background()
-	is := is.New(t)
 
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 
@@ -51,7 +50,7 @@ func TestSubscriptionRepmgr(t *testing.T) {
 
 	_, messages := setupSubscription(ctx, t, conn.Config().Config, table1, table2)
 
-	fetchAndAssertMessageTypes := func(m chan pglogrepl.Message, msgTypes ...pglogrepl.MessageType) []pglogrepl.Message {
+	fetchAndAssertMessageTypes := func(is *is.I, m chan pglogrepl.Message, msgTypes ...pglogrepl.MessageType) []pglogrepl.Message {
 		out := make([]pglogrepl.Message, len(msgTypes))
 		for i, msgType := range msgTypes {
 			select {
@@ -66,12 +65,14 @@ func TestSubscriptionRepmgr(t *testing.T) {
 	}
 
 	t.Run("first insert table1", func(t *testing.T) {
+		is := is.New(t)
 		query := `INSERT INTO %s (id, column1, column2, column3)
 		VALUES (6, 'bizz', 456, false)`
 		_, err := conn.Exec(ctx, fmt.Sprintf(query, table1))
 		is.NoErr(err)
 
 		_ = fetchAndAssertMessageTypes(
+			is,
 			messages,
 			// first insert should contain the relation as well
 			pglogrepl.MessageTypeBegin,
@@ -82,12 +83,14 @@ func TestSubscriptionRepmgr(t *testing.T) {
 	})
 
 	t.Run("second insert table1", func(t *testing.T) {
+		is := is.New(t)
 		query := `INSERT INTO %s (id, column1, column2, column3)
 		VALUES (7, 'bizz', 456, false)`
 		_, err := conn.Exec(ctx, fmt.Sprintf(query, table1))
 		is.NoErr(err)
 
 		_ = fetchAndAssertMessageTypes(
+			is,
 			messages,
 			// second insert does not ship the relation
 			pglogrepl.MessageTypeBegin,
@@ -97,11 +100,13 @@ func TestSubscriptionRepmgr(t *testing.T) {
 	})
 
 	t.Run("first update table2", func(t *testing.T) {
+		is := is.New(t)
 		query := `UPDATE %s SET column1 = 'foo' WHERE id = 1`
 		_, err := conn.Exec(ctx, fmt.Sprintf(query, table2))
 		is.NoErr(err)
 
 		_ = fetchAndAssertMessageTypes(
+			is,
 			messages,
 			// first insert should contain the relation as well
 			pglogrepl.MessageTypeBegin,
@@ -112,11 +117,13 @@ func TestSubscriptionRepmgr(t *testing.T) {
 	})
 
 	t.Run("update all table 2", func(t *testing.T) {
+		is := is.New(t)
 		query := `UPDATE %s SET column1 = 'bar'` // update all rows
 		_, err := conn.Exec(ctx, fmt.Sprintf(query, table2))
 		is.NoErr(err)
 
 		_ = fetchAndAssertMessageTypes(
+			is,
 			messages,
 			// we already got the relation so second update is without relation
 			pglogrepl.MessageTypeBegin,
@@ -179,7 +186,7 @@ func setupSubscription(
 		publication,
 		tables,
 		0,
-		func(ctx context.Context, msg pglogrepl.Message, lsn pglogrepl.LSN) error {
+		func(ctx context.Context, msg pglogrepl.Message, _ pglogrepl.LSN) error {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
