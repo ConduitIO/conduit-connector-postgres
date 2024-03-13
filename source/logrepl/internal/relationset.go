@@ -19,29 +19,29 @@ import (
 	"fmt"
 
 	"github.com/jackc/pglogrepl"
-	"github.com/jackc/pgtype"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // RelationSet can be used to build a cache of relations returned by logical
 // replication.
 type RelationSet struct {
-	relations map[pgtype.OID]*pglogrepl.RelationMessage
-	connInfo  *pgtype.ConnInfo
+	relations map[uint32]*pglogrepl.RelationMessage
+	connInfo  *pgtype.Map
 }
 
 // NewRelationSet creates a new relation set.
-func NewRelationSet(ci *pgtype.ConnInfo) *RelationSet {
+func NewRelationSet(ci *pgtype.Map) *RelationSet {
 	return &RelationSet{
-		relations: map[pgtype.OID]*pglogrepl.RelationMessage{},
+		relations: map[uint32]*pglogrepl.RelationMessage{},
 		connInfo:  ci,
 	}
 }
 
 func (rs *RelationSet) Add(r *pglogrepl.RelationMessage) {
-	rs.relations[pgtype.OID(r.RelationID)] = r
+	rs.relations[r.RelationID] = r
 }
 
-func (rs *RelationSet) Get(id pgtype.OID) (*pglogrepl.RelationMessage, error) {
+func (rs *RelationSet) Get(id uint32) (*pglogrepl.RelationMessage, error) {
 	msg, ok := rs.relations[id]
 	if !ok {
 		return nil, fmt.Errorf("no relation for %d", id)
@@ -49,7 +49,7 @@ func (rs *RelationSet) Get(id pgtype.OID) (*pglogrepl.RelationMessage, error) {
 	return msg, nil
 }
 
-func (rs *RelationSet) Values(id pgtype.OID, row *pglogrepl.TupleData) (map[string]pgtype.Value, error) {
+func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]any, error) {
 	if row == nil {
 		return nil, errors.New("no tuple data")
 	}
@@ -59,38 +59,27 @@ func (rs *RelationSet) Values(id pgtype.OID, row *pglogrepl.TupleData) (map[stri
 		return nil, fmt.Errorf("no relation for %d", id)
 	}
 
-	values := map[string]pgtype.Value{}
+	values := map[string]any{}
 
 	// assert same number of row and rel columns
 	for i, tuple := range row.Columns {
 		col := rel.Columns[i]
-		decoder := rs.oidToDecoderValue(col.DataType)
-
-		if err := decoder.DecodeText(rs.connInfo, tuple.Data); err != nil {
+		decoder := rs.oidToCodec(col.DataType)
+		val, err := decoder.DecodeValue(rs.connInfo, col.DataType, pgtype.TextFormatCode, tuple.Data)
+		if err != nil {
 			return nil, fmt.Errorf("failed to decode tuple %d: %w", i, err)
 		}
 
-		values[col.Name] = decoder
+		values[col.Name] = val
 	}
 
 	return values, nil
 }
 
-type decoderValue interface {
-	pgtype.Value
-	pgtype.TextDecoder
-}
-
-func (rs *RelationSet) oidToDecoderValue(id uint32) decoderValue {
-	dt, ok := rs.connInfo.DataTypeForOID(id)
+func (rs *RelationSet) oidToCodec(id uint32) pgtype.Codec {
+	dt, ok := rs.connInfo.TypeForOID(id)
 	if !ok {
-		return rs.oidToDecoderValue(pgtype.UnknownOID)
+		return rs.oidToCodec(pgtype.UnknownOID)
 	}
-	value := pgtype.NewValue(dt.Value)
-
-	decoder, ok := value.(decoderValue)
-	if !ok {
-		return rs.oidToDecoderValue(pgtype.UnknownOID)
-	}
-	return decoder
+	return dt.Codec
 }

@@ -22,7 +22,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	"github.com/conduitio/conduit-connector-postgres/source/longpoll"
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v5"
 )
 
 // Source is a Postgres source plugin.
@@ -99,7 +99,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		snap, err := longpoll.NewSnapshotIterator(
 			ctx,
 			s.conn,
-			s.config.Table[0], //todo: only the first table for now
+			s.config.Table[0], // todo: only the first table for now
 			columns,
 			s.tableKeys[s.config.Table[0]])
 		if err != nil {

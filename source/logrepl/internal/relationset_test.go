@@ -19,12 +19,14 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/test"
+	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pglogrepl"
-	"github.com/jackc/pgtype"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/matryer/is"
 )
 
@@ -33,9 +35,9 @@ func TestRelationSetUnregisteredType(t *testing.T) {
 	is := is.New(t)
 
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-	rs := NewRelationSet(conn.ConnInfo())
+	rs := NewRelationSet(conn.TypeMap())
 
-	got, err := rs.Get(pgtype.OID(1234567))
+	got, err := rs.Get(1234567)
 	is.True(err != nil)
 	is.Equal(got, nil)
 }
@@ -77,14 +79,14 @@ func TestRelationSetAllTypes(t *testing.T) {
 		break
 	}
 
-	rs := NewRelationSet(conn.ConnInfo())
+	rs := NewRelationSet(conn.TypeMap())
 
 	rs.Add(rel)
-	gotRel, err := rs.Get(pgtype.OID(rel.RelationID))
+	gotRel, err := rs.Get(rel.RelationID)
 	is.NoErr(err)
 	is.Equal(gotRel, rel)
 
-	values, err := rs.Values(pgtype.OID(ins.RelationID), ins.Tuple)
+	values, err := rs.Values(ins.RelationID, ins.Tuple)
 	is.NoErr(err)
 	isValuesAllTypes(is, values)
 }
@@ -246,199 +248,104 @@ func insertRowAllTypes(ctx context.Context, t *testing.T, conn test.Querier, tab
 	is.NoErr(err)
 }
 
-func isValuesAllTypes(is *is.I, got map[string]pgtype.Value) {
-	want := map[string]pgtype.Value{
-		"col_bit": &pgtype.Bit{
-			Bytes:  []byte{0b01},
-			Len:    8,
-			Status: pgtype.Present,
+func isValuesAllTypes(is *is.I, got map[string]any) {
+	want := map[string]any{
+		"col_bit": pgtype.Bits{
+			Bytes: []byte{0b01},
+			Len:   8,
+			Valid: true,
 		},
-		"col_varbit": &pgtype.Varbit{
-			Bytes:  []byte{0b10},
-			Len:    8,
-			Status: pgtype.Present,
+		"col_varbit": pgtype.Bits{
+			Bytes: []byte{0b10},
+			Len:   8,
+			Valid: true,
 		},
-		"col_boolean": &pgtype.Bool{
-			Bool:   true,
-			Status: pgtype.Present,
+		"col_boolean": true,
+		"col_box": pgtype.Box{
+			P:     [2]pgtype.Vec2{{X: 5, Y: 6}, {X: 3, Y: 4}},
+			Valid: true,
 		},
-		"col_box": &pgtype.Box{
-			P:      [2]pgtype.Vec2{{X: 5, Y: 6}, {X: 3, Y: 4}},
-			Status: pgtype.Present,
+		"col_bytea":   []byte{0x07},
+		"col_char":    "8  ", // blank padded char
+		"col_varchar": "9",
+		"col_cidr":    netip.MustParsePrefix("192.168.100.128/25"),
+		"col_circle": pgtype.Circle{
+			P:     pgtype.Vec2{X: 11, Y: 12},
+			R:     13,
+			Valid: true,
 		},
-		"col_bytea": &pgtype.Bytea{
-			Bytes:  []byte{0x07},
-			Status: pgtype.Present,
-		},
-		"col_char": &pgtype.BPChar{
-			String: "8  ", // blank padded char
-			Status: pgtype.Present,
-		},
-		"col_varchar": &pgtype.Varchar{
-			String: "9",
-			Status: pgtype.Present,
-		},
-		"col_cidr": &pgtype.CIDR{
-			IPNet: &net.IPNet{
-				IP:   net.IPv4(192, 168, 100, 128).To4(),
-				Mask: net.CIDRMask(25, 32),
-			},
-			Status: pgtype.Present,
-		},
-		"col_circle": &pgtype.Circle{
-			P:      pgtype.Vec2{X: 11, Y: 12},
-			R:      13,
-			Status: pgtype.Present,
-		},
-		"col_date": &pgtype.Date{
-			Time:             time.Date(2022, 3, 14, 0, 0, 0, 0, time.UTC),
-			Status:           pgtype.Present,
-			InfinityModifier: pgtype.None,
-		},
-		"col_float4": &pgtype.Float4{
-			Float:  15,
-			Status: pgtype.Present,
-		},
-		"col_float8": &pgtype.Float8{
-			Float:  16.16,
-			Status: pgtype.Present,
-		},
-		"col_inet": &pgtype.Inet{
-			IPNet: &net.IPNet{
-				IP:   net.IPv4(192, 168, 0, 17).To4(),
-				Mask: net.CIDRMask(32, 32),
-			},
-			Status: pgtype.Present,
-		},
-		"col_int2": &pgtype.Int2{
-			Int:    32767,
-			Status: pgtype.Present,
-		},
-		"col_int4": &pgtype.Int4{
-			Int:    2147483647,
-			Status: pgtype.Present,
-		},
-		"col_int8": &pgtype.Int8{
-			Int:    9223372036854775807,
-			Status: pgtype.Present,
-		},
-		"col_interval": &pgtype.Interval{
+		"col_date":   time.Date(2022, 3, 14, 0, 0, 0, 0, time.UTC),
+		"col_float4": float32(15),
+		"col_float8": float64(16.16),
+		"col_inet":   netip.MustParsePrefix("192.168.0.17/32"),
+		"col_int2":   int16(32767),
+		"col_int4":   int32(2147483647),
+		"col_int8":   int64(9223372036854775807),
+		"col_interval": pgtype.Interval{
 			Microseconds: 18000000,
 			Days:         0,
 			Months:       0,
-			Status:       pgtype.Present,
+			Valid:        true,
 		},
-		"col_json": &pgtype.JSON{
-			Bytes:  []byte(`{"foo":"bar"}`),
-			Status: pgtype.Present,
+		"col_json":  map[string]any{"foo": "bar"},
+		"col_jsonb": map[string]any{"foo": "baz"},
+		"col_line": pgtype.Line{
+			A:     19,
+			B:     20,
+			C:     21,
+			Valid: true,
 		},
-		"col_jsonb": &pgtype.JSONB{
-			Bytes:  []byte(`{"foo": "baz"}`),
-			Status: pgtype.Present,
+		"col_lseg": pgtype.Lseg{
+			P:     [2]pgtype.Vec2{{X: 22, Y: 23}, {X: 24, Y: 25}},
+			Valid: true,
 		},
-		"col_line": &pgtype.Line{
-			A:      19,
-			B:      20,
-			C:      21,
-			Status: pgtype.Present,
-		},
-		"col_lseg": &pgtype.Lseg{
-			P:      [2]pgtype.Vec2{{X: 22, Y: 23}, {X: 24, Y: 25}},
-			Status: pgtype.Present,
-		},
-		"col_macaddr": &pgtype.Macaddr{
-			Addr: func() net.HardwareAddr {
-				mac, _ := net.ParseMAC("08:00:2b:01:02:26")
-				return mac
-			}(),
-			Status: pgtype.Present,
-		},
-		"col_macaddr8": &pgtype.Unknown{
-			String: "08:00:2b:01:02:03:04:27",
-			Status: pgtype.Present,
-		},
-		"col_money": &pgtype.Unknown{
-			String: "$28.00",
-			Status: pgtype.Present,
-		},
-		"col_numeric": &pgtype.Numeric{
+		"col_macaddr":  net.HardwareAddr{0x08, 0x00, 0x2b, 0x01, 0x02, 0x26},
+		"col_macaddr8": "08:00:2b:01:02:03:04:27",
+		"col_money":    "$28.00",
+		"col_numeric": pgtype.Numeric{
 			Int:              big.NewInt(29292929),
 			Exp:              -2,
-			Status:           pgtype.Present,
 			NaN:              false,
-			InfinityModifier: pgtype.None,
+			InfinityModifier: pgtype.Finite,
+			Valid:            true,
 		},
-		"col_path": &pgtype.Path{
+		"col_path": pgtype.Path{
 			P:      []pgtype.Vec2{{X: 30, Y: 31}, {X: 32, Y: 33}, {X: 34, Y: 35}},
 			Closed: false,
-			Status: pgtype.Present,
+			Valid:  true,
 		},
-		"col_pg_lsn": &pgtype.Unknown{
-			String: "36/37",
-			Status: pgtype.Present,
+		"col_pg_lsn":      "36/37",
+		"col_pg_snapshot": "10:20:10,14,15",
+		"col_point": pgtype.Point{
+			P:     pgtype.Vec2{X: 38, Y: 39},
+			Valid: true,
 		},
-		"col_pg_snapshot": &pgtype.Unknown{
-			String: "10:20:10,14,15",
-			Status: pgtype.Present,
+		"col_polygon": pgtype.Polygon{
+			P:     []pgtype.Vec2{{X: 40, Y: 41}, {X: 42, Y: 43}, {X: 44, Y: 45}},
+			Valid: true,
 		},
-		"col_point": &pgtype.Point{
-			P:      pgtype.Vec2{X: 38, Y: 39},
-			Status: pgtype.Present,
-		},
-		"col_polygon": &pgtype.Polygon{
-			P:      []pgtype.Vec2{{X: 40, Y: 41}, {X: 42, Y: 43}, {X: 44, Y: 45}},
-			Status: pgtype.Present,
-		},
-		"col_serial2": &pgtype.Int2{
-			Int:    32767,
-			Status: pgtype.Present,
-		},
-		"col_serial4": &pgtype.Int4{
-			Int:    2147483647,
-			Status: pgtype.Present,
-		},
-		"col_serial8": &pgtype.Int8{
-			Int:    9223372036854775807,
-			Status: pgtype.Present,
-		},
-		"col_text": &pgtype.Text{
-			String: "foo bar baz",
-			Status: pgtype.Present,
-		},
-		"col_time": &pgtype.Time{
+		"col_serial2": int16(32767),
+		"col_serial4": int32(2147483647),
+		"col_serial8": int64(9223372036854775807),
+		"col_text":    "foo bar baz",
+		"col_time": pgtype.Time{
 			Microseconds: time.Date(1970, 1, 1, 4, 5, 6, 789000000, time.UTC).UnixMicro(),
-			Status:       pgtype.Present,
+			Valid:        true,
 		},
-		"col_timetz": &pgtype.Unknown{
-			String: "04:05:06.789-08",
-			Status: pgtype.Present,
-		},
-		"col_timestamp": &pgtype.Timestamp{
-			Time:             time.Date(2022, 3, 14, 15, 16, 17, 0, time.UTC),
-			Status:           pgtype.Present,
-			InfinityModifier: pgtype.None,
-		},
-		"col_timestamptz": &pgtype.Timestamptz{
-			Time:             time.Date(2022, 3, 14, 15+8, 16, 17, 0, time.UTC),
-			Status:           pgtype.Present,
-			InfinityModifier: pgtype.None,
-		},
-		"col_tsquery": &pgtype.Unknown{
-			String: "'fat' & ( 'rat' | 'cat' )",
-			Status: pgtype.Present,
-		},
-		"col_tsvector": &pgtype.Unknown{
-			String: "'a' 'and' 'ate' 'cat' 'fat' 'mat' 'on' 'rat' 'sat'",
-			Status: pgtype.Present,
-		},
-		"col_uuid": &pgtype.UUID{
-			Bytes:  [16]byte{0xbd, 0x94, 0xee, 0x0b, 0x56, 0x4f, 0x40, 0x88, 0xbf, 0x4e, 0x8d, 0x5e, 0x62, 0x6c, 0xaf, 0x66},
-			Status: pgtype.Present,
-		},
-		"col_xml": &pgtype.Unknown{
-			String: "<foo>bar</foo>",
-			Status: pgtype.Present,
-		},
+		"col_timetz":      "04:05:06.789-08",
+		"col_timestamp":   time.Date(2022, 3, 14, 15, 16, 17, 0, time.UTC),
+		"col_timestamptz": time.Date(2022, 3, 14, 15+8, 16, 17, 0, time.UTC),
+		"col_tsquery":     "'fat' & ( 'rat' | 'cat' )",
+		"col_tsvector":    "'a' 'and' 'ate' 'cat' 'fat' 'mat' 'on' 'rat' 'sat'",
+		"col_uuid":        [16]uint8{0xbd, 0x94, 0xee, 0x0b, 0x56, 0x4f, 0x40, 0x88, 0xbf, 0x4e, 0x8d, 0x5e, 0x62, 0x6c, 0xaf, 0x66},
+		"col_xml":         "<foo>bar</foo>",
 	}
-	is.Equal(got, want)
+	is.Equal("", cmp.Diff(want, got,
+		cmp.Comparer(func(x, y *big.Int) bool {
+			return x.Cmp(y) == 0
+		}),
+		cmp.Comparer(func(x, y netip.Prefix) bool {
+			return x.String() == y.String()
+		}),
+	))
 }
