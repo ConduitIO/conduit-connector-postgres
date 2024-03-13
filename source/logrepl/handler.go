@@ -96,7 +96,7 @@ func (h *CDCHandler) handleInsert(
 		LSNToPosition(lsn),
 		h.buildRecordMetadata(rel),
 		h.buildRecordKey(newValues, rel.RelationName),
-		sdk.StructuredData(newValues),
+		h.buildRecordPayload(newValues),
 	)
 	return h.send(ctx, rec)
 }
@@ -129,8 +129,8 @@ func (h *CDCHandler) handleUpdate(
 		LSNToPosition(lsn),
 		h.buildRecordMetadata(rel),
 		h.buildRecordKey(newValues, rel.RelationName),
-		sdk.StructuredData(oldValues),
-		sdk.StructuredData(newValues),
+		h.buildRecordPayload(oldValues),
+		h.buildRecordPayload(newValues),
 	)
 	return h.send(ctx, rec)
 }
@@ -189,4 +189,13 @@ func (h *CDCHandler) buildRecordKey(values map[string]any, table string) sdk.Dat
 		}
 	}
 	return key
+}
+
+// buildRecordPayload takes the values from the message and extracts the payload
+// for the record.
+func (h *CDCHandler) buildRecordPayload(values map[string]any) sdk.Data {
+	if len(values) == 0 {
+		return nil
+	}
+	return sdk.StructuredData(values)
 }
