@@ -22,7 +22,7 @@ import (
 
 	sq "github.com/Masterminds/squirrel"
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v5"
 )
 
 // ErrSnapshotComplete is returned by Next when a snapshot is finished

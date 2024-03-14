@@ -22,7 +22,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
-	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v5"
 )
 
 const (
@@ -175,7 +175,7 @@ func (i *CDCIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) er
 		i.config.Tables,
 		lsn,
 		NewCDCHandler(
-			internal.NewRelationSet(conn.ConnInfo()),
+			internal.NewRelationSet(conn.TypeMap()),
 			i.config.TableKeys,
 			i.records,
 		).Handle,

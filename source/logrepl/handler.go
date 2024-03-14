@@ -21,7 +21,6 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
-	"github.com/jackc/pgtype"
 )
 
 // CDCHandler is responsible for handling logical replication messages,
@@ -83,12 +82,12 @@ func (h *CDCHandler) handleInsert(
 	msg *pglogrepl.InsertMessage,
 	lsn pglogrepl.LSN,
 ) (err error) {
-	rel, err := h.relationSet.Get(pgtype.OID(msg.RelationID))
+	rel, err := h.relationSet.Get(msg.RelationID)
 	if err != nil {
 		return err
 	}
 
-	newValues, err := h.relationSet.Values(pgtype.OID(msg.RelationID), msg.Tuple)
+	newValues, err := h.relationSet.Values(msg.RelationID, msg.Tuple)
 	if err != nil {
 		return fmt.Errorf("failed to decode new values: %w", err)
 	}
@@ -109,17 +108,17 @@ func (h *CDCHandler) handleUpdate(
 	msg *pglogrepl.UpdateMessage,
 	lsn pglogrepl.LSN,
 ) error {
-	rel, err := h.relationSet.Get(pgtype.OID(msg.RelationID))
+	rel, err := h.relationSet.Get(msg.RelationID)
 	if err != nil {
 		return err
 	}
 
-	newValues, err := h.relationSet.Values(pgtype.OID(msg.RelationID), msg.NewTuple)
+	newValues, err := h.relationSet.Values(msg.RelationID, msg.NewTuple)
 	if err != nil {
 		return fmt.Errorf("failed to decode new values: %w", err)
 	}
 
-	oldValues, err := h.relationSet.Values(pgtype.OID(msg.RelationID), msg.OldTuple)
+	oldValues, err := h.relationSet.Values(msg.RelationID, msg.OldTuple)
 	if err != nil {
 		// this is not a critical error, old values are optional, just log it
 		// we use level "trace" intentionally to not clog up the logs in production
@@ -143,12 +142,12 @@ func (h *CDCHandler) handleDelete(
 	msg *pglogrepl.DeleteMessage,
 	lsn pglogrepl.LSN,
 ) error {
-	rel, err := h.relationSet.Get(pgtype.OID(msg.RelationID))
+	rel, err := h.relationSet.Get(msg.RelationID)
 	if err != nil {
 		return err
 	}
 
-	oldValues, err := h.relationSet.Values(pgtype.OID(msg.RelationID), msg.OldTuple)
+	oldValues, err := h.relationSet.Values(msg.RelationID, msg.OldTuple)
 	if err != nil {
 		return fmt.Errorf("failed to decode old values: %w", err)
 	}
@@ -180,12 +179,12 @@ func (h *CDCHandler) buildRecordMetadata(relation *pglogrepl.RelationMessage) ma
 
 // buildRecordKey takes the values from the message and extracts the key that
 // matches the configured keyColumnName.
-func (h *CDCHandler) buildRecordKey(values map[string]pgtype.Value, table string) sdk.Data {
+func (h *CDCHandler) buildRecordKey(values map[string]any, table string) sdk.Data {
 	keyColumn := h.tableKeys[table]
 	key := make(sdk.StructuredData)
 	for k, v := range values {
 		if keyColumn == k {
-			key[k] = v.Get()
+			key[k] = v
 			break // TODO add support for composite keys
 		}
 	}
@@ -194,13 +193,9 @@ func (h *CDCHandler) buildRecordKey(values map[string]pgtype.Value, table string
 
 // buildRecordPayload takes the values from the message and extracts the payload
 // for the record.
-func (h *CDCHandler) buildRecordPayload(values map[string]pgtype.Value) sdk.Data {
+func (h *CDCHandler) buildRecordPayload(values map[string]any) sdk.Data {
 	if len(values) == 0 {
 		return nil
 	}
-	payload := make(sdk.StructuredData)
-	for k, v := range values {
-		payload[k] = v.Get()
-	}
-	return payload
+	return sdk.StructuredData(values)
 }

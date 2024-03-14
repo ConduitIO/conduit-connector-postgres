@@ -23,7 +23,7 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/conduitio/conduit-connector-postgres/destination"
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v5"
 )
 
 const (

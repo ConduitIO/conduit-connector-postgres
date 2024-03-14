@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jackc/pgconn"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // CreatePublicationOptions contains additional options for creating a publication.

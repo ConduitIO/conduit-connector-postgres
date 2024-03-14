@@ -22,9 +22,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgconn"
-	"github.com/jackc/pgx/v4"
-	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
 )
 
@@ -35,14 +35,14 @@ const RepmgrConnString = "postgres://repmgr:repmgrmeroxa@localhost:5432/meroxadb
 const RegularConnString = "postgres://meroxauser:meroxapass@localhost:5432/meroxadb?sslmode=disable"
 
 type Querier interface {
-	Exec(ctx context.Context, sql string, arguments ...interface{}) (pgconn.CommandTag, error)
-	Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 func ConnectPool(ctx context.Context, t *testing.T, connString string) *pgxpool.Pool {
 	is := is.New(t)
-	pool, err := pgxpool.Connect(ctx, connString)
+	pool, err := pgxpool.New(ctx, connString)
 	is.NoErr(err)
 	t.Cleanup(func() {
 		// close connection with fresh context

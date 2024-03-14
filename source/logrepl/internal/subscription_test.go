@@ -22,8 +22,8 @@ import (
 	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/test"
-	"github.com/jackc/pgconn"
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/matryer/is"
 )
 
@@ -205,7 +205,13 @@ func setupSubscription(
 	}()
 
 	// wait for subscription to be ready
-	<-sub.Ready()
+	select {
+	case <-sub.Ready():
+		// all good
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out while waiting for subscription to be ready")
+	}
+
 	t.Cleanup(func() {
 		// stop subscription
 		sub.Stop()
