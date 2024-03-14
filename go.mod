@@ -8,7 +8,7 @@ require (
 	github.com/golangci/golangci-lint v1.56.1
 	github.com/google/go-cmp v0.6.0
 	github.com/jackc/pglogrepl v0.0.0-20240307033717-828fbfe908e9
-	github.com/jackc/pgx/v5 v5.5.4
+	github.com/jackc/pgx/v5 v5.5.5
 	github.com/matryer/is v1.4.1
 )
 
