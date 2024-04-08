@@ -39,7 +39,6 @@ Example configuration for CDC features:
   "url": "url",
   "key": "key",
   "table": "records",
-  "columns": "key,column1,column2,column3",
   "cdcMode": "logrepl",
   "logrepl.publicationName": "meroxademo",
   "logrepl.slotName": "meroxademo"
@@ -50,11 +49,6 @@ Example configuration for CDC features:
 
 If no `key` field is provided, then the connector will attempt to look up the primary key column of the table. If that
 can't be determined it will fail.
-
-## Columns
-
-If no column names are provided in the config, then the connector will assume that all columns in the table should be
-returned.
 
 ## Configuration Options
 
