@@ -173,7 +173,7 @@ func (h *CDCHandler) send(ctx context.Context, rec sdk.Record) error {
 
 func (h *CDCHandler) buildRecordMetadata(relation *pglogrepl.RelationMessage) map[string]string {
 	return map[string]string{
-		MetadataPostgresTable: relation.RelationName,
+		sdk.MetadataCollection: relation.RelationName,
 	}
 }
 

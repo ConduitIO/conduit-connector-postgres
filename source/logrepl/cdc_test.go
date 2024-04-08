@@ -54,7 +54,7 @@ func TestIterator_Next(t *testing.T) {
 			want: sdk.Record{
 				Operation: sdk.OperationCreate,
 				Metadata: map[string]string{
-					MetadataPostgresTable: table,
+					sdk.MetadataCollection: table,
 				},
 				Key: sdk.StructuredData{"id": int64(6)},
 				Payload: sdk.Change{
@@ -78,7 +78,7 @@ func TestIterator_Next(t *testing.T) {
 			want: sdk.Record{
 				Operation: sdk.OperationUpdate,
 				Metadata: map[string]string{
-					MetadataPostgresTable: table,
+					sdk.MetadataCollection: table,
 				},
 				Key: sdk.StructuredData{"id": int64(1)},
 				Payload: sdk.Change{
@@ -100,7 +100,7 @@ func TestIterator_Next(t *testing.T) {
 			want: sdk.Record{
 				Operation: sdk.OperationDelete,
 				Metadata: map[string]string{
-					MetadataPostgresTable: table,
+					sdk.MetadataCollection: table,
 				},
 				Key: sdk.StructuredData{"id": int64(3)},
 			},
