@@ -19,7 +19,7 @@ func (Config) Parameters() map[string]sdk.Parameter {
 		},
 		"key": {
 			Default:     "",
-			Description: "key is a list of key column names per table, ex:\"table1:key1,table2:key2\", records should use the key values for their `key` fields.",
+			Description: "key is a list of key column names per table, e.g.:\"table1:key1,table2:key2\", records should use the key values for their `key` fields.",
 			Type:        sdk.ParameterTypeString,
 			Validations: []sdk.Validation{},
 		},
@@ -45,7 +45,7 @@ func (Config) Parameters() map[string]sdk.Parameter {
 		},
 		"table": {
 			Default:     "",
-			Description: "table is a List of table names to read from, separated by a comma.",
+			Description: "table is a List of table names to read from, separated by a comma, e.g.:\"table1,table2\". Use \"*\" if you'd like to listen to all tables.",
 			Type:        sdk.ParameterTypeString,
 			Validations: []sdk.Validation{
 				sdk.ValidationRequired{},
