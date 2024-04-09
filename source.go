@@ -64,6 +64,14 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
+
+	if s.readingAllTables() {
+		s.config.Table, err = s.getAllTables(ctx, conn)
+		if err != nil {
+			return fmt.Errorf("failed to connect to database: %w", err)
+		}
+	}
+
 	s.conn = conn
 
 	switch s.config.CDCMode {
@@ -158,4 +166,31 @@ func (s *Source) getTableColumns(ctx context.Context, conn *pgx.Conn) ([]string,
 		return nil, fmt.Errorf("rows error: %w", err)
 	}
 	return columns, nil
+}
+
+func (s *Source) readingAllTables() bool {
+	return len(s.config.Table) == 1 && s.config.Table[0] == source.AllTablesWildcard
+}
+
+func (s *Source) getAllTables(ctx context.Context, conn *pgx.Conn) ([]string, error) {
+	query := "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
+
+	rows, err := conn.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tables []string
+	for rows.Next() {
+		var tableName string
+		if err := rows.Scan(&tableName); err != nil {
+			return nil, fmt.Errorf("failed to scan table name: %w", err)
+		}
+		tables = append(tables, tableName)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows error: %w", err)
+	}
+	return tables, nil
 }
