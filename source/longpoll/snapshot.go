@@ -51,7 +51,7 @@ type SnapshotIterator struct {
 	// rows holds a reference to the postgres connection. this can be nil so
 	// we must always call loadRows before HasNext or Next.
 	rows pgx.Rows
-	// ineternalPos is an internal integer Position for the SnapshotIterator to
+	// internalPos is an internal integer Position for the SnapshotIterator to
 	// to return at each Read call.
 	internalPos int64
 	// snapshotComplete keeps an internal record of whether the snapshot is
