@@ -60,10 +60,8 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
-	columns, err := s.getTableColumns(ctx, conn)
-	if err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
-	}
+
+	s.conn = conn
 
 	if s.readingAllTables() {
 		s.config.Table, err = s.getAllTables(ctx, conn)
@@ -71,8 +69,6 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			return fmt.Errorf("failed to connect to database: %w", err)
 		}
 	}
-
-	s.conn = conn
 
 	switch s.config.CDCMode {
 	case source.CDCModeAuto:
@@ -105,16 +101,25 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			return sdk.ErrUnimplemented
 		}
 
-		snap, err := longpoll.NewSnapshotIterator(
-			ctx,
-			s.conn,
-			s.config.Table[0], // todo: only the first table for now
-			columns,
-			s.tableKeys[s.config.Table[0]])
-		if err != nil {
-			return fmt.Errorf("failed to create long polling iterator: %w", err)
+		for _, table := range s.config.Table {
+			columns, err := s.getTableColumns(ctx, conn, table)
+			if err != nil {
+				return fmt.Errorf("failed to connect to database: %w", err)
+			}
+
+			snap, err := longpoll.NewSnapshotIterator(
+				ctx,
+				s.conn,
+				table,
+				columns,
+				s.tableKeys[table])
+			if err != nil {
+				return fmt.Errorf("failed to create long polling iterator: %w", err)
+			}
+
+			// TODO: check how to keep this reference
+			s.iterator = snap
 		}
-		s.iterator = snap
 	default:
 		// shouldn't happen, config was validated
 		return fmt.Errorf("unsupported CDC mode %q", s.config.CDCMode)
@@ -144,16 +149,17 @@ func (s *Source) Teardown(ctx context.Context) error {
 	return nil
 }
 
-func (s *Source) getTableColumns(ctx context.Context, conn *pgx.Conn) ([]string, error) {
+func (s *Source) getTableColumns(ctx context.Context, conn *pgx.Conn, table string) ([]string, error) {
 	query := "SELECT column_name FROM information_schema.columns WHERE table_name = $1"
 
-	rows, err := conn.Query(ctx, query, s.config.Table[0])
+	rows, err := conn.Query(ctx, query, table)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
 	var columns []string
+
 	for rows.Next() {
 		var columnName string
 		err := rows.Scan(&columnName)
@@ -165,6 +171,7 @@ func (s *Source) getTableColumns(ctx context.Context, conn *pgx.Conn) ([]string,
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("rows error: %w", err)
 	}
+
 	return columns, nil
 }
 
