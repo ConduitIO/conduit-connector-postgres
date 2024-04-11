@@ -173,7 +173,7 @@ func (f *Fetcher) updateFetchLimit(ctx context.Context, tx pgx.Tx) error {
 
 	if err := tx.QueryRow(
 		ctx,
-		fmt.Sprintf("SELECT max(%s) FROM %s", f.conf.Key, f.conf.Table),
+		"SELECT max($1) FROM $2", f.conf.Key, f.conf.Table,
 	).Scan(&f.snapshotEnd); err != nil {
 		return err
 	}
@@ -291,7 +291,7 @@ func validateTable(ctx context.Context, table string, tx pgx.Tx) error {
 
 	if err := tx.QueryRow(
 		ctx,
-		"SELECT EXISTS(SELECT tablename FROM pg_tables WHERE tablename = $1)",
+		"SELECT EXISTS(SELECT tablename FROM pg_tables WHERE tablename=$1)",
 		table,
 	).Scan(&tableExists); err != nil {
 		return fmt.Errorf("unable to check table %q: %w", table, err)
