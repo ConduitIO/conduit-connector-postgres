@@ -209,7 +209,8 @@ func (d *Destination) remove(r sdk.Record, b *pgx.Batch) error {
 // can error on constraints violations so should only be used when no table
 // key or unique constraints are otherwise present.
 func (d *Destination) insert(r sdk.Record, b *pgx.Batch) error {
-	sdk.Logger(context.Background()).
+	ctx := context.Background()
+	sdk.Logger(ctx).
 		Info().
 		Str("reocrd", string(r.Bytes())).
 		Msg("inserting record")
@@ -217,6 +218,8 @@ func (d *Destination) insert(r sdk.Record, b *pgx.Batch) error {
 	if err != nil {
 		return err
 	}
+	sdk.Logger(ctx).Info().Str("table_name", tableName).Msg("table name")
+
 	key, err := d.getKey(r)
 	if err != nil {
 		return err
@@ -225,6 +228,9 @@ func (d *Destination) insert(r sdk.Record, b *pgx.Batch) error {
 	if err != nil {
 		return err
 	}
+
+	sdk.Logger(ctx).Info().Msg("got to stmt builder")
+
 	colArgs, valArgs := d.formatColumnsAndValues(key, payload)
 	query, args, err := d.stmtBuilder.
 		Insert(tableName).
