@@ -35,8 +35,10 @@ const (
 type Destination struct {
 	sdk.UnimplementedDestination
 
+	config  destination.Config
+	tableFn destination.TableFn
+
 	conn        *pgx.Conn
-	config      destination.Config
 	stmtBuilder sq.StatementBuilderType
 }
 
@@ -61,6 +63,13 @@ func (d *Destination) Configure(_ context.Context, cfg map[string]string) error 
 	if err != nil {
 		return fmt.Errorf("invalid url: %w", err)
 	}
+
+	// try parsing the table function
+	d.tableFn, err = d.config.TableFunction()
+	if err != nil {
+		return fmt.Errorf("invalid table: %w", err)
+	}
+
 	return nil
 }
 
@@ -160,7 +169,7 @@ func (d *Destination) upsert(r sdk.Record, b *pgx.Batch) error {
 
 	keyColumnName := d.getKeyColumnName(key, d.config.Key)
 
-	tableName, err := d.getTableName(r.Metadata)
+	tableName, err := d.tableFn(r)
 	if err != nil {
 		return fmt.Errorf("failed to get table name for write: %w", err)
 	}
@@ -180,7 +189,7 @@ func (d *Destination) remove(r sdk.Record, b *pgx.Batch) error {
 		return err
 	}
 	keyColumnName := d.getKeyColumnName(key, d.config.Key)
-	tableName, err := d.getTableName(r.Metadata)
+	tableName, err := d.tableFn(r)
 	if err != nil {
 		return fmt.Errorf("failed to get table name for write: %w", err)
 	}
@@ -200,7 +209,7 @@ func (d *Destination) remove(r sdk.Record, b *pgx.Batch) error {
 // can error on constraints violations so should only be used when no table
 // key or unique constraints are otherwise present.
 func (d *Destination) insert(r sdk.Record, b *pgx.Batch) error {
-	tableName, err := d.getTableName(r.Metadata)
+	tableName, err := d.tableFn(r)
 	if err != nil {
 		return err
 	}
@@ -320,20 +329,6 @@ func (d *Destination) formatColumnsAndValues(key, payload sdk.StructuredData) ([
 	}
 
 	return colArgs, valArgs
-}
-
-// return either the record's metadata value for table or the default configured
-// value for table. Otherwise it will error since we require some table to be
-// set to write into.
-func (d *Destination) getTableName(metadata map[string]string) (string, error) {
-	tableName, ok := metadata[MetadataPostgresTable]
-	if !ok {
-		if d.config.Table == "" {
-			return "", fmt.Errorf("no table provided for default writes")
-		}
-		return d.config.Table, nil
-	}
-	return tableName, nil
 }
 
 // getKeyColumnName will return the name of the first item in the key or the
