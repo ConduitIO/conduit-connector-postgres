@@ -209,6 +209,10 @@ func (d *Destination) remove(r sdk.Record, b *pgx.Batch) error {
 // can error on constraints violations so should only be used when no table
 // key or unique constraints are otherwise present.
 func (d *Destination) insert(r sdk.Record, b *pgx.Batch) error {
+	sdk.Logger(context.Background()).
+		Info().
+		Str("reocrd", string(r.Bytes())).
+		Msg("inserting record")
 	tableName, err := d.tableFn(r)
 	if err != nil {
 		return err
