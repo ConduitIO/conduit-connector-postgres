@@ -218,18 +218,19 @@ func (d *Destination) insert(r sdk.Record, b *pgx.Batch) error {
 	if err != nil {
 		return err
 	}
-	sdk.Logger(ctx).Info().Str("table_name", tableName).Msg("table name")
+	sdk.Logger(ctx).Info().Str("table_name", tableName).Msg("got table name")
 
 	key, err := d.getKey(r)
 	if err != nil {
 		return err
 	}
+	sdk.Logger(ctx).Info().Str("key", string(key.Bytes())).Msg("got key")
+
 	payload, err := d.getPayload(r)
 	if err != nil {
 		return err
 	}
-
-	sdk.Logger(ctx).Info().Msg("got to stmt builder")
+	sdk.Logger(ctx).Info().Str("payload", string(payload.Bytes())).Msg("got payload")
 
 	colArgs, valArgs := d.formatColumnsAndValues(key, payload)
 	query, args, err := d.stmtBuilder.
