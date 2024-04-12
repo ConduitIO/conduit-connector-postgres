@@ -35,8 +35,8 @@ const (
 type Destination struct {
 	sdk.UnimplementedDestination
 
-	config  destination.Config
-	tableFn destination.TableFn
+	config       destination.Config
+	getTableName destination.TableFn
 
 	conn        *pgx.Conn
 	stmtBuilder sq.StatementBuilderType
@@ -64,10 +64,9 @@ func (d *Destination) Configure(_ context.Context, cfg map[string]string) error 
 		return fmt.Errorf("invalid url: %w", err)
 	}
 
-	// try parsing the table function
-	d.tableFn, err = d.config.TableFunction()
+	d.getTableName, err = d.config.TableFunction()
 	if err != nil {
-		return fmt.Errorf("invalid table: %w", err)
+		return fmt.Errorf("invalid table name or table function: %w", err)
 	}
 
 	return nil
@@ -169,7 +168,7 @@ func (d *Destination) upsert(r sdk.Record, b *pgx.Batch) error {
 
 	keyColumnName := d.getKeyColumnName(key, d.config.Key)
 
-	tableName, err := d.tableFn(r)
+	tableName, err := d.getTableName(r)
 	if err != nil {
 		return fmt.Errorf("failed to get table name for write: %w", err)
 	}
@@ -189,7 +188,7 @@ func (d *Destination) remove(r sdk.Record, b *pgx.Batch) error {
 		return err
 	}
 	keyColumnName := d.getKeyColumnName(key, d.config.Key)
-	tableName, err := d.tableFn(r)
+	tableName, err := d.getTableName(r)
 	if err != nil {
 		return fmt.Errorf("failed to get table name for write: %w", err)
 	}
@@ -209,28 +208,20 @@ func (d *Destination) remove(r sdk.Record, b *pgx.Batch) error {
 // can error on constraints violations so should only be used when no table
 // key or unique constraints are otherwise present.
 func (d *Destination) insert(r sdk.Record, b *pgx.Batch) error {
-	ctx := context.Background()
-	sdk.Logger(ctx).
-		Info().
-		Str("record", string(r.Bytes())).
-		Msg("inserting record")
-	tableName, err := d.tableFn(r)
+	tableName, err := d.getTableName(r)
 	if err != nil {
 		return err
 	}
-	sdk.Logger(ctx).Info().Str("table_name", tableName).Msg("got table name")
 
 	key, err := d.getKey(r)
 	if err != nil {
 		return err
 	}
-	sdk.Logger(ctx).Info().Str("key", string(key.Bytes())).Msg("got key")
 
 	payload, err := d.getPayload(r)
 	if err != nil {
 		return err
 	}
-	sdk.Logger(ctx).Info().Str("payload", string(payload.Bytes())).Msg("got payload")
 
 	colArgs, valArgs := d.formatColumnsAndValues(key, payload)
 	query, args, err := d.stmtBuilder.

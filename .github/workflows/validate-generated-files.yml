@@ -20,4 +20,5 @@ jobs:
         run: |
           export PATH=$PATH:$(go env GOPATH)/bin
           make install-tools generate
+          git diff
           git diff --exit-code --numstat

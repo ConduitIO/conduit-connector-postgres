@@ -18,7 +18,6 @@ package destination
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"strings"
 	"text/template"
@@ -45,10 +44,6 @@ func (c Config) TableFunction() (f TableFn, err error) {
 	// Not a template, i.e. it's a static table name
 	if !strings.HasPrefix(c.Table, "{{") && !strings.HasSuffix(c.Table, "}}") {
 		return func(record sdk.Record) (string, error) {
-			sdk.Logger(context.Background()).
-				Info().
-				Str("table_function_static", c.Table).
-				Msg("returning static table name")
 			return c.Table, nil
 		}, nil
 	}
@@ -63,10 +58,6 @@ func (c Config) TableFunction() (f TableFn, err error) {
 	// The table is a valid template, return TableFn.
 	var buf bytes.Buffer
 	return func(r sdk.Record) (string, error) {
-		sdk.Logger(context.Background()).
-			Info().
-			Str("table_function_template", c.Table).
-			Msg("returning static table name")
 		buf.Reset()
 		if err := t.Execute(&buf, r); err != nil {
 			return "", fmt.Errorf("failed to execute table template: %w", err)
