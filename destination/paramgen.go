@@ -16,7 +16,7 @@ func (Config) Parameters() map[string]sdk.Parameter {
 			Validations: []sdk.Validation{},
 		},
 		"table": {
-			Default:     "",
+			Default:     "{{ index .Metadata \"opencdc.collection\" }}",
 			Description: "table is used as the target table into which records are inserted.",
 			Type:        sdk.ParameterTypeString,
 			Validations: []sdk.Validation{},

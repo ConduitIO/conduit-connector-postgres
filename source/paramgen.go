@@ -19,7 +19,7 @@ func (Config) Parameters() map[string]sdk.Parameter {
 		},
 		"key": {
 			Default:     "",
-			Description: "todo: remove param, Column name that records should use for their `key` fields.",
+			Description: "key is a list of key column names per table, ex:\"table1:key1,table2:key2\", records should use the key values for their `key` fields.",
 			Type:        sdk.ParameterTypeString,
 			Validations: []sdk.Validation{},
 		},
@@ -37,7 +37,7 @@ func (Config) Parameters() map[string]sdk.Parameter {
 		},
 		"snapshotMode": {
 			Default:     "initial",
-			Description: "Whether or not the plugin will take a snapshot of the entire table before starting cdc mode.",
+			Description: "snapshotMode is whether the plugin will take a snapshot of the entire table before starting cdc mode.",
 			Type:        sdk.ParameterTypeString,
 			Validations: []sdk.Validation{
 				sdk.ValidationInclusion{List: []string{"initial", "never"}},
@@ -45,7 +45,7 @@ func (Config) Parameters() map[string]sdk.Parameter {
 		},
 		"table": {
 			Default:     "",
-			Description: "List of table names to read from, separated by a comma.",
+			Description: "table is a List of table names to read from, separated by a comma.",
 			Type:        sdk.ParameterTypeString,
 			Validations: []sdk.Validation{
 				sdk.ValidationRequired{},
