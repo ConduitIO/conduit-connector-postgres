@@ -43,7 +43,7 @@ type Config struct {
 func (c Config) TableFunction() (f TableFn, err error) {
 	// Not a template, i.e. it's a static table name
 	if !strings.HasPrefix(c.Table, "{{") && !strings.HasSuffix(c.Table, "}}") {
-		return func(record sdk.Record) (string, error) {
+		return func(_ sdk.Record) (string, error) {
 			return c.Table, nil
 		}, nil
 	}
