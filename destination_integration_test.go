@@ -32,7 +32,13 @@ func TestDestination_Write(t *testing.T) {
 	tableName := test.SetupTestTable(ctx, t, conn)
 
 	d := NewDestination()
-	err := d.Configure(ctx, map[string]string{"url": test.RegularConnString})
+	err := d.Configure(
+		ctx,
+		map[string]string{
+			"url":   test.RegularConnString,
+			"table": "{{ index .Metadata \"opencdc.collection\" }}",
+		},
+	)
 	is.NoErr(err)
 	err = d.Open(ctx)
 	is.NoErr(err)
@@ -49,7 +55,7 @@ func TestDestination_Write(t *testing.T) {
 		record: sdk.Record{
 			Position:  sdk.Position("foo"),
 			Operation: sdk.OperationSnapshot,
-			Metadata:  map[string]string{MetadataPostgresTable: tableName},
+			Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
 			Key:       sdk.StructuredData{"id": 5000},
 			Payload: sdk.Change{
 				After: sdk.StructuredData{
@@ -64,7 +70,7 @@ func TestDestination_Write(t *testing.T) {
 		record: sdk.Record{
 			Position:  sdk.Position("foo"),
 			Operation: sdk.OperationCreate,
-			Metadata:  map[string]string{MetadataPostgresTable: tableName},
+			Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
 			Key:       sdk.StructuredData{"id": 5},
 			Payload: sdk.Change{
 				After: sdk.StructuredData{
@@ -79,7 +85,7 @@ func TestDestination_Write(t *testing.T) {
 		record: sdk.Record{
 			Position:  sdk.Position("foo"),
 			Operation: sdk.OperationUpdate,
-			Metadata:  map[string]string{MetadataPostgresTable: tableName},
+			Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
 			Key:       sdk.StructuredData{"id": 6},
 			Payload: sdk.Change{
 				After: sdk.StructuredData{
@@ -94,7 +100,7 @@ func TestDestination_Write(t *testing.T) {
 		record: sdk.Record{
 			Position:  sdk.Position("foo"),
 			Operation: sdk.OperationUpdate,
-			Metadata:  map[string]string{MetadataPostgresTable: tableName},
+			Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
 			Key:       sdk.StructuredData{"id": 1},
 			Payload: sdk.Change{
 				After: sdk.StructuredData{
@@ -108,7 +114,7 @@ func TestDestination_Write(t *testing.T) {
 		name: "delete",
 		record: sdk.Record{
 			Position:  sdk.Position("foo"),
-			Metadata:  map[string]string{MetadataPostgresTable: tableName},
+			Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
 			Operation: sdk.OperationDelete,
 			Key:       sdk.StructuredData{"id": 4},
 		},

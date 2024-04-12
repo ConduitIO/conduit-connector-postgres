@@ -29,7 +29,7 @@ import (
 const (
 	// TODO same constant is defined in packages longpoll, logrepl and destination
 	//  use same constant everywhere
-	MetadataPostgresTable = "postgres.table"
+	MetadataOpenCDCCollection = "opencdc.collection"
 )
 
 type Destination struct {
