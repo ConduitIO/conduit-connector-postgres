@@ -89,13 +89,13 @@ func (d *Destination) Write(ctx context.Context, recs []sdk.Record) (int, error)
 		var err error
 		switch rec.Operation {
 		case sdk.OperationCreate:
-			err = d.handleInsert(rec, b)
+			err = d.handleInsert(ctx, rec, b)
 		case sdk.OperationUpdate:
-			err = d.handleUpdate(rec, b)
+			err = d.handleUpdate(ctx, rec, b)
 		case sdk.OperationDelete:
-			err = d.handleDelete(rec, b)
+			err = d.handleDelete(ctx, rec, b)
 		case sdk.OperationSnapshot:
-			err = d.handleInsert(rec, b)
+			err = d.handleInsert(ctx, rec, b)
 		default:
 			return 0, fmt.Errorf("invalid operation %q", rec.Operation)
 		}
@@ -129,33 +129,33 @@ func (d *Destination) Teardown(ctx context.Context) error {
 // table. It checks for the existence of a key. If no key is present or a key
 // exists and no key column name is configured, it will plainly insert the data.
 // Otherwise it upserts the record.
-func (d *Destination) handleInsert(r sdk.Record, b *pgx.Batch) error {
+func (d *Destination) handleInsert(ctx context.Context, r sdk.Record, b *pgx.Batch) error {
 	if !d.hasKey(r) || d.config.Key == "" {
-		return d.insert(r, b)
+		return d.insert(ctx, r, b)
 	}
-	return d.upsert(r, b)
+	return d.upsert(ctx, r, b)
 }
 
 // handleUpdate adds a query to the batch that updates the record in the target
 // table. It assumes the record has a key and fails if one is not present.
-func (d *Destination) handleUpdate(r sdk.Record, b *pgx.Batch) error {
+func (d *Destination) handleUpdate(ctx context.Context, r sdk.Record, b *pgx.Batch) error {
 	if !d.hasKey(r) {
 		return fmt.Errorf("key must be provided on update actions")
 	}
 	// TODO handle case if the key was updated
-	return d.upsert(r, b)
+	return d.upsert(ctx, r, b)
 }
 
 // handleDelete adds a query to the batch that deletes the record from the
 // target table. It assumes the record has a key and fails if one is not present.
-func (d *Destination) handleDelete(r sdk.Record, b *pgx.Batch) error {
+func (d *Destination) handleDelete(ctx context.Context, r sdk.Record, b *pgx.Batch) error {
 	if !d.hasKey(r) {
 		return fmt.Errorf("key must be provided on delete actions")
 	}
-	return d.remove(r, b)
+	return d.remove(ctx, r, b)
 }
 
-func (d *Destination) upsert(r sdk.Record, b *pgx.Batch) error {
+func (d *Destination) upsert(ctx context.Context, r sdk.Record, b *pgx.Batch) error {
 	payload, err := d.getPayload(r)
 	if err != nil {
 		return fmt.Errorf("failed to get payload: %w", err)
@@ -177,12 +177,16 @@ func (d *Destination) upsert(r sdk.Record, b *pgx.Batch) error {
 	if err != nil {
 		return fmt.Errorf("error formatting query: %w", err)
 	}
+	sdk.Logger(ctx).Trace().
+		Str("table_name", tableName).
+		Any("key", map[string]interface{}{keyColumnName: key[keyColumnName]}).
+		Msg("upserting record")
 
 	b.Queue(query, args...)
 	return nil
 }
 
-func (d *Destination) remove(r sdk.Record, b *pgx.Batch) error {
+func (d *Destination) remove(ctx context.Context, r sdk.Record, b *pgx.Batch) error {
 	key, err := d.getKey(r)
 	if err != nil {
 		return err
@@ -192,6 +196,11 @@ func (d *Destination) remove(r sdk.Record, b *pgx.Batch) error {
 	if err != nil {
 		return fmt.Errorf("failed to get table name for write: %w", err)
 	}
+
+	sdk.Logger(ctx).Trace().
+		Str("table_name", tableName).
+		Any("key", map[string]interface{}{keyColumnName: key[keyColumnName]}).
+		Msg("deleting record")
 	query, args, err := d.stmtBuilder.
 		Delete(tableName).
 		Where(sq.Eq{keyColumnName: key[keyColumnName]}).
@@ -207,7 +216,7 @@ func (d *Destination) remove(r sdk.Record, b *pgx.Batch) error {
 // insert is an append-only operation that doesn't care about keys, but
 // can error on constraints violations so should only be used when no table
 // key or unique constraints are otherwise present.
-func (d *Destination) insert(r sdk.Record, b *pgx.Batch) error {
+func (d *Destination) insert(ctx context.Context, r sdk.Record, b *pgx.Batch) error {
 	tableName, err := d.getTableName(r)
 	if err != nil {
 		return err
@@ -224,6 +233,9 @@ func (d *Destination) insert(r sdk.Record, b *pgx.Batch) error {
 	}
 
 	colArgs, valArgs := d.formatColumnsAndValues(key, payload)
+	sdk.Logger(ctx).Trace().
+		Str("table_name", tableName).
+		Msg("inserting record")
 	query, args, err := d.stmtBuilder.
 		Insert(tableName).
 		Columns(colArgs...).
