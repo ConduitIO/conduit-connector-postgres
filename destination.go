@@ -212,7 +212,7 @@ func (d *Destination) insert(r sdk.Record, b *pgx.Batch) error {
 	ctx := context.Background()
 	sdk.Logger(ctx).
 		Info().
-		Str("reocrd", string(r.Bytes())).
+		Str("record", string(r.Bytes())).
 		Msg("inserting record")
 	tableName, err := d.tableFn(r)
 	if err != nil {
