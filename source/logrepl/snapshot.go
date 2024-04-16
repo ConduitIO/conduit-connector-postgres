@@ -32,8 +32,7 @@ var ErrSnapshotComplete = errors.New("snapshot complete")
 var ErrSnapshotInterrupt = errors.New("snapshot interrupted")
 
 const (
-	// TODO same constant is defined in packages longpoll, logrepl and destination
-	//  use same constant everywhere
+	// TODO Update this once snapshots are properly done for this mode.
 	MetadataPostgresTable = "postgres.table"
 )
 
