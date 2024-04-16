@@ -93,7 +93,7 @@ If there is no key, the record will be simply appended.
 | `table` | The name of the table in Postgres that the connector should write to.*      | false    |         |
 | `key`   | Column name used to detect if the target table already contains the record. | false    |         |
 
-*Note that the `postgres.table` field in the record's metadata will override the `table` property in the destination's
+*Note that the `opencdc.collection` field in the record's metadata will override the `table` property in the destination's
 configuration. Please refer to [Table Name](#table-name) for more information.
 
 # Testing
