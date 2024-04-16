@@ -67,16 +67,6 @@ can't be determined it will fail.
 The Postgres Destination takes a `record.Record` and parses it into a valid SQL query. The Destination is designed to
 handle different payloads and keys. Because of this, each record is individually parsed and upserted.
 
-## Table Name
-
-If a record contains a `opencdc.collection` property in its metadata it will be inserted in that table, otherwise it will
-fall back to use the table configured in the connector. This way the Destination can support multiple tables in the same
-connector.
-
-This is especially important in a pipeline where the source is also a Postgres connector, as the source will include the
-`opencdc.collection` field in the metadata of each record. If you want to reroute the records to a different table, you have
-to modify the `opencdc.collection` field in the record's metadata using a processor.
-
 ## Upsert Behavior
 
 If the target table already contains a record with the same key, the Destination will upsert with its current received
@@ -87,14 +77,11 @@ If there is no key, the record will be simply appended.
 
 ## Configuration Options
 
-| name    | description                                                                 | required | default |
-|---------|-----------------------------------------------------------------------------|----------|---------|
-| `url`   | Connection string for the Postgres database.                                | true     |         |
-| `table` | The name of the table in Postgres that the connector should write to.*      | false    |         |
-| `key`   | Column name used to detect if the target table already contains the record. | false    |         |
-
-*Note that the `opencdc.collection` field in the record's metadata will override the `table` property in the destination's
-configuration. Please refer to [Table Name](#table-name) for more information.
+| name    | description                                                                                                                                                                          | required | default |
+|---------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------|---------|
+| `url`   | Connection string for the Postgres database.                                                                                                                                         | true     |         |
+| `table` | Table names. It can contain a Go template that will be executed for each record to determine the table. By default, the table is the value of the `opencdc.collection` metadata field. | false    |         |
+| `key`   | Column name used to detect if the target table already contains the record.                                                                                                          | false    |         |
 
 # Testing
 
