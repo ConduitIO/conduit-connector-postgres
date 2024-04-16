@@ -19,7 +19,6 @@ import (
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	"github.com/conduitio/conduit-connector-postgres/source/longpoll"
-
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 

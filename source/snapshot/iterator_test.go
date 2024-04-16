@@ -21,7 +21,6 @@ import (
 	"testing"
 
 	"github.com/conduitio/conduit-connector-postgres/source/position"
-
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
 )

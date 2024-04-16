@@ -14,11 +14,16 @@ test:
 
 .PHONY: lint
 lint:
-	golangci-lint run
+	golangci-lint run -v
 
 .PHONY: generate
 generate:
 	go generate ./...
+
+.PHONY: fmt
+fmt:
+	gofumpt -l -w .
+	gci write --skip-generated  .
 
 .PHONY: install-tools
 install-tools:
