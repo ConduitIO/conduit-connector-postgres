@@ -77,11 +77,11 @@ If there is no key, the record will be simply appended.
 
 ## Configuration Options
 
-| name    | description                                                                                                                                                                          | required | default |
-|---------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------|---------|
-| `url`   | Connection string for the Postgres database.                                                                                                                                         | true     |         |
-| `table` | Table names. It can contain a Go template that will be executed for each record to determine the table. By default, the table is the value of the `opencdc.collection` metadata field. | false    |         |
-| `key`   | Column name used to detect if the target table already contains the record.                                                                                                          | false    |         |
+| name    | description                                                                                                                                                                             | required | default                                    |
+|---------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------|--------------------------------------------|
+| `url`   | Connection string for the Postgres database.                                                                                                                                            | true     |                                            |
+| `table` | Table names. It can contain a Go template that will be executed for each record to determine the table. By default, the table is the value of the `opencdc.collection` metadata field.  | false    | {{ index .Metadata "opencdc.collection" }} |
+| `key`   | Column name used to detect if the target table already contains the record.                                                                                                             | false    |                                            |
 
 # Testing
 
