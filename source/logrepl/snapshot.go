@@ -31,6 +31,12 @@ var ErrSnapshotComplete = errors.New("snapshot complete")
 // ErrSnapshotInterrupt is returned by Teardown when a snapshot is interrupted
 var ErrSnapshotInterrupt = errors.New("snapshot interrupted")
 
+const (
+	// TODO same constant is defined in packages longpoll, logrepl and destination
+	//  use same constant everywhere
+	MetadataPostgresTable = "postgres.table"
+)
+
 type SnapshotConfig struct {
 	SnapshotName string
 	Table        string
@@ -182,7 +188,7 @@ func (s *SnapshotIterator) buildRecordPosition() sdk.Position {
 
 func (s *SnapshotIterator) buildRecordMetadata() map[string]string {
 	return map[string]string{
-		sdk.MetadataCollection: s.config.Table,
+		MetadataPostgresTable: s.config.Table,
 	}
 }
 

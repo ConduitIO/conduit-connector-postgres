@@ -24,6 +24,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+const (
+	// TODO same constant is defined in packages longpoll, logrepl and destination
+	//  use same constant everywhere
+	MetadataPostgresTable = "postgres.table"
+)
+
 // Declare Postgres $ placeholder format
 var psql = sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 
@@ -176,7 +182,7 @@ func (s *SnapshotIterator) buildRecordPosition() sdk.Position {
 
 func (s *SnapshotIterator) buildRecordMetadata() map[string]string {
 	return map[string]string{
-		sdk.MetadataCollection: s.table,
+		MetadataPostgresTable: s.table,
 	}
 }
 
