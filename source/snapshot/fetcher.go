@@ -1,3 +1,17 @@
+// Copyright © 2024 Meroxa, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package snapshot
 
 import (
@@ -94,7 +108,13 @@ func (f *FetcherWorker) Validate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to start tx for validation: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		if err := tx.Rollback(ctx); err != nil {
+			sdk.Logger(ctx).Warn().
+				Err(err).
+				Msgf("error on validation tx rollback for %q", f.cursorName)
+		}
+	}()
 
 	if err := validateTable(ctx, f.conf.Table, tx); err != nil {
 		return fmt.Errorf("failed to validate table: %w", err)
@@ -117,7 +137,13 @@ func (f *FetcherWorker) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		if err := tx.Rollback(ctx); err != nil {
+			sdk.Logger(ctx).Warn().
+				Err(err).
+				Msgf("error run tx rollback for %q", f.cursorName)
+		}
+	}()
 
 	if err := f.withSnapshot(ctx, tx); err != nil {
 		return err
@@ -141,6 +167,10 @@ func (f *FetcherWorker) Run(ctx context.Context) error {
 			return fmt.Errorf("failed to fetch results: %w", err)
 		}
 
+		if n == 0 { // end of cursor
+			break
+		}
+
 		nfetched += int64(n)
 
 		sdk.Logger(ctx).Info().
@@ -148,11 +178,6 @@ func (f *FetcherWorker) Run(ctx context.Context) error {
 			Str("table", f.conf.Table).
 			Dur("elapsed", time.Since(start)).
 			Msg("fetching rows")
-
-		if n == 0 { // end of cursor
-			break
-		}
-
 	}
 
 	sdk.Logger(ctx).Info().
@@ -179,7 +204,12 @@ func (f *FetcherWorker) createCursor(ctx context.Context, tx pgx.Tx) (func(), er
 	}
 
 	return func() {
-		tx.Exec(ctx, fmt.Sprint("CLOSE ", f.cursorName))
+		// N.B. The cursor will automatically close when the TX is done.
+		if _, err := tx.Exec(ctx, fmt.Sprint("CLOSE ", f.cursorName)); err != nil {
+			sdk.Logger(ctx).Warn().
+				Err(err).
+				Msgf("unexpected error when closing cursor %q", f.cursorName)
+		}
 	}, nil
 }
 
@@ -244,11 +274,11 @@ func (f *FetcherWorker) buildRecord(fields []string, values []any) sdk.Record {
 	payload := make(sdk.StructuredData)
 
 	for i, name := range fields {
-		switch v := values[i]; v.(type) {
-		case time.Time:
-			payload[name] = (v.(time.Time)).UTC().String()
+		switch t := values[i].(type) {
+		case time.Time: // type not supported in sdk.Record
+			payload[name] = t.UTC().String()
 		default:
-			payload[name] = values[i]
+			payload[name] = t
 		}
 	}
 
