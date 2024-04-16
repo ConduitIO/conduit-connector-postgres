@@ -60,8 +60,6 @@ type FetcherWorker struct {
 	snapshotEnd int64
 	lastRead    int64
 	cursorName  string
-
-	done chan struct{}
 }
 
 func NewFetcherWorker(db *pgxpool.Pool, out chan<- sdk.Record, c FetcherConfig) *FetcherWorker {
@@ -69,7 +67,6 @@ func NewFetcherWorker(db *pgxpool.Pool, out chan<- sdk.Record, c FetcherConfig) 
 		conf:       c,
 		db:         db,
 		out:        out,
-		done:       make(chan struct{}),
 		cursorName: fmt.Sprint("fetcher_", strings.ReplaceAll(uuid.NewString(), "-", "")),
 	}
 
@@ -121,7 +118,6 @@ func (f *FetcherWorker) Run(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	defer close(f.done)
 
 	if err := f.withSnapshot(ctx, tx); err != nil {
 		return err
@@ -242,10 +238,6 @@ func (f *FetcherWorker) send(ctx context.Context, r sdk.Record) error {
 	case f.out <- r:
 		return nil
 	}
-}
-
-func (f *FetcherWorker) Done() chan struct{} {
-	return f.done
 }
 
 func (f *FetcherWorker) buildRecord(fields []string, values []any) sdk.Record {
