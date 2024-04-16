@@ -69,7 +69,7 @@ handle different payloads and keys. Because of this, each record is individually
 
 ## Table Name
 
-If a record contains a `postgres.table` property in its metadata it will be inserted in that table, otherwise it will
+If a record contains a `opencdc.collection` property in its metadata it will be inserted in that table, otherwise it will
 fall back to use the table configured in the connector. This way the Destination can support multiple tables in the same
 connector.
 

@@ -56,7 +56,7 @@ func TestDestination_Write(t *testing.T) {
 			record: sdk.Record{
 				Position:  sdk.Position("foo"),
 				Operation: sdk.OperationSnapshot,
-				Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
+				Metadata:  map[string]string{sdk.MetadataCollection: tableName},
 				Key:       sdk.StructuredData{"id": 5000},
 				Payload: sdk.Change{
 					After: sdk.StructuredData{
@@ -71,7 +71,7 @@ func TestDestination_Write(t *testing.T) {
 			record: sdk.Record{
 				Position:  sdk.Position("foo"),
 				Operation: sdk.OperationCreate,
-				Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
+				Metadata:  map[string]string{sdk.MetadataCollection: tableName},
 				Key:       sdk.StructuredData{"id": 5},
 				Payload: sdk.Change{
 					After: sdk.StructuredData{
@@ -86,7 +86,7 @@ func TestDestination_Write(t *testing.T) {
 			record: sdk.Record{
 				Position:  sdk.Position("foo"),
 				Operation: sdk.OperationUpdate,
-				Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
+				Metadata:  map[string]string{sdk.MetadataCollection: tableName},
 				Key:       sdk.StructuredData{"id": 6},
 				Payload: sdk.Change{
 					After: sdk.StructuredData{
@@ -101,7 +101,7 @@ func TestDestination_Write(t *testing.T) {
 			record: sdk.Record{
 				Position:  sdk.Position("foo"),
 				Operation: sdk.OperationUpdate,
-				Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
+				Metadata:  map[string]string{sdk.MetadataCollection: tableName},
 				Key:       sdk.StructuredData{"id": 1},
 				Payload: sdk.Change{
 					After: sdk.StructuredData{
@@ -115,7 +115,7 @@ func TestDestination_Write(t *testing.T) {
 			name: "delete",
 			record: sdk.Record{
 				Position:  sdk.Position("foo"),
-				Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
+				Metadata:  map[string]string{sdk.MetadataCollection: tableName},
 				Operation: sdk.OperationDelete,
 				Key:       sdk.StructuredData{"id": 4},
 			},
