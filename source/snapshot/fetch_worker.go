@@ -205,13 +205,15 @@ func (f *FetchWorker) createCursor(ctx context.Context, tx pgx.Tx) (func(), erro
 	// N.B. Prepare as much as possible when the cursor is created.
 	//      Table and columns cannot be prepared.
 	//      This query will scan the table for rows based on the conditions.
-	selectQuery := fmt.Sprintf(
-		"SELECT * FROM %s WHERE %s > $1 AND %s <= $2 ORDER BY $3",
-		f.conf.Table, f.conf.Key, f.conf.Key,
-	)
-	cursorSQL := fmt.Sprintf("DECLARE %s CURSOR FOR(%s)", f.cursorName, selectQuery)
+	selectQuery := "SELECT * FROM " + f.conf.Table + " WHERE " + f.conf.Key + " > $1 AND " + f.conf.Key + " <= $2 ORDER BY $3"
 
-	if _, err := tx.Exec(ctx, cursorSQL, f.lastRead, f.snapshotEnd, f.conf.Key); err != nil {
+	if _, err := tx.Exec(
+		ctx,
+		"DECLARE " + f.cursorName + " CURSOR FOR(" + selectQuery + ")",
+		f.lastRead,    // range start
+		f.snapshotEnd, // reange end
+		f.conf.Key,    // order by this
+	); err != nil {
 		return nil, err
 	}
 
