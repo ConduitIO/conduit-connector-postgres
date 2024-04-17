@@ -117,7 +117,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 				return fmt.Errorf("failed to create long polling iterator: %w", err)
 			}
 
-			// TODO: check how to keep this reference
+			// TODO: Address once https://github.com/ConduitIO/conduit-connector-postgres/pull/132 ships
 			s.iterator = snap
 		}
 	default:
