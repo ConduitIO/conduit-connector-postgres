@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -29,6 +30,11 @@ import (
 )
 
 const defaultFetchSize = 50000
+
+var supportedKeyTypes = []string{
+	"smallint", "integer", "bigint",
+	"decimal", "numeric", "real", "double",
+}
 
 type FetchConfig struct {
 	Table     string
@@ -331,19 +337,24 @@ func (f *FetchWorker) withSnapshot(ctx context.Context, tx pgx.Tx) error {
 }
 
 func (FetchWorker) validateKey(ctx context.Context, table, key string, tx pgx.Tx) error {
-	var keyExists, isPK bool
+	var dataType string
 
 	if err := tx.QueryRow(
 		ctx,
-		"SELECT EXISTS(SELECT column_name FROM information_schema.columns WHERE table_name=$1 AND column_name=$2)",
+		"SELECT data_type FROM information_schema.columns WHERE table_name=$1 AND column_name=$2",
 		table, key,
-	).Scan(&keyExists); err != nil {
+	).Scan(&dataType); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("key %q not present on table %q", key, table)
+		}
 		return fmt.Errorf("unable to check key %q on table %q: %w", key, table, err)
 	}
 
-	if !keyExists {
-		return fmt.Errorf("key %q not present on table %q", key, table)
+	if !slices.Contains(supportedKeyTypes, dataType) {
+		return fmt.Errorf("key %q type %q is not supported", key, dataType)
 	}
+
+	var isPK bool
 
 	if err := tx.QueryRow(
 		ctx,
