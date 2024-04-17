@@ -34,7 +34,7 @@ func Test_Iterator_Next(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		is := is.New(t)
 
-		i, err := NewIterator(ctx, pool.Config().ConnString(), Config{
+		i, err := NewIterator(ctx, pool, Config{
 			Position: position.Position{}.ToSDKPosition(),
 			Tables:   []string{table},
 			TablesKeys: map[string]string{
@@ -58,7 +58,7 @@ func Test_Iterator_Next(t *testing.T) {
 	t.Run("context cancelled", func(t *testing.T) {
 		is := is.New(t)
 
-		i, err := NewIterator(ctx, pool.Config().ConnString(), Config{
+		i, err := NewIterator(ctx, pool, Config{
 			Position: position.Position{}.ToSDKPosition(),
 			Tables:   []string{table},
 			TablesKeys: map[string]string{
@@ -81,7 +81,7 @@ func Test_Iterator_Next(t *testing.T) {
 		is := is.New(t)
 		cancelCtx, cancel := context.WithCancel(ctx)
 
-		i, err := NewIterator(cancelCtx, pool.Config().ConnString(), Config{
+		i, err := NewIterator(cancelCtx, pool, Config{
 			Position: position.Position{}.ToSDKPosition(),
 			Tables:   []string{table},
 			TablesKeys: map[string]string{

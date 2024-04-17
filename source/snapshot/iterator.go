@@ -47,7 +47,7 @@ type Iterator struct {
 	records chan sdk.Record
 }
 
-func NewIterator(ctx context.Context, conninfo string, c Config) (*Iterator, error) {
+func NewIterator(ctx context.Context, db *pgxpool.Pool, c Config) (*Iterator, error) {
 	p, err := position.ParseSDKPosition(c.Position)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse position: %w", err)
@@ -55,11 +55,6 @@ func NewIterator(ctx context.Context, conninfo string, c Config) (*Iterator, err
 
 	if p.Snapshot == nil {
 		p.Snapshot = make(position.SnapshotPositions)
-	}
-
-	db, err := pgxpool.New(ctx, conninfo)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse connection string: %w", err)
 	}
 
 	i := &Iterator{
@@ -106,10 +101,6 @@ func (i *Iterator) Ack(_ context.Context) error {
 func (i *Iterator) Teardown(_ context.Context) error {
 	if i.t != nil {
 		i.t.Kill(errors.New("tearing down snapshot iterator"))
-	}
-
-	if i.db != nil {
-		i.db.Close()
 	}
 
 	return nil
