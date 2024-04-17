@@ -94,8 +94,8 @@ func TestSnapshotInterrupted(t *testing.T) {
 			},
 		},
 		Metadata: map[string]string{
-			MetadataPostgresTable: table,
-			sdk.MetadataReadAt:    rec.Metadata[sdk.MetadataReadAt],
+			sdk.MetadataCollection: table,
+			sdk.MetadataReadAt:     rec.Metadata[sdk.MetadataReadAt],
 		},
 	})
 	is.True(errors.Is(s.Teardown(ctx), ErrSnapshotInterrupt))

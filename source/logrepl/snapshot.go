@@ -31,11 +31,6 @@ var ErrSnapshotComplete = errors.New("snapshot complete")
 // ErrSnapshotInterrupt is returned by Teardown when a snapshot is interrupted
 var ErrSnapshotInterrupt = errors.New("snapshot interrupted")
 
-const (
-	// TODO Update this once snapshots are properly done for this mode.
-	MetadataPostgresTable = "postgres.table"
-)
-
 type SnapshotConfig struct {
 	SnapshotName string
 	Table        string
@@ -187,7 +182,7 @@ func (s *SnapshotIterator) buildRecordPosition() sdk.Position {
 
 func (s *SnapshotIterator) buildRecordMetadata() map[string]string {
 	return map[string]string{
-		MetadataPostgresTable: s.config.Table,
+		sdk.MetadataCollection: s.config.Table,
 	}
 }
 
