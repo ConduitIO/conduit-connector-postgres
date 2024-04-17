@@ -82,7 +82,7 @@ func NewIterator(ctx context.Context, conninfo string, c Config) (*Iterator, err
 func (i *Iterator) Next(ctx context.Context) (sdk.Record, error) {
 	select {
 	case <-ctx.Done():
-		return sdk.Record{}, ctx.Err()
+		return sdk.Record{}, fmt.Errorf("iterator stopped: %w", ctx.Err())
 	case r, ok := <-i.records:
 		if !ok { // closed
 			if err := i.t.Err(); err != nil {

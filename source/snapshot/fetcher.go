@@ -38,25 +38,27 @@ type FetcherConfig struct {
 	Position  position.Position
 }
 
-func (c *FetcherConfig) Validate() error {
+var (
+	errTableRequired  = errors.New("table name is required")
+	errKeyRequired    = errors.New("table key required")
+	errInvalidCDCType = errors.New("invalid position type CDC")
+)
+
+func (c FetcherConfig) Validate() error {
 	var errs []error
 
 	if c.Table == "" {
-		errs = append(errs, fmt.Errorf("invalid table %q", c.Table))
+		errs = append(errs, errTableRequired)
 	}
 
 	if c.Key == "" {
-		errs = append(errs, fmt.Errorf("invalid table key %q", c.Key))
-	}
-
-	if c.FetchSize == 0 {
-		c.FetchSize = defaultFetchSize
+		errs = append(errs, errKeyRequired)
 	}
 
 	switch c.Position.Type {
 	case position.TypeSnapshot, position.TypeInitial:
 	default:
-		errs = append(errs, fmt.Errorf("invalid position type %q", c.Position.Type.String()))
+		errs = append(errs, errInvalidCDCType)
 	}
 
 	if len(errs) != 0 {
@@ -82,6 +84,10 @@ func NewFetcherWorker(db *pgxpool.Pool, out chan<- sdk.Record, c FetcherConfig) 
 		db:         db,
 		out:        out,
 		cursorName: fmt.Sprint("fetcher_", strings.ReplaceAll(uuid.NewString(), "-", "")),
+	}
+
+	if f.conf.FetchSize == 0 {
+		f.conf.FetchSize = defaultFetchSize
 	}
 
 	if c.Position.Type == position.TypeInitial || c.Position.Snapshot == nil {
@@ -264,7 +270,7 @@ func (f *FetcherWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 func (f *FetcherWorker) send(ctx context.Context, r sdk.Record) error {
 	select {
 	case <-ctx.Done():
-		return fmt.Errorf("send context done: %w", ctx.Err())
+		return fmt.Errorf("fetcher send ctx: %w", ctx.Err())
 	case f.out <- r:
 		return nil
 	}
@@ -282,13 +288,16 @@ func (f *FetcherWorker) buildRecord(fields []string, values []any) sdk.Record {
 		}
 	}
 
+	// always coerce snapshot position to bigint, pk may be any type of integer.
+	lastRead := keyInt64(payload[f.conf.Key])
+
 	pos := position.Position{
 		Type: position.TypeSnapshot,
 		Snapshot: position.SnapshotPositions{
 			f.conf.Table: {
-				LastRead:    payload[f.conf.Key].(int64),
+				LastRead:    lastRead,
 				SnapshotEnd: f.snapshotEnd,
-				Done:        f.snapshotEnd == payload[f.conf.Key].(int64),
+				Done:        f.snapshotEnd == lastRead,
 			},
 		},
 	}.ToSDKPosition()
@@ -306,7 +315,8 @@ func (f *FetcherWorker) buildRecord(fields []string, values []any) sdk.Record {
 
 func (f *FetcherWorker) withSnapshot(ctx context.Context, tx pgx.Tx) error {
 	if f.conf.Snapshot == "" {
-		// log snapshot not provided
+		sdk.Logger(ctx).Warn().
+			Msgf("fetcher %q starting without transaction snapshot", f.cursorName)
 		return nil
 	}
 
