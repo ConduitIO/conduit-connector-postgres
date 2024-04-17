@@ -32,16 +32,17 @@ import (
 const defaultFetchSize = 50000
 
 var supportedKeyTypes = []string{
-	"smallint", "integer", "bigint",
-	"decimal", "numeric", "real", "double",
+	"smallint",
+	"integer",
+	"bigint",
 }
 
 type FetchConfig struct {
-	Table     string
-	Key       string
-	Snapshot  string
-	FetchSize int
-	Position  position.Position
+	Table        string
+	Key          string
+	TXSnapshotID string
+	FetchSize    int
+	Position     position.Position
 }
 
 var (
@@ -201,17 +202,16 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 }
 
 func (f *FetchWorker) createCursor(ctx context.Context, tx pgx.Tx) (func(), error) {
-	cursorSQL := fmt.Sprintf("DECLARE %s CURSOR FOR (SELECT * FROM %s WHERE %s > %d AND %s <= %d ORDER BY %s)",
-		f.cursorName,
-		f.conf.Table,
-		f.conf.Key,
-		f.lastRead,
-		f.conf.Key,
-		f.snapshotEnd,
-		f.conf.Key,
+	// N.B. Prepare as much as possible when the cursor is created.
+	//      Table and columns cannot be prepared.
+	//      This query will scan the table for rows based on the conditions.
+	selectQuery := fmt.Sprintf(
+		"SELECT * FROM %s WHERE %s > $1 AND %s <= $2 ORDER BY $3",
+		f.conf.Table, f.conf.Key, f.conf.Key,
 	)
+	cursorSQL := fmt.Sprintf("DECLARE %s CURSOR FOR(%s)", f.cursorName, selectQuery)
 
-	if _, err := tx.Exec(ctx, cursorSQL); err != nil {
+	if _, err := tx.Exec(ctx, cursorSQL, f.lastRead, f.snapshotEnd, f.conf.Key); err != nil {
 		return nil, err
 	}
 
@@ -257,14 +257,14 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 	for rows.Next() {
 		values, err := rows.Values()
 		if err != nil {
-			return 0, fmt.Errorf("failed to get values")
+			return 0, fmt.Errorf("failed to get values: %w", err)
 		}
 
 		if err := f.send(
 			ctx,
 			f.buildRecord(fields, values),
 		); err != nil {
-			return nread, fmt.Errorf("failed to send record")
+			return nread, fmt.Errorf("failed to send record: %w", err)
 		}
 
 		nread++
@@ -320,7 +320,7 @@ func (f *FetchWorker) buildRecord(fields []string, values []any) sdk.Record {
 }
 
 func (f *FetchWorker) withSnapshot(ctx context.Context, tx pgx.Tx) error {
-	if f.conf.Snapshot == "" {
+	if f.conf.TXSnapshotID == "" {
 		sdk.Logger(ctx).Warn().
 			Msgf("fetcher %q starting without transaction snapshot", f.cursorName)
 		return nil
@@ -328,15 +328,15 @@ func (f *FetchWorker) withSnapshot(ctx context.Context, tx pgx.Tx) error {
 
 	if _, err := tx.Exec(
 		ctx,
-		fmt.Sprintf("SET TRANSACTION SNAPSHOT '%s'", f.conf.Snapshot),
+		fmt.Sprintf("SET TRANSACTION SNAPSHOT '%s'", f.conf.TXSnapshotID),
 	); err != nil {
-		return fmt.Errorf("failed to set tx snapshot %q: %w", f.conf.Snapshot, err)
+		return fmt.Errorf("failed to set tx snapshot %q: %w", f.conf.TXSnapshotID, err)
 	}
 
 	return nil
 }
 
-func (FetchWorker) validateKey(ctx context.Context, table, key string, tx pgx.Tx) error {
+func (*FetchWorker) validateKey(ctx context.Context, table, key string, tx pgx.Tx) error {
 	var dataType string
 
 	if err := tx.QueryRow(
@@ -351,7 +351,7 @@ func (FetchWorker) validateKey(ctx context.Context, table, key string, tx pgx.Tx
 	}
 
 	if !slices.Contains(supportedKeyTypes, dataType) {
-		return fmt.Errorf("key %q type %q is not supported", key, dataType)
+		return fmt.Errorf("key %q of type %q is unsupported", key, dataType)
 	}
 
 	var isPK bool
@@ -374,7 +374,7 @@ func (FetchWorker) validateKey(ctx context.Context, table, key string, tx pgx.Tx
 	return nil
 }
 
-func (FetchWorker) validateTable(ctx context.Context, table string, tx pgx.Tx) error {
+func (*FetchWorker) validateTable(ctx context.Context, table string, tx pgx.Tx) error {
 	var tableExists bool
 
 	if err := tx.QueryRow(

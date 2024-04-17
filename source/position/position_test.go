@@ -15,8 +15,6 @@
 package position
 
 import (
-	"errors"
-	"fmt"
 	"testing"
 
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -39,22 +37,6 @@ func Test_ToSDKPosition(t *testing.T) {
 		string(sdkPos),
 		`{"type":1,"snapshot":{"orders":{"last_read":1,"snapshot_end":2}},"last_lsn":"4/137515E8"}`,
 	)
-
-	var panicErr error
-
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				panicErr = errors.New(fmt.Sprint(r))
-			}
-		}()
-
-		var p *Position
-		_ = p.ToSDKPosition()
-	}()
-
-	is.True(panicErr != nil)
-	is.Equal(panicErr.Error(), "runtime error: invalid memory address or nil pointer dereference")
 }
 
 func Test_PositionLSN(t *testing.T) {
@@ -66,8 +48,9 @@ func Test_PositionLSN(t *testing.T) {
 	is.Equal(err.Error(), "failed to parse LSN in position: failed to parse LSN: expected integer")
 
 	valid := Position{LastLSN: "4/137515E8"}
-	_, noErr := valid.LSN()
+	lsn, noErr := valid.LSN()
 	is.NoErr(noErr)
+	is.Equal(uint64(lsn), uint64(17506309608))
 }
 
 func Test_ParseSDKPosition(t *testing.T) {

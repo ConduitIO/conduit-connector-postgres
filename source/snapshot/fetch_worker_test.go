@@ -162,7 +162,8 @@ func Test_FetcherValidate(t *testing.T) {
 
 		err1 := f.Validate(ctx)
 		is.True(err1 != nil)
-		is.True(strings.Contains(err1.Error(), `failed to validate key: key "column3" type "boolean" is not supported`))
+		t.Logf("err: %s\n", err1.Error())
+		is.True(strings.Contains(err1.Error(), `failed to validate key: key "column3" of type "boolean" is unsupported`))
 
 		f.conf.Key = "missing_key"
 		err2 := f.Validate(ctx)
@@ -343,7 +344,7 @@ func Test_withSnapshot(t *testing.T) {
 		is.NoErr(txErr)
 		t.Cleanup(func() { _ = tx.Rollback(ctx) })
 
-		f := FetchWorker{conf: FetchConfig{Snapshot: snapshot}}
+		f := FetchWorker{conf: FetchConfig{TXSnapshotID: snapshot}}
 
 		is.NoErr(f.withSnapshot(ctx, tx))
 	})
@@ -362,7 +363,7 @@ func Test_withSnapshot(t *testing.T) {
 		is.NoErr(txErr)
 		t.Cleanup(func() { is.NoErr(tx.Rollback(ctx)) })
 
-		f := FetchWorker{conf: FetchConfig{Snapshot: "invalid"}}
+		f := FetchWorker{conf: FetchConfig{TXSnapshotID: "invalid"}}
 
 		snapErr := f.withSnapshot(ctx, tx)
 		is.True(strings.Contains(snapErr.Error(), `invalid snapshot identifier: "invalid"`))

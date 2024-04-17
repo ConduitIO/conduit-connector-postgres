@@ -29,10 +29,10 @@ import (
 var ErrIteratorDone = errors.New("snapshot complete")
 
 type Config struct {
-	Position   sdk.Position
-	Tables     []string
-	TablesKeys map[string]string
-	Snapshot   string
+	Position     sdk.Position
+	Tables       []string
+	TablesKeys   map[string]string
+	TXSnapshotID string
 }
 
 type Iterator struct {
@@ -69,7 +69,7 @@ func NewIterator(ctx context.Context, db *pgxpool.Pool, c Config) (*Iterator, er
 		return nil, fmt.Errorf("failed to initialize table fetchers: %w", err)
 	}
 
-	go i.start(ctx)
+	go i.run(ctx)
 
 	return i, nil
 }
@@ -130,10 +130,10 @@ func (i *Iterator) initFetchers(ctx context.Context) error {
 
 	for j, t := range i.conf.Tables {
 		w := NewFetchWorker(i.db, i.records, FetchConfig{
-			Table:    t,
-			Key:      i.conf.TablesKeys[t],
-			Snapshot: i.conf.Snapshot,
-			Position: i.lastPosition,
+			Table:        t,
+			Key:          i.conf.TablesKeys[t],
+			TXSnapshotID: i.conf.TXSnapshotID,
+			Position:     i.lastPosition,
 		})
 
 		if err := w.Validate(ctx); err != nil {
@@ -150,7 +150,7 @@ func (i *Iterator) initFetchers(ctx context.Context) error {
 	return nil
 }
 
-func (i *Iterator) start(ctx context.Context) {
+func (i *Iterator) run(ctx context.Context) {
 	var wg sync.WaitGroup
 	for j := range i.workers {
 		f := i.workers[j]

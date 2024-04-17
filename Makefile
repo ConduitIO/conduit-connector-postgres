@@ -5,19 +5,12 @@ build:
 	go build -ldflags "-X 'github.com/conduitio/conduit-connector-postgres.version=${VERSION}'" -o conduit-connector-postgres cmd/connector/main.go
 
 .PHONY: test
-test: start_test_service tests stop_test_service 
-
-.PHONY: start_test_service
-start_test_service:
-	docker compose -f test/docker-compose.yml up --quiet-pull -d --wait --force-recreate
-
-.PHONY: stop_test_service
-stop_test_service:
-	docker compose -f test/docker-compose.yml down --volumes
-
-.PHONY: tests
-tests: 
-	go test $(GOTEST_FLAGS) -race ./...
+test:
+	# run required docker containers, execute integration tests, stop containers after tests
+	docker compose -f test/docker-compose.yml up --quiet-pull -d --wait
+	go test $(GOTEST_FLAGS) -race ./...; ret=$$?; \
+		docker compose -f test/docker-compose.yml down --volumes; \
+		exit $$ret
 
 .PHONY: lint
 lint:
