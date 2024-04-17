@@ -209,7 +209,7 @@ func (f *FetchWorker) createCursor(ctx context.Context, tx pgx.Tx) (func(), erro
 
 	if _, err := tx.Exec(
 		ctx,
-		"DECLARE " + f.cursorName + " CURSOR FOR(" + selectQuery + ")",
+		"DECLARE "+f.cursorName+" CURSOR FOR("+selectQuery+")",
 		f.lastRead,    // range start
 		f.snapshotEnd, // reange end
 		f.conf.Key,    // order by this
