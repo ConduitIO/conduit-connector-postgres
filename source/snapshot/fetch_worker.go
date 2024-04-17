@@ -30,7 +30,7 @@ import (
 
 const defaultFetchSize = 50000
 
-type FetcherConfig struct {
+type FetchConfig struct {
 	Table     string
 	Key       string
 	Snapshot  string
@@ -44,7 +44,7 @@ var (
 	errInvalidCDCType = errors.New("invalid position type CDC")
 )
 
-func (c FetcherConfig) Validate() error {
+func (c FetchConfig) Validate() error {
 	var errs []error
 
 	if c.Table == "" {
@@ -68,8 +68,8 @@ func (c FetcherConfig) Validate() error {
 	return nil
 }
 
-type FetcherWorker struct {
-	conf FetcherConfig
+type FetchWorker struct {
+	conf FetchConfig
 	db   *pgxpool.Pool
 	out  chan<- sdk.Record
 
@@ -78,12 +78,12 @@ type FetcherWorker struct {
 	cursorName  string
 }
 
-func NewFetcherWorker(db *pgxpool.Pool, out chan<- sdk.Record, c FetcherConfig) *FetcherWorker {
-	f := &FetcherWorker{
+func NewFetchWorker(db *pgxpool.Pool, out chan<- sdk.Record, c FetchConfig) *FetchWorker {
+	f := &FetchWorker{
 		conf:       c,
 		db:         db,
 		out:        out,
-		cursorName: fmt.Sprint("fetcher_", strings.ReplaceAll(uuid.NewString(), "-", "")),
+		cursorName: "fetcher_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
 	}
 
 	if f.conf.FetchSize == 0 {
@@ -105,7 +105,7 @@ func NewFetcherWorker(db *pgxpool.Pool, out chan<- sdk.Record, c FetcherConfig) 
 // Validate will ensure the config is correctt.
 // * Table and keys exist
 // * Key is a primary key
-func (f *FetcherWorker) Validate(ctx context.Context) error {
+func (f *FetchWorker) Validate(ctx context.Context) error {
 	if err := f.conf.Validate(); err != nil {
 		return fmt.Errorf("failed to validate config: %w", err)
 	}
@@ -122,18 +122,18 @@ func (f *FetcherWorker) Validate(ctx context.Context) error {
 		}
 	}()
 
-	if err := validateTable(ctx, f.conf.Table, tx); err != nil {
+	if err := f.validateTable(ctx, f.conf.Table, tx); err != nil {
 		return fmt.Errorf("failed to validate table: %w", err)
 	}
 
-	if err := validateKey(ctx, f.conf.Table, f.conf.Key, tx); err != nil {
+	if err := f.validateKey(ctx, f.conf.Table, f.conf.Key, tx); err != nil {
 		return fmt.Errorf("failed to validate key: %w", err)
 	}
 
 	return nil
 }
 
-func (f *FetcherWorker) Run(ctx context.Context) error {
+func (f *FetchWorker) Run(ctx context.Context) error {
 	start := time.Now().UTC()
 
 	tx, err := f.db.BeginTx(ctx, pgx.TxOptions{
@@ -194,7 +194,7 @@ func (f *FetcherWorker) Run(ctx context.Context) error {
 	return nil
 }
 
-func (f *FetcherWorker) createCursor(ctx context.Context, tx pgx.Tx) (func(), error) {
+func (f *FetchWorker) createCursor(ctx context.Context, tx pgx.Tx) (func(), error) {
 	cursorSQL := fmt.Sprintf("DECLARE %s CURSOR FOR (SELECT * FROM %s WHERE %s > %d AND %s <= %d ORDER BY %s)",
 		f.cursorName,
 		f.conf.Table,
@@ -211,7 +211,7 @@ func (f *FetcherWorker) createCursor(ctx context.Context, tx pgx.Tx) (func(), er
 
 	return func() {
 		// N.B. The cursor will automatically close when the TX is done.
-		if _, err := tx.Exec(ctx, fmt.Sprint("CLOSE ", f.cursorName)); err != nil {
+		if _, err := tx.Exec(ctx, "CLOSE "+f.cursorName); err != nil {
 			sdk.Logger(ctx).Warn().
 				Err(err).
 				Msgf("unexpected error when closing cursor %q", f.cursorName)
@@ -219,7 +219,7 @@ func (f *FetcherWorker) createCursor(ctx context.Context, tx pgx.Tx) (func(), er
 	}, nil
 }
 
-func (f *FetcherWorker) updateFetchLimit(ctx context.Context, tx pgx.Tx) error {
+func (f *FetchWorker) updateFetchLimit(ctx context.Context, tx pgx.Tx) error {
 	if f.snapshotEnd > 0 {
 		return nil
 	}
@@ -234,7 +234,7 @@ func (f *FetcherWorker) updateFetchLimit(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-func (f *FetcherWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
+func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 	rows, err := tx.Query(ctx, fmt.Sprintf("FETCH %d FROM %s", f.conf.FetchSize, f.cursorName))
 	if err != nil {
 		return 0, fmt.Errorf("failed to fetch rows: %w", err)
@@ -267,7 +267,7 @@ func (f *FetcherWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 	return nread, nil
 }
 
-func (f *FetcherWorker) send(ctx context.Context, r sdk.Record) error {
+func (f *FetchWorker) send(ctx context.Context, r sdk.Record) error {
 	select {
 	case <-ctx.Done():
 		return fmt.Errorf("fetcher send ctx: %w", ctx.Err())
@@ -276,7 +276,7 @@ func (f *FetcherWorker) send(ctx context.Context, r sdk.Record) error {
 	}
 }
 
-func (f *FetcherWorker) buildRecord(fields []string, values []any) sdk.Record {
+func (f *FetchWorker) buildRecord(fields []string, values []any) sdk.Record {
 	payload := make(sdk.StructuredData)
 
 	for i, name := range fields {
@@ -313,7 +313,7 @@ func (f *FetcherWorker) buildRecord(fields []string, values []any) sdk.Record {
 	return sdk.Util.Source.NewRecordSnapshot(pos, meta, key, payload)
 }
 
-func (f *FetcherWorker) withSnapshot(ctx context.Context, tx pgx.Tx) error {
+func (f *FetchWorker) withSnapshot(ctx context.Context, tx pgx.Tx) error {
 	if f.conf.Snapshot == "" {
 		sdk.Logger(ctx).Warn().
 			Msgf("fetcher %q starting without transaction snapshot", f.cursorName)
@@ -330,7 +330,7 @@ func (f *FetcherWorker) withSnapshot(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-func validateKey(ctx context.Context, table, key string, tx pgx.Tx) error {
+func (FetchWorker) validateKey(ctx context.Context, table, key string, tx pgx.Tx) error {
 	var keyExists, isPK bool
 
 	if err := tx.QueryRow(
@@ -363,7 +363,7 @@ func validateKey(ctx context.Context, table, key string, tx pgx.Tx) error {
 	return nil
 }
 
-func validateTable(ctx context.Context, table string, tx pgx.Tx) error {
+func (FetchWorker) validateTable(ctx context.Context, table string, tx pgx.Tx) error {
 	var tableExists bool
 
 	if err := tx.QueryRow(

@@ -34,7 +34,7 @@ import (
 func Test_NewFetcher(t *testing.T) {
 	t.Run("with initial position", func(t *testing.T) {
 		is := is.New(t)
-		f := NewFetcherWorker(&pgxpool.Pool{}, make(chan<- sdk.Record), FetcherConfig{})
+		f := NewFetchWorker(&pgxpool.Pool{}, make(chan<- sdk.Record), FetchConfig{})
 
 		is.Equal(f.snapshotEnd, int64(0))
 		is.Equal(f.lastRead, int64(0))
@@ -42,7 +42,7 @@ func Test_NewFetcher(t *testing.T) {
 
 	t.Run("with missing position data", func(t *testing.T) {
 		is := is.New(t)
-		f := NewFetcherWorker(&pgxpool.Pool{}, make(chan<- sdk.Record), FetcherConfig{
+		f := NewFetchWorker(&pgxpool.Pool{}, make(chan<- sdk.Record), FetchConfig{
 			Position: position.Position{
 				Type: position.TypeSnapshot,
 			},
@@ -55,7 +55,7 @@ func Test_NewFetcher(t *testing.T) {
 	t.Run("resume from position", func(t *testing.T) {
 		is := is.New(t)
 
-		f := NewFetcherWorker(&pgxpool.Pool{}, make(chan<- sdk.Record), FetcherConfig{
+		f := NewFetchWorker(&pgxpool.Pool{}, make(chan<- sdk.Record), FetchConfig{
 			Position: position.Position{
 				Type: position.TypeSnapshot,
 				Snapshot: position.SnapshotPositions{
@@ -70,10 +70,10 @@ func Test_NewFetcher(t *testing.T) {
 	})
 }
 
-func Test_FetcherConfigValidate(t *testing.T) {
+func Test_FetchConfigValidate(t *testing.T) {
 	t.Run("multiple errors", func(t *testing.T) {
 		is := is.New(t)
-		err := (&FetcherConfig{}).Validate()
+		err := (&FetchConfig{}).Validate()
 
 		is.True(errors.Is(err, errTableRequired))
 		is.True(errors.Is(err, errKeyRequired))
@@ -81,21 +81,21 @@ func Test_FetcherConfigValidate(t *testing.T) {
 
 	t.Run("missing table", func(t *testing.T) {
 		is := is.New(t)
-		tableErr := (&FetcherConfig{Key: "id"}).Validate()
+		tableErr := (&FetchConfig{Key: "id"}).Validate()
 
 		is.True(errors.Is(tableErr, errTableRequired))
 	})
 
 	t.Run("missing table key", func(t *testing.T) {
 		is := is.New(t)
-		keyErr := (&FetcherConfig{Table: "table"}).Validate()
+		keyErr := (&FetchConfig{Table: "table"}).Validate()
 
 		is.True(errors.Is(keyErr, errKeyRequired))
 	})
 
 	t.Run("invalid position", func(t *testing.T) {
 		is := is.New(t)
-		positionErr := (&FetcherConfig{
+		positionErr := (&FetchConfig{
 			Table:    "mytable",
 			Key:      "id",
 			Position: position.Position{Type: position.TypeCDC},
@@ -106,7 +106,7 @@ func Test_FetcherConfigValidate(t *testing.T) {
 
 	t.Run("success", func(t *testing.T) {
 		is := is.New(t)
-		err := (&FetcherConfig{
+		err := (&FetchConfig{
 			Table: "mytable",
 			Key:   "id",
 		}).Validate()
@@ -124,9 +124,9 @@ func Test_FetcherValidate(t *testing.T) {
 
 	t.Run("success", func(t *testing.T) {
 		is := is.New(t)
-		f := FetcherWorker{
+		f := FetchWorker{
 			db: pool,
-			conf: FetcherConfig{
+			conf: FetchConfig{
 				Table: table,
 				Key:   "id",
 			},
@@ -137,9 +137,9 @@ func Test_FetcherValidate(t *testing.T) {
 
 	t.Run("table missing", func(t *testing.T) {
 		is := is.New(t)
-		f := FetcherWorker{
+		f := FetchWorker{
 			db: pool,
-			conf: FetcherConfig{
+			conf: FetchConfig{
 				Table: "missing_table",
 				Key:   "id",
 			},
@@ -152,9 +152,9 @@ func Test_FetcherValidate(t *testing.T) {
 
 	t.Run("key is invalid", func(t *testing.T) {
 		is := is.New(t)
-		f := FetcherWorker{
+		f := FetchWorker{
 			db: pool,
-			conf: FetcherConfig{
+			conf: FetchConfig{
 				Table: table,
 				Key:   "column1",
 			},
@@ -184,7 +184,7 @@ func Test_FetcherRun_Initial(t *testing.T) {
 		tt      = &tomb.Tomb{}
 	)
 
-	f := NewFetcherWorker(pool, records, FetcherConfig{
+	f := NewFetchWorker(pool, records, FetchConfig{
 		Table: table,
 		Key:   "id",
 	})
@@ -238,7 +238,7 @@ func Test_FetcherRun_Resume(t *testing.T) {
 		tt      = &tomb.Tomb{}
 	)
 
-	f := NewFetcherWorker(pool, records, FetcherConfig{
+	f := NewFetchWorker(pool, records, FetchConfig{
 		Table: table,
 		Key:   "id",
 		Position: position.Position{
@@ -320,7 +320,7 @@ func Test_withSnapshot(t *testing.T) {
 		is.NoErr(txErr)
 		t.Cleanup(func() { _ = tx.Rollback(ctx) })
 
-		f := FetcherWorker{conf: FetcherConfig{Snapshot: snapshot}}
+		f := FetchWorker{conf: FetchConfig{Snapshot: snapshot}}
 
 		is.NoErr(f.withSnapshot(ctx, tx))
 	})
@@ -339,7 +339,7 @@ func Test_withSnapshot(t *testing.T) {
 		is.NoErr(txErr)
 		t.Cleanup(func() { is.NoErr(tx.Rollback(ctx)) })
 
-		f := FetcherWorker{conf: FetcherConfig{Snapshot: "invalid"}}
+		f := FetchWorker{conf: FetchConfig{Snapshot: "invalid"}}
 
 		snapErr := f.withSnapshot(ctx, tx)
 		is.True(strings.Contains(snapErr.Error(), `invalid snapshot identifier: "invalid"`))
@@ -348,7 +348,7 @@ func Test_withSnapshot(t *testing.T) {
 	t.Run("without snapshot", func(t *testing.T) {
 		is := is.New(t)
 
-		f := FetcherWorker{conf: FetcherConfig{}}
+		f := FetchWorker{conf: FetchConfig{}}
 
 		snapErr := f.withSnapshot(ctx, nil)
 		is.NoErr(snapErr)
@@ -359,7 +359,7 @@ func Test_send(t *testing.T) {
 	is := is.New(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	f := FetcherWorker{conf: FetcherConfig{}}
+	f := FetchWorker{conf: FetchConfig{}}
 
 	cancel()
 
@@ -370,7 +370,7 @@ func Test_send(t *testing.T) {
 	is.Equal(err.Error(), "fetcher send ctx: context canceled")
 }
 
-func Test_FetcherWorker_buildRecord(t *testing.T) {
+func Test_FetchWorker_buildRecord(t *testing.T) {
 	var (
 		is  = is.New(t)
 		now = time.Now().UTC()
@@ -381,8 +381,8 @@ func Test_FetcherWorker_buildRecord(t *testing.T) {
 		expectValues = []any{1, now.String()}
 	)
 
-	r := (&FetcherWorker{
-		conf: FetcherConfig{Table: "mytable", Key: "id"},
+	r := (&FetchWorker{
+		conf: FetchConfig{Table: "mytable", Key: "id"},
 	}).buildRecord(fields, values)
 
 	data := r.Payload.After.(sdk.StructuredData)
@@ -391,7 +391,7 @@ func Test_FetcherWorker_buildRecord(t *testing.T) {
 	}
 }
 
-func Test_FetcherWorker_updateFetchLimit(t *testing.T) {
+func Test_FetchWorker_updateFetchLimit(t *testing.T) {
 	var (
 		is    = is.New(t)
 		ctx   = context.Background()
@@ -405,13 +405,13 @@ func Test_FetcherWorker_updateFetchLimit(t *testing.T) {
 
 	tests := []struct {
 		desc     string
-		w        *FetcherWorker
+		w        *FetchWorker
 		expected int64
 		wantErr  error
 	}{
 		{
 			desc: "success",
-			w: &FetcherWorker{conf: FetcherConfig{
+			w: &FetchWorker{conf: FetchConfig{
 				Table: table,
 				Key:   "id",
 			}},
@@ -419,12 +419,12 @@ func Test_FetcherWorker_updateFetchLimit(t *testing.T) {
 		},
 		{
 			desc:     "skip update when set",
-			w:        &FetcherWorker{snapshotEnd: 10},
+			w:        &FetchWorker{snapshotEnd: 10},
 			expected: 10,
 		},
 		{
 			desc: "fails to get range",
-			w: &FetcherWorker{conf: FetcherConfig{
+			w: &FetchWorker{conf: FetchConfig{
 				Table: table,
 				Key:   "notid",
 			}},

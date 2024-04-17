@@ -38,7 +38,7 @@ type Config struct {
 type Iterator struct {
 	db      *pgxpool.Pool
 	t       *tomb.Tomb
-	workers []*FetcherWorker
+	workers []*FetchWorker
 
 	conf Config
 
@@ -126,10 +126,10 @@ func (i *Iterator) updateLastPosition(r *sdk.Record) error {
 func (i *Iterator) initFetchers(ctx context.Context) error {
 	var errs []error
 
-	i.workers = make([]*FetcherWorker, len(i.conf.Tables))
+	i.workers = make([]*FetchWorker, len(i.conf.Tables))
 
 	for j, t := range i.conf.Tables {
-		w := NewFetcherWorker(i.db, i.records, FetcherConfig{
+		w := NewFetchWorker(i.db, i.records, FetchConfig{
 			Table:    t,
 			Key:      i.conf.TablesKeys[t],
 			Snapshot: i.conf.Snapshot,
