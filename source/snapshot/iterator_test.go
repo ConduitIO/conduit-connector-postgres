@@ -16,6 +16,7 @@ package snapshot
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/conduitio/conduit-connector-postgres/source/position"
@@ -95,7 +96,6 @@ func Test_Iterator_Next(t *testing.T) {
 		cancel()
 
 		_, err = i.Next(ctx)
-		is.True(err != nil)
-		is.Equal(err.Error(), "fetchers exited unexpectedly: context canceled")
+		is.True(errors.Is(err, context.Canceled))
 	})
 }
