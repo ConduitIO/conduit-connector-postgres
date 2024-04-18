@@ -140,7 +140,7 @@ func (i *Iterator) startWorkers() {
 	for j := range i.workers {
 		f := i.workers[j]
 		i.t.Go(func() error {
-			ctx := i.t.Context(nil)
+			ctx := i.t.Context(nil) //nolint:staticcheck // This is the correct usage of tomb.Context
 			if err := f.Run(ctx); err != nil {
 				return fmt.Errorf("fetcher for table %q exited: %w", f.conf.Table, err)
 			}
