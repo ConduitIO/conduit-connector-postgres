@@ -56,9 +56,10 @@ func NewIterator(ctx context.Context, db *pgxpool.Pool, c Config) (*Iterator, er
 		p.Snapshot = make(position.SnapshotPositions)
 	}
 
+	t, _ := tomb.WithContext(ctx)
 	i := &Iterator{
 		db:           db,
-		t:            &tomb.Tomb{},
+		t:            t,
 		conf:         c,
 		records:      make(chan sdk.Record),
 		lastPosition: p,
@@ -68,7 +69,7 @@ func NewIterator(ctx context.Context, db *pgxpool.Pool, c Config) (*Iterator, er
 		return nil, fmt.Errorf("failed to initialize table fetchers: %w", err)
 	}
 
-	go i.run(ctx)
+	i.startWorkers()
 
 	return i, nil
 }
@@ -145,19 +146,19 @@ func (i *Iterator) initFetchers(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-func (i *Iterator) run(ctx context.Context) {
+func (i *Iterator) startWorkers() {
 	for j := range i.workers {
 		f := i.workers[j]
-
 		i.t.Go(func() error {
-			ctx := i.t.Context(ctx)
+			ctx := i.t.Context(nil)
 			if err := f.Run(ctx); err != nil {
-				return fmt.Errorf("fetcher exited: %w", err)
+				return fmt.Errorf("fetcher for table %q exited: %w", f.conf.Table, err)
 			}
-
 			return nil
 		})
 	}
-	defer close(i.records)
-	<-i.t.Dead()
+	go func() {
+		<-i.t.Dead()
+		close(i.records)
+	}()
 }

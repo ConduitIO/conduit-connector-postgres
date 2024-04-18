@@ -388,10 +388,8 @@ func Test_send(t *testing.T) {
 	cancel()
 
 	err := f.send(ctx, sdk.Record{})
-	fmt.Printf("%+v", err)
 
-	is.True(err != nil)
-	is.Equal(err.Error(), "fetcher send ctx: context canceled")
+	is.Equal(err, context.Canceled)
 }
 
 func Test_FetchWorker_buildRecord(t *testing.T) {
@@ -415,7 +413,7 @@ func Test_FetchWorker_buildRecord(t *testing.T) {
 	}
 }
 
-func Test_FetchWorker_updateFetchLimit(t *testing.T) {
+func Test_FetchWorker_updateSnapshotEnd(t *testing.T) {
 	var (
 		is    = is.New(t)
 		ctx   = context.Background()
@@ -460,7 +458,7 @@ func Test_FetchWorker_updateFetchLimit(t *testing.T) {
 		t.Run(tc.desc, func(t *testing.T) {
 			is := is.New(t)
 
-			err := tc.w.updateFetchLimit(ctx, tx)
+			err := tc.w.updateSnapshotEnd(ctx, tx)
 			if tc.wantErr != nil {
 				is.True(err != nil)
 				is.True(strings.Contains(err.Error(), tc.wantErr.Error()))

@@ -274,7 +274,7 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 func (f *FetchWorker) send(ctx context.Context, r sdk.Record) error {
 	select {
 	case <-ctx.Done():
-		return fmt.Errorf("fetcher send ctx: %w", ctx.Err())
+		return ctx.Err()
 	case f.out <- r:
 		return nil
 	}

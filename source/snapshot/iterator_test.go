@@ -97,7 +97,7 @@ func Test_Iterator_Next(t *testing.T) {
 
 		_, err = i.Next(ctx)
 		is.True(err != nil)
-		is.Equal(err.Error(), "fetchers exited unexpectedly: fetcher exited: context canceled")
+		is.Equal(err.Error(), "fetchers exited unexpectedly: context canceled")
 	})
 }
 
