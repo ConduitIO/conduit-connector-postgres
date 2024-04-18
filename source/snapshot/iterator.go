@@ -43,7 +43,7 @@ type Iterator struct {
 
 	lastPosition position.Position
 
-	records chan sdk.Record
+	data chan FetchData
 }
 
 func NewIterator(ctx context.Context, db *pgxpool.Pool, c Config) (*Iterator, error) {
@@ -61,7 +61,7 @@ func NewIterator(ctx context.Context, db *pgxpool.Pool, c Config) (*Iterator, er
 		db:           db,
 		t:            t,
 		conf:         c,
-		records:      make(chan sdk.Record),
+		data:         make(chan FetchData),
 		lastPosition: p,
 	}
 
@@ -78,7 +78,7 @@ func (i *Iterator) Next(ctx context.Context) (sdk.Record, error) {
 	select {
 	case <-ctx.Done():
 		return sdk.Record{}, fmt.Errorf("iterator stopped: %w", ctx.Err())
-	case r, ok := <-i.records:
+	case d, ok := <-i.data:
 		if !ok { // closed
 			if err := i.t.Err(); err != nil {
 				return sdk.Record{}, fmt.Errorf("fetchers exited unexpectedly: %w", err)
@@ -86,11 +86,7 @@ func (i *Iterator) Next(ctx context.Context) (sdk.Record, error) {
 			return sdk.Record{}, ErrIteratorDone
 		}
 
-		if err := i.updateLastPosition(&r); err != nil {
-			return sdk.Record{}, fmt.Errorf("failed to update last fetched position: %w", err)
-		}
-
-		return r, nil
+		return i.buildRecord(d), nil
 	}
 }
 
@@ -106,21 +102,15 @@ func (i *Iterator) Teardown(_ context.Context) error {
 	return nil
 }
 
-func (i *Iterator) updateLastPosition(r *sdk.Record) error {
-	pos, err := position.ParseSDKPosition(r.Position)
-	if err != nil {
-		return fmt.Errorf("failed to parse position: %w", err)
-	}
-
+func (i *Iterator) buildRecord(d FetchData) sdk.Record {
 	// merge this position with latest position
-	i.lastPosition.Type = pos.Type
-	for k, v := range pos.Snapshot {
-		i.lastPosition.Snapshot[k] = v
-	}
+	i.lastPosition.Snapshot[d.Table] = d.Position
 
-	r.Position = i.lastPosition.ToSDKPosition()
+	pos := i.lastPosition.ToSDKPosition()
+	metadata := make(sdk.Metadata)
+	metadata["postgres.table"] = d.Table
 
-	return nil
+	return sdk.Util.Source.NewRecordCreate(pos, metadata, d.Key, d.Payload)
 }
 
 func (i *Iterator) initFetchers(ctx context.Context) error {
@@ -129,7 +119,7 @@ func (i *Iterator) initFetchers(ctx context.Context) error {
 	i.workers = make([]*FetchWorker, len(i.conf.Tables))
 
 	for j, t := range i.conf.Tables {
-		w := NewFetchWorker(i.db, i.records, FetchConfig{
+		w := NewFetchWorker(i.db, i.data, FetchConfig{
 			Table:        t,
 			Key:          i.conf.TablesKeys[t],
 			TXSnapshotID: i.conf.TXSnapshotID,
@@ -159,6 +149,6 @@ func (i *Iterator) startWorkers() {
 	}
 	go func() {
 		<-i.t.Dead()
-		close(i.records)
+		close(i.data)
 	}()
 }

@@ -18,19 +18,19 @@ import (
 	"fmt"
 )
 
-func keyInt64(id any) int64 {
+func keyInt64(id any) (int64, error) {
 	switch t := id.(type) {
 	case int:
-		return int64(t)
+		return int64(t), nil
 	case int8:
-		return int64(t)
+		return int64(t), nil
 	case int16:
-		return int64(t)
+		return int64(t), nil
 	case int32:
-		return int64(t)
+		return int64(t), nil
 	case int64:
-		return t
+		return t, nil
 	default:
-		panic(fmt.Sprintf("invalid type for key %T", id))
+		return 0, fmt.Errorf("invalid type for key %T", id)
 	}
 }

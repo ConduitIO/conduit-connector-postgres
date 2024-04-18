@@ -20,7 +20,6 @@ import (
 
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
-	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/matryer/is"
 )
 
@@ -99,13 +98,4 @@ func Test_Iterator_Next(t *testing.T) {
 		is.True(err != nil)
 		is.Equal(err.Error(), "fetchers exited unexpectedly: context canceled")
 	})
-}
-
-func Test_Iterator_updateLastPosition(t *testing.T) {
-	is := is.New(t)
-	i := Iterator{lastPosition: position.Position{}}
-
-	err := i.updateLastPosition(&sdk.Record{Position: []byte(`{`)})
-	is.True(err != nil)
-	is.Equal(err.Error(), "failed to parse position: invalid position: unexpected end of JSON input")
 }

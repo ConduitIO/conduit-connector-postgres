@@ -34,7 +34,7 @@ import (
 func Test_NewFetcher(t *testing.T) {
 	t.Run("with initial position", func(t *testing.T) {
 		is := is.New(t)
-		f := NewFetchWorker(&pgxpool.Pool{}, make(chan<- sdk.Record), FetchConfig{})
+		f := NewFetchWorker(&pgxpool.Pool{}, make(chan<- FetchData), FetchConfig{})
 
 		is.Equal(f.snapshotEnd, int64(0))
 		is.Equal(f.lastRead, int64(0))
@@ -42,7 +42,7 @@ func Test_NewFetcher(t *testing.T) {
 
 	t.Run("with missing position data", func(t *testing.T) {
 		is := is.New(t)
-		f := NewFetchWorker(&pgxpool.Pool{}, make(chan<- sdk.Record), FetchConfig{
+		f := NewFetchWorker(&pgxpool.Pool{}, make(chan<- FetchData), FetchConfig{
 			Position: position.Position{
 				Type: position.TypeSnapshot,
 			},
@@ -55,7 +55,7 @@ func Test_NewFetcher(t *testing.T) {
 	t.Run("resume from position", func(t *testing.T) {
 		is := is.New(t)
 
-		f := NewFetchWorker(&pgxpool.Pool{}, make(chan<- sdk.Record), FetchConfig{
+		f := NewFetchWorker(&pgxpool.Pool{}, make(chan<- FetchData), FetchConfig{
 			Position: position.Position{
 				Type: position.TypeSnapshot,
 				Snapshot: position.SnapshotPositions{
@@ -200,22 +200,22 @@ func Test_FetcherValidate(t *testing.T) {
 
 func Test_FetcherRun_Initial(t *testing.T) {
 	var (
-		pool    = test.ConnectPool(context.Background(), t, test.RegularConnString)
-		table   = test.SetupTestTable(context.Background(), t, pool)
-		is      = is.New(t)
-		records = make(chan sdk.Record)
-		ctx     = context.Background()
-		tt      = &tomb.Tomb{}
+		pool  = test.ConnectPool(context.Background(), t, test.RegularConnString)
+		table = test.SetupTestTable(context.Background(), t, pool)
+		is    = is.New(t)
+		out   = make(chan FetchData)
+		ctx   = context.Background()
+		tt    = &tomb.Tomb{}
 	)
 
-	f := NewFetchWorker(pool, records, FetchConfig{
+	f := NewFetchWorker(pool, out, FetchConfig{
 		Table: table,
 		Key:   "id",
 	})
 
 	tt.Go(func() error {
 		ctx = tt.Context(ctx)
-		defer close(records)
+		defer close(out)
 
 		if err := f.Validate(ctx); err != nil {
 			return err
@@ -223,13 +223,13 @@ func Test_FetcherRun_Initial(t *testing.T) {
 		return f.Run(ctx)
 	})
 
-	var rr []sdk.Record
-	for r := range records {
-		rr = append(rr, r)
+	var dd []FetchData
+	for data := range out {
+		dd = append(dd, data)
 	}
 
 	is.NoErr(tt.Err())
-	is.True(len(rr) == 4)
+	is.True(len(dd) == 4)
 
 	expectedMatch := []sdk.StructuredData{
 		{"id": int64(1), "key": []uint8{49}, "column1": "foo", "column2": int32(123), "column3": false},
@@ -238,31 +238,30 @@ func Test_FetcherRun_Initial(t *testing.T) {
 		{"id": int64(4), "key": []uint8{52}, "column1": nil, "column2": nil, "column3": nil},
 	}
 
-	for i, r := range rr {
-		is.Equal(r.Key, sdk.StructuredData{"id": int64(i + 1)})
+	for i, d := range dd {
+		is.Equal(d.Key, sdk.StructuredData{"id": int64(i + 1)})
+		is.Equal(d.Payload, expectedMatch[i])
 
-		is.True(r.Payload.Before == nil)
-		is.Equal(r.Payload.After, expectedMatch[i])
-
-		matchPos := fmt.Sprintf(`{"type":1,"snapshot":{%q:{"last_read":%d,"snapshot_end":4}}}`, table, i+1)
-		if i+1 == 4 { // last
-			matchPos = fmt.Sprintf(`{"type":1,"snapshot":{%q:{"last_read":%d,"snapshot_end":4,"done":true}}}`, table, i+1)
-		}
-		is.Equal(string(r.Position), matchPos)
+		is.Equal(d.Position, position.SnapshotPosition{
+			LastRead:    int64(i + 1),
+			SnapshotEnd: 4,
+			Done:        i == 3,
+		})
+		is.Equal(d.Table, table)
 	}
 }
 
 func Test_FetcherRun_Resume(t *testing.T) {
 	var (
-		pool    = test.ConnectPool(context.Background(), t, test.RegularConnString)
-		table   = test.SetupTestTable(context.Background(), t, pool)
-		is      = is.New(t)
-		records = make(chan sdk.Record)
-		ctx     = context.Background()
-		tt      = &tomb.Tomb{}
+		pool  = test.ConnectPool(context.Background(), t, test.RegularConnString)
+		table = test.SetupTestTable(context.Background(), t, pool)
+		is    = is.New(t)
+		out   = make(chan FetchData)
+		ctx   = context.Background()
+		tt    = &tomb.Tomb{}
 	)
 
-	f := NewFetchWorker(pool, records, FetchConfig{
+	f := NewFetchWorker(pool, out, FetchConfig{
 		Table: table,
 		Key:   "id",
 		Position: position.Position{
@@ -278,7 +277,7 @@ func Test_FetcherRun_Resume(t *testing.T) {
 
 	tt.Go(func() error {
 		ctx = tt.Context(ctx)
-		defer close(records)
+		defer close(out)
 
 		if err := f.Validate(ctx); err != nil {
 			return err
@@ -286,18 +285,17 @@ func Test_FetcherRun_Resume(t *testing.T) {
 		return f.Run(ctx)
 	})
 
-	var rr []sdk.Record
-	for r := range records {
-		rr = append(rr, r)
+	var dd []FetchData
+	for d := range out {
+		dd = append(dd, d)
 	}
 
 	is.NoErr(tt.Err())
-	is.True(len(rr) == 1)
+	is.True(len(dd) == 1)
 
 	// validate generated record
-	is.Equal(rr[0].Key, sdk.StructuredData{"id": int64(3)})
-	is.True(rr[0].Payload.Before == nil)
-	is.Equal(rr[0].Payload.After, sdk.StructuredData{
+	is.Equal(dd[0].Key, sdk.StructuredData{"id": int64(3)})
+	is.Equal(dd[0].Payload, sdk.StructuredData{
 		"id":      int64(3),
 		"key":     []uint8{51},
 		"column1": "baz",
@@ -305,10 +303,12 @@ func Test_FetcherRun_Resume(t *testing.T) {
 		"column3": false,
 	})
 
-	is.Equal(
-		string(rr[0].Position),
-		fmt.Sprintf(`{"type":1,"snapshot":{%q:{"last_read":3,"snapshot_end":3,"done":true}}}`, table),
-	)
+	is.Equal(dd[0].Position, position.SnapshotPosition{
+		LastRead:    3,
+		SnapshotEnd: 3,
+		Done:        true,
+	})
+	is.Equal(dd[0].Table, table)
 }
 
 func Test_withSnapshot(t *testing.T) {
@@ -387,12 +387,12 @@ func Test_send(t *testing.T) {
 
 	cancel()
 
-	err := f.send(ctx, sdk.Record{})
+	err := f.send(ctx, FetchData{})
 
 	is.Equal(err, context.Canceled)
 }
 
-func Test_FetchWorker_buildRecord(t *testing.T) {
+func Test_FetchWorker_buildRecordData(t *testing.T) {
 	var (
 		is  = is.New(t)
 		now = time.Now().UTC()
@@ -403,14 +403,17 @@ func Test_FetchWorker_buildRecord(t *testing.T) {
 		expectValues = []any{1, now.String()}
 	)
 
-	r := (&FetchWorker{
+	key, payload := (&FetchWorker{
 		conf: FetchConfig{Table: "mytable", Key: "id"},
-	}).buildRecord(fields, values)
+	}).buildRecordData(fields, values)
 
-	data := r.Payload.After.(sdk.StructuredData)
+	is.Equal(len(payload), 2)
 	for i, k := range fields {
-		is.Equal(data[k], expectValues[i])
+		is.Equal(payload[k], expectValues[i])
 	}
+
+	is.Equal(len(key), 1)
+	is.Equal(key["id"], 1)
 }
 
 func Test_FetchWorker_updateSnapshotEnd(t *testing.T) {

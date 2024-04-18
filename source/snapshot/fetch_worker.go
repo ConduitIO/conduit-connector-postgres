@@ -71,17 +71,24 @@ func (c FetchConfig) Validate() error {
 	return errors.Join(errs...)
 }
 
+type FetchData struct {
+	Key      sdk.StructuredData
+	Payload  sdk.StructuredData
+	Position position.SnapshotPosition
+	Table    string
+}
+
 type FetchWorker struct {
 	conf FetchConfig
 	db   *pgxpool.Pool
-	out  chan<- sdk.Record
+	out  chan<- FetchData
 
 	snapshotEnd int64
 	lastRead    int64
 	cursorName  string
 }
 
-func NewFetchWorker(db *pgxpool.Pool, out chan<- sdk.Record, c FetchConfig) *FetchWorker {
+func NewFetchWorker(db *pgxpool.Pool, out chan<- FetchData, c FetchConfig) *FetchWorker {
 	f := &FetchWorker{
 		conf:       c,
 		db:         db,
@@ -168,7 +175,7 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 	}
 	defer closeCursor()
 
-	var nfetched int64
+	var nfetched int
 
 	for {
 		n, err := f.fetch(ctx, tx)
@@ -180,10 +187,10 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 			break
 		}
 
-		nfetched += int64(n)
+		nfetched += n
 
 		sdk.Logger(ctx).Info().
-			Int64("rows", nfetched).
+			Int("rows", nfetched).
 			Str("table", f.conf.Table).
 			Dur("elapsed", time.Since(start)).
 			Msg("fetching rows")
@@ -258,30 +265,67 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 			return 0, fmt.Errorf("failed to get values: %w", err)
 		}
 
-		if err := f.send(
-			ctx,
-			f.buildRecord(fields, values),
-		); err != nil {
+		data, err := f.buildFetchData(fields, values)
+		if err != nil {
+			return nread, fmt.Errorf("failed to build fetch data: %w", err)
+		}
+
+		if err := f.send(ctx, data); err != nil {
 			return nread, fmt.Errorf("failed to send record: %w", err)
 		}
 
 		nread++
 	}
+	if rows.Err() != nil {
+		return 0, fmt.Errorf("failed to read rows: %w", rows.Err())
+	}
 
 	return nread, nil
 }
 
-func (f *FetchWorker) send(ctx context.Context, r sdk.Record) error {
+func (f *FetchWorker) send(ctx context.Context, d FetchData) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case f.out <- r:
+	case f.out <- d:
 		return nil
 	}
 }
 
-func (f *FetchWorker) buildRecord(fields []string, values []any) sdk.Record {
-	payload := make(sdk.StructuredData)
+func (f *FetchWorker) buildFetchData(fields []string, values []any) (FetchData, error) {
+	pos, err := f.buildSnapshotPosition(fields, values)
+	if err != nil {
+		return FetchData{}, fmt.Errorf("failed to build snapshot position: %w", err)
+	}
+	key, payload := f.buildRecordData(fields, values)
+	return FetchData{
+		Key:      key,
+		Payload:  payload,
+		Position: pos,
+		Table:    f.conf.Table,
+	}, nil
+}
+
+func (f *FetchWorker) buildSnapshotPosition(fields []string, values []any) (position.SnapshotPosition, error) {
+	for i, name := range fields {
+		if name == f.conf.Key {
+			// Always coerce snapshot position to bigint, pk may be any type of integer.
+			lastRead, err := keyInt64(values[i])
+			if err != nil {
+				return position.SnapshotPosition{}, fmt.Errorf("failed to parse key: %w", err)
+			}
+			return position.SnapshotPosition{
+				LastRead:    lastRead,
+				SnapshotEnd: f.snapshotEnd,
+				Done:        f.snapshotEnd == lastRead,
+			}, nil
+		}
+	}
+	return position.SnapshotPosition{}, fmt.Errorf("key %q not found in fields", f.conf.Key)
+}
+
+func (f *FetchWorker) buildRecordData(fields []string, values []any) (key sdk.StructuredData, payload sdk.StructuredData) {
+	payload = make(sdk.StructuredData)
 
 	for i, name := range fields {
 		switch t := values[i].(type) {
@@ -292,29 +336,11 @@ func (f *FetchWorker) buildRecord(fields []string, values []any) sdk.Record {
 		}
 	}
 
-	// always coerce snapshot position to bigint, pk may be any type of integer.
-	lastRead := keyInt64(payload[f.conf.Key])
-
-	pos := position.Position{
-		Type: position.TypeSnapshot,
-		Snapshot: position.SnapshotPositions{
-			f.conf.Table: {
-				LastRead:    lastRead,
-				SnapshotEnd: f.snapshotEnd,
-				Done:        f.snapshotEnd == lastRead,
-			},
-		},
-	}.ToSDKPosition()
-
-	meta := map[string]string{
-		"table": f.conf.Table,
-	}
-
-	key := sdk.StructuredData{
+	key = sdk.StructuredData{
 		f.conf.Key: payload[f.conf.Key],
 	}
 
-	return sdk.Util.Source.NewRecordSnapshot(pos, meta, key, payload)
+	return key, payload
 }
 
 func (f *FetchWorker) withSnapshot(ctx context.Context, tx pgx.Tx) error {
