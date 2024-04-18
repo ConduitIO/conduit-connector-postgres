@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -143,23 +142,15 @@ func (i *Iterator) initFetchers(ctx context.Context) error {
 		i.workers[j] = w
 	}
 
-	if len(errs) != 0 {
-		return errors.Join(errs...)
-	}
-
-	return nil
+	return errors.Join(errs...)
 }
 
 func (i *Iterator) run(ctx context.Context) {
-	var wg sync.WaitGroup
 	for j := range i.workers {
 		f := i.workers[j]
 
-		wg.Add(1)
 		i.t.Go(func() error {
 			ctx := i.t.Context(ctx)
-			defer wg.Done()
-
 			if err := f.Run(ctx); err != nil {
 				return fmt.Errorf("fetcher exited: %w", err)
 			}
@@ -168,6 +159,5 @@ func (i *Iterator) run(ctx context.Context) {
 		})
 	}
 	defer close(i.records)
-
-	wg.Wait()
+	<-i.t.Dead()
 }

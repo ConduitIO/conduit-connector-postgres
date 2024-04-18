@@ -68,11 +68,7 @@ func (c FetchConfig) Validate() error {
 		errs = append(errs, errInvalidCDCType)
 	}
 
-	if len(errs) != 0 {
-		return errors.Join(errs...)
-	}
-
-	return nil
+	return errors.Join(errs...)
 }
 
 type FetchWorker struct {
@@ -109,7 +105,7 @@ func NewFetchWorker(db *pgxpool.Pool, out chan<- sdk.Record, c FetchConfig) *Fet
 	return f
 }
 
-// Validate will ensure the config is correctt.
+// Validate will ensure the config is correct.
 // * Table and keys exist
 // * Key is a primary key
 func (f *FetchWorker) Validate(ctx context.Context) error {
@@ -148,7 +144,7 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 		AccessMode: pgx.ReadOnly,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to start tx: %w", err)
 	}
 	defer func() {
 		if err := tx.Rollback(ctx); err != nil {
@@ -162,13 +158,13 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 		return err
 	}
 
-	if err := f.updateFetchLimit(ctx, tx); err != nil {
+	if err := f.updateSnapshotEnd(ctx, tx); err != nil {
 		return fmt.Errorf("failed to update fetch limit: %w", err)
 	}
 
 	closeCursor, err := f.createCursor(ctx, tx)
 	if err != nil {
-		return fmt.Errorf("fail to create cursor: %w", err)
+		return fmt.Errorf("failed to create cursor: %w", err)
 	}
 	defer closeCursor()
 
@@ -227,7 +223,7 @@ func (f *FetchWorker) createCursor(ctx context.Context, tx pgx.Tx) (func(), erro
 	}, nil
 }
 
-func (f *FetchWorker) updateFetchLimit(ctx context.Context, tx pgx.Tx) error {
+func (f *FetchWorker) updateSnapshotEnd(ctx context.Context, tx pgx.Tx) error {
 	if f.snapshotEnd > 0 {
 		return nil
 	}

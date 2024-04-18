@@ -73,7 +73,7 @@ func Test_ParseSDKPosition(t *testing.T) {
 		LastLSN: "4/137515E8",
 	})
 
-	_, invalidErr := ParseSDKPosition(sdk.Position([]byte("{")))
+	_, invalidErr := ParseSDKPosition(sdk.Position("{"))
 	is.True(invalidErr != nil)
 	is.Equal(invalidErr.Error(), "invalid position: unexpected end of JSON input")
 }
