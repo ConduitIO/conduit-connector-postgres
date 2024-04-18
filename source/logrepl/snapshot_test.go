@@ -156,7 +156,8 @@ func createTestSnapshot(ctx context.Context, t *testing.T, pool *pgxpool.Pool) s
 
 // creates a snapshot iterator for testing that hands its connection's cleanup.
 func createTestSnapshotIterator(ctx context.Context, t *testing.T,
-	pool *pgxpool.Pool, cfg SnapshotConfig) *SnapshotIterator {
+	pool *pgxpool.Pool, cfg SnapshotConfig,
+) *SnapshotIterator {
 	is := is.New(t)
 
 	conn, err := pool.Acquire(ctx)

@@ -29,10 +29,10 @@ import (
 )
 
 // RepmgrConnString is a replication user connection string for the test postgres.
-const RepmgrConnString = "postgres://repmgr:repmgrmeroxa@localhost:5432/meroxadb?sslmode=disable"
+const RepmgrConnString = "postgres://repmgr:repmgrmeroxa@127.0.0.1:5433/meroxadb?sslmode=disable"
 
 // RegularConnString is a non-replication user connection string for the test postgres.
-const RegularConnString = "postgres://meroxauser:meroxapass@localhost:5432/meroxadb?sslmode=disable"
+const RegularConnString = "postgres://meroxauser:meroxapass@127.0.0.1:5433/meroxadb?sslmode=disable"
 
 type Querier interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)

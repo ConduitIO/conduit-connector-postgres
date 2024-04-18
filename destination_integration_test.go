@@ -50,75 +50,76 @@ func TestDestination_Write(t *testing.T) {
 	tests := []struct {
 		name   string
 		record sdk.Record
-	}{{
-		name: "snapshot",
-		record: sdk.Record{
-			Position:  sdk.Position("foo"),
-			Operation: sdk.OperationSnapshot,
-			Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
-			Key:       sdk.StructuredData{"id": 5000},
-			Payload: sdk.Change{
-				After: sdk.StructuredData{
-					"column1": "foo",
-					"column2": 123,
-					"column3": true,
+	}{
+		{
+			name: "snapshot",
+			record: sdk.Record{
+				Position:  sdk.Position("foo"),
+				Operation: sdk.OperationSnapshot,
+				Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
+				Key:       sdk.StructuredData{"id": 5000},
+				Payload: sdk.Change{
+					After: sdk.StructuredData{
+						"column1": "foo",
+						"column2": 123,
+						"column3": true,
+					},
 				},
 			},
-		},
-	}, {
-		name: "create",
-		record: sdk.Record{
-			Position:  sdk.Position("foo"),
-			Operation: sdk.OperationCreate,
-			Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
-			Key:       sdk.StructuredData{"id": 5},
-			Payload: sdk.Change{
-				After: sdk.StructuredData{
-					"column1": "foo",
-					"column2": 456,
-					"column3": false,
+		}, {
+			name: "create",
+			record: sdk.Record{
+				Position:  sdk.Position("foo"),
+				Operation: sdk.OperationCreate,
+				Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
+				Key:       sdk.StructuredData{"id": 5},
+				Payload: sdk.Change{
+					After: sdk.StructuredData{
+						"column1": "foo",
+						"column2": 456,
+						"column3": false,
+					},
 				},
 			},
-		},
-	}, {
-		name: "insert on update (upsert)",
-		record: sdk.Record{
-			Position:  sdk.Position("foo"),
-			Operation: sdk.OperationUpdate,
-			Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
-			Key:       sdk.StructuredData{"id": 6},
-			Payload: sdk.Change{
-				After: sdk.StructuredData{
-					"column1": "bar",
-					"column2": 567,
-					"column3": true,
+		}, {
+			name: "insert on update (upsert)",
+			record: sdk.Record{
+				Position:  sdk.Position("foo"),
+				Operation: sdk.OperationUpdate,
+				Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
+				Key:       sdk.StructuredData{"id": 6},
+				Payload: sdk.Change{
+					After: sdk.StructuredData{
+						"column1": "bar",
+						"column2": 567,
+						"column3": true,
+					},
 				},
 			},
-		},
-	}, {
-		name: "update on conflict",
-		record: sdk.Record{
-			Position:  sdk.Position("foo"),
-			Operation: sdk.OperationUpdate,
-			Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
-			Key:       sdk.StructuredData{"id": 1},
-			Payload: sdk.Change{
-				After: sdk.StructuredData{
-					"column1": "foobar",
-					"column2": 567,
-					"column3": true,
+		}, {
+			name: "update on conflict",
+			record: sdk.Record{
+				Position:  sdk.Position("foo"),
+				Operation: sdk.OperationUpdate,
+				Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
+				Key:       sdk.StructuredData{"id": 1},
+				Payload: sdk.Change{
+					After: sdk.StructuredData{
+						"column1": "foobar",
+						"column2": 567,
+						"column3": true,
+					},
 				},
 			},
+		}, {
+			name: "delete",
+			record: sdk.Record{
+				Position:  sdk.Position("foo"),
+				Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
+				Operation: sdk.OperationDelete,
+				Key:       sdk.StructuredData{"id": 4},
+			},
 		},
-	}, {
-		name: "delete",
-		record: sdk.Record{
-			Position:  sdk.Position("foo"),
-			Metadata:  map[string]string{MetadataOpenCDCCollection: tableName},
-			Operation: sdk.OperationDelete,
-			Key:       sdk.StructuredData{"id": 4},
-		},
-	},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

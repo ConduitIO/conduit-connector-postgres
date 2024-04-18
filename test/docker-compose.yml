@@ -1,9 +1,9 @@
 version: '3.4'
 services:
   pg-0:
-    image: docker.io/bitnami/postgresql-repmgr:14
+    image: docker.io/bitnami/postgresql-repmgr:15
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - "pg_0_data:/bitnami/postgresql"
       - "./conf.d/:/bitnami/postgresql/conf/conf.d/"

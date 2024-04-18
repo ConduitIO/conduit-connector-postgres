@@ -54,6 +54,7 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 	}
 	return nil
 }
+
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 	conn, err := pgx.Connect(ctx, s.config.URL)
 	if err != nil {

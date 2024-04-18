@@ -12,14 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build tools
-
-package postgres
+package snapshot
 
 import (
-	_ "github.com/conduitio/conduit-connector-sdk/cmd/paramgen"
-	_ "github.com/daixiang0/gci"
-	_ "github.com/golangci/golangci-lint/cmd/golangci-lint"
-	_ "golang.org/x/tools/cmd/stringer"
-	_ "mvdan.cc/gofumpt"
+	"fmt"
 )
+
+func keyInt64(id any) (int64, error) {
+	switch t := id.(type) {
+	case int:
+		return int64(t), nil
+	case int8:
+		return int64(t), nil
+	case int16:
+		return int64(t), nil
+	case int32:
+		return int64(t), nil
+	case int64:
+		return t, nil
+	default:
+		return 0, fmt.Errorf("invalid type for key %T", id)
+	}
+}
