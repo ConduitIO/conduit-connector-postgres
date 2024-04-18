@@ -58,7 +58,7 @@ func Test_NewFetcher(t *testing.T) {
 		f := NewFetchWorker(&pgxpool.Pool{}, make(chan<- FetchData), FetchConfig{
 			Position: position.Position{
 				Type: position.TypeSnapshot,
-				Snapshot: position.SnapshotPositions{
+				Snapshots: position.SnapshotPositions{
 					"mytable": {SnapshotEnd: 10, LastRead: 5},
 				},
 			},
@@ -266,7 +266,7 @@ func Test_FetcherRun_Resume(t *testing.T) {
 		Key:   "id",
 		Position: position.Position{
 			Type: position.TypeSnapshot,
-			Snapshot: position.SnapshotPositions{
+			Snapshots: position.SnapshotPositions{
 				table: {
 					SnapshotEnd: 3,
 					LastRead:    2,

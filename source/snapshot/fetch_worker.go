@@ -100,11 +100,11 @@ func NewFetchWorker(db *pgxpool.Pool, out chan<- FetchData, c FetchConfig) *Fetc
 		f.conf.FetchSize = defaultFetchSize
 	}
 
-	if c.Position.Type == position.TypeInitial || c.Position.Snapshot == nil {
+	if c.Position.Type == position.TypeInitial || c.Position.Snapshots == nil {
 		return f
 	}
 
-	if t, ok := c.Position.Snapshot[c.Table]; ok {
+	if t, ok := c.Position.Snapshots[c.Table]; ok {
 		f.snapshotEnd = t.SnapshotEnd
 		f.lastRead = t.LastRead
 	}

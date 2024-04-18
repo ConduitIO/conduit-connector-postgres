@@ -52,8 +52,8 @@ func NewIterator(ctx context.Context, db *pgxpool.Pool, c Config) (*Iterator, er
 		return nil, fmt.Errorf("failed to parse position: %w", err)
 	}
 
-	if p.Snapshot == nil {
-		p.Snapshot = make(position.SnapshotPositions)
+	if p.Snapshots == nil {
+		p.Snapshots = make(position.SnapshotPositions)
 	}
 
 	t, _ := tomb.WithContext(ctx)
@@ -105,7 +105,7 @@ func (i *Iterator) Teardown(_ context.Context) error {
 func (i *Iterator) buildRecord(d FetchData) sdk.Record {
 	// merge this position with latest position
 	i.lastPosition.Type = position.TypeSnapshot
-	i.lastPosition.Snapshot[d.Table] = d.Position
+	i.lastPosition.Snapshots[d.Table] = d.Position
 
 	pos := i.lastPosition.ToSDKPosition()
 	metadata := make(sdk.Metadata)

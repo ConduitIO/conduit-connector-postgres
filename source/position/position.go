@@ -33,9 +33,9 @@ const (
 )
 
 type Position struct {
-	Type     Type              `json:"type"`
-	Snapshot SnapshotPositions `json:"snapshot,omitempty"`
-	LastLSN  string            `json:"last_lsn,omitempty"`
+	Type      Type              `json:"type"`
+	Snapshots SnapshotPositions `json:"snapshots,omitempty"`
+	LastLSN   string            `json:"last_lsn,omitempty"`
 }
 
 type SnapshotPositions map[string]SnapshotPosition
