@@ -104,6 +104,7 @@ func (i *Iterator) Teardown(_ context.Context) error {
 
 func (i *Iterator) buildRecord(d FetchData) sdk.Record {
 	// merge this position with latest position
+	i.lastPosition.Type = position.TypeSnapshot
 	i.lastPosition.Snapshot[d.Table] = d.Position
 
 	pos := i.lastPosition.ToSDKPosition()

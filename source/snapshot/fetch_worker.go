@@ -214,7 +214,7 @@ func (f *FetchWorker) createCursor(ctx context.Context, tx pgx.Tx) (func(), erro
 		ctx,
 		"DECLARE "+f.cursorName+" CURSOR FOR("+selectQuery+")",
 		f.lastRead,    // range start
-		f.snapshotEnd, // reange end
+		f.snapshotEnd, // range end
 		f.conf.Key,    // order by this
 	); err != nil {
 		return nil, err
