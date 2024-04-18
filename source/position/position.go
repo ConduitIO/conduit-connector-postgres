@@ -62,12 +62,13 @@ func ParseSDKPosition(sdkPos sdk.Position) (Position, error) {
 func (p Position) ToSDKPosition() sdk.Position {
 	v, err := json.Marshal(p)
 	if err != nil {
+		// This should never happen, all Position structs should be valid.
 		panic(err)
 	}
-
-	return sdk.Position(v)
+	return v
 }
 
+// LSN returns the last LSN (Log Sequence Number) in the position.
 func (p Position) LSN() (pglogrepl.LSN, error) {
 	if p.LastLSN == "" {
 		return 0, nil
