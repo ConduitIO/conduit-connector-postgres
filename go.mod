@@ -6,7 +6,7 @@ require (
 	github.com/Masterminds/sprig/v3 v3.2.3
 	github.com/Masterminds/squirrel v1.5.4
 	github.com/conduitio/conduit-connector-sdk v0.8.0
-	github.com/daixiang0/gci v0.12.3
+	github.com/daixiang0/gci v0.13.4
 	github.com/golangci/golangci-lint v1.57.2
 	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0
