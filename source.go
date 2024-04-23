@@ -17,12 +17,12 @@ package postgres
 import (
 	"context"
 	"fmt"
-
 	"github.com/conduitio/conduit-connector-postgres/source"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
-	"github.com/conduitio/conduit-connector-postgres/source/longpoll"
+	"github.com/conduitio/conduit-connector-postgres/source/snapshot"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Source is a Postgres source plugin.
@@ -56,15 +56,13 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 }
 
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
-	conn, err := pgx.Connect(ctx, s.config.URL)
+	pool, err := pgxpool.New(ctx, s.config.URL)
 	if err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
+		return fmt.Errorf("failed to create a connection pool to database: %w", err)
 	}
 
-	s.conn = conn
-
 	if s.readingAllTables() {
-		s.config.Table, err = s.getAllTables(ctx, conn)
+		s.config.Table, err = s.getAllTables(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to connect to database: %w", err)
 		}
@@ -101,25 +99,21 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			return sdk.ErrUnimplemented
 		}
 
-		for _, table := range s.config.Table {
-			columns, err := s.getTableColumns(ctx, conn, table)
-			if err != nil {
-				return fmt.Errorf("failed to connect to database: %w", err)
-			}
-
-			snap, err := longpoll.NewSnapshotIterator(
-				ctx,
-				s.conn,
-				table,
-				columns,
-				s.tableKeys[table])
-			if err != nil {
-				return fmt.Errorf("failed to create long polling iterator: %w", err)
-			}
-
-			// TODO: Address once https://github.com/ConduitIO/conduit-connector-postgres/pull/132 ships
-			s.iterator = snap
+		snap, err := snapshot.NewIterator(ctx, pool, snapshot.Config{
+			Tables:     s.config.Table,
+			TablesKeys: nil,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create long polling iterator: %w", err)
 		}
+
+		//
+		s.iterator = snap
+
+		//	columns, err := s.getTableColumns(ctx, conn, table)
+		//	if err != nil {
+		//		return fmt.Errorf("failed to connect to database: %w", err)
+		//	}
 	default:
 		// shouldn't happen, config was validated
 		return fmt.Errorf("unsupported CDC mode %q", s.config.CDCMode)
@@ -179,10 +173,11 @@ func (s *Source) readingAllTables() bool {
 	return len(s.config.Table) == 1 && s.config.Table[0] == source.AllTablesWildcard
 }
 
-func (s *Source) getAllTables(ctx context.Context, conn *pgx.Conn) ([]string, error) {
+func (s *Source) getAllTables(ctx context.Context) ([]string, error) {
 	query := "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
 
-	rows, err := conn.Query(ctx, query)
+	// TODO: use connection pool
+	rows, err := s.conn.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
