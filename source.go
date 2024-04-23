@@ -31,7 +31,8 @@ type Source struct {
 
 	iterator  source.Iterator
 	config    source.Config
-	conn      *pgx.Conn
+	conn      *pgx.Conn // TODO: Migrate to pgxpool once all iterators are replaced by the new one
+	connPool  *pgxpool.Pool
 	tableKeys map[string]string
 }
 
@@ -56,13 +57,20 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 }
 
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
-	pool, err := pgxpool.New(ctx, s.config.URL)
+	conn, err := pgx.Connect(ctx, s.config.URL)
+	if err != nil {
+		return fmt.Errorf("failed to connect to database: %w", err)
+	}
+	s.conn = conn
+
+	connPool, err := pgxpool.New(ctx, s.config.URL)
 	if err != nil {
 		return fmt.Errorf("failed to create a connection pool to database: %w", err)
 	}
+	s.connPool = connPool
 
 	if s.readingAllTables() {
-		s.config.Table, err = s.getAllTables(ctx)
+		s.config.Table, err = s.getAllTables(ctx, conn)
 		if err != nil {
 			return fmt.Errorf("failed to connect to database: %w", err)
 		}
@@ -80,7 +88,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			sdk.Logger(ctx).Warn().Msg("snapshot not supported in logical replication mode")
 		}
 
-		i, err := logrepl.NewCDCIterator(ctx, s.conn, logrepl.Config{
+		i, err := logrepl.NewCDCIterator(ctx, conn, logrepl.Config{
 			Position:        pos,
 			SlotName:        s.config.LogreplSlotName,
 			PublicationName: s.config.LogreplPublicationName,
@@ -99,7 +107,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			return sdk.ErrUnimplemented
 		}
 
-		snap, err := snapshot.NewIterator(ctx, pool, snapshot.Config{
+		snap, err := snapshot.NewIterator(ctx, connPool, snapshot.Config{
 			Tables:     s.config.Table,
 			TablesKeys: nil,
 		})
@@ -107,7 +115,9 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			return fmt.Errorf("failed to create long polling iterator: %w", err)
 		}
 
-		//
+		// Cannot use 'snap' (type *Iterator) as the type source.Iterator Type does not implement 'source.Iterator'
+		// need the method: Ack(context.Context, sdk.Position) error have the method: Ack(_ context.Context) error
+		// slack message https://meroxa.slack.com/archives/C01ERTL0MJR/p1713892954250549
 		s.iterator = snap
 
 		//	columns, err := s.getTableColumns(ctx, conn, table)
@@ -139,6 +149,9 @@ func (s *Source) Teardown(ctx context.Context) error {
 		if err := s.conn.Close(ctx); err != nil {
 			return fmt.Errorf("failed to close DB connection: %w", err)
 		}
+	}
+	if s.connPool != nil {
+		s.connPool.Close()
 	}
 	return nil
 }
@@ -173,11 +186,10 @@ func (s *Source) readingAllTables() bool {
 	return len(s.config.Table) == 1 && s.config.Table[0] == source.AllTablesWildcard
 }
 
-func (s *Source) getAllTables(ctx context.Context) ([]string, error) {
+func (s *Source) getAllTables(ctx context.Context, conn *pgx.Conn) ([]string, error) {
 	query := "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
 
-	// TODO: use connection pool
-	rows, err := s.conn.Query(ctx, query)
+	rows, err := conn.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
