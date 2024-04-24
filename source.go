@@ -52,6 +52,10 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 	if err != nil {
 		return err
 	}
+
+	// TODO: Remove once `Table` is removed.
+	s.config = s.config.Init()
+
 	return s.config.Validate()
 }
 

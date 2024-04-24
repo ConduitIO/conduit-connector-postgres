@@ -39,11 +39,15 @@ func (Config) Parameters() map[string]sdk.Parameter {
 		},
 		"table": {
 			Default:     "",
-			Description: "table is a List of table names to read from, separated by a comma, e.g.:\"table1,table2\". Use \"*\" if you'd like to listen to all tables.",
+			Description: "Deprecated: use `tables` instead.",
 			Type:        sdk.ParameterTypeString,
-			Validations: []sdk.Validation{
-				sdk.ValidationRequired{},
-			},
+			Validations: []sdk.Validation{},
+		},
+		"tables": {
+			Default:     "",
+			Description: "tables is a List of table names to read from, separated by a comma, e.g.:\"table1,table2\". Use \"*\" if you'd like to listen to all tables.",
+			Type:        sdk.ParameterTypeString,
+			Validations: []sdk.Validation{},
 		},
 		"url": {
 			Default:     "",
