@@ -31,11 +31,9 @@ import (
 )
 
 func TestRelationSetUnregisteredType(t *testing.T) {
-	ctx := context.Background()
 	is := is.New(t)
 
-	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-	rs := NewRelationSet(conn.TypeMap())
+	rs := NewRelationSet()
 
 	got, err := rs.Get(1234567)
 	is.True(err != nil)
@@ -79,7 +77,7 @@ func TestRelationSetAllTypes(t *testing.T) {
 		break
 	}
 
-	rs := NewRelationSet(conn.TypeMap())
+	rs := NewRelationSet()
 
 	rs.Add(rel)
 	gotRel, err := rs.Get(rel.RelationID)

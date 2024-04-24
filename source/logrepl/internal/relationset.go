@@ -30,10 +30,10 @@ type RelationSet struct {
 }
 
 // NewRelationSet creates a new relation set.
-func NewRelationSet(ci *pgtype.Map) *RelationSet {
+func NewRelationSet() *RelationSet {
 	return &RelationSet{
 		relations: map[uint32]*pglogrepl.RelationMessage{},
-		connInfo:  ci,
+		connInfo:  pgtype.NewMap(),
 	}
 }
 

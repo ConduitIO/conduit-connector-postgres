@@ -19,12 +19,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Config holds configuration values for CDCIterator.
@@ -65,13 +64,7 @@ func NewCDCIterator(ctx context.Context, connPool *pgxpool.Pool, config Config) 
 		records: make(chan sdk.Record),
 	}
 
-	conn, err := connPool.Acquire(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to acquire connection: %w", err)
-	}
-	defer conn.Release()
-
-	err = i.attachSubscription(conn.Conn())
+	err := i.attachSubscription(connPool.Config().ConnConfig.Config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to setup subscription: %w", err)
 	}
@@ -156,7 +149,7 @@ func (i *CDCIterator) Teardown(ctx context.Context) error {
 
 // attachSubscription determines the starting LSN and key column of the source
 // table and prepares a subscription.
-func (i *CDCIterator) attachSubscription(conn *pgx.Conn) error {
+func (i *CDCIterator) attachSubscription(connConfig pgconn.Config) error {
 	lsn, err := i.config.LSN()
 	if err != nil {
 		return err
@@ -170,13 +163,13 @@ func (i *CDCIterator) attachSubscription(conn *pgx.Conn) error {
 	}
 
 	sub := internal.NewSubscription(
-		conn.Config().Config,
+		connConfig,
 		i.config.SlotName,
 		i.config.PublicationName,
 		i.config.Tables,
 		lsn,
 		NewCDCHandler(
-			internal.NewRelationSet(conn.TypeMap()),
+			internal.NewRelationSet(),
 			i.config.TableKeys,
 			i.records,
 		).Handle,

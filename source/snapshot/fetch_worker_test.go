@@ -162,7 +162,6 @@ func Test_FetcherValidate(t *testing.T) {
 
 		err := f.Validate(ctx)
 		is.True(err != nil)
-		t.Logf("err: %s\n", err.Error())
 		is.True(strings.Contains(err.Error(), `failed to validate key: key "column3" of type "boolean" is unsupported`))
 	})
 
