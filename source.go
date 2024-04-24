@@ -172,7 +172,7 @@ func (s *Source) readingAllTables() bool {
 }
 
 func (s *Source) getAllTables(ctx context.Context) ([]string, error) {
-	query := "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
+	query := "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
 
 	rows, err := s.connPool.Query(ctx, query)
 	if err != nil {
