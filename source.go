@@ -25,6 +25,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	"github.com/conduitio/conduit-connector-postgres/source/snapshot"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -70,12 +71,24 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		logger.Info().Msg("Detecting all tables...")
 		s.config.Table, err = s.getAllTables(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to connect to database: %w", err)
+			return fmt.Errorf("failed to connect to get all tables: %w", err)
 		}
 		logger.Info().
 			Strs("tables", s.config.Table).
 			Int("count", len(s.config.Table)).
 			Msg("Successfully detected tables")
+	}
+
+	// ensure we have keys for all tables
+	for _, tableName := range s.config.Table {
+		// get unprovided table keys
+		if _, ok := s.tableKeys[tableName]; ok {
+			continue // key was provided manually
+		}
+		s.tableKeys[tableName], err = s.getTableKeys(ctx, tableName)
+		if err != nil {
+			return fmt.Errorf("failed to find key for table %s (try specifying it manually): %w", tableName, err)
+		}
 	}
 
 	switch s.config.CDCMode {
@@ -111,7 +124,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 
 		snap, err := snapshot.NewIterator(ctx, connPool, snapshot.Config{
 			Tables:     s.config.Table,
-			TablesKeys: nil,
+			TablesKeys: s.tableKeys,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create long polling iterator: %w", err)
@@ -179,4 +192,41 @@ func (s *Source) getAllTables(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("rows error: %w", err)
 	}
 	return tables, nil
+}
+
+// getTableKeys queries the db for the name of the primary key column for a
+// table if one exists and returns it.
+func (s *Source) getTableKeys(ctx context.Context, tableName string) (string, error) {
+	query := `SELECT c.column_name
+FROM information_schema.table_constraints tc
+JOIN information_schema.constraint_column_usage AS ccu USING (constraint_schema, constraint_name)
+JOIN information_schema.columns AS c ON c.table_schema = tc.constraint_schema
+  AND tc.table_name = c.table_name AND ccu.column_name = c.column_name
+WHERE constraint_type = 'PRIMARY KEY' and tc.table_name = $1`
+
+	rows, err := s.connPool.Query(ctx, query, tableName)
+	if err != nil {
+		return "", fmt.Errorf("failed to query table keys: %w", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		if rows.Err() != nil {
+			return "", fmt.Errorf("query failed: %w", rows.Err())
+		}
+		return "", fmt.Errorf("no table keys found: %w", pgx.ErrNoRows)
+	}
+
+	var colName string
+	err = rows.Scan(&colName)
+	if err != nil {
+		return "", fmt.Errorf("failed to scan row: %w", err)
+	}
+
+	if rows.Next() {
+		// we only support single column primary keys for now
+		return "", errors.New("composite keys are not supported")
+	}
+
+	return colName, nil
 }

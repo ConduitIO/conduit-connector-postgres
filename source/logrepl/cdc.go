@@ -36,6 +36,17 @@ type Config struct {
 	TableKeys       map[string]string
 }
 
+func (c Config) LSN() (pglogrepl.LSN, error) {
+	if len(c.Position) == 0 {
+		return 0, nil
+	}
+	lsn, err := PositionToLSN(c.Position)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse position: %w", err)
+	}
+	return lsn, nil
+}
+
 // CDCIterator asynchronously listens for events from the logical replication
 // slot and returns them to the caller through Next.
 type CDCIterator struct {
@@ -60,7 +71,7 @@ func NewCDCIterator(ctx context.Context, connPool *pgxpool.Pool, config Config) 
 	}
 	defer conn.Release()
 
-	err = i.attachSubscription(ctx, conn.Conn())
+	err = i.attachSubscription(conn.Conn())
 	if err != nil {
 		return nil, fmt.Errorf("failed to setup subscription: %w", err)
 	}
@@ -145,28 +156,16 @@ func (i *CDCIterator) Teardown(ctx context.Context) error {
 
 // attachSubscription determines the starting LSN and key column of the source
 // table and prepares a subscription.
-func (i *CDCIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) error {
-	var lsn pglogrepl.LSN
-	if i.config.Position != nil && string(i.config.Position) != "" {
-		var err error
-		lsn, err = PositionToLSN(i.config.Position)
-		if err != nil {
-			return err
-		}
+func (i *CDCIterator) attachSubscription(conn *pgx.Conn) error {
+	lsn, err := i.config.LSN()
+	if err != nil {
+		return err
 	}
 
-	var err error
-	if i.config.TableKeys == nil {
-		i.config.TableKeys = make(map[string]string, len(i.config.Tables))
-	}
+	// make sure we have all table keys
 	for _, tableName := range i.config.Tables {
-		// get unprovided table keys
-		if _, ok := i.config.TableKeys[tableName]; ok {
-			continue // key was provided manually
-		}
-		i.config.TableKeys[tableName], err = i.getTableKeys(ctx, conn, tableName)
-		if err != nil {
-			return fmt.Errorf("failed to find key for table %s (try specifying it manually): %w", tableName, err)
+		if i.config.TableKeys[tableName] != "" {
+			return fmt.Errorf("missing key for table %q", tableName)
 		}
 	}
 
@@ -185,22 +184,4 @@ func (i *CDCIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) er
 
 	i.sub = sub
 	return nil
-}
-
-// getTableKeys queries the db for the name of the primary key column for a
-// table if one exists and returns it.
-func (i *CDCIterator) getTableKeys(ctx context.Context, conn *pgx.Conn, tableName string) (string, error) {
-	query := `SELECT column_name
-		FROM information_schema.key_column_usage
-		WHERE table_name = $1 AND constraint_name LIKE '%_pkey'
-		LIMIT 1;`
-	row := conn.QueryRow(ctx, query, tableName)
-
-	var colName string
-	err := row.Scan(&colName)
-	if err != nil {
-		return "", fmt.Errorf("getTableKeys query failed: %w", err)
-	}
-
-	return colName, nil
 }

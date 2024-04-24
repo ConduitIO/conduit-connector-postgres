@@ -392,7 +392,9 @@ func (*FetchWorker) validateKey(ctx context.Context, table, key string, tx pgx.T
 	}
 
 	if !isPK {
-		return fmt.Errorf("invalid key %q, not a primary key", key)
+		sdk.Logger(ctx).Warn().
+			Err(fmt.Errorf("column %q is not a primary key", key)).
+			Msg("this may cause unexpected behavior if the key is not unique")
 	}
 
 	return nil
