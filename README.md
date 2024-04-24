@@ -68,7 +68,7 @@ handle different payloads and keys. Because of this, each record is individually
 
 ## Upsert Behavior
 
-If the target tables already contains a record with the same key, the Destination will upsert with its current received
+If the target table already contains a record with the same key, the Destination will upsert with its current received
 values. Because Keys must be unique, this can overwrite and thus potentially lose data, so keys should be assigned
 correctly from the Source.
 

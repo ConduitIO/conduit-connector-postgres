@@ -35,7 +35,7 @@ type Source struct {
 
 	iterator  source.Iterator
 	config    source.Config
-	conn      *pgxpool.Pool
+	pool      *pgxpool.Pool
 	tableKeys map[string]string
 }
 
@@ -60,11 +60,11 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 }
 
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
-	conn, err := pgxpool.New(ctx, s.config.URL)
+	pool, err := pgxpool.New(ctx, s.config.URL)
 	if err != nil {
 		return fmt.Errorf("failed to create a connection pool to database: %w", err)
 	}
-	s.conn = conn
+	s.pool = pool
 
 	logger := sdk.Logger(ctx)
 	if s.readingAllTables() {
@@ -99,7 +99,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			logger.Warn().Msg("Snapshot not supported yet in logical replication mode")
 		}
 
-		i, err := logrepl.NewCDCIterator(ctx, s.conn, logrepl.Config{
+		i, err := logrepl.NewCDCIterator(ctx, s.pool, logrepl.Config{
 			Position:        pos,
 			SlotName:        s.config.LogreplSlotName,
 			PublicationName: s.config.LogreplPublicationName,
@@ -118,7 +118,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			return sdk.ErrUnimplemented
 		}
 
-		snap, err := snapshot.NewIterator(ctx, conn, snapshot.Config{
+		snap, err := snapshot.NewIterator(ctx, pool, snapshot.Config{
 			Tables:     s.config.Tables,
 			TablesKeys: s.tableKeys,
 		})
@@ -153,9 +153,9 @@ func (s *Source) Teardown(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("failed to tear down iterator: %w", err))
 		}
 	}
-	if s.conn != nil {
+	if s.pool != nil {
 		logger.Debug().Msg("Closing connection pool...")
-		err := csync.RunTimeout(ctx, s.conn.Close, time.Minute)
+		err := csync.RunTimeout(ctx, s.pool.Close, time.Minute)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("failed to close DB connection pool: %w", err))
 		}
@@ -170,7 +170,7 @@ func (s *Source) readingAllTables() bool {
 func (s *Source) getAllTables(ctx context.Context) ([]string, error) {
 	query := "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
 
-	rows, err := s.conn.Query(ctx, query)
+	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +201,7 @@ JOIN information_schema.columns AS c ON c.table_schema = tc.constraint_schema
 WHERE constraint_type = 'PRIMARY KEY' AND tc.table_schema = 'public'
   AND tc.table_name = $1`
 
-	rows, err := s.conn.Query(ctx, query, tableName)
+	rows, err := s.pool.Query(ctx, query, tableName)
 	if err != nil {
 		return "", fmt.Errorf("failed to query table keys: %w", err)
 	}
