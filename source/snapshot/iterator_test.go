@@ -47,7 +47,11 @@ func Test_Iterator_Next(t *testing.T) {
 		}()
 
 		for j := 1; j <= 4; j++ {
-			_, err := i.Next(ctx)
+			_, err = i.Next(ctx)
+			is.NoErr(err)
+		}
+		for j := 1; j <= 4; j++ {
+			err = i.Ack(ctx, nil)
 			is.NoErr(err)
 		}
 
