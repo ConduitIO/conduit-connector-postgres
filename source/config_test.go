@@ -30,7 +30,7 @@ func TestConfig_Validate(t *testing.T) {
 			name: "valid config",
 			cfg: Config{
 				URL:     "postgresql://meroxauser:meroxapass@127.0.0.1:5432/meroxadb",
-				Table:   []string{"table1", "table2"},
+				Tables:  []string{"table1", "table2"},
 				Key:     []string{"table1:key1"},
 				CDCMode: CDCModeLogrepl,
 			},
@@ -39,7 +39,7 @@ func TestConfig_Validate(t *testing.T) {
 			name: "invalid postgres url",
 			cfg: Config{
 				URL:     "postgresql",
-				Table:   []string{"table1", "table2"},
+				Tables:  []string{"table1", "table2"},
 				Key:     []string{"table1:key1"},
 				CDCMode: CDCModeLogrepl,
 			},
@@ -48,7 +48,7 @@ func TestConfig_Validate(t *testing.T) {
 			name: "invalid multiple tables for long polling",
 			cfg: Config{
 				URL:     "postgresql://meroxauser:meroxapass@127.0.0.1:5432/meroxadb",
-				Table:   []string{"table1", "table2"},
+				Tables:  []string{"table1", "table2"},
 				Key:     []string{"table1:key1"},
 				CDCMode: CDCModeLongPolling,
 			},
@@ -57,7 +57,7 @@ func TestConfig_Validate(t *testing.T) {
 			name: "invalid key list format",
 			cfg: Config{
 				URL:     "postgresql://meroxauser:meroxapass@127.0.0.1:5432/meroxadb",
-				Table:   []string{"table1", "table2"},
+				Tables:  []string{"table1", "table2"},
 				Key:     []string{"key1,key2"},
 				CDCMode: CDCModeLogrepl,
 			},

@@ -50,9 +50,9 @@ const (
 type Config struct {
 	// URL is the connection string for the Postgres database.
 	URL string `json:"url" validate:"required"`
-	// Table is a List of table names to read from, separated by a comma, e.g.:"table1,table2".
+	// Tables is a List of table names to read from, separated by a comma, e.g.:"table1,table2".
 	// Use "*" if you'd like to listen to all tables.
-	Table []string `json:"table" validate:"required"`
+	Tables []string `json:"table" validate:"required"`
 	// Key is a list of Key column names per table, e.g.:"table1:key1,table2:key2", records should use the key values for their `Key` fields.
 	Key []string `json:"key"`
 
@@ -77,10 +77,10 @@ func (c Config) Validate() (map[string]string, error) {
 		return nil, fmt.Errorf("invalid url: %w", err)
 	}
 	// TODO: when cdcMode "auto" is implemented, change this check
-	if len(c.Table) != 1 && c.CDCMode == CDCModeLongPolling {
+	if len(c.Tables) != 1 && c.CDCMode == CDCModeLongPolling {
 		return nil, fmt.Errorf("multi-tables are only supported for logrepl CDCMode, please provide only one table")
 	}
-	tableKeys := make(map[string]string, len(c.Table))
+	tableKeys := make(map[string]string, len(c.Tables))
 	for _, pair := range c.Key {
 		// Split each pair into key and value
 		parts := strings.Split(pair, ":")

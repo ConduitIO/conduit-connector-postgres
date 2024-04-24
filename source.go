@@ -69,18 +69,18 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 	logger := sdk.Logger(ctx)
 	if s.readingAllTables() {
 		logger.Info().Msg("Detecting all tables...")
-		s.config.Table, err = s.getAllTables(ctx)
+		s.config.Tables, err = s.getAllTables(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to connect to get all tables: %w", err)
 		}
 		logger.Info().
-			Strs("tables", s.config.Table).
-			Int("count", len(s.config.Table)).
+			Strs("tables", s.config.Tables).
+			Int("count", len(s.config.Tables)).
 			Msg("Successfully detected tables")
 	}
 
 	// ensure we have keys for all tables
-	for _, tableName := range s.config.Table {
+	for _, tableName := range s.config.Tables {
 		// get unprovided table keys
 		if _, ok := s.tableKeys[tableName]; ok {
 			continue // key was provided manually
@@ -107,7 +107,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			Position:        pos,
 			SlotName:        s.config.LogreplSlotName,
 			PublicationName: s.config.LogreplPublicationName,
-			Tables:          s.config.Table,
+			Tables:          s.config.Tables,
 			TableKeys:       s.tableKeys,
 		})
 		if err != nil {
@@ -123,7 +123,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		}
 
 		snap, err := snapshot.NewIterator(ctx, connPool, snapshot.Config{
-			Tables:     s.config.Table,
+			Tables:     s.config.Tables,
 			TablesKeys: s.tableKeys,
 		})
 		if err != nil {
@@ -168,7 +168,7 @@ func (s *Source) Teardown(ctx context.Context) error {
 }
 
 func (s *Source) readingAllTables() bool {
-	return len(s.config.Table) == 1 && s.config.Table[0] == source.AllTablesWildcard
+	return len(s.config.Tables) == 1 && s.config.Tables[0] == source.AllTablesWildcard
 }
 
 func (s *Source) getAllTables(ctx context.Context) ([]string, error) {
