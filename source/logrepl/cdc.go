@@ -164,7 +164,7 @@ func (i *CDCIterator) attachSubscription(conn *pgx.Conn) error {
 
 	// make sure we have all table keys
 	for _, tableName := range i.config.Tables {
-		if i.config.TableKeys[tableName] != "" {
+		if i.config.TableKeys[tableName] == "" {
 			return fmt.Errorf("missing key for table %q", tableName)
 		}
 	}

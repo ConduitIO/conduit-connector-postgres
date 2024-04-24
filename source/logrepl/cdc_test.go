@@ -139,6 +139,7 @@ func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table s
 	is := is.New(t)
 	config := Config{
 		Tables:          []string{table},
+		TableKeys:       map[string]string{table: "id"},
 		PublicationName: table, // table is random, reuse for publication name
 		SlotName:        table, // table is random, reuse for slot name
 	}
