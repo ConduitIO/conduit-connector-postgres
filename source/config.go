@@ -17,9 +17,10 @@
 package source
 
 import (
+	"errors"
 	"fmt"
-	"strings"
 
+	"github.com/conduitio/conduit-commons/config"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -50,11 +51,11 @@ const (
 type Config struct {
 	// URL is the connection string for the Postgres database.
 	URL string `json:"url" validate:"required"`
-	// Table is a List of table names to read from, separated by a comma, e.g.:"table1,table2".
+	// Tables is a List of table names to read from, separated by a comma, e.g.:"table1,table2".
 	// Use "*" if you'd like to listen to all tables.
-	Table []string `json:"table" validate:"required"`
-	// Key is a list of Key column names per table, e.g.:"table1:key1,table2:key2", records should use the key values for their `Key` fields.
-	Key []string `json:"key"`
+	Tables []string `json:"tables"` // TODO: make it required once `Table` is removed.
+	// Deprecated: use `tables` instead.
+	Table []string `json:"table"`
 
 	// SnapshotMode is whether the plugin will take a snapshot of the entire table before starting cdc mode.
 	SnapshotMode SnapshotMode `json:"snapshotMode" validate:"inclusion=initial|never" default:"initial"`
@@ -70,24 +71,35 @@ type Config struct {
 }
 
 // Validate validates the provided config values.
-func (c Config) Validate() (map[string]string, error) {
+func (c Config) Validate() error {
+	var errs []error
+
 	// try parsing the url
 	_, err := pgx.ParseConfig(c.URL)
 	if err != nil {
-		return nil, fmt.Errorf("invalid url: %w", err)
+		errs = append(errs, fmt.Errorf("invalid url: %w", err))
 	}
+
+	if len(c.Tables) > 0 && len(c.Table) > 0 {
+		errs = append(errs, fmt.Errorf(`error validating "tables": cannot provide both "table" and "tables", use "tables" only`))
+	}
+
+	if len(c.Tables) == 0 {
+		errs = append(errs, fmt.Errorf(`error validating "tables": %w`, config.ErrRequiredParameterMissing))
+	}
+
 	// TODO: when cdcMode "auto" is implemented, change this check
-	if len(c.Table) != 1 && c.CDCMode == CDCModeLongPolling {
-		return nil, fmt.Errorf("multi-tables are only supported for logrepl CDCMode, please provide only one table")
+	if len(c.Tables) != 1 && c.CDCMode == CDCModeLongPolling {
+		errs = append(errs, fmt.Errorf("multi-tables are only supported for logrepl CDCMode, please provide only one table"))
 	}
-	tableKeys := make(map[string]string, len(c.Table))
-	for _, pair := range c.Key {
-		// Split each pair into key and value
-		parts := strings.Split(pair, ":")
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("wrong format for the configuration %q, use comma separated pairs of tables and keys, example: table1:key1,table2:key2", "key")
-		}
-		tableKeys[parts[0]] = parts[1]
+	return errors.Join(errs...)
+}
+
+// Init sets the desired value on Tables while Table is being deprecated.
+func (c Config) Init() Config {
+	if len(c.Table) > 0 && len(c.Tables) == 0 {
+		c.Tables = c.Table
+		c.Table = nil
 	}
-	return tableKeys, nil
+	return c
 }

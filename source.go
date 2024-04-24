@@ -35,7 +35,7 @@ type Source struct {
 
 	iterator  source.Iterator
 	config    source.Config
-	connPool  *pgxpool.Pool
+	pool      *pgxpool.Pool
 	tableKeys map[string]string
 }
 
@@ -52,39 +52,34 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 	if err != nil {
 		return err
 	}
-	s.tableKeys, err = s.config.Validate()
-	if err != nil {
-		return err
-	}
-	return nil
+
+	s.config = s.config.Init()
+
+	return s.config.Validate()
 }
 
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
-	connPool, err := pgxpool.New(ctx, s.config.URL)
+	pool, err := pgxpool.New(ctx, s.config.URL)
 	if err != nil {
 		return fmt.Errorf("failed to create a connection pool to database: %w", err)
 	}
-	s.connPool = connPool
+	s.pool = pool
 
 	logger := sdk.Logger(ctx)
 	if s.readingAllTables() {
 		logger.Info().Msg("Detecting all tables...")
-		s.config.Table, err = s.getAllTables(ctx)
+		s.config.Tables, err = s.getAllTables(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to connect to get all tables: %w", err)
 		}
 		logger.Info().
-			Strs("tables", s.config.Table).
-			Int("count", len(s.config.Table)).
+			Strs("tables", s.config.Tables).
+			Int("count", len(s.config.Tables)).
 			Msg("Successfully detected tables")
 	}
 
 	// ensure we have keys for all tables
-	for _, tableName := range s.config.Table {
-		// get unprovided table keys
-		if _, ok := s.tableKeys[tableName]; ok {
-			continue // key was provided manually
-		}
+	for _, tableName := range s.config.Tables {
 		s.tableKeys[tableName], err = s.getTableKeys(ctx, tableName)
 		if err != nil {
 			return fmt.Errorf("failed to find key for table %s (try specifying it manually): %w", tableName, err)
@@ -103,11 +98,11 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			logger.Warn().Msg("Snapshot not supported yet in logical replication mode")
 		}
 
-		i, err := logrepl.NewCDCIterator(ctx, s.connPool, logrepl.Config{
+		i, err := logrepl.NewCDCIterator(ctx, s.pool, logrepl.Config{
 			Position:        pos,
 			SlotName:        s.config.LogreplSlotName,
 			PublicationName: s.config.LogreplPublicationName,
-			Tables:          s.config.Table,
+			Tables:          s.config.Tables,
 			TableKeys:       s.tableKeys,
 		})
 		if err != nil {
@@ -122,8 +117,8 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			return sdk.ErrUnimplemented
 		}
 
-		snap, err := snapshot.NewIterator(ctx, connPool, snapshot.Config{
-			Tables:     s.config.Table,
+		snap, err := snapshot.NewIterator(ctx, pool, snapshot.Config{
+			Tables:     s.config.Tables,
 			TablesKeys: s.tableKeys,
 		})
 		if err != nil {
@@ -157,9 +152,9 @@ func (s *Source) Teardown(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("failed to tear down iterator: %w", err))
 		}
 	}
-	if s.connPool != nil {
+	if s.pool != nil {
 		logger.Debug().Msg("Closing connection pool...")
-		err := csync.RunTimeout(ctx, s.connPool.Close, time.Minute)
+		err := csync.RunTimeout(ctx, s.pool.Close, time.Minute)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("failed to close DB connection pool: %w", err))
 		}
@@ -168,13 +163,13 @@ func (s *Source) Teardown(ctx context.Context) error {
 }
 
 func (s *Source) readingAllTables() bool {
-	return len(s.config.Table) == 1 && s.config.Table[0] == source.AllTablesWildcard
+	return len(s.config.Tables) == 1 && s.config.Tables[0] == source.AllTablesWildcard
 }
 
 func (s *Source) getAllTables(ctx context.Context) ([]string, error) {
 	query := "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
 
-	rows, err := s.connPool.Query(ctx, query)
+	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +200,7 @@ JOIN information_schema.columns AS c ON c.table_schema = tc.constraint_schema
 WHERE constraint_type = 'PRIMARY KEY' AND tc.table_schema = 'public'
   AND tc.table_name = $1`
 
-	rows, err := s.connPool.Query(ctx, query, tableName)
+	rows, err := s.pool.Query(ctx, query, tableName)
 	if err != nil {
 		return "", fmt.Errorf("failed to query table keys: %w", err)
 	}

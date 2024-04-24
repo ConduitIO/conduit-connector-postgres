@@ -3,15 +3,15 @@
 # Source
 
 The Postgres Source Connector connects to a database with the provided `url` and starts creating records for each change
-detected in a table.
+detected in the provided tables.
 
-Upon starting, the source takes a snapshot of a given table in the database, then switches into CDC mode. In CDC mode,
+Upon starting, the source takes a snapshot of the provided tables in the database, then switches into CDC mode. In CDC mode,
 the plugin reads from a buffer of CDC events.
 
 ## Snapshot Capture
 
-When the connector first starts, snapshot mode is enabled. The connector acquires a read-only lock on the table, and
-then reads all rows of the table into Conduit. Once all rows in that initial snapshot are read the connector releases
+When the connector first starts, snapshot mode is enabled. The connector acquires a read-only lock on the tables, and
+then reads all rows of the tables into Conduit. Once all rows in that initial snapshot are read the connector releases
 its lock and switches into CDC mode.
 
 This behavior is enabled by default, but can be turned off by adding `"snapshotMode":"never"` to the Source
@@ -37,8 +37,7 @@ Example configuration for CDC features:
 ```json
 {
   "url": "url",
-  "key": "key",
-  "table": "records",
+  "tables": "records",
   "cdcMode": "logrepl",
   "logrepl.publicationName": "meroxademo",
   "logrepl.slotName": "meroxademo"
@@ -47,20 +46,20 @@ Example configuration for CDC features:
 
 ## Key Handling
 
-If no `key` field is provided, then the connector will attempt to look up the primary key column of the table. If that
-can't be determined it will fail.
+The connector will automatically look up the primary key column for the specified tables. If that can't be determined, 
+the connector will return an error.
 
 ## Configuration Options
 
-| name                      | description                                                                                                                                                                                | required | default       |
-|---------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------|---------------|
-| `url`                     | Connection string for the Postgres database.                                                                                                                                               | true     |               |
-| `table`                   | List of table names to read from, separated by comma. Using `*` will read from all public tables.                                                                                          | true     |               |
-| `key`                     | List of Key column names per table, separated by comma. Example:`"table1:key1,table2:key2"`, if not supplied, the table(s) primary keys will be used as the `'Key'` field for the records. | false    |               |
-| `snapshotMode`            | Whether or not the plugin will take a snapshot of the entire table before starting cdc mode (allowed values: `initial` or `never`).                                                        | false    | `initial`     |
-| `cdcMode`                 | Determines the CDC mode (allowed values: `auto`, `logrepl` or `long_polling`).                                                                                                             | false    | `auto`        |
-| `logrepl.publicationName` | Name of the publication to listen for WAL events.                                                                                                                                          | false    | `conduitpub`  |
-| `logrepl.slotName`        | Name of the slot opened for replication events.                                                                                                                                            | false    | `conduitslot` |
+| name                      | description                                                                                                                                | required | default       |
+|---------------------------|--------------------------------------------------------------------------------------------------------------------------------------------|----------|---------------|
+| `url`                     | Connection string for the Postgres database.                                                                                               | true     |               |
+| `tables`                  | List of table names to read from, separated by comma. Example: `"employees,offices,payments"`. Using `*` will read from all public tables. | true     |               |
+| `snapshotMode`            | Whether or not the plugin will take a snapshot of the entire table before starting cdc mode (allowed values: `initial` or `never`).        | false    | `initial`     |
+| `cdcMode`                 | Determines the CDC mode (allowed values: `auto`, `logrepl` or `long_polling`).                                                             | false    | `auto`        |
+| `logrepl.publicationName` | Name of the publication to listen for WAL events.                                                                                          | false    | `conduitpub`  |
+| `logrepl.slotName`        | Name of the slot opened for replication events.                                                                                            | false    | `conduitslot` |
+| ~~`table`~~               | List of table names to read from, separated by comma. **Deprecated: use `tables` instead.**                                                | false    |               |
 
 # Destination
 
@@ -77,11 +76,10 @@ If there is no key, the record will be simply appended.
 
 ## Configuration Options
 
-| name    | description                                                                                                                                                                           | required | default                                    |
-|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------|--------------------------------------------|
-| `url`   | Connection string for the Postgres database.                                                                                                                                          | true     |                                            |
+| name    | description                                                                                                                                                                           | required | default                                      |
+|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------|----------------------------------------------|
+| `url`   | Connection string for the Postgres database.                                                                                                                                          | true     |                                              |
 | `table` | Table name. It can contain a Go template that will be executed for each record to determine the table. By default, the table is the value of the `opencdc.collection` metadata field. | false    | `{{ index .Metadata "opencdc.collection" }}` |
-| `key`   | Column name used to detect if the target table already contains the record.                                                                                                           | false    |                                            |
 
 # Testing
 

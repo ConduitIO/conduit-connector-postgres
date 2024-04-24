@@ -17,12 +17,6 @@ func (Config) Parameters() map[string]sdk.Parameter {
 				sdk.ValidationInclusion{List: []string{"auto", "logrepl", "long_polling"}},
 			},
 		},
-		"key": {
-			Default:     "",
-			Description: "key is a list of key column names per table, e.g.:\"table1:key1,table2:key2\", records should use the key values for their `key` fields.",
-			Type:        sdk.ParameterTypeString,
-			Validations: []sdk.Validation{},
-		},
 		"logrepl.publicationName": {
 			Default:     "conduitpub",
 			Description: "logrepl.publicationName determines the publication name in case the connector uses logical replication to listen to changes (see CDCMode).",
@@ -45,11 +39,15 @@ func (Config) Parameters() map[string]sdk.Parameter {
 		},
 		"table": {
 			Default:     "",
-			Description: "table is a List of table names to read from, separated by a comma, e.g.:\"table1,table2\". Use \"*\" if you'd like to listen to all tables.",
+			Description: "Deprecated: use `tables` instead.",
 			Type:        sdk.ParameterTypeString,
-			Validations: []sdk.Validation{
-				sdk.ValidationRequired{},
-			},
+			Validations: []sdk.Validation{},
+		},
+		"tables": {
+			Default:     "",
+			Description: "tables is a List of table names to read from, separated by a comma, e.g.:\"table1,table2\". Use \"*\" if you'd like to listen to all tables.",
+			Type:        sdk.ParameterTypeString,
+			Validations: []sdk.Validation{},
 		},
 		"url": {
 			Default:     "",

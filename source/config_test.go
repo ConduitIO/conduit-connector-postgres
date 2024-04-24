@@ -30,8 +30,7 @@ func TestConfig_Validate(t *testing.T) {
 			name: "valid config",
 			cfg: Config{
 				URL:     "postgresql://meroxauser:meroxapass@127.0.0.1:5432/meroxadb",
-				Table:   []string{"table1", "table2"},
-				Key:     []string{"table1:key1"},
+				Tables:  []string{"table1", "table2"},
 				CDCMode: CDCModeLogrepl,
 			},
 			wantErr: false,
@@ -39,8 +38,7 @@ func TestConfig_Validate(t *testing.T) {
 			name: "invalid postgres url",
 			cfg: Config{
 				URL:     "postgresql",
-				Table:   []string{"table1", "table2"},
-				Key:     []string{"table1:key1"},
+				Tables:  []string{"table1", "table2"},
 				CDCMode: CDCModeLogrepl,
 			},
 			wantErr: true,
@@ -48,18 +46,8 @@ func TestConfig_Validate(t *testing.T) {
 			name: "invalid multiple tables for long polling",
 			cfg: Config{
 				URL:     "postgresql://meroxauser:meroxapass@127.0.0.1:5432/meroxadb",
-				Table:   []string{"table1", "table2"},
-				Key:     []string{"table1:key1"},
+				Tables:  []string{"table1", "table2"},
 				CDCMode: CDCModeLongPolling,
-			},
-			wantErr: true,
-		}, {
-			name: "invalid key list format",
-			cfg: Config{
-				URL:     "postgresql://meroxauser:meroxapass@127.0.0.1:5432/meroxadb",
-				Table:   []string{"table1", "table2"},
-				Key:     []string{"key1,key2"},
-				CDCMode: CDCModeLogrepl,
 			},
 			wantErr: true,
 		},
@@ -67,7 +55,7 @@ func TestConfig_Validate(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			is := is.New(t)
-			_, err := tc.cfg.Validate()
+			err := tc.cfg.Validate()
 			if tc.wantErr {
 				is.True(err != nil)
 				return
