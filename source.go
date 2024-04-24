@@ -52,11 +52,7 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 	if err != nil {
 		return err
 	}
-	s.tableKeys, err = s.config.Validate()
-	if err != nil {
-		return err
-	}
-	return nil
+	return s.config.Validate()
 }
 
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
@@ -81,10 +77,6 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 
 	// ensure we have keys for all tables
 	for _, tableName := range s.config.Tables {
-		// get unprovided table keys
-		if _, ok := s.tableKeys[tableName]; ok {
-			continue // key was provided manually
-		}
 		s.tableKeys[tableName], err = s.getTableKeys(ctx, tableName)
 		if err != nil {
 			return fmt.Errorf("failed to find key for table %s (try specifying it manually): %w", tableName, err)

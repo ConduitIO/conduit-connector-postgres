@@ -17,12 +17,6 @@ func (Config) Parameters() map[string]sdk.Parameter {
 				sdk.ValidationInclusion{List: []string{"auto", "logrepl", "long_polling"}},
 			},
 		},
-		"key": {
-			Default:     "",
-			Description: "key is a list of key column names per table, e.g.:\"table1:key1,table2:key2\", records should use the key values for their `key` fields.",
-			Type:        sdk.ParameterTypeString,
-			Validations: []sdk.Validation{},
-		},
 		"logrepl.publicationName": {
 			Default:     "conduitpub",
 			Description: "logrepl.publicationName determines the publication name in case the connector uses logical replication to listen to changes (see CDCMode).",
