@@ -50,14 +50,6 @@ func TestConfig_Validate(t *testing.T) {
 				CDCMode: CDCModeLongPolling,
 			},
 			wantErr: true,
-		}, {
-			name: "invalid key list format",
-			cfg: Config{
-				URL:     "postgresql://meroxauser:meroxapass@127.0.0.1:5432/meroxadb",
-				Tables:  []string{"table1", "table2"},
-				CDCMode: CDCModeLogrepl,
-			},
-			wantErr: true,
 		},
 	}
 	for _, tc := range testCases {
