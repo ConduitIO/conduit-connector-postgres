@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
@@ -55,6 +56,47 @@ func Test_Iterator_Next(t *testing.T) {
 			is.NoErr(err)
 		}
 
+		_, err = i.Next(ctx)
+		is.Equal(err, ErrIteratorDone)
+	})
+
+	t.Run("next waits for acks", func(t *testing.T) {
+		is := is.New(t)
+
+		i, err := NewIterator(ctx, pool, Config{
+			Position: position.Position{}.ToSDKPosition(),
+			Tables:   []string{table},
+			TablesKeys: map[string]string{
+				table: "id",
+			},
+		})
+		is.NoErr(err)
+		defer func() {
+			is.NoErr(i.Teardown(ctx))
+		}()
+
+		for j := 1; j <= 4; j++ {
+			_, err = i.Next(ctx)
+			is.NoErr(err)
+		}
+		// Only ack 3 records
+		for j := 1; j <= 3; j++ {
+			err = i.Ack(ctx, nil)
+			is.NoErr(err)
+		}
+
+		ctxTimeout, cancel := context.WithTimeout(ctx, time.Millisecond*10)
+		defer cancel()
+
+		// No more records, but Next blocks because we haven't acked all records
+		_, err = i.Next(ctxTimeout)
+		is.True(errors.Is(err, context.DeadlineExceeded))
+
+		// Ack the last record
+		err = i.Ack(ctx, nil)
+		is.NoErr(err)
+
+		// Now Next won't block
 		_, err = i.Next(ctx)
 		is.Equal(err, ErrIteratorDone)
 	})
