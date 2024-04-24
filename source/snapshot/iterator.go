@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/conduitio/conduit-commons/csync"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -38,6 +39,7 @@ type Iterator struct {
 	db      *pgxpool.Pool
 	t       *tomb.Tomb
 	workers []*FetchWorker
+	acks    csync.WaitGroup
 
 	conf Config
 
@@ -83,14 +85,19 @@ func (i *Iterator) Next(ctx context.Context) (sdk.Record, error) {
 			if err := i.t.Err(); err != nil {
 				return sdk.Record{}, fmt.Errorf("fetchers exited unexpectedly: %w", err)
 			}
+			if err := i.acks.Wait(ctx); err != nil {
+				return sdk.Record{}, fmt.Errorf("failed to wait for acks: %w", err)
+			}
 			return sdk.Record{}, ErrIteratorDone
 		}
 
+		i.acks.Add(1)
 		return i.buildRecord(d), nil
 	}
 }
 
 func (i *Iterator) Ack(_ context.Context, _ sdk.Position) error {
+	i.acks.Done()
 	return nil
 }
 
