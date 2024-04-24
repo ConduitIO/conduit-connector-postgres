@@ -16,12 +16,15 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
+
+	"github.com/conduitio/conduit-commons/csync"
 	"github.com/conduitio/conduit-connector-postgres/source"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	"github.com/conduitio/conduit-connector-postgres/source/snapshot"
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -31,7 +34,6 @@ type Source struct {
 
 	iterator  source.Iterator
 	config    source.Config
-	conn      *pgx.Conn // TODO: Migrate to pgxpool once all iterators are replaced by the new one
 	connPool  *pgxpool.Pool
 	tableKeys map[string]string
 }
@@ -57,23 +59,23 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 }
 
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
-	conn, err := pgx.Connect(ctx, s.config.URL)
-	if err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
-	}
-	s.conn = conn
-
 	connPool, err := pgxpool.New(ctx, s.config.URL)
 	if err != nil {
 		return fmt.Errorf("failed to create a connection pool to database: %w", err)
 	}
 	s.connPool = connPool
 
+	logger := sdk.Logger(ctx)
 	if s.readingAllTables() {
-		s.config.Table, err = s.getAllTables(ctx, conn)
+		logger.Info().Msg("Detecting all tables...")
+		s.config.Table, err = s.getAllTables(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to connect to database: %w", err)
 		}
+		logger.Info().
+			Strs("tables", s.config.Table).
+			Int("count", len(s.config.Table)).
+			Msg("Successfully detected tables")
 	}
 
 	switch s.config.CDCMode {
@@ -85,10 +87,10 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		if s.config.SnapshotMode == source.SnapshotModeInitial {
 			// TODO create snapshot iterator for logical replication and pass
 			//  the snapshot mode in the config
-			sdk.Logger(ctx).Warn().Msg("snapshot not supported in logical replication mode")
+			logger.Warn().Msg("Snapshot not supported yet in logical replication mode")
 		}
 
-		i, err := logrepl.NewCDCIterator(ctx, conn, logrepl.Config{
+		i, err := logrepl.NewCDCIterator(ctx, s.connPool, logrepl.Config{
 			Position:        pos,
 			SlotName:        s.config.LogreplSlotName,
 			PublicationName: s.config.LogreplPublicationName,
@@ -100,10 +102,10 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		}
 		s.iterator = i
 	case source.CDCModeLongPolling:
-		sdk.Logger(ctx).Warn().Msg("long polling not supported yet, only snapshot is supported")
+		logger.Warn().Msg("Long polling not supported yet, only snapshot is supported")
 		if s.config.SnapshotMode != source.SnapshotModeInitial {
 			// TODO create long polling iterator and pass snapshot mode in the config
-			sdk.Logger(ctx).Warn().Msg("snapshot disabled, can't do anything right now")
+			logger.Warn().Msg("snapshot disabled, can't do anything right now")
 			return sdk.ErrUnimplemented
 		}
 
@@ -115,15 +117,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			return fmt.Errorf("failed to create long polling iterator: %w", err)
 		}
 
-		// Cannot use 'snap' (type *Iterator) as the type source.Iterator Type does not implement 'source.Iterator'
-		// need the method: Ack(context.Context, sdk.Position) error have the method: Ack(_ context.Context) error
-		// slack message https://meroxa.slack.com/archives/C01ERTL0MJR/p1713892954250549
 		s.iterator = snap
-
-		//	columns, err := s.getTableColumns(ctx, conn, table)
-		//	if err != nil {
-		//		return fmt.Errorf("failed to connect to database: %w", err)
-		//	}
 	default:
 		// shouldn't happen, config was validated
 		return fmt.Errorf("unsupported CDC mode %q", s.config.CDCMode)
@@ -140,56 +134,34 @@ func (s *Source) Ack(ctx context.Context, pos sdk.Position) error {
 }
 
 func (s *Source) Teardown(ctx context.Context) error {
+	logger := sdk.Logger(ctx)
+
+	var errs []error
 	if s.iterator != nil {
+		logger.Debug().Msg("Tearing down iterator...")
 		if err := s.iterator.Teardown(ctx); err != nil {
-			return fmt.Errorf("failed to tear down iterator: %w", err)
-		}
-	}
-	if s.conn != nil {
-		if err := s.conn.Close(ctx); err != nil {
-			return fmt.Errorf("failed to close DB connection: %w", err)
+			logger.Warn().Err(err).Msg("Failed to tear down iterator")
+			errs = append(errs, fmt.Errorf("failed to tear down iterator: %w", err))
 		}
 	}
 	if s.connPool != nil {
-		s.connPool.Close()
-	}
-	return nil
-}
-
-func (s *Source) getTableColumns(ctx context.Context, conn *pgx.Conn, table string) ([]string, error) {
-	query := "SELECT column_name FROM information_schema.columns WHERE table_name = $1"
-
-	rows, err := conn.Query(ctx, query, table)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var columns []string
-
-	for rows.Next() {
-		var columnName string
-		err := rows.Scan(&columnName)
+		logger.Debug().Msg("Closing connection pool...")
+		err := csync.RunTimeout(ctx, s.connPool.Close, time.Minute)
 		if err != nil {
-			return nil, err
+			errs = append(errs, fmt.Errorf("failed to close DB connection pool: %w", err))
 		}
-		columns = append(columns, columnName)
 	}
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows error: %w", err)
-	}
-
-	return columns, nil
+	return errors.Join(errs...)
 }
 
 func (s *Source) readingAllTables() bool {
 	return len(s.config.Table) == 1 && s.config.Table[0] == source.AllTablesWildcard
 }
 
-func (s *Source) getAllTables(ctx context.Context, conn *pgx.Conn) ([]string, error) {
+func (s *Source) getAllTables(ctx context.Context) ([]string, error) {
 	query := "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
 
-	rows, err := conn.Query(ctx, query)
+	rows, err := s.connPool.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}

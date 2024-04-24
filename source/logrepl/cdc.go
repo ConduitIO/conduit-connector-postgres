@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
@@ -46,13 +48,19 @@ type CDCIterator struct {
 // NewCDCIterator sets up the subscription to a logical replication slot and
 // starts a goroutine that listens to events. The goroutine will keep running
 // until either the context is canceled or Teardown is called.
-func NewCDCIterator(ctx context.Context, conn *pgx.Conn, config Config) (*CDCIterator, error) {
+func NewCDCIterator(ctx context.Context, connPool *pgxpool.Pool, config Config) (*CDCIterator, error) {
 	i := &CDCIterator{
 		config:  config,
 		records: make(chan sdk.Record),
 	}
 
-	err := i.attachSubscription(ctx, conn)
+	conn, err := connPool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire connection: %w", err)
+	}
+	defer conn.Release()
+
+	err = i.attachSubscription(ctx, conn.Conn())
 	if err != nil {
 		return nil, fmt.Errorf("failed to setup subscription: %w", err)
 	}

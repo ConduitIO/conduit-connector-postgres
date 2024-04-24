@@ -143,14 +143,7 @@ func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table s
 		SlotName:        table, // table is random, reuse for slot name
 	}
 
-	// acquire connection for the time of the test
-	conn, err := pool.Acquire(ctx)
-	is.NoErr(err)
-	t.Cleanup(func() {
-		conn.Release()
-	})
-
-	i, err := NewCDCIterator(ctx, conn.Conn(), config)
+	i, err := NewCDCIterator(ctx, pool, config)
 	is.NoErr(err)
 	return i
 }

@@ -90,7 +90,7 @@ func (i *Iterator) Next(ctx context.Context) (sdk.Record, error) {
 	}
 }
 
-func (i *Iterator) Ack(_ context.Context) error {
+func (i *Iterator) Ack(_ context.Context, _ sdk.Position) error {
 	return nil
 }
 
