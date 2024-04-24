@@ -51,15 +51,15 @@ the connector will return an error.
 
 ## Configuration Options
 
-| name                      | description                                                                                                                                                                                | required | default       |
-|---------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------|---------------|
-| `url`                     | Connection string for the Postgres database.                                                                                                                                               | true     |               |
-| `tables`                  | List of table names to read from, separated by comma. Example: `"employees,offices,payments"`. Using `*` will read from all public tables.                                                 | true     |               |
-| `snapshotMode`            | Whether or not the plugin will take a snapshot of the entire table before starting cdc mode (allowed values: `initial` or `never`).                                                        | false    | `initial`     |
-| `cdcMode`                 | Determines the CDC mode (allowed values: `auto`, `logrepl` or `long_polling`).                                                                                                             | false    | `auto`        |
-| `logrepl.publicationName` | Name of the publication to listen for WAL events.                                                                                                                                          | false    | `conduitpub`  |
-| `logrepl.slotName`        | Name of the slot opened for replication events.                                                                                                                                            | false    | `conduitslot` |
-| ~~`table`~~               | List of table names to read from, separated by comma. **Deprecated: use `tables` instead.**                                                                                                | false    |               |
+| name                      | description                                                                                                                                | required | default       |
+|---------------------------|--------------------------------------------------------------------------------------------------------------------------------------------|----------|---------------|
+| `url`                     | Connection string for the Postgres database.                                                                                               | true     |               |
+| `tables`                  | List of table names to read from, separated by comma. Example: `"employees,offices,payments"`. Using `*` will read from all public tables. | true     |               |
+| `snapshotMode`            | Whether or not the plugin will take a snapshot of the entire table before starting cdc mode (allowed values: `initial` or `never`).        | false    | `initial`     |
+| `cdcMode`                 | Determines the CDC mode (allowed values: `auto`, `logrepl` or `long_polling`).                                                             | false    | `auto`        |
+| `logrepl.publicationName` | Name of the publication to listen for WAL events.                                                                                          | false    | `conduitpub`  |
+| `logrepl.slotName`        | Name of the slot opened for replication events.                                                                                            | false    | `conduitslot` |
+| ~~`table`~~               | List of table names to read from, separated by comma. **Deprecated: use `tables` instead.**                                                | false    |               |
 
 # Destination
 
