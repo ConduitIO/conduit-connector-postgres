@@ -42,14 +42,18 @@ const (
 	CDCModeLogrepl CDCMode = "logrepl"
 	// CDCModeLongPolling uses long polling to listen to changes.
 	CDCModeLongPolling CDCMode = "long_polling"
+
+	// AllTablesWildcard can be used if you'd like to listen to all tables.
+	AllTablesWildcard = "*"
 )
 
 type Config struct {
 	// URL is the connection string for the Postgres database.
 	URL string `json:"url" validate:"required"`
-	// Table is a List of table names to read from, separated by a comma.
+	// Table is a List of table names to read from, separated by a comma, e.g.:"table1,table2".
+	// Use "*" if you'd like to listen to all tables.
 	Table []string `json:"table" validate:"required"`
-	// Key is a list of Key column names per table, ex:"table1:key1,table2:key2", records should use the key values for their `Key` fields.
+	// Key is a list of Key column names per table, e.g.:"table1:key1,table2:key2", records should use the key values for their `Key` fields.
 	Key []string `json:"key"`
 
 	// SnapshotMode is whether the plugin will take a snapshot of the entire table before starting cdc mode.
@@ -72,9 +76,9 @@ func (c Config) Validate() (map[string]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid url: %w", err)
 	}
-	// todo: when cdcMode "auto" is implemented, change this check
+	// TODO: when cdcMode "auto" is implemented, change this check
 	if len(c.Table) != 1 && c.CDCMode == CDCModeLongPolling {
-		return nil, fmt.Errorf("multi tables are only supported for logrepl CDCMode, please provide only one table")
+		return nil, fmt.Errorf("multi-tables are only supported for logrepl CDCMode, please provide only one table")
 	}
 	tableKeys := make(map[string]string, len(c.Table))
 	for _, pair := range c.Key {

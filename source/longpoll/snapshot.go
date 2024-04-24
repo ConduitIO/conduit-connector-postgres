@@ -24,12 +24,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const (
-	// TODO same constant is defined in packages longpoll, logrepl and destination
-	//  use same constant everywhere
-	MetadataPostgresTable = "postgres.table"
-)
-
 // Declare Postgres $ placeholder format
 var psql = sq.StatementBuilder.PlaceholderFormat(sq.Dollar)
 
@@ -57,7 +51,7 @@ type SnapshotIterator struct {
 	// rows holds a reference to the postgres connection. this can be nil so
 	// we must always call loadRows before HasNext or Next.
 	rows pgx.Rows
-	// ineternalPos is an internal integer Position for the SnapshotIterator to
+	// internalPos is an internal integer Position for the SnapshotIterator to
 	// to return at each Read call.
 	internalPos int64
 	// snapshotComplete keeps an internal record of whether the snapshot is
@@ -182,7 +176,7 @@ func (s *SnapshotIterator) buildRecordPosition() sdk.Position {
 
 func (s *SnapshotIterator) buildRecordMetadata() map[string]string {
 	return map[string]string{
-		MetadataPostgresTable: s.table,
+		sdk.MetadataCollection: s.table,
 	}
 }
 

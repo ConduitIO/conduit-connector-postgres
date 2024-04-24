@@ -54,7 +54,7 @@ func TestIterator_Next(t *testing.T) {
 			want: sdk.Record{
 				Operation: sdk.OperationCreate,
 				Metadata: map[string]string{
-					MetadataPostgresTable: table,
+					sdk.MetadataCollection: table,
 				},
 				Key: sdk.StructuredData{"id": int64(6)},
 				Payload: sdk.Change{
@@ -78,7 +78,7 @@ func TestIterator_Next(t *testing.T) {
 			want: sdk.Record{
 				Operation: sdk.OperationUpdate,
 				Metadata: map[string]string{
-					MetadataPostgresTable: table,
+					sdk.MetadataCollection: table,
 				},
 				Key: sdk.StructuredData{"id": int64(1)},
 				Payload: sdk.Change{
@@ -100,7 +100,7 @@ func TestIterator_Next(t *testing.T) {
 			want: sdk.Record{
 				Operation: sdk.OperationDelete,
 				Metadata: map[string]string{
-					MetadataPostgresTable: table,
+					sdk.MetadataCollection: table,
 				},
 				Key: sdk.StructuredData{"id": int64(3)},
 			},
@@ -139,18 +139,12 @@ func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table s
 	is := is.New(t)
 	config := Config{
 		Tables:          []string{table},
+		TableKeys:       map[string]string{table: "id"},
 		PublicationName: table, // table is random, reuse for publication name
 		SlotName:        table, // table is random, reuse for slot name
 	}
 
-	// acquire connection for the time of the test
-	conn, err := pool.Acquire(ctx)
-	is.NoErr(err)
-	t.Cleanup(func() {
-		conn.Release()
-	})
-
-	i, err := NewCDCIterator(ctx, conn.Conn(), config)
+	i, err := NewCDCIterator(ctx, pool, config)
 	is.NoErr(err)
 	return i
 }

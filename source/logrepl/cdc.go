@@ -22,13 +22,8 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
-	"github.com/jackc/pgx/v5"
-)
-
-const (
-	// TODO same constant is defined in packages longpoll, logrepl and destination
-	//  use same constant everywhere
-	MetadataPostgresTable = "postgres.table"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Config holds configuration values for CDCIterator.
@@ -38,6 +33,17 @@ type Config struct {
 	PublicationName string
 	Tables          []string
 	TableKeys       map[string]string
+}
+
+func (c Config) LSN() (pglogrepl.LSN, error) {
+	if len(c.Position) == 0 {
+		return 0, nil
+	}
+	lsn, err := PositionToLSN(c.Position)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse position: %w", err)
+	}
+	return lsn, nil
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -52,13 +58,13 @@ type CDCIterator struct {
 // NewCDCIterator sets up the subscription to a logical replication slot and
 // starts a goroutine that listens to events. The goroutine will keep running
 // until either the context is canceled or Teardown is called.
-func NewCDCIterator(ctx context.Context, conn *pgx.Conn, config Config) (*CDCIterator, error) {
+func NewCDCIterator(ctx context.Context, connPool *pgxpool.Pool, config Config) (*CDCIterator, error) {
 	i := &CDCIterator{
 		config:  config,
 		records: make(chan sdk.Record),
 	}
 
-	err := i.attachSubscription(ctx, conn)
+	err := i.attachSubscription(connPool.Config().ConnConfig.Config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to setup subscription: %w", err)
 	}
@@ -143,39 +149,27 @@ func (i *CDCIterator) Teardown(ctx context.Context) error {
 
 // attachSubscription determines the starting LSN and key column of the source
 // table and prepares a subscription.
-func (i *CDCIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) error {
-	var lsn pglogrepl.LSN
-	if i.config.Position != nil && string(i.config.Position) != "" {
-		var err error
-		lsn, err = PositionToLSN(i.config.Position)
-		if err != nil {
-			return err
-		}
+func (i *CDCIterator) attachSubscription(connConfig pgconn.Config) error {
+	lsn, err := i.config.LSN()
+	if err != nil {
+		return err
 	}
 
-	var err error
-	if i.config.TableKeys == nil {
-		i.config.TableKeys = make(map[string]string, len(i.config.Tables))
-	}
+	// make sure we have all table keys
 	for _, tableName := range i.config.Tables {
-		// get unprovided table keys
-		if _, ok := i.config.TableKeys[tableName]; ok {
-			continue // key was provided manually
-		}
-		i.config.TableKeys[tableName], err = i.getTableKeys(ctx, conn, tableName)
-		if err != nil {
-			return fmt.Errorf("failed to find key for table %s (try specifying it manually): %w", tableName, err)
+		if i.config.TableKeys[tableName] == "" {
+			return fmt.Errorf("missing key for table %q", tableName)
 		}
 	}
 
 	sub := internal.NewSubscription(
-		conn.Config().Config,
+		connConfig,
 		i.config.SlotName,
 		i.config.PublicationName,
 		i.config.Tables,
 		lsn,
 		NewCDCHandler(
-			internal.NewRelationSet(conn.TypeMap()),
+			internal.NewRelationSet(),
 			i.config.TableKeys,
 			i.records,
 		).Handle,
@@ -183,22 +177,4 @@ func (i *CDCIterator) attachSubscription(ctx context.Context, conn *pgx.Conn) er
 
 	i.sub = sub
 	return nil
-}
-
-// getTableKeys queries the db for the name of the primary key column for a
-// table if one exists and returns it.
-func (i *CDCIterator) getTableKeys(ctx context.Context, conn *pgx.Conn, tableName string) (string, error) {
-	query := `SELECT column_name
-		FROM information_schema.key_column_usage
-		WHERE table_name = $1 AND constraint_name LIKE '%_pkey'
-		LIMIT 1;`
-	row := conn.QueryRow(ctx, query, tableName)
-
-	var colName string
-	err := row.Scan(&colName)
-	if err != nil {
-		return "", fmt.Errorf("getTableKeys query failed: %w", err)
-	}
-
-	return colName, nil
 }

@@ -160,18 +160,9 @@ func Test_FetcherValidate(t *testing.T) {
 			},
 		}
 
-		err1 := f.Validate(ctx)
-		is.True(err1 != nil)
-		t.Logf("err: %s\n", err1.Error())
-		is.True(strings.Contains(err1.Error(), `failed to validate key: key "column3" of type "boolean" is unsupported`))
-
-		f.conf.Key = "missing_key"
-		err2 := f.Validate(ctx)
-		is.True(err2 != nil)
-		is.True(strings.Contains(
-			err2.Error(),
-			fmt.Sprintf(`key "missing_key" not present on table %q`, table),
-		))
+		err := f.Validate(ctx)
+		is.True(err != nil)
+		is.True(strings.Contains(err.Error(), `failed to validate key: key "column3" of type "boolean" is unsupported`))
 	})
 
 	t.Run("key is not pk", func(t *testing.T) {
@@ -184,15 +175,24 @@ func Test_FetcherValidate(t *testing.T) {
 			},
 		}
 
-		err1 := f.Validate(ctx)
-		is.True(err1 != nil)
-		is.True(strings.Contains(err1.Error(), `failed to validate key: invalid key "column2", not a primary key`))
+		err := f.Validate(ctx)
+		is.NoErr(err) // no error, only a warning
+	})
 
-		f.conf.Key = "missing_key"
-		err2 := f.Validate(ctx)
-		is.True(err2 != nil)
+	t.Run("missing key", func(t *testing.T) {
+		is := is.New(t)
+		f := FetchWorker{
+			db: pool,
+			conf: FetchConfig{
+				Table: table,
+				Key:   "missing_key",
+			},
+		}
+
+		err := f.Validate(ctx)
+		is.True(err != nil)
 		is.True(strings.Contains(
-			err2.Error(),
+			err.Error(),
 			fmt.Sprintf(`key "missing_key" not present on table %q`, table),
 		))
 	})

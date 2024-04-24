@@ -182,7 +182,7 @@ func (s *SnapshotIterator) buildRecordPosition() sdk.Position {
 
 func (s *SnapshotIterator) buildRecordMetadata() map[string]string {
 	return map[string]string{
-		MetadataPostgresTable: s.config.Table,
+		sdk.MetadataCollection: s.config.Table,
 	}
 }
 

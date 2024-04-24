@@ -16,13 +16,17 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
+	"github.com/conduitio/conduit-commons/csync"
 	"github.com/conduitio/conduit-connector-postgres/source"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
-	"github.com/conduitio/conduit-connector-postgres/source/longpoll"
+	"github.com/conduitio/conduit-connector-postgres/source/snapshot"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Source is a Postgres source plugin.
@@ -31,7 +35,7 @@ type Source struct {
 
 	iterator  source.Iterator
 	config    source.Config
-	conn      *pgx.Conn
+	connPool  *pgxpool.Pool
 	tableKeys map[string]string
 }
 
@@ -56,15 +60,36 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 }
 
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
-	conn, err := pgx.Connect(ctx, s.config.URL)
+	connPool, err := pgxpool.New(ctx, s.config.URL)
 	if err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
+		return fmt.Errorf("failed to create a connection pool to database: %w", err)
 	}
-	columns, err := s.getTableColumns(ctx, conn)
-	if err != nil {
-		return fmt.Errorf("failed to connect to database: %w", err)
+	s.connPool = connPool
+
+	logger := sdk.Logger(ctx)
+	if s.readingAllTables() {
+		logger.Info().Msg("Detecting all tables...")
+		s.config.Table, err = s.getAllTables(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to connect to get all tables: %w", err)
+		}
+		logger.Info().
+			Strs("tables", s.config.Table).
+			Int("count", len(s.config.Table)).
+			Msg("Successfully detected tables")
 	}
-	s.conn = conn
+
+	// ensure we have keys for all tables
+	for _, tableName := range s.config.Table {
+		// get unprovided table keys
+		if _, ok := s.tableKeys[tableName]; ok {
+			continue // key was provided manually
+		}
+		s.tableKeys[tableName], err = s.getTableKeys(ctx, tableName)
+		if err != nil {
+			return fmt.Errorf("failed to find key for table %s (try specifying it manually): %w", tableName, err)
+		}
+	}
 
 	switch s.config.CDCMode {
 	case source.CDCModeAuto:
@@ -75,10 +100,10 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		if s.config.SnapshotMode == source.SnapshotModeInitial {
 			// TODO create snapshot iterator for logical replication and pass
 			//  the snapshot mode in the config
-			sdk.Logger(ctx).Warn().Msg("snapshot not supported in logical replication mode")
+			logger.Warn().Msg("Snapshot not supported yet in logical replication mode")
 		}
 
-		i, err := logrepl.NewCDCIterator(ctx, s.conn, logrepl.Config{
+		i, err := logrepl.NewCDCIterator(ctx, s.connPool, logrepl.Config{
 			Position:        pos,
 			SlotName:        s.config.LogreplSlotName,
 			PublicationName: s.config.LogreplPublicationName,
@@ -90,22 +115,21 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		}
 		s.iterator = i
 	case source.CDCModeLongPolling:
-		sdk.Logger(ctx).Warn().Msg("long polling not supported yet, only snapshot is supported")
+		logger.Warn().Msg("Long polling not supported yet, only snapshot is supported")
 		if s.config.SnapshotMode != source.SnapshotModeInitial {
 			// TODO create long polling iterator and pass snapshot mode in the config
-			sdk.Logger(ctx).Warn().Msg("snapshot disabled, can't do anything right now")
+			logger.Warn().Msg("snapshot disabled, can't do anything right now")
 			return sdk.ErrUnimplemented
 		}
 
-		snap, err := longpoll.NewSnapshotIterator(
-			ctx,
-			s.conn,
-			s.config.Table[0], // todo: only the first table for now
-			columns,
-			s.tableKeys[s.config.Table[0]])
+		snap, err := snapshot.NewIterator(ctx, connPool, snapshot.Config{
+			Tables:     s.config.Table,
+			TablesKeys: s.tableKeys,
+		})
 		if err != nil {
 			return fmt.Errorf("failed to create long polling iterator: %w", err)
 		}
+
 		s.iterator = snap
 	default:
 		// shouldn't happen, config was validated
@@ -123,39 +147,87 @@ func (s *Source) Ack(ctx context.Context, pos sdk.Position) error {
 }
 
 func (s *Source) Teardown(ctx context.Context) error {
+	logger := sdk.Logger(ctx)
+
+	var errs []error
 	if s.iterator != nil {
+		logger.Debug().Msg("Tearing down iterator...")
 		if err := s.iterator.Teardown(ctx); err != nil {
-			return fmt.Errorf("failed to tear down iterator: %w", err)
+			logger.Warn().Err(err).Msg("Failed to tear down iterator")
+			errs = append(errs, fmt.Errorf("failed to tear down iterator: %w", err))
 		}
 	}
-	if s.conn != nil {
-		if err := s.conn.Close(ctx); err != nil {
-			return fmt.Errorf("failed to close DB connection: %w", err)
+	if s.connPool != nil {
+		logger.Debug().Msg("Closing connection pool...")
+		err := csync.RunTimeout(ctx, s.connPool.Close, time.Minute)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to close DB connection pool: %w", err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
-func (s *Source) getTableColumns(ctx context.Context, conn *pgx.Conn) ([]string, error) {
-	query := "SELECT column_name FROM information_schema.columns WHERE table_name = $1"
+func (s *Source) readingAllTables() bool {
+	return len(s.config.Table) == 1 && s.config.Table[0] == source.AllTablesWildcard
+}
 
-	rows, err := conn.Query(ctx, query, s.config.Table[0])
+func (s *Source) getAllTables(ctx context.Context) ([]string, error) {
+	query := "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+
+	rows, err := s.connPool.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var columns []string
+	var tables []string
 	for rows.Next() {
-		var columnName string
-		err := rows.Scan(&columnName)
-		if err != nil {
-			return nil, err
+		var tableName string
+		if err := rows.Scan(&tableName); err != nil {
+			return nil, fmt.Errorf("failed to scan table name: %w", err)
 		}
-		columns = append(columns, columnName)
+		tables = append(tables, tableName)
 	}
-	if err = rows.Err(); err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("rows error: %w", err)
 	}
-	return columns, nil
+	return tables, nil
+}
+
+// getTableKeys queries the db for the name of the primary key column for a
+// table if one exists and returns it.
+func (s *Source) getTableKeys(ctx context.Context, tableName string) (string, error) {
+	query := `SELECT c.column_name
+FROM information_schema.table_constraints tc
+JOIN information_schema.constraint_column_usage AS ccu USING (constraint_schema, constraint_name)
+JOIN information_schema.columns AS c ON c.table_schema = tc.constraint_schema
+  AND tc.table_name = c.table_name AND ccu.column_name = c.column_name
+WHERE constraint_type = 'PRIMARY KEY' AND tc.table_schema = 'public'
+  AND tc.table_name = $1`
+
+	rows, err := s.connPool.Query(ctx, query, tableName)
+	if err != nil {
+		return "", fmt.Errorf("failed to query table keys: %w", err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		if rows.Err() != nil {
+			return "", fmt.Errorf("query failed: %w", rows.Err())
+		}
+		return "", fmt.Errorf("no table keys found: %w", pgx.ErrNoRows)
+	}
+
+	var colName string
+	err = rows.Scan(&colName)
+	if err != nil {
+		return "", fmt.Errorf("failed to scan row: %w", err)
+	}
+
+	if rows.Next() {
+		// we only support single column primary keys for now
+		return "", errors.New("composite keys are not supported")
+	}
+
+	return colName, nil
 }
