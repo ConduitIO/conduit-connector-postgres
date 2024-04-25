@@ -1,4 +1,8 @@
 # Conduit Connector PostgreSQL
+![scarf pixel](https://static.scarf.sh/a.png?x-pxid=1423de19-24e7-4d64-91cf-0b893ca28cc6)
+
+The PostgreSQL connector is a [Conduit](https://github.com/ConduitIO/conduit) plugin. It provides both, a source
+and a destination PostgresSQL connectors.
 
 # Source
 
