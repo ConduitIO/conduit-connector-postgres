@@ -17,6 +17,15 @@ func (Config) Parameters() map[string]sdk.Parameter {
 				sdk.ValidationInclusion{List: []string{"auto", "logrepl", "long_polling"}},
 			},
 		},
+		"logrepl.autoCleanup": {
+			Default:     "true",
+			Description: "logrepl.autoCleanup determines if the replication slot and publication should be removed when the connector is deleted.",
+			Type:        sdk.ParameterTypeBool,
+			Validations: []sdk.Validation{
+				sdk.ValidationInclusion{List: []string{"true", "t"}},
+				sdk.ValidationExclusion{List: []string{"false", "f"}},
+			},
+		},
 		"logrepl.publicationName": {
 			Default:     "conduitpub",
 			Description: "logrepl.publicationName determines the publication name in case the connector uses logical replication to listen to changes (see CDCMode).",

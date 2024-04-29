@@ -99,6 +99,27 @@ func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 	return table
 }
 
+func CreateReplicationSlot(t *testing.T, conn *pgx.Conn, slotName string) {
+	is := is.New(t)
+
+	_, err := conn.Exec(
+		context.Background(),
+		"SELECT pg_create_logical_replication_slot($1, $2)",
+		slotName,
+		"pgoutput",
+	)
+
+	is.NoErr(err)
+}
+
+func CreatePublication(t *testing.T, conn *pgx.Conn, pubName string) {
+	is := is.New(t)
+
+	_, err := conn.Exec(context.Background(), "CREATE PUBLICATION "+pubName+" FOR ALL TABLES")
+
+	is.NoErr(err)
+}
+
 func RandomIdentifier(t *testing.T) string {
 	return fmt.Sprintf("conduit_%v_%d",
 		strings.ReplaceAll(strings.ToLower(t.Name()), "/", "_"),
