@@ -108,16 +108,28 @@ func CreateReplicationSlot(t *testing.T, conn *pgx.Conn, slotName string) {
 		slotName,
 		"pgoutput",
 	)
-
 	is.NoErr(err)
+
+	t.Cleanup(func() {
+		_, err := conn.Exec(
+			context.Background(),
+			"SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name=$1",
+			slotName,
+		)
+		is.NoErr(err)
+	})
 }
 
 func CreatePublication(t *testing.T, conn *pgx.Conn, pubName string) {
 	is := is.New(t)
 
 	_, err := conn.Exec(context.Background(), "CREATE PUBLICATION "+pubName+" FOR ALL TABLES")
-
 	is.NoErr(err)
+
+	t.Cleanup(func() {
+		_, err := conn.Exec(context.Background(), "DROP PUBLICATION IF EXISTS "+pubName)
+		is.NoErr(err)
+	})
 }
 
 func RandomIdentifier(t *testing.T) string {

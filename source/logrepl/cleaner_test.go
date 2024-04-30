@@ -38,55 +38,55 @@ func Test_Cleanup(t *testing.T) {
 			desc: "drops slot and pub",
 			conf: CleanupConfig{
 				URL:             test.RepmgrConnString,
-				SlotName:        "conduitslot",
-				PublicationName: "conduitpub",
+				SlotName:        "conduitslot1",
+				PublicationName: "conduitpub1",
 			},
 			setup: func(t *testing.T) {
-				test.CreatePublication(t, conn, "conduitpub")
-				test.CreateReplicationSlot(t, conn, "conduitslot")
+				test.CreatePublication(t, conn, "conduitpub1")
+				test.CreateReplicationSlot(t, conn, "conduitslot1")
 			},
 		},
 		{
 			desc: "drops pub, slot unspecified",
 			conf: CleanupConfig{
 				URL:             test.RepmgrConnString,
-				PublicationName: "conduitpub",
+				PublicationName: "conduitpub2",
 			},
 			setup: func(t *testing.T) {
-				test.CreatePublication(t, conn, "conduitpub")
+				test.CreatePublication(t, conn, "conduitpub2")
 			},
 		},
 		{
 			desc: "drops slot, pub unspecified",
 			conf: CleanupConfig{
 				URL:      test.RepmgrConnString,
-				SlotName: "conduitslot",
+				SlotName: "conduitslot3",
 			},
 			setup: func(t *testing.T) {
-				test.CreateReplicationSlot(t, conn, "conduitslot")
+				test.CreateReplicationSlot(t, conn, "conduitslot3")
 			},
 		},
 		{
 			desc: "drops pub, slot missing",
 			conf: CleanupConfig{
 				URL:             test.RepmgrConnString,
-				SlotName:        "conduitslot",
-				PublicationName: "conduitpub",
+				SlotName:        "conduitslot4",
+				PublicationName: "conduitpub4",
 			},
 			setup: func(t *testing.T) {
-				test.CreatePublication(t, conn, "conduitpub")
+				test.CreatePublication(t, conn, "conduitpub4")
 			},
-			wantErr: errors.New(`replication slot "conduitslot" does not exist`),
+			wantErr: errors.New(`replication slot "conduitslot4" does not exist`),
 		},
 		{
 			desc: "drops slot, pub missing", // no op
 			conf: CleanupConfig{
 				URL:             test.RepmgrConnString,
-				SlotName:        "conduitslot",
-				PublicationName: "conduitpub",
+				SlotName:        "conduitslot5",
+				PublicationName: "conduitpub5",
 			},
 			setup: func(t *testing.T) {
-				test.CreateReplicationSlot(t, conn, "conduitslot")
+				test.CreateReplicationSlot(t, conn, "conduitslot5")
 			},
 		},
 	}

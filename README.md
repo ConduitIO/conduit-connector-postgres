@@ -48,6 +48,9 @@ Example configuration for CDC features:
 }
 ```
 
+:warning: When the connector or pipeline is deleted, the connector will automatically attempt to delete the replication slots and publication.
+This is the default behaviour and can be disabled by setting `logrepl.autoCleanup` to `false`.
+
 ## Key Handling
 
 The connector will automatically look up the primary key column for the specified tables. If that can't be determined, 

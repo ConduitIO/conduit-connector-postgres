@@ -33,9 +33,6 @@ func TestIterator_Next(t *testing.T) {
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
 	table := test.SetupTestTable(ctx, t, pool)
 	i := testIterator(ctx, t, pool, table)
-	t.Cleanup(func() {
-		is.NoErr(i.Teardown(ctx))
-	})
 
 	// wait for subscription to be ready
 	<-i.sub.Ready()
@@ -72,7 +69,7 @@ func TestIterator_Next(t *testing.T) {
 		{
 			name: "should detect update",
 			setupQuery: `UPDATE %s
-				SET column1 = 'test cdc updates' 
+				SET column1 = 'test cdc updates'
 				WHERE key = '1'`,
 			wantErr: false,
 			want: sdk.Record{
@@ -146,5 +143,14 @@ func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table s
 
 	i, err := NewCDCIterator(ctx, pool, config)
 	is.NoErr(err)
+	t.Cleanup(func() {
+		is.NoErr(i.Teardown(ctx))
+		is.NoErr(Cleanup(ctx, CleanupConfig{
+			URL:             pool.Config().ConnString(),
+			SlotName:        table,
+			PublicationName: table,
+		}))
+	})
+
 	return i
 }
