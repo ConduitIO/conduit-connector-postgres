@@ -38,7 +38,7 @@ func Test_Iterator_Next(t *testing.T) {
 		i, err := NewIterator(ctx, pool, Config{
 			Position: position.Position{}.ToSDKPosition(),
 			Tables:   []string{table},
-			TablesKeys: map[string]string{
+			TableKeys: map[string]string{
 				table: "id",
 			},
 		})
@@ -66,7 +66,7 @@ func Test_Iterator_Next(t *testing.T) {
 		i, err := NewIterator(ctx, pool, Config{
 			Position: position.Position{}.ToSDKPosition(),
 			Tables:   []string{table},
-			TablesKeys: map[string]string{
+			TableKeys: map[string]string{
 				table: "id",
 			},
 		})
@@ -107,7 +107,7 @@ func Test_Iterator_Next(t *testing.T) {
 		i, err := NewIterator(ctx, pool, Config{
 			Position: position.Position{}.ToSDKPosition(),
 			Tables:   []string{table},
-			TablesKeys: map[string]string{
+			TableKeys: map[string]string{
 				table: "id",
 			},
 		})
@@ -130,7 +130,7 @@ func Test_Iterator_Next(t *testing.T) {
 		i, err := NewIterator(cancelCtx, pool, Config{
 			Position: position.Position{}.ToSDKPosition(),
 			Tables:   []string{table},
-			TablesKeys: map[string]string{
+			TableKeys: map[string]string{
 				table: "id",
 			},
 		})

@@ -92,18 +92,13 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		//  switches to long polling if it's not. For now use logical replication
 		fallthrough
 	case source.CDCModeLogrepl:
-		if s.config.SnapshotMode == source.SnapshotModeInitial {
-			// TODO create snapshot iterator for logical replication and pass
-			//  the snapshot mode in the config
-			logger.Warn().Msg("Snapshot not supported yet in logical replication mode")
-		}
-
-		i, err := logrepl.NewCDCIterator(ctx, s.pool, logrepl.Config{
+		i, err := logrepl.NewCombinedIterator(ctx, s.pool, logrepl.Config{
 			Position:        pos,
 			SlotName:        s.config.LogreplSlotName,
 			PublicationName: s.config.LogreplPublicationName,
 			Tables:          s.config.Tables,
 			TableKeys:       s.tableKeys,
+			WithSnapshot:    s.config.SnapshotMode == source.SnapshotModeInitial,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create logical replication iterator: %w", err)
@@ -118,8 +113,8 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		}
 
 		snap, err := snapshot.NewIterator(ctx, pool, snapshot.Config{
-			Tables:     s.config.Tables,
-			TablesKeys: s.tableKeys,
+			Tables:    s.config.Tables,
+			TableKeys: s.tableKeys,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create long polling iterator: %w", err)

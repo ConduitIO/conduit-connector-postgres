@@ -16,23 +16,125 @@ package logrepl
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
 )
 
-func TestIterator_Next(t *testing.T) {
+func TestCDCIterator_New(t *testing.T) {
+	ctx := context.Background()
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T) CDCConfig
+		pgconf  *pgconn.Config
+		wantErr error
+	}{
+		{
+			name:   "publication already exists",
+			pgconf: &pool.Config().ConnConfig.Config,
+			setup: func(t *testing.T) CDCConfig {
+				is := is.New(t)
+				table := test.SetupTestTable(ctx, t, pool)
+				test.CreatePublication(t, pool, table, []string{table})
+
+				t.Cleanup(func() {
+					is.NoErr(Cleanup(ctx, CleanupConfig{
+						URL:      pool.Config().ConnString(),
+						SlotName: table,
+					}))
+				})
+
+				return CDCConfig{
+					SlotName:        table,
+					PublicationName: table,
+					Tables:          []string{table},
+				}
+			},
+		},
+		{
+			name: "fails to connect",
+			pgconf: func() *pgconn.Config {
+				c := pool.Config().ConnConfig.Config
+				c.Port = 31337
+
+				return &c
+			}(),
+			setup: func(*testing.T) CDCConfig {
+				return CDCConfig{}
+			},
+			wantErr: errors.New("could not establish replication connection"),
+		},
+		{
+			name:   "fails to create publication",
+			pgconf: &pool.Config().ConnConfig.Config,
+			setup: func(*testing.T) CDCConfig {
+				return CDCConfig{
+					PublicationName: "foobar",
+				}
+			},
+			wantErr: errors.New("requires at least one table"),
+		},
+		{
+			name:   "fails to create subscription",
+			pgconf: &pool.Config().ConnConfig.Config,
+			setup: func(t *testing.T) CDCConfig {
+				is := is.New(t)
+				table := test.SetupTestTable(ctx, t, pool)
+
+				t.Cleanup(func() {
+					is.NoErr(Cleanup(ctx, CleanupConfig{
+						URL:             pool.Config().ConnString(),
+						PublicationName: table,
+					}))
+				})
+
+				return CDCConfig{
+					SlotName:        "invalid,name_/",
+					PublicationName: table,
+					Tables:          []string{table},
+				}
+			},
+			wantErr: errors.New("ERROR: syntax error (SQLSTATE 42601)"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := is.New(t)
+
+			config := tt.setup(t)
+
+			_, err := NewCDCIterator(ctx, tt.pgconf, config)
+			if tt.wantErr != nil {
+				if match := strings.Contains(err.Error(), tt.wantErr.Error()); !match {
+					t.Logf("%s != %s", err.Error(), tt.wantErr.Error())
+					is.True(match)
+				}
+			} else {
+				is.NoErr(err)
+			}
+		})
+	}
+}
+
+func TestCDCIterator_Next(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
 
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
 	table := test.SetupTestTable(ctx, t, pool)
-	i := testIterator(ctx, t, pool, table)
+	i := testCDCIterator(ctx, t, pool, table, true)
 
 	// wait for subscription to be ready
 	<-i.sub.Ready()
@@ -132,17 +234,137 @@ func TestIterator_Next(t *testing.T) {
 	}
 }
 
-func testIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string) *CDCIterator {
+func TestCDCIterator_Next_Fail(t *testing.T) {
+	ctx := context.Background()
+
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupTestTable(ctx, t, pool)
+
+	t.Run("fail when sub is done", func(t *testing.T) {
+		is := is.New(t)
+
+		i := testCDCIterator(ctx, t, pool, table, true)
+		<-i.sub.Ready()
+
+		is.NoErr(i.Teardown(ctx))
+
+		_, err := i.Next(ctx)
+		expectErr := "logical replication error:"
+
+		match := strings.Contains(err.Error(), expectErr)
+		if !match {
+			t.Logf("%s != %s", err.Error(), expectErr)
+		}
+		is.True(match)
+	})
+
+	t.Run("fail when subscriber is not started", func(t *testing.T) {
+		is := is.New(t)
+
+		i := testCDCIterator(ctx, t, pool, table, false)
+
+		_, nexterr := i.Next(ctx)
+		is.Equal(nexterr.Error(), "logical replication has not been started")
+	})
+}
+
+func TestCDCIterator_Ack(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		pos     sdk.Position
+		wantErr error
+	}{
+		{
+			name:    "failed to parse position",
+			pos:     sdk.Position([]byte("{")),
+			wantErr: errors.New("invalid position: unexpected end of JSON input"),
+		},
+		{
+			name: "position of wrong type",
+			pos: position.Position{
+				Type: position.TypeSnapshot,
+			}.ToSDKPosition(),
+			wantErr: errors.New(`invalid type "Snapshot" for CDC position`),
+		},
+		{
+			name: "failed to parse LSN",
+			pos: position.Position{
+				Type:    position.TypeCDC,
+				LastLSN: "garble",
+			}.ToSDKPosition(),
+			wantErr: errors.New("failed to parse LSN: expected integer"),
+		},
+		{
+			name: "invalid position LSN",
+			pos: position.Position{
+				Type: position.TypeCDC,
+			}.ToSDKPosition(),
+			wantErr: errors.New("cannot ack zero position"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := is.New(t)
+
+			i := &CDCIterator{}
+
+			err := i.Ack(ctx, tt.pos)
+			if tt.wantErr != nil {
+				is.Equal(err.Error(), tt.wantErr.Error())
+			} else {
+				is.NoErr(err)
+			}
+		})
+	}
+}
+
+func TestCDCIterator_Teardown(t *testing.T) {
+	t.Skip("This causes a data race in the the postgres connection being closed during forced teardown")
+
+	ctx := context.Background()
 	is := is.New(t)
-	config := Config{
+
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupTestTable(ctx, t, pool)
+	i := testCDCIterator(ctx, t, pool, table, true)
+
+	// wait for subscription to be ready
+	<-i.sub.Ready()
+
+	cctx, cancel := context.WithCancel(ctx)
+	cancel()
+
+	_ = i.Teardown(cctx)
+	// is.Equal(err.Error(), "context canceled")
+	_ = is
+}
+
+func Test_withReplication(t *testing.T) {
+	is := is.New(t)
+
+	c := withReplication(&pgconn.Config{})
+	is.Equal(c.RuntimeParams["replication"], "database")
+}
+
+func testCDCIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string, start bool) *CDCIterator {
+	is := is.New(t)
+	config := CDCConfig{
 		Tables:          []string{table},
 		TableKeys:       map[string]string{table: "id"},
 		PublicationName: table, // table is random, reuse for publication name
 		SlotName:        table, // table is random, reuse for slot name
 	}
 
-	i, err := NewCDCIterator(ctx, pool, config)
+	i, err := NewCDCIterator(ctx, &pool.Config().ConnConfig.Config, config)
 	is.NoErr(err)
+
+	if start {
+		is.NoErr(i.StartSubscriber(ctx))
+	}
+
 	t.Cleanup(func() {
 		is.NoErr(i.Teardown(ctx))
 		is.NoErr(Cleanup(ctx, CleanupConfig{

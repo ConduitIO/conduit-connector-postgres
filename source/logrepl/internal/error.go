@@ -12,19 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package logrepl
+package internal
 
 import (
-	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/jackc/pglogrepl"
+	"errors"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// LSNToPosition converts a Postgres LSN to a Conduit position.
-func LSNToPosition(lsn pglogrepl.LSN) sdk.Position {
-	return sdk.Position(lsn.String())
-}
+const pgDuplicateObjectErrorCode = "42710"
 
-// PositionToLSN converts a Conduit position to a Postgres LSN.
-func PositionToLSN(pos sdk.Position) (pglogrepl.LSN, error) {
-	return pglogrepl.ParseLSN(string(pos))
+func IsPgDuplicateErr(err error) bool {
+	var pgerr *pgconn.PgError
+	return errors.As(err, &pgerr) && pgerr.Code == pgDuplicateObjectErrorCode
 }

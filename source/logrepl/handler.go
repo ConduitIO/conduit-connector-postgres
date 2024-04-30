@@ -19,6 +19,7 @@ import (
 	"fmt"
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
+	"github.com/conduitio/conduit-connector-postgres/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
 )
@@ -93,11 +94,12 @@ func (h *CDCHandler) handleInsert(
 	}
 
 	rec := sdk.Util.Source.NewRecordCreate(
-		LSNToPosition(lsn),
+		h.buildPosition(lsn),
 		h.buildRecordMetadata(rel),
 		h.buildRecordKey(newValues, rel.RelationName),
 		h.buildRecordPayload(newValues),
 	)
+
 	return h.send(ctx, rec)
 }
 
@@ -126,7 +128,7 @@ func (h *CDCHandler) handleUpdate(
 	}
 
 	rec := sdk.Util.Source.NewRecordUpdate(
-		LSNToPosition(lsn),
+		h.buildPosition(lsn),
 		h.buildRecordMetadata(rel),
 		h.buildRecordKey(newValues, rel.RelationName),
 		h.buildRecordPayload(oldValues),
@@ -153,7 +155,7 @@ func (h *CDCHandler) handleDelete(
 	}
 
 	rec := sdk.Util.Source.NewRecordDelete(
-		LSNToPosition(lsn),
+		h.buildPosition(lsn),
 		h.buildRecordMetadata(rel),
 		h.buildRecordKey(oldValues, rel.RelationName),
 	)
@@ -198,4 +200,11 @@ func (h *CDCHandler) buildRecordPayload(values map[string]any) sdk.Data {
 		return nil
 	}
 	return sdk.StructuredData(values)
+}
+
+func (*CDCHandler) buildPosition(lsn pglogrepl.LSN) sdk.Position {
+	return position.Position{
+		Type:    position.TypeCDC,
+		LastLSN: lsn.String(),
+	}.ToSDKPosition()
 }

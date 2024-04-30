@@ -53,7 +53,7 @@ type Config struct {
 	URL string `json:"url" validate:"required"`
 	// Tables is a List of table names to read from, separated by a comma, e.g.:"table1,table2".
 	// Use "*" if you'd like to listen to all tables.
-	Tables []string `json:"tables"` // TODO: make it required once `Table` is removed.
+	Tables []string `json:"tables"`
 	// Deprecated: use `tables` instead.
 	Table []string `json:"table"`
 

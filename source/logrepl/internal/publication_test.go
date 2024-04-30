@@ -21,7 +21,6 @@ import (
 	"testing"
 
 	"github.com/conduitio/conduit-connector-postgres/test"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/matryer/is"
 )
 
@@ -30,35 +29,45 @@ func TestCreatePublication(t *testing.T) {
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 
 	pubNames := []string{"testpub", "123", "test-hyphen", "test=equal"}
-	allTables := []bool{true, false}
 	pubParams := [][]string{
 		nil,
 		{"publish = 'insert'"},
 		{"publish = 'insert,update,delete'"},
 	}
 
+	tables := []string{
+		test.SetupTestTable(ctx, t, conn),
+		test.SetupTestTable(ctx, t, conn),
+	}
+
 	for _, givenPubName := range pubNames {
-		for _, givenAllTables := range allTables {
-			for i, givenPubParams := range pubParams {
-				testName := fmt.Sprintf("%s_%v_%d", givenPubName, givenAllTables, i)
-				t.Run(testName, func(t *testing.T) {
-					is := is.New(t)
-					err := CreatePublication(
-						ctx,
-						conn.PgConn(),
-						givenPubName,
-						CreatePublicationOptions{
-							AllTables:         givenAllTables,
-							PublicationParams: givenPubParams,
-						},
-					)
-					is.NoErr(err)
-					// cleanup
-					is.NoErr(DropPublication(ctx, conn.PgConn(), givenPubName, DropPublicationOptions{}))
-				})
-			}
+		for i, givenPubParams := range pubParams {
+			testName := fmt.Sprintf("%s_%d", givenPubName, i)
+			t.Run(testName, func(t *testing.T) {
+				is := is.New(t)
+				err := CreatePublication(
+					ctx,
+					conn.PgConn(),
+					givenPubName,
+					CreatePublicationOptions{
+						Tables:            tables,
+						PublicationParams: givenPubParams,
+					},
+				)
+				is.NoErr(err)
+				// cleanup
+				is.NoErr(DropPublication(ctx, conn.PgConn(), givenPubName, DropPublicationOptions{}))
+			})
 		}
 	}
+
+	// Without tables
+	t.Run("fails without tables", func(t *testing.T) {
+		is := is.New(t)
+
+		err := CreatePublication(ctx, nil, "testpub", CreatePublicationOptions{})
+		is.Equal(err.Error(), `publication "testpub" requires at least one table`)
+	})
 }
 
 func TestCreatePublicationForTables(t *testing.T) {
@@ -67,10 +76,6 @@ func TestCreatePublicationForTables(t *testing.T) {
 	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
 
 	tables := [][]string{
-		nil,
-		{},
-		// there is a 0.3% chance this test will fail because test tables will
-		// have clashing names, a risk we're willing to take
 		{test.SetupTestTable(ctx, t, conn)},
 		{test.SetupTestTable(ctx, t, conn), test.SetupTestTable(ctx, t, conn)},
 	}
@@ -92,59 +97,6 @@ func TestCreatePublicationForTables(t *testing.T) {
 			is.NoErr(DropPublication(ctx, conn.PgConn(), pub, DropPublicationOptions{}))
 		})
 	}
-}
-
-func TestCreatePublicationForTablesAndAllTables(t *testing.T) {
-	ctx := context.Background()
-	is := is.New(t)
-	pub := test.RandomIdentifier(t)
-	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
-
-	err := CreatePublication(
-		ctx,
-		conn.PgConn(),
-		pub,
-		CreatePublicationOptions{
-			Tables:    []string{"something"},
-			AllTables: true,
-		},
-	)
-
-	is.True(err != nil)
-	_, ok := err.(*pgconn.PgError)
-	is.True(!ok) // err shouldn't be a PgError, no statement should be even sent to Postgres
-}
-
-func TestCreatePublicationAllTables(t *testing.T) {
-	ctx := context.Background()
-	is := is.New(t)
-	pub := test.RandomIdentifier(t)
-
-	// first connect with regular user
-	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
-	err := CreatePublication(
-		ctx,
-		conn.PgConn(),
-		pub,
-		CreatePublicationOptions{
-			AllTables: true,
-		},
-	)
-	test.IsPgError(is, err, "42501")
-
-	// next connect with repmgr
-	conn = test.ConnectSimple(ctx, t, test.RepmgrConnString)
-	err = CreatePublication(
-		ctx,
-		conn.PgConn(),
-		pub,
-		CreatePublicationOptions{
-			AllTables: true,
-		},
-	)
-	is.NoErr(err)
-	// cleanup
-	is.NoErr(DropPublication(ctx, conn.PgConn(), pub, DropPublicationOptions{}))
 }
 
 func TestDropPublication(t *testing.T) {

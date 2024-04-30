@@ -43,7 +43,6 @@ type SnapshotPositions map[string]SnapshotPosition
 type SnapshotPosition struct {
 	LastRead    int64 `json:"last_read"`
 	SnapshotEnd int64 `json:"snapshot_end"`
-	Done        bool  `json:"done,omitempty"`
 }
 
 func ParseSDKPosition(sdkPos sdk.Position) (Position, error) {
@@ -76,7 +75,7 @@ func (p Position) LSN() (pglogrepl.LSN, error) {
 
 	lsn, err := pglogrepl.ParseLSN(p.LastLSN)
 	if err != nil {
-		return 0, fmt.Errorf("failed to parse LSN in position: %w", err)
+		return 0, err
 	}
 
 	return lsn, nil

@@ -42,22 +42,24 @@ func Test_Cleanup(t *testing.T) {
 				PublicationName: "conduitpub1",
 			},
 			setup: func(t *testing.T) {
-				test.CreatePublication(t, conn, "conduitpub1")
+				table := test.SetupTestTable(context.Background(), t, conn)
+				test.CreatePublication(t, conn, "conduitpub1", []string{table})
 				test.CreateReplicationSlot(t, conn, "conduitslot1")
 			},
 		},
 		{
-			desc: "drops pub, slot unspecified",
+			desc: "drops pub slot unspecified",
 			conf: CleanupConfig{
 				URL:             test.RepmgrConnString,
 				PublicationName: "conduitpub2",
 			},
 			setup: func(t *testing.T) {
-				test.CreatePublication(t, conn, "conduitpub2")
+				table := test.SetupTestTable(context.Background(), t, conn)
+				test.CreatePublication(t, conn, "conduitpub2", []string{table})
 			},
 		},
 		{
-			desc: "drops slot, pub unspecified",
+			desc: "drops slot pub unspecified",
 			conf: CleanupConfig{
 				URL:      test.RepmgrConnString,
 				SlotName: "conduitslot3",
@@ -67,14 +69,15 @@ func Test_Cleanup(t *testing.T) {
 			},
 		},
 		{
-			desc: "drops pub, slot missing",
+			desc: "drops pub slot missing",
 			conf: CleanupConfig{
 				URL:             test.RepmgrConnString,
 				SlotName:        "conduitslot4",
 				PublicationName: "conduitpub4",
 			},
 			setup: func(t *testing.T) {
-				test.CreatePublication(t, conn, "conduitpub4")
+				table := test.SetupTestTable(context.Background(), t, conn)
+				test.CreatePublication(t, conn, "conduitpub4", []string{table})
 			},
 			wantErr: errors.New(`replication slot "conduitslot4" does not exist`),
 		},

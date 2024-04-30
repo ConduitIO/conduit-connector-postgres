@@ -53,7 +53,9 @@ func (Config) Parameters() map[string]sdk.Parameter {
 			Default:     "",
 			Description: "tables is a List of table names to read from, separated by a comma, e.g.:\"table1,table2\". Use \"*\" if you'd like to listen to all tables.",
 			Type:        sdk.ParameterTypeString,
-			Validations: []sdk.Validation{},
+			Validations: []sdk.Validation{
+				sdk.ValidationRequired{},
+			},
 		},
 		"url": {
 			Default:     "",

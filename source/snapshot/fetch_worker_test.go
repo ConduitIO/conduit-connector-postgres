@@ -245,7 +245,6 @@ func Test_FetcherRun_Initial(t *testing.T) {
 		is.Equal(d.Position, position.SnapshotPosition{
 			LastRead:    int64(i + 1),
 			SnapshotEnd: 4,
-			Done:        i == 3,
 		})
 		is.Equal(d.Table, table)
 	}
@@ -306,7 +305,6 @@ func Test_FetcherRun_Resume(t *testing.T) {
 	is.Equal(dd[0].Position, position.SnapshotPosition{
 		LastRead:    3,
 		SnapshotEnd: 3,
-		Done:        true,
 	})
 	is.Equal(dd[0].Table, table)
 }

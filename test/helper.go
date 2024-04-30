@@ -62,6 +62,17 @@ func ConnectSimple(ctx context.Context, t *testing.T, connString string) *pgx.Co
 	return conn.Conn()
 }
 
+func ConnectReplication(ctx context.Context, t *testing.T, connString string) *pgconn.PgConn {
+	is := is.New(t)
+
+	conn, err := pgconn.Connect(ctx, connString+"&replication=database")
+	is.NoErr(err)
+	t.Cleanup(func() {
+		is.NoErr(conn.Close(ctx))
+	})
+	return conn
+}
+
 // SetupTestTable creates a new table and returns its name.
 func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 	is := is.New(t)
@@ -99,7 +110,7 @@ func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 	return table
 }
 
-func CreateReplicationSlot(t *testing.T, conn *pgx.Conn, slotName string) {
+func CreateReplicationSlot(t *testing.T, conn Querier, slotName string) {
 	is := is.New(t)
 
 	_, err := conn.Exec(
@@ -120,10 +131,13 @@ func CreateReplicationSlot(t *testing.T, conn *pgx.Conn, slotName string) {
 	})
 }
 
-func CreatePublication(t *testing.T, conn *pgx.Conn, pubName string) {
+func CreatePublication(t *testing.T, conn Querier, pubName string, tables []string) {
 	is := is.New(t)
 
-	_, err := conn.Exec(context.Background(), "CREATE PUBLICATION "+pubName+" FOR ALL TABLES")
+	_, err := conn.Exec(
+		context.Background(),
+		"CREATE PUBLICATION "+pubName+" FOR TABLE "+strings.Join(tables, ","),
+	)
 	is.NoErr(err)
 
 	t.Cleanup(func() {
