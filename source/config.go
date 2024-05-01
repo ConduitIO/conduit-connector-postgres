@@ -71,7 +71,7 @@ type Config struct {
 
 	// LogreplAutoCleanup determines if the replication slot and publication should be
 	// removed when the connector is deleted.
-	LogreplAutoCleanup bool `json:"logrepl.autoCleanup" validate:"inclusion=true|false" default:"true"`
+	LogreplAutoCleanup bool `json:"logrepl.autoCleanup" default:"true"`
 }
 
 // Validate validates the provided config values.

@@ -21,9 +21,7 @@ func (Config) Parameters() map[string]sdk.Parameter {
 			Default:     "true",
 			Description: "logrepl.autoCleanup determines if the replication slot and publication should be removed when the connector is deleted.",
 			Type:        sdk.ParameterTypeBool,
-			Validations: []sdk.Validation{
-				sdk.ValidationInclusion{List: []string{"true", "false"}},
-			},
+			Validations: []sdk.Validation{},
 		},
 		"logrepl.publicationName": {
 			Default:     "conduitpub",
