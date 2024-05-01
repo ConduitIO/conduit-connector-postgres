@@ -312,16 +312,8 @@ func (s *Subscription) createPublication(ctx context.Context, conn *pgconn.PgCon
 		if !errors.As(err, &pgerr) || pgerr.Code != pgDuplicateObjectErrorCode {
 			return err
 		}
-	} else {
-		// publication was created successfully, drop it when we're done
-		s.addCleanup(func(ctx context.Context) error {
-			err := DropPublication(ctx, conn, s.Publication, DropPublicationOptions{})
-			if err != nil {
-				return fmt.Errorf("failed to drop publication: %w", err)
-			}
-			return nil
-		})
 	}
+
 	return nil
 }
 
@@ -335,7 +327,6 @@ func (s *Subscription) createReplicationSlot(ctx context.Context, conn *pgconn.P
 		s.SlotName,
 		pgOutputPlugin,
 		pglogrepl.CreateReplicationSlotOptions{
-			Temporary:      true, // replication slot is dropped when we disconnect
 			SnapshotAction: "EXPORT_SNAPSHOT",
 			Mode:           pglogrepl.LogicalReplication,
 		},

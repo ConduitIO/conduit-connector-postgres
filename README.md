@@ -48,6 +48,9 @@ Example configuration for CDC features:
 }
 ```
 
+:warning: When the connector or pipeline is deleted, the connector will automatically attempt to delete the replication slot and publication.
+This is the default behaviour and can be disabled by setting `logrepl.autoCleanup` to `false`.
+
 ## Key Handling
 
 The connector will automatically look up the primary key column for the specified tables. If that can't be determined, 
@@ -63,6 +66,7 @@ the connector will return an error.
 | `cdcMode`                 | Determines the CDC mode (allowed values: `auto`, `logrepl` or `long_polling`).                                                             | false    | `auto`        |
 | `logrepl.publicationName` | Name of the publication to listen for WAL events.                                                                                          | false    | `conduitpub`  |
 | `logrepl.slotName`        | Name of the slot opened for replication events.                                                                                            | false    | `conduitslot` |
+| `logrepl.autoCleanup`     | Whether or not to cleanup the replication slot and pub when connector is deleted                                                                                            | false    | `true` |
 | ~~`table`~~               | List of table names to read from, separated by comma. **Deprecated: use `tables` instead.**                                                | false    |               |
 
 # Destination

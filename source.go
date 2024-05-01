@@ -162,6 +162,26 @@ func (s *Source) Teardown(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+func (s *Source) LifecycleOnDeleted(ctx context.Context, _ map[string]string) error {
+	switch s.config.CDCMode {
+	case source.CDCModeAuto:
+		fallthrough // TODO: Adjust as `auto` changes.
+	case source.CDCModeLogrepl:
+		if !s.config.LogreplAutoCleanup {
+			sdk.Logger(ctx).Warn().Msg("Skipping logrepl auto cleanup")
+			return nil
+		}
+
+		return logrepl.Cleanup(ctx, logrepl.CleanupConfig{
+			URL:             s.config.URL,
+			SlotName:        s.config.LogreplSlotName,
+			PublicationName: s.config.LogreplPublicationName,
+		})
+	default:
+		return nil
+	}
+}
+
 func (s *Source) readingAllTables() bool {
 	return len(s.config.Tables) == 1 && s.config.Tables[0] == source.AllTablesWildcard
 }
