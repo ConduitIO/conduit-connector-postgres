@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync/atomic"
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
@@ -43,7 +42,6 @@ type CDCIterator struct {
 	records chan sdk.Record
 	pgconn  *pgconn.PgConn
 
-	subStarted atomic.Bool
 	sub        *internal.Subscription
 }
 
@@ -110,7 +108,6 @@ func (i *CDCIterator) StartSubscriber(ctx context.Context) error {
 	}()
 
 	<-i.sub.Ready()
-	i.subStarted.Store(true)
 
 	sdk.Logger(ctx).Info().
 		Str("slot", i.config.SlotName).
@@ -125,7 +122,7 @@ func (i *CDCIterator) StartSubscriber(ctx context.Context) error {
 // subscription stops because of an error or the context gets canceled.
 // Returns error when the subscription has been started.
 func (i *CDCIterator) Next(ctx context.Context) (sdk.Record, error) {
-	if started := i.subStarted.Load(); !started {
+	if started := i.subscriberReady(); !started {
 		return sdk.Record{}, errors.New("logical replication has not been started")
 	}
 
@@ -181,19 +178,21 @@ func (i *CDCIterator) Ack(_ context.Context, sdkPos sdk.Position) error {
 func (i *CDCIterator) Teardown(ctx context.Context) error {
 	defer i.pgconn.Close(ctx)
 
-	if started := i.subStarted.Load(); !started {
+	if started := i.subscriberReady(); !started {
 		return nil
 	}
 
 	i.sub.Stop()
+	return i.sub.Wait(ctx)
+}
 
+// subscriberReady returns true when the subscriber is running.
+func (i *CDCIterator) subscriberReady() bool {
 	select {
-	case <-ctx.Done():
-		// When context is done, the pgconn will be closed hastedly
-		// without waiting for the subscription to be completely stopped.
-		return ctx.Err()
 	case <-i.sub.Ready():
-		return i.sub.Wait(ctx)
+		return true
+	default:
+		return false
 	}
 }
 
