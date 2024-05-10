@@ -122,7 +122,7 @@ func (i *CDCIterator) StartSubscriber(ctx context.Context) error {
 // subscription stops because of an error or the context gets canceled.
 // Returns error when the subscription has been started.
 func (i *CDCIterator) Next(ctx context.Context) (sdk.Record, error) {
-	if started := i.subscriberReady(); !started {
+	if !i.subscriberReady() {
 		return sdk.Record{}, errors.New("logical replication has not been started")
 	}
 
@@ -178,7 +178,7 @@ func (i *CDCIterator) Ack(_ context.Context, sdkPos sdk.Position) error {
 func (i *CDCIterator) Teardown(ctx context.Context) error {
 	defer i.pgconn.Close(ctx)
 
-	if started := i.subscriberReady(); !started {
+	if !i.subscriberReady() {
 		return nil
 	}
 
