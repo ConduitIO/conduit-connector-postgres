@@ -233,7 +233,7 @@ func setupSubscription(
 	is.NoErr(err)
 
 	go func() {
-		err := sub.Start(ctx)
+		err := sub.Run(ctx)
 		if !errors.Is(err, context.Canceled) {
 			t.Logf("unexpected error: %+v", err)
 			is.Fail()

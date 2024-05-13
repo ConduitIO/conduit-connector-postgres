@@ -100,7 +100,7 @@ func (i *CDCIterator) StartSubscriber(ctx context.Context) error {
 		Msg("Starting logical replication")
 
 	go func() {
-		if err := i.sub.Start(ctx); err != nil {
+		if err := i.sub.Run(ctx); err != nil {
 			sdk.Logger(ctx).Error().
 				Err(err).
 				Msg("replication exited with an error")

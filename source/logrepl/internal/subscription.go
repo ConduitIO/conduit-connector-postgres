@@ -100,8 +100,8 @@ func CreateSubscription(
 	}, nil
 }
 
-// Start replication and block until error or ctx is canceled.
-func (s *Subscription) Start(ctx context.Context) error {
+// Run logical replication listener and block until error or ctx is canceled.
+func (s *Subscription) Run(ctx context.Context) error {
 	defer s.doneReplication()
 
 	if err := s.startReplication(ctx); err != nil {
