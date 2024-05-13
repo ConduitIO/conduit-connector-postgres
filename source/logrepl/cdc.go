@@ -42,7 +42,7 @@ type CDCIterator struct {
 	records chan sdk.Record
 	pgconn  *pgconn.PgConn
 
-	sub        *internal.Subscription
+	sub *internal.Subscription
 }
 
 // NewCDCIterator initializes logical replication by creating the publication and subscription manager.
