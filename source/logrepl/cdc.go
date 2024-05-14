@@ -18,12 +18,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgconn"
+)
+
+const (
+	subscriberDoneTimeout = time.Second * 2
 )
 
 // Config holds configuration values for CDCIterator.
@@ -176,7 +181,15 @@ func (i *CDCIterator) Ack(_ context.Context, sdkPos sdk.Position) error {
 // or the context gets canceled. If the subscription stopped with an unexpected
 // error, the error is returned.
 func (i *CDCIterator) Teardown(ctx context.Context) error {
-	defer i.pgconn.Close(ctx)
+	defer func() {
+		// Give the subscription 2 seconds to settle.
+		select {
+		case <-i.sub.Done():
+		case <-time.After(subscriberDoneTimeout):
+		}
+
+		i.pgconn.Close(ctx)
+	}()
 
 	if !i.subscriberReady() {
 		return nil

@@ -27,7 +27,10 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 )
 
-const pgOutputPlugin = "pgoutput"
+const (
+	pgOutputPlugin          = "pgoutput"
+	closeReplicationTimeout = time.Second * 2
+)
 
 // Subscription manages a subscription to a logical replication slot.
 type Subscription struct {
@@ -344,7 +347,10 @@ func (s *Subscription) receiveMessage(ctx context.Context, deadline time.Time) (
 // doneReplication performs the replication closing tasks on completition and
 // closes the done channel. If any errors are encountered, will be available through Err().
 func (s *Subscription) doneReplication() {
-	if err := s.sentStandbyDone(context.Background()); err != nil {
+	tctx, cancel := context.WithTimeout(context.Background(), closeReplicationTimeout)
+	defer cancel()
+
+	if err := s.sentStandbyDone(tctx); err != nil {
 		s.doneErr = errors.Join(s.doneErr, err)
 	}
 

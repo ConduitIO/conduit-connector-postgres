@@ -55,7 +55,7 @@ func Cleanup(ctx context.Context, c CleanupConfig) error {
 	if c.SlotName != "" {
 		// Terminate any outstanding backends which are consuming the slot before deleting it.
 		mrr := conn.Exec(ctx, fmt.Sprintf(
-			"SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots WHERE slot_name='%s AND active=true'", c.SlotName,
+			"SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots WHERE slot_name='%s' AND active=true", c.SlotName,
 		))
 		if err := mrr.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to terminate active backends on slot: %w", err))

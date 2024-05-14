@@ -60,6 +60,31 @@ func TestCombinedIterator_New(t *testing.T) {
 		is.Equal(err.Error(), "failed to create logrepl iterator: invalid position: unexpected end of JSON input")
 	})
 
+	t.Run("snapshot and cdc", func(t *testing.T) {
+		is := is.New(t)
+
+		i, err := NewCombinedIterator(ctx, pool, Config{
+			Position:        sdk.Position{},
+			Tables:          []string{table},
+			TableKeys:       map[string]string{table: "id"},
+			PublicationName: table,
+			SlotName:        table,
+			WithSnapshot:    true,
+		})
+		is.NoErr(err)
+
+		is.True(i.snapshotIterator != nil)
+		is.True(i.cdcIterator != nil)
+		is.Equal(i.activeIterator, i.snapshotIterator)
+
+		is.NoErr(i.Teardown(ctx))
+		is.NoErr(Cleanup(context.Background(), CleanupConfig{
+			URL:             pool.Config().ConnString(),
+			SlotName:        table,
+			PublicationName: table,
+		}))
+	})
+
 	t.Run("initial cdc only", func(t *testing.T) {
 		is := is.New(t)
 
@@ -73,8 +98,9 @@ func TestCombinedIterator_New(t *testing.T) {
 		})
 		is.NoErr(err)
 
-		is.True(i.snapshotIterator == nil)
-		is.True(i.cdcIterator == i.activeIterator)
+		is.True(i.cdcIterator != nil)
+		is.Equal(i.activeIterator, i.cdcIterator)
+		is.Equal(i.snapshotIterator, nil)
 
 		is.NoErr(i.Teardown(ctx))
 		is.NoErr(Cleanup(context.Background(), CleanupConfig{
@@ -97,8 +123,9 @@ func TestCombinedIterator_New(t *testing.T) {
 		})
 		is.NoErr(err)
 
-		is.True(i.snapshotIterator == nil)
-		is.True(i.cdcIterator == i.activeIterator)
+		is.True(i.cdcIterator != nil)
+		is.Equal(i.activeIterator, i.cdcIterator)
+		is.Equal(i.snapshotIterator, nil)
 
 		is.NoErr(i.Teardown(ctx))
 		is.NoErr(Cleanup(context.Background(), CleanupConfig{
