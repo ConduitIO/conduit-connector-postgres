@@ -359,7 +359,7 @@ func (s *Subscription) sentStandbyDone(ctx context.Context) error {
 	if err := s.sendStandbyCopyDone(ctx); err != nil {
 		sdk.Logger(ctx).Error().
 			Err(err).
-			Msg("failed to seend standby copy done")
+			Msg("failed to send standby copy done")
 		errs = append(errs, err)
 	}
 	// send last status update
