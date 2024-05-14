@@ -68,7 +68,7 @@ func ConnectReplication(ctx context.Context, t *testing.T, connString string) *p
 	conn, err := pgconn.Connect(ctx, connString+"&replication=database")
 	is.NoErr(err)
 	t.Cleanup(func() {
-		is.NoErr(conn.Close(ctx))
+		is.NoErr(conn.Close(context.Background()))
 	})
 	return conn
 }
