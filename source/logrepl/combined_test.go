@@ -16,6 +16,7 @@ package logrepl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -30,7 +31,7 @@ import (
 func TestConfig_Validate(t *testing.T) {
 	is := is.New(t)
 
-	err := Config{
+	errs := Config{
 		Tables: []string{
 			"t1", "t2", "t3", "t4",
 		},
@@ -39,11 +40,10 @@ func TestConfig_Validate(t *testing.T) {
 		},
 	}.Validate()
 
-	errs := err.(interface{ Unwrap() []error }).Unwrap()
-
-	is.True(len(errs) == 2)
-	is.Equal(errs[0].Error(), `missing key for table "t2"`)
-	is.Equal(errs[1].Error(), `missing key for table "t3"`)
+	is.Equal(errs, errors.Join(
+		errors.New(`missing key for table "t2"`),
+		errors.New(`missing key for table "t3"`),
+	))
 }
 
 func TestCombinedIterator_New(t *testing.T) {
@@ -174,9 +174,10 @@ func TestCombinedIterator_Next(t *testing.T) {
 			jsonPos := fmt.Sprintf(`{"type":1,"snapshots":{"%s":{"last_read":%d,"snapshot_end":4}}}`, table, id)
 			is.Equal(string(r.Position), jsonPos)
 
-			data := r.Payload.After.(sdk.StructuredData)
-			diff := cmp.Diff(expectedRecords[id], data)
-			is.Equal(diff, "")
+			is.Equal("", cmp.Diff(
+				expectedRecords[id],
+				r.Payload.After.(sdk.StructuredData),
+			))
 
 			is.NoErr(i.Ack(ctx, r.Position))
 		})
@@ -196,9 +197,10 @@ func TestCombinedIterator_Next(t *testing.T) {
 		is.NoErr(err)
 		is.True(lsn != 0)
 
-		data := r.Payload.After.(sdk.StructuredData)
-		diff := cmp.Diff(expectedRecords[5], data)
-		is.Equal(diff, "")
+		is.Equal("", cmp.Diff(
+			expectedRecords[5],
+			r.Payload.After.(sdk.StructuredData),
+		))
 
 		is.NoErr(i.Ack(ctx, r.Position))
 		lastPos = r.Position
@@ -235,9 +237,10 @@ func TestCombinedIterator_Next(t *testing.T) {
 		is.NoErr(err)
 		is.True(lsn != 0)
 
-		data := r.Payload.After.(sdk.StructuredData)
-		diff := cmp.Diff(expectedRecords[6], data)
-		is.Equal(diff, "")
+		is.Equal("", cmp.Diff(
+			expectedRecords[6],
+			r.Payload.After.(sdk.StructuredData),
+		))
 
 		is.NoErr(i.Ack(ctx, r.Position))
 		is.NoErr(i.Teardown(ctx))
