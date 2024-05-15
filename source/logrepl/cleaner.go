@@ -31,7 +31,8 @@ type CleanupConfig struct {
 	PublicationName string
 }
 
-// Cleanup drops the provided replication and publication.
+// Cleanup drops the provided replication slot and publication.
+// It will terminate any backends consuming the replication slot before deletion.
 func Cleanup(ctx context.Context, c CleanupConfig) error {
 	pgconfig, err := pgconn.ParseConfig(c.URL)
 	if err != nil {
@@ -52,6 +53,14 @@ func Cleanup(ctx context.Context, c CleanupConfig) error {
 	var errs []error
 
 	if c.SlotName != "" {
+		// Terminate any outstanding backends which are consuming the slot before deleting it.
+		mrr := conn.Exec(ctx, fmt.Sprintf(
+			"SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots WHERE slot_name='%s' AND active=true", c.SlotName,
+		))
+		if err := mrr.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to terminate active backends on slot: %w", err))
+		}
+
 		if err := pglogrepl.DropReplicationSlot(
 			ctx,
 			conn,

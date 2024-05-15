@@ -45,7 +45,7 @@ func Test_PositionLSN(t *testing.T) {
 	invalid := Position{LastLSN: "invalid"}
 	_, err := invalid.LSN()
 	is.True(err != nil)
-	is.Equal(err.Error(), "failed to parse LSN in position: failed to parse LSN: expected integer")
+	is.Equal(err.Error(), "failed to parse LSN: expected integer")
 
 	valid := Position{LastLSN: "4/137515E8"}
 	lsn, noErr := valid.LSN()

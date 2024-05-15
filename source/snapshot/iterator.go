@@ -31,7 +31,7 @@ var ErrIteratorDone = errors.New("snapshot complete")
 type Config struct {
 	Position     sdk.Position
 	Tables       []string
-	TablesKeys   map[string]string
+	TableKeys    map[string]string
 	TXSnapshotID string
 }
 
@@ -129,7 +129,7 @@ func (i *Iterator) initFetchers(ctx context.Context) error {
 	for j, t := range i.conf.Tables {
 		w := NewFetchWorker(i.db, i.data, FetchConfig{
 			Table:        t,
-			Key:          i.conf.TablesKeys[t],
+			Key:          i.conf.TableKeys[t],
 			TXSnapshotID: i.conf.TXSnapshotID,
 			Position:     i.lastPosition,
 		})

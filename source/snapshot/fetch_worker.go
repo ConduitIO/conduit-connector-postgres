@@ -317,7 +317,6 @@ func (f *FetchWorker) buildSnapshotPosition(fields []string, values []any) (posi
 			return position.SnapshotPosition{
 				LastRead:    lastRead,
 				SnapshotEnd: f.snapshotEnd,
-				Done:        f.snapshotEnd == lastRead,
 			}, nil
 		}
 	}

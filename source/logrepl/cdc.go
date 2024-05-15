@@ -18,83 +18,119 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
+	"github.com/conduitio/conduit-connector-postgres/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+const (
+	subscriberDoneTimeout = time.Second * 2
 )
 
 // Config holds configuration values for CDCIterator.
-type Config struct {
-	Position        sdk.Position
+type CDCConfig struct {
+	LSN             pglogrepl.LSN
 	SlotName        string
 	PublicationName string
 	Tables          []string
 	TableKeys       map[string]string
 }
 
-func (c Config) LSN() (pglogrepl.LSN, error) {
-	if len(c.Position) == 0 {
-		return 0, nil
-	}
-	lsn, err := PositionToLSN(c.Position)
-	if err != nil {
-		return 0, fmt.Errorf("failed to parse position: %w", err)
-	}
-	return lsn, nil
-}
-
 // CDCIterator asynchronously listens for events from the logical replication
 // slot and returns them to the caller through Next.
 type CDCIterator struct {
-	config  Config
+	config  CDCConfig
 	records chan sdk.Record
+	pgconn  *pgconn.PgConn
 
 	sub *internal.Subscription
 }
 
-// NewCDCIterator sets up the subscription to a logical replication slot and
-// starts a goroutine that listens to events. The goroutine will keep running
-// until either the context is canceled or Teardown is called.
-func NewCDCIterator(ctx context.Context, connPool *pgxpool.Pool, config Config) (*CDCIterator, error) {
-	i := &CDCIterator{
-		config:  config,
-		records: make(chan sdk.Record),
-	}
-
-	err := i.attachSubscription(connPool.Config().ConnConfig.Config)
+// NewCDCIterator initializes logical replication by creating the publication and subscription manager.
+func NewCDCIterator(ctx context.Context, pgconf *pgconn.Config, c CDCConfig) (*CDCIterator, error) {
+	conn, err := pgconn.ConnectConfig(ctx, withReplication(pgconf))
 	if err != nil {
-		return nil, fmt.Errorf("failed to setup subscription: %w", err)
+		return nil, fmt.Errorf("could not establish replication connection: %w", err)
 	}
 
-	go i.listen(ctx)
+	if err := internal.CreatePublication(
+		ctx,
+		conn,
+		c.PublicationName,
+		internal.CreatePublicationOptions{Tables: c.Tables},
+	); err != nil {
+		// If creating the publication fails with code 42710, this means
+		// the publication already exists.
+		if !internal.IsPgDuplicateErr(err) {
+			return nil, err
+		}
 
-	return i, nil
+		sdk.Logger(ctx).Warn().
+			Msgf("Publication %q already exists.", c.PublicationName)
+	}
+
+	records := make(chan sdk.Record)
+
+	sub, err := internal.CreateSubscription(
+		ctx,
+		conn,
+		c.SlotName,
+		c.PublicationName,
+		c.Tables,
+		c.LSN,
+		NewCDCHandler(internal.NewRelationSet(), c.TableKeys, records).Handle,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize subscription: %w", err)
+	}
+
+	return &CDCIterator{
+		config:  c,
+		records: records,
+		pgconn:  conn,
+		sub:     sub,
+	}, nil
 }
 
-// listen should be called in a goroutine. It starts the subscription and keeps
-// it running until the subscription is stopped or the context is canceled.
-func (i *CDCIterator) listen(ctx context.Context) {
+// StartSubscriber starts the logical replication service in the background.
+// Blocks until the subscription becomes ready.
+func (i *CDCIterator) StartSubscriber(ctx context.Context) error {
 	sdk.Logger(ctx).Info().
 		Str("slot", i.config.SlotName).
 		Str("publication", i.config.PublicationName).
-		Msg("starting logical replication")
+		Msg("Starting logical replication")
 
-	err := i.sub.Start(ctx)
-	if err != nil {
-		// log it to be safe we don't miss the error, but use warn level
-		// because the error will most probably be still propagated to Conduit
-		// and might be recovered from
-		sdk.Logger(ctx).Warn().Err(err).Msg("subscription returned an error")
-	}
+	go func() {
+		if err := i.sub.Run(ctx); err != nil {
+			sdk.Logger(ctx).Error().
+				Err(err).
+				Msg("replication exited with an error")
+		}
+	}()
+
+	<-i.sub.Ready()
+
+	sdk.Logger(ctx).Info().
+		Str("slot", i.config.SlotName).
+		Str("publication", i.config.PublicationName).
+		Msg("Logical replication started")
+
+	return nil
 }
 
 // Next returns the next record retrieved from the subscription. This call will
 // block until either a record is returned from the subscription, the
 // subscription stops because of an error or the context gets canceled.
+// Returns error when the subscription has been started.
 func (i *CDCIterator) Next(ctx context.Context) (sdk.Record, error) {
+	if !i.subscriberReady() {
+		return sdk.Record{}, errors.New("logical replication has not been started")
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -118,11 +154,25 @@ func (i *CDCIterator) Next(ctx context.Context) (sdk.Record, error) {
 }
 
 // Ack forwards the acknowledgment to the subscription.
-func (i *CDCIterator) Ack(_ context.Context, pos sdk.Position) error {
-	lsn, err := PositionToLSN(pos)
+func (i *CDCIterator) Ack(_ context.Context, sdkPos sdk.Position) error {
+	pos, err := position.ParseSDKPosition(sdkPos)
 	if err != nil {
-		return fmt.Errorf("failed to parse position: %w", err)
+		return err
 	}
+
+	if pos.Type != position.TypeCDC {
+		return fmt.Errorf("invalid type %q for CDC position", pos.Type.String())
+	}
+
+	lsn, err := pos.LSN()
+	if err != nil {
+		return err
+	}
+
+	if lsn == 0 {
+		return fmt.Errorf("cannot ack zero position")
+	}
+
 	i.sub.Ack(lsn)
 	return nil
 }
@@ -131,50 +181,42 @@ func (i *CDCIterator) Ack(_ context.Context, pos sdk.Position) error {
 // or the context gets canceled. If the subscription stopped with an unexpected
 // error, the error is returned.
 func (i *CDCIterator) Teardown(ctx context.Context) error {
-	i.sub.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-i.sub.Done():
-		err := i.sub.Err()
-		if errors.Is(err, context.Canceled) {
-			// this was a controlled stop
-			return nil
-		} else if err != nil {
-			return fmt.Errorf("logical replication error: %w", err)
-		}
+	defer i.pgconn.Close(ctx)
+
+	if !i.subscriberReady() {
 		return nil
+	}
+
+	i.sub.Stop()
+	return i.sub.Wait(ctx, subscriberDoneTimeout)
+}
+
+// subscriberReady returns true when the subscriber is running.
+func (i *CDCIterator) subscriberReady() bool {
+	select {
+	case <-i.sub.Ready():
+		return true
+	default:
+		return false
 	}
 }
 
-// attachSubscription determines the starting LSN and key column of the source
-// table and prepares a subscription.
-func (i *CDCIterator) attachSubscription(connConfig pgconn.Config) error {
-	lsn, err := i.config.LSN()
-	if err != nil {
-		return err
+// TXSnapshotID returns the transaction snapshot which is received
+// when the replication slot is created. The value can be empty, when the
+// iterator is resuming.
+func (i *CDCIterator) TXSnapshotID() string {
+	return i.sub.TXSnapshotID
+}
+
+// withReplication adds the `replication` parameter to the connection config.
+// This will uprgade a regular command connection to accept replication commands.
+func withReplication(pgconf *pgconn.Config) *pgconn.Config {
+	c := pgconf.Copy()
+	if c.RuntimeParams == nil {
+		c.RuntimeParams = make(map[string]string)
 	}
+	// enable replication on connection
+	c.RuntimeParams["replication"] = "database"
 
-	// make sure we have all table keys
-	for _, tableName := range i.config.Tables {
-		if i.config.TableKeys[tableName] == "" {
-			return fmt.Errorf("missing key for table %q", tableName)
-		}
-	}
-
-	sub := internal.NewSubscription(
-		connConfig,
-		i.config.SlotName,
-		i.config.PublicationName,
-		i.config.Tables,
-		lsn,
-		NewCDCHandler(
-			internal.NewRelationSet(),
-			i.config.TableKeys,
-			i.records,
-		).Handle,
-	)
-
-	i.sub = sub
-	return nil
+	return c
 }

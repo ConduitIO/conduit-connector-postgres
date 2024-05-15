@@ -16,7 +16,6 @@ package internal
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -27,30 +26,24 @@ import (
 // If AllTables and Tables are both true and not empty at the same time,
 // publication creation will fail.
 type CreatePublicationOptions struct {
-	AllTables         bool
 	Tables            []string
 	PublicationParams []string
 }
 
 // CreatePublication creates a publication.
-func CreatePublication(ctx context.Context, conn *pgconn.PgConn, publicationName string, options CreatePublicationOptions) error {
-	if options.AllTables && len(options.Tables) != 0 {
-		return errors.New("incompatible tables options, either set AllTables to false or remove Tables from options")
+func CreatePublication(ctx context.Context, conn *pgconn.PgConn, name string, opts CreatePublicationOptions) error {
+	if len(opts.Tables) == 0 {
+		return fmt.Errorf("publication %q requires at least one table", name)
 	}
 
-	var forTableString string
-	if options.AllTables {
-		forTableString = "FOR ALL TABLES"
-	} else if len(options.Tables) > 0 {
-		forTableString = fmt.Sprintf("FOR TABLE %s", strings.Join(options.Tables, ", "))
-	}
+	forTableString := fmt.Sprintf("FOR TABLE %s", strings.Join(opts.Tables, ", "))
 
 	var publicationParams string
-	if len(options.PublicationParams) > 0 {
-		publicationParams = fmt.Sprintf("WITH (%s)", strings.Join(options.PublicationParams, ", "))
+	if len(opts.PublicationParams) > 0 {
+		publicationParams = fmt.Sprintf("WITH (%s)", strings.Join(opts.PublicationParams, ", "))
 	}
 
-	sql := fmt.Sprintf("CREATE PUBLICATION %q %s %s", publicationName, forTableString, publicationParams)
+	sql := fmt.Sprintf("CREATE PUBLICATION %q %s %s", name, forTableString, publicationParams)
 
 	mrr := conn.Exec(ctx, sql)
 	return mrr.Close()

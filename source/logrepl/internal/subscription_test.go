@@ -27,28 +27,26 @@ import (
 	"github.com/matryer/is"
 )
 
-func TestSubscriptionRegularUser(t *testing.T) {
+func TestSubscription_Create(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
+	conn := test.ConnectReplication(ctx, t, test.RepmgrConnString)
+	conn.Close(ctx)
 
-	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
-	slotName := test.RandomIdentifier(t)
-	publication := test.RandomIdentifier(t)
-
-	sub := NewSubscription(conn.Config().Config, slotName, publication, nil, 0, nil)
-	err := sub.Start(ctx)
-	test.IsPgError(is, err, "42501")
+	_, err := CreateSubscription(ctx, conn, "slotname", "pubname", nil, 0, nil)
+	is.Equal(err.Error(), "conn closed")
 }
 
-func TestSubscriptionRepmgr(t *testing.T) {
+func TestSubscription_WithRepmgr(t *testing.T) {
 	ctx := context.Background()
 
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
+	replConn := test.ConnectReplication(ctx, t, test.RepmgrConnString)
 
 	table1 := test.SetupTestTable(ctx, t, conn)
 	table2 := test.SetupTestTable(ctx, t, conn)
 
-	_, messages := setupSubscription(ctx, t, conn.Config().Config, table1, table2)
+	_, messages := setupSubscription(ctx, t, replConn, table1, table2)
 
 	fetchAndAssertMessageTypes := func(is *is.I, m chan pglogrepl.Message, msgTypes ...pglogrepl.MessageType) []pglogrepl.Message {
 		out := make([]pglogrepl.Message, len(msgTypes))
@@ -140,14 +138,15 @@ func TestSubscriptionRepmgr(t *testing.T) {
 	})
 }
 
-func TestSubscriptionClosedContext(t *testing.T) {
+func TestSubscription_ClosedContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	is := is.New(t)
 
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
+	replConn := test.ConnectReplication(ctx, t, test.RepmgrConnString)
 	table := test.SetupTestTable(ctx, t, conn)
 
-	sub, messages := setupSubscription(ctx, t, conn.Config().Config, table)
+	sub, messages := setupSubscription(ctx, t, replConn, table)
 
 	// insert to get new messages into publication
 	query := `INSERT INTO %s (id, column1, column2, column3)
@@ -155,8 +154,8 @@ func TestSubscriptionClosedContext(t *testing.T) {
 	_, err := conn.Exec(ctx, fmt.Sprintf(query, table))
 	is.NoErr(err)
 
-	// do not fetch messages, just close context instead
 	cancel()
+	// do not fetch messages, just close context instead
 	select {
 	case <-time.After(time.Second):
 		is.Fail() // timed out while waiting for subscription to close
@@ -168,10 +167,41 @@ func TestSubscriptionClosedContext(t *testing.T) {
 	isNoMoreMessages(t, messages, time.Millisecond*500)
 }
 
+func TestSubscription_Ack(t *testing.T) {
+	is := is.New(t)
+
+	s := &Subscription{}
+	s.Ack(12345)
+
+	is.Equal(s.walFlushed, pglogrepl.LSN(12345))
+}
+
+func TestSubscription_Stop(t *testing.T) {
+	t.Run("with stop function", func(t *testing.T) {
+		is := is.New(t)
+
+		var stopped bool
+
+		s := &Subscription{
+			stop: func() {
+				stopped = true
+			},
+		}
+
+		s.Stop()
+		is.True(stopped)
+	})
+
+	t.Run("with missing stop function", func(*testing.T) {
+		s := &Subscription{}
+		s.Stop()
+	})
+}
+
 func setupSubscription(
 	ctx context.Context,
 	t *testing.T,
-	connConfig pgconn.Config,
+	replConn *pgconn.PgConn,
 	tables ...string,
 ) (*Subscription, chan pglogrepl.Message) {
 	is := is.New(t)
@@ -179,9 +209,14 @@ func setupSubscription(
 	slotName := test.RandomIdentifier(t)
 	publication := test.RandomIdentifier(t)
 
+	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
+
+	test.CreatePublication(t, conn, publication, tables)
+
 	messages := make(chan pglogrepl.Message)
-	sub := NewSubscription(
-		connConfig,
+	sub, err := CreateSubscription(
+		ctx,
+		replConn,
 		slotName,
 		publication,
 		tables,
@@ -195,9 +230,10 @@ func setupSubscription(
 			}
 		},
 	)
+	is.NoErr(err)
 
 	go func() {
-		err := sub.Start(ctx)
+		err := sub.Run(ctx)
 		if !errors.Is(err, context.Canceled) {
 			t.Logf("unexpected error: %+v", err)
 			is.Fail()
@@ -216,8 +252,15 @@ func setupSubscription(
 		// stop subscription
 		sub.Stop()
 		cctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		is.NoErr(sub.Wait(cctx))
+		is.NoErr(sub.Wait(cctx, 0))
 		cancel()
+
+		_, err := conn.Exec(
+			context.Background(),
+			"SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name=$1",
+			slotName,
+		)
+		is.NoErr(err)
 	})
 
 	return sub, messages

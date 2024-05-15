@@ -28,29 +28,27 @@ import (
 )
 
 const (
-	pgDuplicateObjectErrorCode = "42710"
-	pgOutputPlugin             = "pgoutput"
+	pgOutputPlugin          = "pgoutput"
+	closeReplicationTimeout = time.Second * 2
 )
 
 // Subscription manages a subscription to a logical replication slot.
 type Subscription struct {
-	ConnConfig    pgconn.Config
 	SlotName      string
 	Publication   string
 	Tables        []string
 	StartLSN      pglogrepl.LSN
 	Handler       Handler
 	StatusTimeout time.Duration
+	TXSnapshotID  string
 
-	stop    context.CancelFunc
+	conn *pgconn.PgConn
+
+	stop context.CancelFunc
+
 	ready   chan struct{}
 	done    chan struct{}
 	doneErr error
-
-	// cleanup is the function that gets called on teardown.
-	// Cleanup functions that get added here on initialization act as deferred
-	// functions.
-	cleanup func(ctx context.Context) error
 
 	walWritten pglogrepl.LSN
 	walFlushed pglogrepl.LSN
@@ -58,94 +56,89 @@ type Subscription struct {
 
 type Handler func(context.Context, pglogrepl.Message, pglogrepl.LSN) error
 
-func NewSubscription(
-	config pgconn.Config,
+// CreateSubscription initializes the logical replication subscriber by creating the replication slot.
+func CreateSubscription(
+	ctx context.Context,
+	conn *pgconn.PgConn,
 	slotName,
 	publication string,
 	tables []string,
 	startLSN pglogrepl.LSN,
 	h Handler,
-) *Subscription {
+) (*Subscription, error) {
+	result, err := pglogrepl.CreateReplicationSlot(
+		ctx,
+		conn,
+		slotName,
+		pgOutputPlugin,
+		pglogrepl.CreateReplicationSlotOptions{
+			SnapshotAction: "EXPORT_SNAPSHOT",
+			Mode:           pglogrepl.LogicalReplication,
+		},
+	)
+	if err != nil {
+		// If creating the replication slot fails with code 42710, this means
+		// the replication slot already exists.
+		if !IsPgDuplicateErr(err) {
+			return nil, err
+		}
+
+		sdk.Logger(ctx).Warn().
+			Msgf("replication slot %q already exists", slotName)
+	}
+
 	return &Subscription{
-		ConnConfig:    config,
 		SlotName:      slotName,
 		Publication:   publication,
 		Tables:        tables,
 		StartLSN:      startLSN,
 		Handler:       h,
 		StatusTimeout: 10 * time.Second,
+		TXSnapshotID:  result.SnapshotName,
+
+		conn: conn,
 
 		ready: make(chan struct{}),
 		done:  make(chan struct{}),
-		// cleanup does nothing by default
-		cleanup: func(context.Context) error { return nil },
-	}
+	}, nil
 }
 
-// Start replication and block until error or ctx is canceled.
-func (s *Subscription) Start(ctx context.Context) (err error) {
-	defer func() {
-		// use fresh context for cleanup
-		cleanupErr := s.cleanup(context.Background())
-		if err == nil {
-			// return close connection error
-			err = cleanupErr
-		} else if cleanupErr != nil {
-			// an error is already returned, let's log this one instead
-			sdk.Logger(ctx).Err(cleanupErr).Msg("failed to cleanup subscription")
-		}
-		s.doneErr = err // store error so it can be retrieved later
+// Run logical replication listener and block until error or ctx is canceled.
+func (s *Subscription) Run(ctx context.Context) error {
+	defer s.doneReplication()
 
-		select {
-		case <-s.ready:
-			// ready is already closed
-		default:
-			close(s.ready)
-		}
-		close(s.done)
-	}()
-
-	conn, err := s.connect(ctx)
-	if err != nil {
-		return err
-	}
-	err = s.createPublication(ctx, conn)
-	if err != nil {
-		return err
-	}
-	err = s.createReplicationSlot(ctx, conn)
-	if err != nil {
-		return err
-	}
-	err = s.startReplication(ctx, conn)
-	if err != nil {
+	if err := s.startReplication(ctx); err != nil {
 		return err
 	}
 
 	lctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	s.stop = cancel
 	s.walWritten = s.StartLSN
 	s.walFlushed = s.StartLSN
 
-	return s.listen(lctx, conn)
+	if err := s.listen(lctx); err != nil {
+		s.doneErr = err
+		return err
+	}
+
+	return nil
 }
 
-// listen runs until context is cancelled or an error is encountered.
-func (s *Subscription) listen(ctx context.Context, conn *pgconn.PgConn) error {
+// listen receives changes from the replication slot until context is cancelled or an error is encountered.
+func (s *Subscription) listen(ctx context.Context) error {
 	// signal that the subscription is ready and is receiving messages
 	close(s.ready)
 	nextStatusUpdateAt := time.Now().Add(s.StatusTimeout)
 	for {
 		if time.Now().After(nextStatusUpdateAt) {
-			err := s.sendStandbyStatusUpdate(ctx, conn)
+			err := s.sendStandbyStatusUpdate(ctx)
 			if err != nil {
 				return err
 			}
 			nextStatusUpdateAt = time.Now().Add(s.StatusTimeout)
 		}
 
-		msg, err := s.receiveMessage(ctx, conn, nextStatusUpdateAt)
+		msg, err := s.receiveMessage(ctx, nextStatusUpdateAt)
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				sdk.Logger(ctx).Trace().Msg("deadline exceeded while receiving message")
@@ -165,7 +158,7 @@ func (s *Subscription) listen(ctx context.Context, conn *pgconn.PgConn) error {
 
 		switch copyDataMsg.Data[0] {
 		case pglogrepl.PrimaryKeepaliveMessageByteID:
-			err := s.handlePrimaryKeepaliveMessage(ctx, conn, copyDataMsg)
+			err := s.handlePrimaryKeepaliveMessage(ctx, copyDataMsg)
 			if err != nil {
 				return err
 			}
@@ -184,7 +177,7 @@ func (s *Subscription) listen(ctx context.Context, conn *pgconn.PgConn) error {
 
 // handlePrimaryKeepaliveMessage will handle the primary keepalive message and
 // send a reply if requested.
-func (s *Subscription) handlePrimaryKeepaliveMessage(ctx context.Context, conn *pgconn.PgConn, copyDataMsg *pgproto3.CopyData) error {
+func (s *Subscription) handlePrimaryKeepaliveMessage(ctx context.Context, copyDataMsg *pgproto3.CopyData) error {
 	sdk.Logger(ctx).Trace().Msg("handling primary keepalive message")
 
 	pkm, err := pglogrepl.ParsePrimaryKeepaliveMessage(copyDataMsg.Data[1:])
@@ -192,7 +185,7 @@ func (s *Subscription) handlePrimaryKeepaliveMessage(ctx context.Context, conn *
 		return fmt.Errorf("failed to parse primary keepalive message: %w", err)
 	}
 	if pkm.ReplyRequested {
-		if err = s.sendStandbyStatusUpdate(ctx, conn); err != nil {
+		if err = s.sendStandbyStatusUpdate(ctx); err != nil {
 			return fmt.Errorf("failed to send status: %w", err)
 		}
 	}
@@ -245,7 +238,13 @@ func (s *Subscription) Stop() {
 // Wait will block until the subscription is stopped. If the context gets
 // cancelled in the meantime it will return the context error, otherwise nil is
 // returned.
-func (s *Subscription) Wait(ctx context.Context) error {
+func (s *Subscription) Wait(ctx context.Context, timeout time.Duration) error {
+	select {
+	case <-time.After(timeout):
+	case <-s.done:
+		return nil
+	}
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -271,82 +270,8 @@ func (s *Subscription) Err() error {
 	return s.doneErr
 }
 
-// connect establishes a replication connection and adds a cleanup function
-// which closes the connection afterwards.
-func (s *Subscription) connect(ctx context.Context) (*pgconn.PgConn, error) {
-	if s.ConnConfig.RuntimeParams == nil {
-		s.ConnConfig.RuntimeParams = make(map[string]string)
-	}
-	// enable replication on connection
-	s.ConnConfig.RuntimeParams["replication"] = "database"
-
-	conn, err := pgconn.ConnectConfig(ctx, &s.ConnConfig)
-	if err != nil {
-		return nil, fmt.Errorf("could not establish replication connection: %w", err)
-	}
-
-	// add cleanup to close connection
-	s.addCleanup(func(ctx context.Context) error {
-		if err := conn.Close(ctx); err != nil {
-			return fmt.Errorf("failed to close replication connection: %w", err)
-		}
-		return nil
-	})
-	return conn, nil
-}
-
-// createPublication creates a publication if it doesn't exist yet. If a
-// publication with that name already exists it returns no error. If a
-// publication is created a cleanup function is added which deletes the
-// publication afterwards.
-func (s *Subscription) createPublication(ctx context.Context, conn *pgconn.PgConn) error {
-	if err := CreatePublication(
-		ctx,
-		conn,
-		s.Publication,
-		CreatePublicationOptions{Tables: s.Tables},
-	); err != nil {
-		// If creating the publication fails with code 42710, this means
-		// the publication already exists.
-		var pgerr *pgconn.PgError
-		if !errors.As(err, &pgerr) || pgerr.Code != pgDuplicateObjectErrorCode {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// createReplicationSlot creates a temporary replication slot which will be
-// deleted once the connection is closed. If a replication slot with that name
-// already exists it returns no error.
-func (s *Subscription) createReplicationSlot(ctx context.Context, conn *pgconn.PgConn) error {
-	result, err := pglogrepl.CreateReplicationSlot(
-		ctx,
-		conn,
-		s.SlotName,
-		pgOutputPlugin,
-		pglogrepl.CreateReplicationSlotOptions{
-			SnapshotAction: "EXPORT_SNAPSHOT",
-			Mode:           pglogrepl.LogicalReplication,
-		},
-	)
-	if err != nil {
-		// If creating the replication slot fails with code 42710, this means
-		// the replication slot already exists.
-		var pgerr *pgconn.PgError
-		if !errors.As(err, &pgerr) || pgerr.Code != pgDuplicateObjectErrorCode {
-			return err
-		}
-	}
-	_ = result // TODO use returned snapshot name to start snapshot iterator
-	return nil
-}
-
-// startReplication starts replication with a specific start LSN and adds two
-// cleanup functions, one for sending the last status update and one for sending
-// the standby copy done signal.
-func (s *Subscription) startReplication(ctx context.Context, conn *pgconn.PgConn) error {
+// startReplication starts replication with a specific start LSN.
+func (s *Subscription) startReplication(ctx context.Context) error {
 	pluginArgs := []string{
 		`"proto_version" '1'`,
 		fmt.Sprintf(`"publication_names" '%s'`, s.Publication),
@@ -354,7 +279,7 @@ func (s *Subscription) startReplication(ctx context.Context, conn *pgconn.PgConn
 
 	if err := pglogrepl.StartReplication(
 		ctx,
-		conn,
+		s.conn,
 		s.SlotName,
 		s.StartLSN,
 		pglogrepl.StartReplicationOptions{
@@ -366,52 +291,14 @@ func (s *Subscription) startReplication(ctx context.Context, conn *pgconn.PgConn
 		return fmt.Errorf("failed to start replication: %w", err)
 	}
 
-	// add cleanup for sending copy done message indicating replication has done
-	s.addCleanup(func(ctx context.Context) error {
-		if err := s.sendStandbyCopyDone(ctx, conn); err != nil {
-			return fmt.Errorf("failed to send standby copy done: %w", err)
-		}
-		return nil
-	})
-
-	// add cleanup for sending last status update
-	s.addCleanup(func(ctx context.Context) error {
-		if err := s.sendStandbyStatusUpdate(ctx, conn); err != nil {
-			return fmt.Errorf("failed to send final status update: %w", err)
-		}
-		return nil
-	})
-
 	return nil
-}
-
-// addCleanup will add the function to the cleanup functions that are called
-// when the subscription is stopped. Functions will get stacked and taken off
-// the stack as they are called (same as deferred functions).
-func (s *Subscription) addCleanup(newCleanup func(context.Context) error) {
-	oldCleanup := s.cleanup
-	s.cleanup = func(ctx context.Context) error {
-		// first call new cleanup, then old cleanup to have the same ordering as
-		// deferred functions
-		newErr := newCleanup(ctx)
-		oldErr := oldCleanup(ctx)
-		switch {
-		case oldErr != nil && newErr == nil:
-			return fmt.Errorf("cleanup error: %w", oldErr)
-		case oldErr == nil && newErr != nil:
-			return fmt.Errorf("cleanup error: %w", newErr)
-		case oldErr != nil && newErr != nil:
-			return fmt.Errorf("[%s] %w", newErr, oldErr)
-		}
-		return nil
-	}
 }
 
 // sendStandbyCopyDone sends the status message to server indicating that
 // replication is done.
-func (s *Subscription) sendStandbyCopyDone(ctx context.Context, conn *pgconn.PgConn) error {
+func (s *Subscription) sendStandbyCopyDone(ctx context.Context) error {
 	sdk.Logger(ctx).Trace().Msg("sending standby copy done message")
-	_, err := pglogrepl.SendStandbyCopyDone(ctx, conn)
+	_, err := pglogrepl.SendStandbyCopyDone(ctx, s.conn)
 	if err != nil {
 		return fmt.Errorf("failed to send standby copy done: %w", err)
 	}
@@ -420,7 +307,7 @@ func (s *Subscription) sendStandbyCopyDone(ctx context.Context, conn *pgconn.PgC
 
 // sendStandbyStatusUpdate sends the status message to server indicating which LSNs
 // have been processed.
-func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context, conn *pgconn.PgConn) error {
+func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 	// load with atomic to prevent race condition with ack
 	walFlushed := pglogrepl.LSN(atomic.LoadUint64((*uint64)(&s.walFlushed)))
 
@@ -434,7 +321,7 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context, conn *pgconn
 		Str("walApply", walFlushed.String()).
 		Msg("sending standby status update")
 
-	err := pglogrepl.SendStandbyStatusUpdate(ctx, conn, pglogrepl.StandbyStatusUpdate{
+	err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn, pglogrepl.StandbyStatusUpdate{
 		WALWritePosition: s.walWritten,
 		WALFlushPosition: walFlushed,
 		WALApplyPosition: walFlushed,
@@ -451,14 +338,49 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context, conn *pgconn
 // receiveMessage tries to receive a message from the replication stream. If the
 // deadline is reached before a message is received it returns
 // context.DeadlineExceeded.
-func (s *Subscription) receiveMessage(ctx context.Context, conn *pgconn.PgConn, deadline time.Time) (pgproto3.BackendMessage, error) {
+func (s *Subscription) receiveMessage(ctx context.Context, deadline time.Time) (pgproto3.BackendMessage, error) {
 	wctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
 	sdk.Logger(ctx).Trace().Msg("receiving message")
-	msg, err := conn.ReceiveMessage(wctx)
+	msg, err := s.conn.ReceiveMessage(wctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to receive message: %w", err)
 	}
 	return msg, nil
+}
+
+// doneReplication performs the replication closing tasks on completition and
+// closes the done channel. If any errors are encountered, will be available through Err().
+func (s *Subscription) doneReplication() {
+	tctx, cancel := context.WithTimeout(context.Background(), closeReplicationTimeout)
+	defer cancel()
+
+	if err := s.sentStandbyDone(tctx); err != nil {
+		s.doneErr = errors.Join(s.doneErr, err)
+	}
+
+	close(s.done)
+}
+
+// sentStandbyDone signals replication done and submits the last flushed LSN.
+func (s *Subscription) sentStandbyDone(ctx context.Context) error {
+	var errs []error
+
+	// send copy done message indicating replication is done
+	if err := s.sendStandbyCopyDone(ctx); err != nil {
+		sdk.Logger(ctx).Error().
+			Err(err).
+			Msg("failed to send standby copy done")
+		errs = append(errs, err)
+	}
+	// send last status update
+	if err := s.sendStandbyStatusUpdate(ctx); err != nil {
+		sdk.Logger(ctx).Error().
+			Err(err).
+			Msg("failed to send final status update")
+		errs = append(errs, err)
+	}
+
+	return errors.Join(errs...)
 }
