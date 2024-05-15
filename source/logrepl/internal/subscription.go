@@ -238,7 +238,13 @@ func (s *Subscription) Stop() {
 // Wait will block until the subscription is stopped. If the context gets
 // cancelled in the meantime it will return the context error, otherwise nil is
 // returned.
-func (s *Subscription) Wait(ctx context.Context) error {
+func (s *Subscription) Wait(ctx context.Context, timeout time.Duration) error {
+	select {
+	case <-time.After(timeout):
+	case <-s.done:
+		return nil
+	}
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

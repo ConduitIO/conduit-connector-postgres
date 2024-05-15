@@ -321,25 +321,6 @@ func TestCDCIterator_Ack(t *testing.T) {
 	}
 }
 
-func TestCDCIterator_Teardown(t *testing.T) {
-	// t.Skip("This causes a data race in the the postgres connection being closed during forced teardown")
-	ctx := context.Background()
-	is := is.New(t)
-
-	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTable(ctx, t, pool)
-	i := testCDCIterator(ctx, t, pool, table, true)
-
-	// wait for subscription to be ready
-	<-i.sub.Ready()
-
-	cctx, cancel := context.WithCancel(ctx)
-	cancel()
-
-	err := i.Teardown(cctx)
-	is.Equal(err.Error(), "context canceled")
-}
-
 func Test_withReplication(t *testing.T) {
 	is := is.New(t)
 

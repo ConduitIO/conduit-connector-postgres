@@ -252,7 +252,7 @@ func setupSubscription(
 		// stop subscription
 		sub.Stop()
 		cctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		is.NoErr(sub.Wait(cctx))
+		is.NoErr(sub.Wait(cctx, 0))
 		cancel()
 
 		_, err := conn.Exec(

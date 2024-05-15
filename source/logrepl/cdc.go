@@ -181,22 +181,14 @@ func (i *CDCIterator) Ack(_ context.Context, sdkPos sdk.Position) error {
 // or the context gets canceled. If the subscription stopped with an unexpected
 // error, the error is returned.
 func (i *CDCIterator) Teardown(ctx context.Context) error {
-	defer func() {
-		// Give the subscription 2 seconds to settle.
-		select {
-		case <-i.sub.Done():
-		case <-time.After(subscriberDoneTimeout):
-		}
-
-		i.pgconn.Close(ctx)
-	}()
+	defer i.pgconn.Close(ctx)
 
 	if !i.subscriberReady() {
 		return nil
 	}
 
 	i.sub.Stop()
-	return i.sub.Wait(ctx)
+	return i.sub.Wait(ctx, subscriberDoneTimeout)
 }
 
 // subscriberReady returns true when the subscriber is running.
