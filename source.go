@@ -55,6 +55,8 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 
 	s.config = s.config.Init()
 
+	s.tableKeys = make(map[string]string)
+
 	return s.config.Validate()
 }
 
