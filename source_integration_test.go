@@ -25,17 +25,20 @@ import (
 func TestSource_Open(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
-	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 	tableName := test.SetupTestTable(ctx, t, conn)
 
 	s := NewSource()
 	err := s.Configure(
 		ctx,
 		map[string]string{
-			"url":          test.RegularConnString,
-			"tables":       tableName,
-			"snapshotMode": "initial",
-			"cdcMode":      "auto",
+			"url":                     test.RepmgrConnString,
+			"tables":                  tableName,
+			"snapshotMode":            "initial",
+			"cdcMode":                 "logrepl",
+			"tableKeys":               "'id",
+			"logrepl.slotName":        "conduitslot1",
+			"logrepl.publicationName": "conduitpub1",
 		},
 	)
 	is.NoErr(err)
