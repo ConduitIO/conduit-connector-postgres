@@ -75,7 +75,7 @@ func NewCombinedIterator(ctx context.Context, pool *pgxpool.Pool, conf Config) (
 	}
 
 	if err := conf.Validate(); err != nil {
-		return nil, fmt.Errorf("failed to validate longrepl config: %w", err)
+		return nil, fmt.Errorf("failed to validate logrepl config: %w", err)
 	}
 
 	c := &CombinedIterator{
