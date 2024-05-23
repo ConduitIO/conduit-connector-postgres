@@ -41,8 +41,6 @@ const (
 	CDCModeAuto CDCMode = "auto"
 	// CDCModeLogrepl uses logical replication to listen to changes.
 	CDCModeLogrepl CDCMode = "logrepl"
-	// CDCModeLongPolling uses long polling to listen to changes.
-	CDCModeLongPolling CDCMode = "long_polling"
 
 	// AllTablesWildcard can be used if you'd like to listen to all tables.
 	AllTablesWildcard = "*"
@@ -90,11 +88,6 @@ func (c Config) Validate() error {
 
 	if len(c.Tables) == 0 {
 		errs = append(errs, fmt.Errorf(`error validating "tables": %w`, config.ErrRequiredParameterMissing))
-	}
-
-	// TODO: when cdcMode "auto" is implemented, change this check
-	if len(c.Tables) != 1 && c.CDCMode == CDCModeLongPolling {
-		errs = append(errs, fmt.Errorf("multi-tables are only supported for logrepl CDCMode, please provide only one table"))
 	}
 	return errors.Join(errs...)
 }

@@ -23,7 +23,6 @@ import (
 	"github.com/conduitio/conduit-commons/csync"
 	"github.com/conduitio/conduit-connector-postgres/source"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
-	"github.com/conduitio/conduit-connector-postgres/source/snapshot"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -88,8 +87,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 
 	switch s.config.CDCMode {
 	case source.CDCModeAuto:
-		// TODO add logic that checks if the DB supports logical replication and
-		//  switches to long polling if it's not. For now use logical replication
+		// TODO add logic that checks if the DB supports logical replication (since that's the only thing we support at the moment)
 		fallthrough
 	case source.CDCModeLogrepl:
 		i, err := logrepl.NewCombinedIterator(ctx, s.pool, logrepl.Config{
@@ -104,23 +102,6 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			return fmt.Errorf("failed to create logical replication iterator: %w", err)
 		}
 		s.iterator = i
-	case source.CDCModeLongPolling:
-		logger.Warn().Msg("Long polling not supported yet, only snapshot is supported")
-		if s.config.SnapshotMode != source.SnapshotModeInitial {
-			// TODO create long polling iterator and pass snapshot mode in the config
-			logger.Warn().Msg("snapshot disabled, can't do anything right now")
-			return sdk.ErrUnimplemented
-		}
-
-		snap, err := snapshot.NewIterator(ctx, pool, snapshot.Config{
-			Tables:    s.config.Tables,
-			TableKeys: s.tableKeys,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to create long polling iterator: %w", err)
-		}
-
-		s.iterator = snap
 	default:
 		// shouldn't happen, config was validated
 		return fmt.Errorf("unsupported CDC mode %q", s.config.CDCMode)

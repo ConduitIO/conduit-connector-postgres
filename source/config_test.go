@@ -42,14 +42,6 @@ func TestConfig_Validate(t *testing.T) {
 				CDCMode: CDCModeLogrepl,
 			},
 			wantErr: true,
-		}, {
-			name: "invalid multiple tables for long polling",
-			cfg: Config{
-				URL:     "postgresql://meroxauser:meroxapass@127.0.0.1:5432/meroxadb",
-				Tables:  []string{"table1", "table2"},
-				CDCMode: CDCModeLongPolling,
-			},
-			wantErr: true,
 		},
 	}
 	for _, tc := range testCases {
