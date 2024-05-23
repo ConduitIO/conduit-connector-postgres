@@ -14,7 +14,7 @@ func (Config) Parameters() map[string]sdk.Parameter {
 			Description: "cdcMode determines how the connector should listen to changes.",
 			Type:        sdk.ParameterTypeString,
 			Validations: []sdk.Validation{
-				sdk.ValidationInclusion{List: []string{"auto", "logrepl", "long_polling"}},
+				sdk.ValidationInclusion{List: []string{"auto", "logrepl"}},
 			},
 		},
 		"logrepl.autoCleanup": {

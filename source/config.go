@@ -58,7 +58,7 @@ type Config struct {
 	// SnapshotMode is whether the plugin will take a snapshot of the entire table before starting cdc mode.
 	SnapshotMode SnapshotMode `json:"snapshotMode" validate:"inclusion=initial|never" default:"initial"`
 	// CDCMode determines how the connector should listen to changes.
-	CDCMode CDCMode `json:"cdcMode" validate:"inclusion=auto|logrepl|long_polling" default:"auto"`
+	CDCMode CDCMode `json:"cdcMode" validate:"inclusion=auto|logrepl" default:"auto"`
 
 	// LogreplPublicationName determines the publication name in case the
 	// connector uses logical replication to listen to changes (see CDCMode).
