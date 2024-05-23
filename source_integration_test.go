@@ -34,7 +34,6 @@ func TestSource_Open(t *testing.T) {
 		map[string]string{
 			"url":          test.RegularConnString,
 			"tables":       tableName,
-			"cdcMode":      "long_polling",
 			"snapshotMode": "initial",
 		},
 	)
