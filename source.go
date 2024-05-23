@@ -84,9 +84,9 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 
 	// ensure we have keys for all tables
 	for _, tableName := range s.config.Tables {
-		s.tableKeys[tableName], err = s.getTableKeys(ctx, tableName)
+		s.tableKeys[tableName], err = s.getPrimaryKey(ctx, tableName)
 		if err != nil {
-			return fmt.Errorf("failed to find key for table %s (try specifying it manually): %w", tableName, err)
+			return fmt.Errorf("failed to find primary key for table %s: %w", tableName, err)
 		}
 	}
 
@@ -190,9 +190,9 @@ func (s *Source) getAllTables(ctx context.Context) ([]string, error) {
 	return tables, nil
 }
 
-// getTableKeys queries the db for the name of the primary key column for a
+// getPrimaryKey queries the db for the name of the primary key column for a
 // table if one exists and returns it.
-func (s *Source) getTableKeys(ctx context.Context, tableName string) (string, error) {
+func (s *Source) getPrimaryKey(ctx context.Context, tableName string) (string, error) {
 	query := `SELECT c.column_name
 FROM information_schema.table_constraints tc
 JOIN information_schema.constraint_column_usage AS ccu USING (constraint_schema, constraint_name)
