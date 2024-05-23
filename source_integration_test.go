@@ -16,12 +16,9 @@ package postgres
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"github.com/conduitio/conduit-connector-postgres/test"
-	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/jackc/pgx/v5"
 	"github.com/matryer/is"
 )
 
@@ -35,15 +32,18 @@ func TestSource_Open(t *testing.T) {
 	err := s.Configure(
 		ctx,
 		map[string]string{
-			"url":   test.RegularConnString,
-			"table": "{{ index .Metadata \"opencdc.collection\" }}",
+			"url":          test.RegularConnString,
+			"tables":       tableName,
+			"cdcMode":      "long_polling",
+			"snapshotMode": "initial",
 		},
 	)
 	is.NoErr(err)
-	err = s.Open(ctx)
+
+	err = s.Open(ctx, nil)
 	is.NoErr(err)
+
 	defer func() {
-		err := s.Teardown(ctx)
-		is.NoErr(err)
+		is.NoErr(s.Teardown(ctx))
 	}()
 }
