@@ -35,6 +35,7 @@ func TestSource_Open(t *testing.T) {
 			"url":          test.RegularConnString,
 			"tables":       tableName,
 			"snapshotMode": "initial",
+			"cdcMode":      "auto",
 		},
 	)
 	is.NoErr(err)
