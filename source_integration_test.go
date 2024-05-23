@@ -18,6 +18,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/matryer/is"
 )
@@ -27,6 +28,8 @@ func TestSource_Open(t *testing.T) {
 	ctx := context.Background()
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 	tableName := test.SetupTestTable(ctx, t, conn)
+	slotName := "conduitslot1"
+	publicationName := "conduitpub1"
 
 	s := NewSource()
 	err := s.Configure(
@@ -37,8 +40,8 @@ func TestSource_Open(t *testing.T) {
 			"snapshotMode":            "initial",
 			"cdcMode":                 "logrepl",
 			"tableKeys":               "'id",
-			"logrepl.slotName":        "conduitslot1",
-			"logrepl.publicationName": "conduitpub1",
+			"logrepl.slotName":        slotName,
+			"logrepl.publicationName": publicationName,
 		},
 	)
 	is.NoErr(err)
@@ -47,6 +50,11 @@ func TestSource_Open(t *testing.T) {
 	is.NoErr(err)
 
 	defer func() {
+		is.NoErr(logrepl.Cleanup(context.Background(), logrepl.CleanupConfig{
+			URL:             test.RepmgrConnString,
+			SlotName:        slotName,
+			PublicationName: publicationName,
+		}))
 		is.NoErr(s.Teardown(ctx))
 	}()
 }
