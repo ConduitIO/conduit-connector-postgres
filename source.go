@@ -143,7 +143,18 @@ func (s *Source) Teardown(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-func (s *Source) LifecycleOnDeleted(ctx context.Context, _ map[string]string) error {
+func (s *Source) LifecycleOnDeleted(ctx context.Context, cfg map[string]string) error {
+	if err := s.Configure(ctx, cfg); err != nil {
+		return fmt.Errorf("fail to handle lifecycle delete event: %w", err)
+	}
+
+	// N.B. This should not stay in here for long, enrich the default.
+	//      Events are not passed enriched config with defaults.
+	if _, ok := cfg["logrepl.autoCleanup"]; !ok { // not set
+		params := s.config.Parameters()
+		s.config.LogreplAutoCleanup = params["logrepl.autoCleanup"].Default == "true"
+	}
+
 	switch s.config.CDCMode {
 	case source.CDCModeAuto:
 		fallthrough // TODO: Adjust as `auto` changes.
@@ -159,6 +170,7 @@ func (s *Source) LifecycleOnDeleted(ctx context.Context, _ map[string]string) er
 			PublicationName: s.config.LogreplPublicationName,
 		})
 	default:
+		sdk.Logger(ctx).Warn().Msgf("cannot handle CDC mode %q", s.config.CDCMode)
 		return nil
 	}
 }

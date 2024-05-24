@@ -34,6 +34,8 @@ type CleanupConfig struct {
 // Cleanup drops the provided replication slot and publication.
 // It will terminate any backends consuming the replication slot before deletion.
 func Cleanup(ctx context.Context, c CleanupConfig) error {
+	logger := sdk.Logger(ctx)
+
 	pgconfig, err := pgconn.ParseConfig(c.URL)
 	if err != nil {
 		return fmt.Errorf("failed to parse config URL: %w", err)
@@ -51,6 +53,11 @@ func Cleanup(ctx context.Context, c CleanupConfig) error {
 	defer conn.Close(ctx)
 
 	var errs []error
+
+	logger.Debug().
+		Str("slot", c.SlotName).
+		Str("publication", c.PublicationName).
+		Msg("removing replication slot and publication")
 
 	if c.SlotName != "" {
 		// Terminate any outstanding backends which are consuming the slot before deleting it.
@@ -70,8 +77,7 @@ func Cleanup(ctx context.Context, c CleanupConfig) error {
 			errs = append(errs, fmt.Errorf("failed to clean up replication slot %q: %w", c.SlotName, err))
 		}
 	} else {
-		sdk.Logger(ctx).Warn().
-			Msg("cleanup: skipping replication slot cleanup, name is empty")
+		logger.Warn().Msg("cleanup: skipping replication slot cleanup, name is empty")
 	}
 
 	if c.PublicationName != "" {
@@ -84,8 +90,7 @@ func Cleanup(ctx context.Context, c CleanupConfig) error {
 			errs = append(errs, fmt.Errorf("failed to clean up publication %q: %w", c.PublicationName, err))
 		}
 	} else {
-		sdk.Logger(ctx).Warn().
-			Msg("cleanup: skipping publication cleanup, name is empty")
+		logger.Warn().Msg("cleanup: skipping publication cleanup, name is empty")
 	}
 
 	return errors.Join(errs...)
