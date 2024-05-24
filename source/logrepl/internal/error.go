@@ -17,12 +17,11 @@ package internal
 import (
 	"errors"
 
+	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-const pgDuplicateObjectErrorCode = "42710"
-
 func IsPgDuplicateErr(err error) bool {
 	var pgerr *pgconn.PgError
-	return errors.As(err, &pgerr) && pgerr.Code == pgDuplicateObjectErrorCode
+	return errors.As(err, &pgerr) && pgerr.Code == pgerrcode.DuplicateObject
 }

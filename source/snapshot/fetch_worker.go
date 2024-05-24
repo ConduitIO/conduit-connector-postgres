@@ -364,8 +364,9 @@ func (*FetchWorker) validateKey(ctx context.Context, table, key string, tx pgx.T
 
 	if err := tx.QueryRow(
 		ctx,
-		"SELECT data_type FROM information_schema.columns WHERE table_name=$1 AND column_name=$2",
-		table, key,
+		`SELECT a.atttypid::regtype AS type FROM pg_class c JOIN pg_attribute a ON c.oid = a.attrelid
+			WHERE c.relkind = 'r' AND a.attname = $1 AND c.relname = $2`,
+		key, table,
 	).Scan(&dataType); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("key %q not present on table %q", key, table)
@@ -379,12 +380,12 @@ func (*FetchWorker) validateKey(ctx context.Context, table, key string, tx pgx.T
 
 	var isPK bool
 
+	// As per https://wiki.postgresql.org/wiki/Retrieve_primary_key_columns
 	if err := tx.QueryRow(
 		ctx,
-		`SELECT EXISTS(SELECT tc.constraint_type
-			FROM information_schema.constraint_column_usage cu JOIN information_schema.table_constraints tc
-			ON tc.constraint_name = cu.constraint_name
-			WHERE cu.table_name=$1 AND cu.column_name=$2)`,
+		`SELECT EXISTS(SELECT a.attname FROM pg_index i
+			JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+			WHERE i.indrelid = $1::regclass AND a.attname = $2 AND i.indisprimary)`,
 		table, key,
 	).Scan(&isPK); err != nil {
 		return fmt.Errorf("unable to determine key %q constraints: %w", key, err)

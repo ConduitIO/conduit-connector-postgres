@@ -33,6 +33,4 @@ type Iterator interface {
 	Teardown(context.Context) error
 }
 
-var (
-	_ Iterator = (*logrepl.CDCIterator)(nil)
-)
+var _ Iterator = (*logrepl.CDCIterator)(nil)
