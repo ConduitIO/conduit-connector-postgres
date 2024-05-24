@@ -118,7 +118,7 @@ func (i *Iterator) buildRecord(d FetchData) sdk.Record {
 	metadata := make(sdk.Metadata)
 	metadata["postgres.table"] = d.Table
 
-	return sdk.Util.Source.NewRecordCreate(pos, metadata, d.Key, d.Payload)
+	return sdk.Util.Source.NewRecordSnapshot(pos, metadata, d.Key, d.Payload)
 }
 
 func (i *Iterator) initFetchers(ctx context.Context) error {

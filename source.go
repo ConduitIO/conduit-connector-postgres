@@ -193,13 +193,9 @@ func (s *Source) getAllTables(ctx context.Context) ([]string, error) {
 // getPrimaryKey queries the db for the name of the primary key column for a
 // table if one exists and returns it.
 func (s *Source) getPrimaryKey(ctx context.Context, tableName string) (string, error) {
-	query := `SELECT c.column_name
-FROM information_schema.table_constraints tc
-JOIN information_schema.constraint_column_usage AS ccu USING (constraint_schema, constraint_name)
-JOIN information_schema.columns AS c ON c.table_schema = tc.constraint_schema
-  AND tc.table_name = c.table_name AND ccu.column_name = c.column_name
-WHERE constraint_type = 'PRIMARY KEY' AND tc.table_schema = 'public'
-  AND tc.table_name = $1`
+	query := `SELECT a.attname FROM pg_index i
+			JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+			WHERE  i.indrelid = $1::regclass AND i.indisprimary`
 
 	rows, err := s.pool.Query(ctx, query, tableName)
 	if err != nil {

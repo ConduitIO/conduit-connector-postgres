@@ -191,10 +191,11 @@ func Test_FetcherValidate(t *testing.T) {
 
 		err := f.Validate(ctx)
 		is.True(err != nil)
-		is.True(strings.Contains(
-			err.Error(),
-			fmt.Sprintf(`key "missing_key" not present on table %q`, table),
-		))
+		ok := strings.Contains(err.Error(), fmt.Sprintf(`key "missing_key" not present on table %q`, table))
+		if !ok {
+			t.Logf("error: %s", err.Error())
+		}
+		is.True(ok)
 	})
 }
 

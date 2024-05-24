@@ -22,6 +22,7 @@ import (
 
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/matryer/is"
 )
 
@@ -48,9 +49,11 @@ func Test_Iterator_Next(t *testing.T) {
 		}()
 
 		for j := 1; j <= 4; j++ {
-			_, err = i.Next(ctx)
+			r, err := i.Next(ctx)
 			is.NoErr(err)
+			is.Equal(r.Operation, sdk.OperationSnapshot)
 		}
+
 		for j := 1; j <= 4; j++ {
 			err = i.Ack(ctx, nil)
 			is.NoErr(err)

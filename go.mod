@@ -11,6 +11,7 @@ require (
 	github.com/golangci/golangci-lint v1.58.2
 	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0
+	github.com/jackc/pgerrcode v0.0.0-20240316143900-6e2875d9b438
 	github.com/jackc/pglogrepl v0.0.0-20240307033717-828fbfe908e9
 	github.com/jackc/pgx/v5 v5.5.5
 	github.com/matryer/is v1.4.1
