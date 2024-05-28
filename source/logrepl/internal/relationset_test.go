@@ -299,7 +299,7 @@ func isValuesAllTypes(is *is.I, got map[string]any) {
 			Valid: true,
 		},
 		"col_macaddr":  net.HardwareAddr{0x08, 0x00, 0x2b, 0x01, 0x02, 0x26},
-		"col_macaddr8": "08:00:2b:01:02:03:04:27",
+		"col_macaddr8": net.HardwareAddr{0x08, 0x00, 0x2b, 0x01, 0x02, 0x03, 0x04, 0x27},
 		"col_money":    "$28.00",
 		"col_numeric": pgtype.Numeric{
 			Int:              big.NewInt(29292929),
