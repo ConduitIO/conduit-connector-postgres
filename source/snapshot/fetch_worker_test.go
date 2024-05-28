@@ -471,3 +471,43 @@ func Test_FetchWorker_updateSnapshotEnd(t *testing.T) {
 		})
 	}
 }
+
+func Test_FetchWorker_createCursor(t *testing.T) {
+	var (
+		pool  = test.ConnectPool(context.Background(), t, test.RegularConnString)
+		table = test.SetupTestTable(context.Background(), t, pool)
+		is    = is.New(t)
+		ctx   = context.Background()
+	)
+
+	f := FetchWorker{
+		lastRead:    10,
+		snapshotEnd: 15,
+		cursorName:  "cursor123",
+		conf: FetchConfig{
+			Table: table,
+			Key:   "id",
+		},
+	}
+
+	tx, err := pool.Begin(ctx)
+	is.NoErr(err)
+
+	cleanup, err := f.createCursor(ctx, tx)
+	is.NoErr(err)
+
+	t.Cleanup(func() {
+		cleanup()
+	})
+
+	var cursorDef string
+	is.NoErr(tx.QueryRow(context.Background(), "SELECT statement FROM pg_cursors WHERE name=$1", f.cursorName).
+		Scan(&cursorDef),
+	)
+	is.Equal(
+		cursorDef,
+		fmt.Sprintf("DECLARE cursor123 CURSOR FOR(SELECT * FROM %s WHERE id > 10 AND id <= 15 ORDER BY id)", table),
+	)
+
+	is.NoErr(tx.Rollback(ctx))
+}
