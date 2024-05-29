@@ -41,12 +41,13 @@ type CombinedIterator struct {
 }
 
 type Config struct {
-	Position        sdk.Position
-	SlotName        string
-	PublicationName string
-	Tables          []string
-	TableKeys       map[string]string
-	WithSnapshot    bool
+	Position          sdk.Position
+	SlotName          string
+	PublicationName   string
+	Tables            []string
+	TableKeys         map[string]string
+	WithSnapshot      bool
+	SnapshotFetchSize int
 }
 
 // Validate performs validation tasks on the config.
@@ -201,6 +202,7 @@ func (c *CombinedIterator) initSnapshotIterator(ctx context.Context, pos positio
 		Tables:       c.conf.Tables,
 		TableKeys:    c.conf.TableKeys,
 		TXSnapshotID: c.cdcIterator.TXSnapshotID(),
+		FetchSize:    c.conf.SnapshotFetchSize,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create snapshot iterator: %w", err)
