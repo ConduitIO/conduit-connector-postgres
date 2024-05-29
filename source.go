@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	v1 "github.com/conduitio/conduit-connector-protocol/conduit/schema/v1"
 	"time"
 
 	"github.com/conduitio/conduit-commons/csync"
@@ -63,6 +64,18 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 }
 
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
+	schemas, err := sdk.NewSchemaService(ctx)
+	if err != nil {
+		return fmt.Errorf("failed acquiring schema service: %w", err)
+	}
+
+	_, err = schemas.Create(ctx, v1.CreateRequest{
+		Name:  "",
+		Bytes: nil,
+	})
+	if err != nil {
+		return fmt.Errorf("failed acquiring schema service: %w", err)
+	}
 	pool, err := pgxpool.New(ctx, s.config.URL)
 	if err != nil {
 		return fmt.Errorf("failed to create a connection pool to database: %w", err)
