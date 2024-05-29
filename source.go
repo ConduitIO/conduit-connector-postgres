@@ -76,6 +76,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 	if err != nil {
 		return fmt.Errorf("failed acquiring schema service: %w", err)
 	}
+
 	pool, err := pgxpool.New(ctx, s.config.URL)
 	if err != nil {
 		return fmt.Errorf("failed to create a connection pool to database: %w", err)
