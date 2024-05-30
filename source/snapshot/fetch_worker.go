@@ -23,9 +23,11 @@ import (
 	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/source/position"
+	"github.com/conduitio/conduit-connector-postgres/source/types"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -304,7 +306,12 @@ func (f *FetchWorker) buildFetchData(fields []string, values []any) (FetchData, 
 	if err != nil {
 		return FetchData{}, fmt.Errorf("failed to build snapshot position: %w", err)
 	}
-	key, payload := f.buildRecordData(fields, values)
+
+	key, payload, err := f.buildRecordData(fields, values)
+	if err != nil {
+		return FetchData{}, fmt.Errorf("failed to encode record data: %w", err)
+	}
+
 	return FetchData{
 		Key:      key,
 		Payload:  payload,
@@ -330,13 +337,19 @@ func (f *FetchWorker) buildSnapshotPosition(fields []string, values []any) (posi
 	return position.SnapshotPosition{}, fmt.Errorf("key %q not found in fields", f.conf.Key)
 }
 
-func (f *FetchWorker) buildRecordData(fields []string, values []any) (key sdk.StructuredData, payload sdk.StructuredData) {
+func (f *FetchWorker) buildRecordData(fields []string, values []any) (key sdk.StructuredData, payload sdk.StructuredData, err error) {
 	payload = make(sdk.StructuredData)
 
 	for i, name := range fields {
 		switch t := values[i].(type) {
 		case time.Time: // type not supported in sdk.Record
-			payload[name] = t.UTC().String()
+			payload[name], _ = types.TimeFormatter{Value: t}.Format()
+		case pgtype.Numeric:
+			f, err := types.NumericFormatter{Value: t}.Format()
+			if err != nil {
+				return sdk.StructuredData{}, sdk.StructuredData{}, err
+			}
+			payload[name] = f
 		default:
 			payload[name] = t
 		}
@@ -346,7 +359,7 @@ func (f *FetchWorker) buildRecordData(fields []string, values []any) (key sdk.St
 		f.conf.Key: payload[f.conf.Key],
 	}
 
-	return key, payload
+	return key, payload, nil
 }
 
 func (f *FetchWorker) withSnapshot(ctx context.Context, tx pgx.Tx) error {

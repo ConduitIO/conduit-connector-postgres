@@ -85,7 +85,10 @@ func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 		key bytea,
 		column1 varchar(256),
 		column2 integer,
-		column3 boolean)`
+		column3 boolean,
+		column4 numeric(16,3),
+		column5 numeric(5)
+	)`
 	query = fmt.Sprintf(query, table)
 	_, err := conn.Exec(ctx, query)
 	is.NoErr(err)
@@ -98,11 +101,11 @@ func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 	})
 
 	query = `
-		INSERT INTO %s (key, column1, column2, column3)
-		VALUES ('1', 'foo', 123, false),
-		('2', 'bar', 456, true),
-		('3', 'baz', 789, false),
-		('4', null, null, null)`
+		INSERT INTO %s (key, column1, column2, column3, column4, column5)
+		VALUES ('1', 'foo', 123, false, 12.2, 4),
+		('2', 'bar', 456, true, 13.42, 8),
+		('3', 'baz', 789, false, null, 9),
+		('4', null, null, null, 91.1, null)`
 	query = fmt.Sprintf(query, table)
 	_, err = conn.Exec(ctx, query)
 	is.NoErr(err)

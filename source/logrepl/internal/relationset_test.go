@@ -301,13 +301,7 @@ func isValuesAllTypes(is *is.I, got map[string]any) {
 		"col_macaddr":  net.HardwareAddr{0x08, 0x00, 0x2b, 0x01, 0x02, 0x26},
 		"col_macaddr8": net.HardwareAddr{0x08, 0x00, 0x2b, 0x01, 0x02, 0x03, 0x04, 0x27},
 		"col_money":    "$28.00",
-		"col_numeric": pgtype.Numeric{
-			Int:              big.NewInt(29292929),
-			Exp:              -2,
-			NaN:              false,
-			InfinityModifier: pgtype.Finite,
-			Valid:            true,
-		},
+		"col_numeric":  float64(292929.29),
 		"col_path": pgtype.Path{
 			P:      []pgtype.Vec2{{X: 30, Y: 31}, {X: 32, Y: 33}, {X: 34, Y: 35}},
 			Closed: false,
