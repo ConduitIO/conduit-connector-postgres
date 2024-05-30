@@ -201,11 +201,14 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 			Int("rows", nfetched).
 			Str("table", f.conf.Table).
 			Dur("elapsed", time.Since(start)).
+			Str("completed_perc", fmt.Sprintf("%.2f", (float64(nfetched)/float64(f.snapshotEnd))*100)).
+			Str("rate_per_min", fmt.Sprintf("%.0f", float64(nfetched)/time.Since(start).Minutes())).
 			Msg("fetching rows")
 	}
 
 	sdk.Logger(ctx).Info().
 		Dur("elapsed", time.Since(start)).
+		Str("rate_per_min", fmt.Sprintf("%.0f", float64(nfetched)/time.Since(start).Minutes())).
 		Str("table", f.conf.Table).
 		Msgf("%q snapshot completed", f.conf.Table)
 
@@ -254,11 +257,17 @@ func (f *FetchWorker) updateSnapshotEnd(ctx context.Context, tx pgx.Tx) error {
 }
 
 func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
+	start := time.Now().UTC()
+
 	rows, err := tx.Query(ctx, fmt.Sprintf("FETCH %d FROM %s", f.conf.FetchSize, f.cursorName))
 	if err != nil {
 		return 0, fmt.Errorf("failed to fetch rows: %w", err)
 	}
 	defer rows.Close()
+
+	sdk.Logger(ctx).Info().
+		Dur("fetch_elapsed", time.Since(start)).
+		Msg("cursor fetched data")
 
 	var fields []string
 	for _, f := range rows.FieldDescriptions() {
@@ -292,6 +301,13 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 }
 
 func (f *FetchWorker) send(ctx context.Context, d FetchData) error {
+	start := time.Now().UTC()
+	defer func() {
+		sdk.Logger(ctx).Trace().
+			Dur("send_elapsed", time.Since(start)).
+			Msg("sending data to chan")
+	}()
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
