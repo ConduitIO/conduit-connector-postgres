@@ -27,7 +27,6 @@ import (
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -337,27 +336,26 @@ func (f *FetchWorker) buildSnapshotPosition(fields []string, values []any) (posi
 	return position.SnapshotPosition{}, fmt.Errorf("key %q not found in fields", f.conf.Key)
 }
 
-func (f *FetchWorker) buildRecordData(fields []string, values []any) (key sdk.StructuredData, payload sdk.StructuredData, err error) {
-	payload = make(sdk.StructuredData)
+func (f *FetchWorker) buildRecordData(fields []string, values []any) (sdk.StructuredData, sdk.StructuredData, error) {
+	var (
+		key     = make(sdk.StructuredData)
+		payload = make(sdk.StructuredData)
+	)
 
 	for i, name := range fields {
-		switch t := values[i].(type) {
-		case time.Time: // type not supported in sdk.Record
-			payload[name], _ = types.Time.Format(t)
-		case pgtype.Numeric:
-			f, err := types.Numeric.Format(t)
-			if err != nil {
-				return sdk.StructuredData{}, sdk.StructuredData{}, err
-			}
-			payload[name] = f
-		default:
-			payload[name] = t
+		v, err := types.Format(values[i])
+		if err != nil {
+			return key, payload, fmt.Errorf("failed to format payload field %q: %w", name, err)
 		}
+		payload[name] = v
 	}
 
-	key = sdk.StructuredData{
-		f.conf.Key: payload[f.conf.Key],
+	k, err := types.Format(payload[f.conf.Key])
+	if err != nil {
+		return key, payload, fmt.Errorf("failed to format key %q: %w", f.conf.Key, err)
 	}
+
+	key[f.conf.Key] = k
 
 	return key, payload, nil
 }

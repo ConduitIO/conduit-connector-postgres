@@ -14,7 +14,28 @@
 
 package types
 
+import (
+	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
+)
+
 var (
 	Numeric = NumericFormatter{}
 	Time    = TimeFormatter{}
 )
+
+func Format(v any) (any, error) {
+	switch t := v.(type) {
+	case pgtype.Numeric:
+		return Numeric.Format(t)
+	case *pgtype.Numeric:
+		return Numeric.Format(*t)
+	case time.Time:
+		return Time.Format(t)
+	case *time.Time:
+		return Time.Format(*t)
+	default: // supported type
+		return t, nil
+	}
+}

@@ -71,16 +71,12 @@ func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]a
 			return nil, fmt.Errorf("failed to decode tuple %d: %w", i, err)
 		}
 
-		switch t := val.(type) {
-		case pgtype.Numeric:
-			v, err := types.Numeric.Format(t)
-			if err != nil {
-				return nil, fmt.Errorf("failed to format numeric value: %w", err)
-			}
-			values[col.Name] = v
-		default:
-			values[col.Name] = val
+		v, err := types.Format(val)
+		if err != nil {
+			return nil, fmt.Errorf("failed to format column %q type %T: %w", col.Name, val, err)
 		}
+
+		values[col.Name] = v
 	}
 
 	return values, nil
