@@ -169,6 +169,13 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to update fetch limit: %w", err)
 	}
 
+	sdk.Logger(ctx).Info().
+		Int("fetchSize", f.conf.FetchSize).
+		Str("tx.snapshot", f.conf.TXSnapshotID).
+		Int64("startAt", f.lastRead).
+		Int64("snapshotEnd", f.snapshotEnd).
+		Msgf("starting fetcher %s", f.cursorName)
+
 	closeCursor, err := f.createCursor(ctx, tx)
 	if err != nil {
 		return fmt.Errorf("failed to create cursor: %w", err)

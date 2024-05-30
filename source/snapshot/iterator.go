@@ -33,6 +33,7 @@ type Config struct {
 	Tables       []string
 	TableKeys    map[string]string
 	TXSnapshotID string
+	FetchSize    int
 }
 
 type Iterator struct {
@@ -132,6 +133,7 @@ func (i *Iterator) initFetchers(ctx context.Context) error {
 			Key:          i.conf.TableKeys[t],
 			TXSnapshotID: i.conf.TXSnapshotID,
 			Position:     i.lastPosition,
+			FetchSize:    i.conf.FetchSize,
 		})
 
 		if err := w.Validate(ctx); err != nil {

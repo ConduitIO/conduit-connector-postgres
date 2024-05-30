@@ -57,6 +57,10 @@ type Config struct {
 
 	// SnapshotMode is whether the plugin will take a snapshot of the entire table before starting cdc mode.
 	SnapshotMode SnapshotMode `json:"snapshotMode" validate:"inclusion=initial|never" default:"initial"`
+
+	// Snapshot fetcher size determines the number of rows to retrieve at a time.
+	SnapshotFetchSize int `json:"snapshot.fetchSize" default:"50000"`
+
 	// CDCMode determines how the connector should listen to changes.
 	CDCMode CDCMode `json:"cdcMode" validate:"inclusion=auto|logrepl" default:"auto"`
 

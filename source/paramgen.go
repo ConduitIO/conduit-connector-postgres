@@ -35,6 +35,12 @@ func (Config) Parameters() map[string]sdk.Parameter {
 			Type:        sdk.ParameterTypeString,
 			Validations: []sdk.Validation{},
 		},
+		"snapshot.fetchSize": {
+			Default:     "50000",
+			Description: "Snapshot fetcher size determines the number of rows to retrieve at a time.",
+			Type:        sdk.ParameterTypeInt,
+			Validations: []sdk.Validation{},
+		},
 		"snapshotMode": {
 			Default:     "initial",
 			Description: "snapshotMode is whether the plugin will take a snapshot of the entire table before starting cdc mode.",

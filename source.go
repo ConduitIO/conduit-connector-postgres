@@ -96,12 +96,13 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		fallthrough
 	case source.CDCModeLogrepl:
 		i, err := logrepl.NewCombinedIterator(ctx, s.pool, logrepl.Config{
-			Position:        pos,
-			SlotName:        s.config.LogreplSlotName,
-			PublicationName: s.config.LogreplPublicationName,
-			Tables:          s.config.Tables,
-			TableKeys:       s.tableKeys,
-			WithSnapshot:    s.config.SnapshotMode == source.SnapshotModeInitial,
+			Position:          pos,
+			SlotName:          s.config.LogreplSlotName,
+			PublicationName:   s.config.LogreplPublicationName,
+			Tables:            s.config.Tables,
+			TableKeys:         s.tableKeys,
+			WithSnapshot:      s.config.SnapshotMode == source.SnapshotModeInitial,
+			SnapshotFetchSize: s.config.SnapshotFetchSize,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create logical replication iterator: %w", err)
@@ -150,9 +151,18 @@ func (s *Source) LifecycleOnDeleted(ctx context.Context, cfg map[string]string) 
 
 	// N.B. This should not stay in here for long, enrich the default.
 	//      Events are not passed enriched config with defaults.
+	params := s.config.Parameters()
+
 	if _, ok := cfg["logrepl.autoCleanup"]; !ok { // not set
-		params := s.config.Parameters()
 		s.config.LogreplAutoCleanup = params["logrepl.autoCleanup"].Default == "true"
+	}
+
+	if _, ok := cfg["logrepl.slotName"]; !ok {
+		s.config.LogreplSlotName = params["logrepl.slotName"].Default
+	}
+
+	if _, ok := cfg["logrepl.publicationName"]; !ok {
+		s.config.LogreplPublicationName = params["logrepl.publicationName"].Default
 	}
 
 	switch s.config.CDCMode {
