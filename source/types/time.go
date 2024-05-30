@@ -22,8 +22,7 @@ type TimeFormatter struct {
 	Value time.Time
 }
 
-// Format coerces `pgtype.Numeric` to int or double depending on the exponent.
-// Returns error when value is invalid.
+// Format coerces `time.Time` to a string representation in UTC tz.
 func (n TimeFormatter) Format() (any, error) {
 	return n.Value.UTC().String(), nil
 }
