@@ -25,6 +25,8 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
@@ -147,8 +149,8 @@ func TestCDCIterator_Next(t *testing.T) {
 	}{
 		{
 			name: "should detect insert",
-			setupQuery: `INSERT INTO %s (id, column1, column2, column3)
-				VALUES (6, 'bizz', 456, false)`,
+			setupQuery: `INSERT INTO %s (id, column1, column2, column3, column4, column5)
+				VALUES (6, 'bizz', 456, false, 12.3, 14)`,
 			wantErr: false,
 			want: sdk.Record{
 				Operation: sdk.OperationCreate,
@@ -163,6 +165,8 @@ func TestCDCIterator_Next(t *testing.T) {
 						"column1": "bizz",
 						"column2": int32(456),
 						"column3": false,
+						"column4": 12.3,
+						"column5": int64(14),
 						"key":     nil,
 					},
 				},
@@ -187,6 +191,8 @@ func TestCDCIterator_Next(t *testing.T) {
 						"column1": "test cdc updates",
 						"column2": int32(123),
 						"column3": false,
+						"column4": 12.2,
+						"column5": int64(4),
 						"key":     []uint8("1"),
 					},
 				},
@@ -228,7 +234,7 @@ func TestCDCIterator_Next(t *testing.T) {
 			tt.want.Metadata[sdk.MetadataReadAt] = got.Metadata[sdk.MetadataReadAt]
 			tt.want.Position = got.Position
 
-			is.Equal(got, tt.want)
+			is.Equal("", cmp.Diff(tt.want, got, cmpopts.IgnoreUnexported(sdk.Record{})))
 			is.NoErr(i.Ack(ctx, got.Position))
 		})
 	}
