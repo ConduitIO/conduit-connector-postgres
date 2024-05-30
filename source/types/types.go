@@ -1,4 +1,4 @@
-// Copyright © 2022 Meroxa, Inc.
+// Copyright © 2024 Meroxa, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,13 +14,7 @@
 
 package types
 
-import (
-	"time"
+var (
+	Numeric = NumericFormatter{}
+	Time    = TimeFormatter{}
 )
-
-type TimeFormatter struct{}
-
-// Format coerces `time.Time` to a string representation in UTC tz.
-func (n TimeFormatter) Format(t time.Time) (any, error) {
-	return t.UTC().String(), nil
-}

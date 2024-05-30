@@ -73,7 +73,7 @@ func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]a
 
 		switch t := val.(type) {
 		case pgtype.Numeric:
-			v, err := types.NumericFormatter{Value: t}.Format()
+			v, err := types.Numeric.Format(t)
 			if err != nil {
 				return nil, fmt.Errorf("failed to format numeric value: %w", err)
 			}

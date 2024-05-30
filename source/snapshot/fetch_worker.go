@@ -343,9 +343,9 @@ func (f *FetchWorker) buildRecordData(fields []string, values []any) (key sdk.St
 	for i, name := range fields {
 		switch t := values[i].(type) {
 		case time.Time: // type not supported in sdk.Record
-			payload[name], _ = types.TimeFormatter{Value: t}.Format()
+			payload[name], _ = types.Time.Format(t)
 		case pgtype.Numeric:
-			f, err := types.NumericFormatter{Value: t}.Format()
+			f, err := types.Numeric.Format(t)
 			if err != nil {
 				return sdk.StructuredData{}, sdk.StructuredData{}, err
 			}
