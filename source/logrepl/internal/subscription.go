@@ -351,7 +351,7 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 
 	// N.B. Manage replication slot lag, by responding with the last server LSN, when
 	//      all previous slot relevant msgs have been written and flushed
-	if walFlushed == s.walWritten && s.walFlushed < s.serverWALEnd {
+	if walFlushed == s.walWritten && walFlushed < s.serverWALEnd {
 		if err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn, pglogrepl.StandbyStatusUpdate{
 			WALWritePosition: s.serverWALEnd,
 			ClientTime:       time.Now(),
