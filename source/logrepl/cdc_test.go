@@ -27,6 +27,7 @@ import (
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
@@ -274,6 +275,38 @@ func TestCDCIterator_Next_Fail(t *testing.T) {
 	})
 }
 
+func TestCDCIterator_EnsureLSN(t *testing.T) {
+	ctx := context.Background()
+	is := is.New(t)
+
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupTestTable(ctx, t, pool)
+
+	i := testCDCIterator(ctx, t, pool, table, true)
+	<-i.sub.Ready()
+
+	_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5)
+				VALUES (6, 'bizz', 456, false, 12.3, 14)`, table))
+	is.NoErr(err)
+
+	r, err := i.Next(ctx)
+	is.NoErr(err)
+
+	p, err := position.ParseSDKPosition(r.Position)
+	is.NoErr(err)
+	is.NoErr(i.Ack(ctx, r.Position))
+
+	lsn, err := p.LSN()
+	is.NoErr(err)
+
+	writeLSN, flushLSN, err := fetchSlotStats(t, pool, table) // table is the slot name
+	is.NoErr(err)
+
+	// this may cause the test to flap if the keepalive update happens before stats are publushed
+	is.Equal(lsn, writeLSN)
+	is.Equal(lsn, flushLSN)
+}
+
 func TestCDCIterator_Ack(t *testing.T) {
 	ctx := context.Background()
 
@@ -360,4 +393,28 @@ func testCDCIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, tabl
 	})
 
 	return i
+}
+
+func fetchSlotStats(t *testing.T, c test.Querier, slotName string) (pglogrepl.LSN, pglogrepl.LSN, error) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+	defer cancel()
+
+	var writeLSN, flushLSN pglogrepl.LSN
+
+	for {
+		query := fmt.Sprintf(`SELECT write_lsn, flush_lsn
+								FROM pg_stat_replication s JOIN pg_replication_slots rs ON s.pid = rs.active_pid
+								WHERE rs.slot_name = '%s'`, slotName)
+
+		err := c.QueryRow(ctx, query).Scan(&writeLSN, &flushLSN)
+		if err == nil {
+			return writeLSN, flushLSN, nil
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return 0, 0, err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }

@@ -160,13 +160,11 @@ func (s *Subscription) listen(ctx context.Context) error {
 
 		switch copyDataMsg.Data[0] {
 		case pglogrepl.PrimaryKeepaliveMessageByteID:
-			err := s.handlePrimaryKeepaliveMessage(ctx, copyDataMsg)
-			if err != nil {
+			if err := s.handlePrimaryKeepaliveMessage(ctx, copyDataMsg); err != nil {
 				return err
 			}
 		case pglogrepl.XLogDataByteID:
-			err := s.handleXLogData(ctx, copyDataMsg)
-			if err != nil {
+			if err := s.handleXLogData(ctx, copyDataMsg); err != nil {
 				return err
 			}
 		default:
@@ -187,7 +185,7 @@ func (s *Subscription) handlePrimaryKeepaliveMessage(ctx context.Context, copyDa
 		return fmt.Errorf("failed to parse primary keepalive message: %w", err)
 	}
 
-	s.serverWALEnd = pkm.ServerWALEnd
+	atomic.StoreUint64((*uint64)(&s.serverWALEnd), uint64(pkm.ServerWALEnd))
 
 	if pkm.ReplyRequested {
 		if err := s.sendStandbyStatusUpdate(ctx); err != nil {
