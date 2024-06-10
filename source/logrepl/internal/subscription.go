@@ -50,8 +50,10 @@ type Subscription struct {
 	done    chan struct{}
 	doneErr error
 
-	walWritten pglogrepl.LSN
-	walFlushed pglogrepl.LSN
+	walWritten   pglogrepl.LSN
+	walFlushed   pglogrepl.LSN
+	lastTXLSN    pglogrepl.LSN
+	serverWALEnd pglogrepl.LSN
 }
 
 type Handler func(context.Context, pglogrepl.Message, pglogrepl.LSN) error
@@ -184,11 +186,15 @@ func (s *Subscription) handlePrimaryKeepaliveMessage(ctx context.Context, copyDa
 	if err != nil {
 		return fmt.Errorf("failed to parse primary keepalive message: %w", err)
 	}
+
+	s.serverWALEnd = pkm.ServerWALEnd
+
 	if pkm.ReplyRequested {
-		if err = s.sendStandbyStatusUpdate(ctx); err != nil {
+		if err := s.sendStandbyStatusUpdate(ctx); err != nil {
 			return fmt.Errorf("failed to send status: %w", err)
 		}
 	}
+
 	return nil
 }
 
@@ -214,9 +220,31 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 		return fmt.Errorf("handler error: %w", err)
 	}
 
-	if xld.WALStart > 0 {
-		s.walWritten = xld.WALStart
+	// Track `BEGIN` and `COMMIT` messages. Track the expected end LSN.
+	// Only update the last written LSN to data changing messages (update, insert, delete)
+	switch m := logicalMsg.(type) {
+	case *pglogrepl.BeginMessage:
+		s.lastTXLSN = m.FinalLSN
+
+		sdk.Logger(ctx).Debug().
+			Stringer("final_lsn", m.FinalLSN).
+			Msg("received begin msg")
+	case *pglogrepl.CommitMessage:
+		sdk.Logger(ctx).Debug().
+			Stringer("commit_lsn", m.CommitLSN).
+			Stringer("tx_lsn", m.TransactionEndLSN).
+			Stringer("expected_end_lsn", s.lastTXLSN).
+			Msg("received commit")
+
+		if s.lastTXLSN != 0 && s.lastTXLSN != m.CommitLSN {
+			return fmt.Errorf("out of order commit %s, expected %s", m.CommitLSN, s.lastTXLSN)
+		}
+	default:
+		if xld.WALStart > 0 {
+			s.walWritten = xld.WALStart
+		}
 	}
+
 	return nil
 }
 
@@ -316,19 +344,29 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 	}
 
 	sdk.Logger(ctx).Trace().
-		Str("walWrite", s.walWritten.String()).
-		Str("walFlush", walFlushed.String()).
-		Str("walApply", walFlushed.String()).
+		Stringer("wal_write", s.walWritten).
+		Stringer("wal_flush", walFlushed).
+		Stringer("server_wal_end", s.serverWALEnd).
 		Msg("sending standby status update")
 
-	err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn, pglogrepl.StandbyStatusUpdate{
+	// N.B. Manage replication slot lag, by responding with the last server LSN, when
+	//      all previous slot relevant msgs have been written and flushed
+	if walFlushed == s.walWritten && s.walFlushed < s.serverWALEnd {
+		if err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn, pglogrepl.StandbyStatusUpdate{
+			WALWritePosition: s.serverWALEnd,
+			ClientTime:       time.Now(),
+		}); err != nil {
+			return fmt.Errorf("failed to send standby status update with server end lsn: %w", err)
+		}
+	}
+
+	if err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn, pglogrepl.StandbyStatusUpdate{
 		WALWritePosition: s.walWritten,
 		WALFlushPosition: walFlushed,
 		WALApplyPosition: walFlushed,
 		ClientTime:       time.Now(),
 		ReplyRequested:   false,
-	})
-	if err != nil {
+	}); err != nil {
 		return fmt.Errorf("failed to send standby status update: %w", err)
 	}
 
