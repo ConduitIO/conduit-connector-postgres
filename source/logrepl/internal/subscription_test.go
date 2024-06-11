@@ -233,12 +233,12 @@ func setupSubscription(
 		publication,
 		tables,
 		0,
-		func(ctx context.Context, msg pglogrepl.Message, _ pglogrepl.LSN) error {
+		func(ctx context.Context, msg pglogrepl.Message, lsn pglogrepl.LSN) (pglogrepl.LSN, error) {
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return 0, ctx.Err()
 			case messages <- msg:
-				return nil
+				return lsn, nil
 			}
 		},
 	)

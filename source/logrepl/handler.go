@@ -30,6 +30,7 @@ type CDCHandler struct {
 	tableKeys   map[string]string
 	relationSet *internal.RelationSet
 	out         chan<- sdk.Record
+	lastTXLSN   pglogrepl.LSN
 }
 
 func NewCDCHandler(
@@ -45,7 +46,8 @@ func NewCDCHandler(
 }
 
 // Handle is the handler function that receives all logical replication messages.
-func (h *CDCHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogrepl.LSN) error {
+// Returns non-zero LSN when a record was emitted for the message.
+func (h *CDCHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogrepl.LSN) (pglogrepl.LSN, error) {
 	sdk.Logger(ctx).Trace().
 		Str("lsn", lsn.String()).
 		Str("messageType", m.Type().String()).
@@ -53,27 +55,32 @@ func (h *CDCHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogr
 
 	switch m := m.(type) {
 	case *pglogrepl.RelationMessage:
-		// We have to add the Relations to our Set so that we can
-		// decode our own output
+		// We have to add the Relations to our Set so that we can decode our own output
 		h.relationSet.Add(m)
 	case *pglogrepl.InsertMessage:
-		err := h.handleInsert(ctx, m, lsn)
-		if err != nil {
-			return fmt.Errorf("logrepl handler insert: %w", err)
+		if err := h.handleInsert(ctx, m, lsn); err != nil {
+			return 0, fmt.Errorf("logrepl handler insert: %w", err)
 		}
+		return lsn, nil
 	case *pglogrepl.UpdateMessage:
-		err := h.handleUpdate(ctx, m, lsn)
-		if err != nil {
-			return fmt.Errorf("logrepl handler update: %w", err)
+		if err := h.handleUpdate(ctx, m, lsn); err != nil {
+			return 0, fmt.Errorf("logrepl handler update: %w", err)
 		}
+		return lsn, nil
 	case *pglogrepl.DeleteMessage:
-		err := h.handleDelete(ctx, m, lsn)
-		if err != nil {
-			return fmt.Errorf("logrepl handler delete: %w", err)
+		if err := h.handleDelete(ctx, m, lsn); err != nil {
+			return 0, fmt.Errorf("logrepl handler delete: %w", err)
+		}
+		return lsn, nil
+	case *pglogrepl.BeginMessage:
+		h.lastTXLSN = m.FinalLSN
+	case *pglogrepl.CommitMessage:
+		if h.lastTXLSN != 0 && h.lastTXLSN != m.CommitLSN {
+			return 0, fmt.Errorf("out of order commit %s, expected %s", m.CommitLSN, h.lastTXLSN)
 		}
 	}
 
-	return nil
+	return 0, nil
 }
 
 // handleInsert formats a Record with INSERT event data from Postgres and sends

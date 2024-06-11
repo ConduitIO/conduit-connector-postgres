@@ -52,11 +52,10 @@ type Subscription struct {
 
 	walWritten   pglogrepl.LSN
 	walFlushed   pglogrepl.LSN
-	lastTXLSN    pglogrepl.LSN
 	serverWALEnd pglogrepl.LSN
 }
 
-type Handler func(context.Context, pglogrepl.Message, pglogrepl.LSN) error
+type Handler func(context.Context, pglogrepl.Message, pglogrepl.LSN) (pglogrepl.LSN, error)
 
 // CreateSubscription initializes the logical replication subscriber by creating the replication slot.
 func CreateSubscription(
@@ -214,33 +213,13 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 		return fmt.Errorf("invalid message: %w", err)
 	}
 
-	if err = s.Handler(ctx, logicalMsg, xld.WALStart); err != nil {
+	writtenLSN, err := s.Handler(ctx, logicalMsg, xld.WALStart)
+	if err != nil {
 		return fmt.Errorf("handler error: %w", err)
 	}
 
-	// Track `BEGIN` and `COMMIT` messages. Track the expected end LSN.
-	// Only update the last written LSN to data changing messages (update, insert, delete)
-	switch m := logicalMsg.(type) {
-	case *pglogrepl.BeginMessage:
-		s.lastTXLSN = m.FinalLSN
-
-		sdk.Logger(ctx).Debug().
-			Stringer("final_lsn", m.FinalLSN).
-			Msg("received begin msg")
-	case *pglogrepl.CommitMessage:
-		sdk.Logger(ctx).Debug().
-			Stringer("commit_lsn", m.CommitLSN).
-			Stringer("tx_lsn", m.TransactionEndLSN).
-			Stringer("expected_end_lsn", s.lastTXLSN).
-			Msg("received commit")
-
-		if s.lastTXLSN != 0 && s.lastTXLSN != m.CommitLSN {
-			return fmt.Errorf("out of order commit %s, expected %s", m.CommitLSN, s.lastTXLSN)
-		}
-	default:
-		if xld.WALStart > 0 {
-			s.walWritten = xld.WALStart
-		}
+	if writtenLSN > 0 {
+		s.walWritten = writtenLSN
 	}
 
 	return nil
@@ -341,15 +320,18 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 		return fmt.Errorf("walWrite (%s) should be >= walFlush (%s)", s.walWritten, walFlushed)
 	}
 
+	// N.B. Manage replication slot lag, by responding with the last server LSN, when
+	//      all previous slot relevant msgs have been written and flushed
+	replyWithWALEnd := walFlushed == s.walWritten && walFlushed < s.serverWALEnd
+
 	sdk.Logger(ctx).Trace().
 		Stringer("wal_write", s.walWritten).
 		Stringer("wal_flush", walFlushed).
 		Stringer("server_wal_end", s.serverWALEnd).
+		Bool("server_wal_end_sent", replyWithWALEnd).
 		Msg("sending standby status update")
 
-	// N.B. Manage replication slot lag, by responding with the last server LSN, when
-	//      all previous slot relevant msgs have been written and flushed
-	if walFlushed == s.walWritten && walFlushed < s.serverWALEnd {
+	if replyWithWALEnd {
 		if err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn, pglogrepl.StandbyStatusUpdate{
 			WALWritePosition: s.serverWALEnd,
 			ClientTime:       time.Now(),
