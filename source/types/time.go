@@ -20,7 +20,12 @@ import (
 
 type TimeFormatter struct{}
 
-// Format coerces `time.Time` to a string representation in UTC tz.
+// Format returns:
+// * string format of Time when connectorn is not builtin
+// * time type in UTC when connector is builtin
 func (n TimeFormatter) Format(t time.Time) (any, error) {
+	if WithBuiltinPlugin {
+		return t.UTC(), nil
+	}
 	return t.UTC().String(), nil
 }

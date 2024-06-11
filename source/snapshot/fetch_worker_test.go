@@ -405,7 +405,7 @@ func Test_FetchWorker_buildRecordData(t *testing.T) {
 		// special case fields
 		fields       = []string{"id", "time"}
 		values       = []any{1, now}
-		expectValues = []any{1, now.String()}
+		expectValues = []any{1, now}
 	)
 
 	key, payload, err := (&FetchWorker{

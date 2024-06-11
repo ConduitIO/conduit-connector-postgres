@@ -23,10 +23,13 @@ import (
 )
 
 func Test_Format(t *testing.T) {
+	now := time.Now().UTC()
+
 	tests := []struct {
-		name   string
-		input  []any
-		expect []any
+		name        string
+		input       []any
+		expect      []any
+		withBuiltin bool
 	}{
 		{
 			name: "int float string bool",
@@ -62,6 +65,16 @@ func Test_Format(t *testing.T) {
 				"2009-11-10 23:00:00 +0000 UTC", nil,
 			},
 		},
+		{
+			name: "builtin time.Time",
+			input: []any{
+				now,
+			},
+			expect: []any{
+				now,
+			},
+			withBuiltin: true,
+		},
 	}
 	_ = time.Now()
 
@@ -69,11 +82,20 @@ func Test_Format(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			is := is.New(t)
 
+			prevWithBuiltinPlugin := WithBuiltinPlugin
+			WithBuiltinPlugin = tc.withBuiltin
+
+			t.Cleanup(func() {
+				WithBuiltinPlugin = prevWithBuiltinPlugin
+			})
+
 			for i, in := range tc.input {
 				v, err := Format(in)
 				is.NoErr(err)
 				is.Equal(v, tc.expect[i])
 			}
+
+
 		})
 	}
 }
