@@ -23,8 +23,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/conduitio/conduit-connector-postgres/source/types"
+	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgtype"

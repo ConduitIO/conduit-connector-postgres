@@ -94,8 +94,6 @@ func Test_Format(t *testing.T) {
 				is.NoErr(err)
 				is.Equal(v, tc.expect[i])
 			}
-
-
 		})
 	}
 }
