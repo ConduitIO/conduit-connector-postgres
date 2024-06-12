@@ -276,6 +276,8 @@ func TestCDCIterator_Next_Fail(t *testing.T) {
 }
 
 func TestCDCIterator_EnsureLSN(t *testing.T) {
+	// t.Skip()
+
 	ctx := context.Background()
 	is := is.New(t)
 
@@ -294,7 +296,6 @@ func TestCDCIterator_EnsureLSN(t *testing.T) {
 
 	p, err := position.ParseSDKPosition(r.Position)
 	is.NoErr(err)
-	is.NoErr(i.Ack(ctx, r.Position))
 
 	lsn, err := p.LSN()
 	is.NoErr(err)
@@ -302,9 +303,18 @@ func TestCDCIterator_EnsureLSN(t *testing.T) {
 	writeLSN, flushLSN, err := fetchSlotStats(t, pool, table) // table is the slot name
 	is.NoErr(err)
 
-	// this may cause the test to flap if the keepalive update happens before stats are publushed
 	is.Equal(lsn, writeLSN)
-	is.Equal(lsn, flushLSN)
+	is.True(flushLSN < lsn)
+
+	is.NoErr(i.Ack(ctx, r.Position))
+	time.Sleep(2 * time.Second) // wait for at least two status updates
+
+	writeLSN, flushLSN, err = fetchSlotStats(t, pool, table) // table is the slot name
+	is.NoErr(err)
+
+	is.True(lsn <= writeLSN)
+	is.True(lsn <= flushLSN)
+	is.Equal(writeLSN, flushLSN)
 }
 
 func TestCDCIterator_Ack(t *testing.T) {
@@ -379,6 +389,8 @@ func testCDCIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, tabl
 	i, err := NewCDCIterator(ctx, &pool.Config().ConnConfig.Config, config)
 	is.NoErr(err)
 
+	i.sub.StatusTimeout = 1 * time.Second
+
 	if start {
 		is.NoErr(i.StartSubscriber(ctx))
 	}
@@ -402,7 +414,6 @@ func fetchSlotStats(t *testing.T, c test.Querier, slotName string) (pglogrepl.LS
 	defer cancel()
 
 	var writeLSN, flushLSN pglogrepl.LSN
-
 	for {
 		query := fmt.Sprintf(`SELECT write_lsn, flush_lsn
 								FROM pg_stat_replication s JOIN pg_replication_slots rs ON s.pid = rs.active_pid

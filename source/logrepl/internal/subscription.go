@@ -34,13 +34,14 @@ const (
 
 // Subscription manages a subscription to a logical replication slot.
 type Subscription struct {
-	SlotName      string
-	Publication   string
-	Tables        []string
-	StartLSN      pglogrepl.LSN
-	Handler       Handler
-	StatusTimeout time.Duration
-	TXSnapshotID  string
+	SlotName          string
+	Publication       string
+	Tables            []string
+	StartLSN          pglogrepl.LSN
+	ConsistentSlotLSN pglogrepl.LSN
+	Handler           Handler
+	StatusTimeout     time.Duration
+	TXSnapshotID      string
 
 	conn *pgconn.PgConn
 
@@ -67,6 +68,8 @@ func CreateSubscription(
 	startLSN pglogrepl.LSN,
 	h Handler,
 ) (*Subscription, error) {
+	var slotLSN pglogrepl.LSN
+
 	result, err := pglogrepl.CreateReplicationSlot(
 		ctx,
 		conn,
@@ -88,14 +91,25 @@ func CreateSubscription(
 			Msgf("replication slot %q already exists", slotName)
 	}
 
+	// If a ConsistentPoint is available use it, otherwise fall back to the startLSN
+	slotLSN, err = pglogrepl.ParseLSN(result.ConsistentPoint)
+	if err != nil {
+		if startLSN == 0 {
+			return nil, fmt.Errorf("failed to parse consistent wal lsn: %w", err)
+		}
+
+		slotLSN = startLSN
+	}
+
 	return &Subscription{
-		SlotName:      slotName,
-		Publication:   publication,
-		Tables:        tables,
-		StartLSN:      startLSN,
-		Handler:       h,
-		StatusTimeout: 10 * time.Second,
-		TXSnapshotID:  result.SnapshotName,
+		SlotName:          slotName,
+		Publication:       publication,
+		Tables:            tables,
+		StartLSN:          startLSN,
+		ConsistentSlotLSN: slotLSN,
+		Handler:           h,
+		StatusTimeout:     10 * time.Second,
+		TXSnapshotID:      result.SnapshotName,
 
 		conn: conn,
 
@@ -334,7 +348,6 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 	if replyWithWALEnd {
 		if err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn, pglogrepl.StandbyStatusUpdate{
 			WALWritePosition: s.serverWALEnd,
-			ClientTime:       time.Now(),
 		}); err != nil {
 			return fmt.Errorf("failed to send standby status update with server end lsn: %w", err)
 		}
@@ -342,11 +355,17 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 		return nil
 	}
 
+	// No messages have been flushed, in this case set the flushed
+	// to just before the slot consistent LSN. This prevents flushed
+	// to be automatically assigned the written LSN by the pglogrepl pkg
+	if walFlushed == 0 {
+		walFlushed = s.ConsistentSlotLSN - 1
+	}
+
 	if err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn, pglogrepl.StandbyStatusUpdate{
 		WALWritePosition: s.walWritten,
 		WALFlushPosition: walFlushed,
 		WALApplyPosition: walFlushed,
-		ClientTime:       time.Now(),
 		ReplyRequested:   false,
 	}); err != nil {
 		return fmt.Errorf("failed to send standby status update: %w", err)

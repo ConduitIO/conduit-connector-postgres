@@ -136,12 +136,22 @@ func TestSubscription_WithRepmgr(t *testing.T) {
 
 	t.Run("Last WAL written is behind keepalive", func(t *testing.T) {
 		is := is.New(t)
+		is.Equal(sub.walFlushed, pglogrepl.LSN(0))
 
-		is.Equal(sub.walFlushed, pglogrepl.LSN(0)) // no acks
+		tctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
 
-		time.Sleep(500 * time.Millisecond) // Server may sent these every 200ms or so.
+		var serverWALEnd pglogrepl.LSN
 
-		serverWALEnd := pglogrepl.LSN(atomic.LoadUint64((*uint64)(&sub.serverWALEnd)))
+		// wait for the keep alive to kick in.
+		for {
+			serverWALEnd = pglogrepl.LSN(atomic.LoadUint64((*uint64)(&sub.serverWALEnd)))
+			if serverWALEnd > sub.walWritten || errors.Is(tctx.Err(), context.DeadlineExceeded) {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+
 		is.True(serverWALEnd > sub.walWritten)
 	})
 
