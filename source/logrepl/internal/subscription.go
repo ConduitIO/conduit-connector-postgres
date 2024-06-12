@@ -338,6 +338,8 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 		}); err != nil {
 			return fmt.Errorf("failed to send standby status update with server end lsn: %w", err)
 		}
+
+		return nil
 	}
 
 	if err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn, pglogrepl.StandbyStatusUpdate{
