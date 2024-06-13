@@ -25,6 +25,8 @@ var (
 	Time    = TimeFormatter{}
 )
 
+var WithBuiltinPlugin = true
+
 func Format(v any) (any, error) {
 	switch t := v.(type) {
 	case pgtype.Numeric:

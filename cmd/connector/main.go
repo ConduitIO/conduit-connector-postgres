@@ -16,9 +16,13 @@ package main
 
 import (
 	postgres "github.com/conduitio/conduit-connector-postgres"
+	"github.com/conduitio/conduit-connector-postgres/source/types"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
 func main() {
+	// Running as standalone plugin
+	types.WithBuiltinPlugin = false
+
 	sdk.Serve(postgres.Connector)
 }

@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-connector-postgres/source/types"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pglogrepl"
@@ -85,9 +86,23 @@ func TestRelationSetAllTypes(t *testing.T) {
 	is.NoErr(err)
 	is.Equal(gotRel, rel)
 
-	values, err := rs.Values(ins.RelationID, ins.Tuple)
-	is.NoErr(err)
-	isValuesAllTypes(is, values)
+	t.Run("with builtin plugin", func(t *testing.T) {
+		is := is.New(t)
+
+		values, err := rs.Values(ins.RelationID, ins.Tuple)
+		is.NoErr(err)
+		isValuesAllTypes(is, values)
+	})
+
+	t.Run("with standalone plugin", func(t *testing.T) {
+		is := is.New(t)
+
+		types.WithBuiltinPlugin = false
+		values, err := rs.Values(ins.RelationID, ins.Tuple)
+		is.NoErr(err)
+		isValuesAllTypesStandalone(is, values)
+		types.WithBuiltinPlugin = true
+	})
 }
 
 // setupTableAllTypes creates a new table with all types and returns its name.
@@ -248,6 +263,102 @@ func insertRowAllTypes(ctx context.Context, t *testing.T, conn test.Querier, tab
 }
 
 func isValuesAllTypes(is *is.I, got map[string]any) {
+	want := map[string]any{
+		"col_bit": pgtype.Bits{
+			Bytes: []byte{0b01},
+			Len:   8,
+			Valid: true,
+		},
+		"col_varbit": pgtype.Bits{
+			Bytes: []byte{0b10},
+			Len:   8,
+			Valid: true,
+		},
+		"col_boolean": true,
+		"col_box": pgtype.Box{
+			P:     [2]pgtype.Vec2{{X: 5, Y: 6}, {X: 3, Y: 4}},
+			Valid: true,
+		},
+		"col_bytea":   []byte{0x07},
+		"col_char":    "8  ", // blank padded char
+		"col_varchar": "9",
+		"col_cidr":    netip.MustParsePrefix("192.168.100.128/25"),
+		"col_circle": pgtype.Circle{
+			P:     pgtype.Vec2{X: 11, Y: 12},
+			R:     13,
+			Valid: true,
+		},
+		"col_date":   time.Date(2022, 3, 14, 0, 0, 0, 0, time.UTC).UTC(),
+		"col_float4": float32(15),
+		"col_float8": float64(16.16),
+		"col_inet":   netip.MustParsePrefix("192.168.0.17/32"),
+		"col_int2":   int16(32767),
+		"col_int4":   int32(2147483647),
+		"col_int8":   int64(9223372036854775807),
+		"col_interval": pgtype.Interval{
+			Microseconds: 18000000,
+			Days:         0,
+			Months:       0,
+			Valid:        true,
+		},
+		"col_json":  map[string]any{"foo": "bar"},
+		"col_jsonb": map[string]any{"foo": "baz"},
+		"col_line": pgtype.Line{
+			A:     19,
+			B:     20,
+			C:     21,
+			Valid: true,
+		},
+		"col_lseg": pgtype.Lseg{
+			P:     [2]pgtype.Vec2{{X: 22, Y: 23}, {X: 24, Y: 25}},
+			Valid: true,
+		},
+		"col_macaddr":  net.HardwareAddr{0x08, 0x00, 0x2b, 0x01, 0x02, 0x26},
+		"col_macaddr8": net.HardwareAddr{0x08, 0x00, 0x2b, 0x01, 0x02, 0x03, 0x04, 0x27},
+		"col_money":    "$28.00",
+		"col_numeric":  float64(292929.29),
+		"col_path": pgtype.Path{
+			P:      []pgtype.Vec2{{X: 30, Y: 31}, {X: 32, Y: 33}, {X: 34, Y: 35}},
+			Closed: false,
+			Valid:  true,
+		},
+		"col_pg_lsn":      "36/37",
+		"col_pg_snapshot": "10:20:10,14,15",
+		"col_point": pgtype.Point{
+			P:     pgtype.Vec2{X: 38, Y: 39},
+			Valid: true,
+		},
+		"col_polygon": pgtype.Polygon{
+			P:     []pgtype.Vec2{{X: 40, Y: 41}, {X: 42, Y: 43}, {X: 44, Y: 45}},
+			Valid: true,
+		},
+		"col_serial2": int16(32767),
+		"col_serial4": int32(2147483647),
+		"col_serial8": int64(9223372036854775807),
+		"col_text":    "foo bar baz",
+		"col_time": pgtype.Time{
+			Microseconds: time.Date(1970, 1, 1, 4, 5, 6, 789000000, time.UTC).UnixMicro(),
+			Valid:        true,
+		},
+		"col_timetz":      "04:05:06.789-08",
+		"col_timestamp":   time.Date(2022, 3, 14, 15, 16, 17, 0, time.UTC).UTC(),
+		"col_timestamptz": time.Date(2022, 3, 14, 15+8, 16, 17, 0, time.UTC).UTC(),
+		"col_tsquery":     "'fat' & ( 'rat' | 'cat' )",
+		"col_tsvector":    "'a' 'and' 'ate' 'cat' 'fat' 'mat' 'on' 'rat' 'sat'",
+		"col_uuid":        [16]uint8{0xbd, 0x94, 0xee, 0x0b, 0x56, 0x4f, 0x40, 0x88, 0xbf, 0x4e, 0x8d, 0x5e, 0x62, 0x6c, 0xaf, 0x66},
+		"col_xml":         "<foo>bar</foo>",
+	}
+	is.Equal("", cmp.Diff(want, got,
+		cmp.Comparer(func(x, y *big.Int) bool {
+			return x.Cmp(y) == 0
+		}),
+		cmp.Comparer(func(x, y netip.Prefix) bool {
+			return x.String() == y.String()
+		}),
+	))
+}
+
+func isValuesAllTypesStandalone(is *is.I, got map[string]any) {
 	want := map[string]any{
 		"col_bit": pgtype.Bits{
 			Bytes: []byte{0b01},
