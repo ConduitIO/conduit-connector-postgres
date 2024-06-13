@@ -15,13 +15,11 @@
 package postgres
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/conduitio/conduit-commons/csync"
@@ -38,12 +36,11 @@ import (
 type Source struct {
 	sdk.UnimplementedSource
 
-	iterator          source.Iterator
-	config            source.Config
-	pool              *pgxpool.Pool
-	tableKeys         map[string]string
-	createdSchema     schema2.Instance
-	createdSchemaLock sync.Mutex
+	iterator      source.Iterator
+	config        source.Config
+	pool          *pgxpool.Pool
+	tableKeys     map[string]string
+	createdSchema schema2.Instance
 }
 
 func NewSource() sdk.Source {
@@ -303,14 +300,10 @@ func (s *Source) fetchSchema(ctx context.Context) {
 		panic(fmt.Errorf("failed acquiring schema service: %w", err))
 	}
 
-	s.createdSchemaLock.Lock()
-	if !bytes.Equal(s.createdSchema.Bytes, tableSchema) {
-		s.createdSchema, err = schemas.Create(ctx, "employees", tableSchema)
-		if err != nil {
-			panic(err)
-		}
+	s.createdSchema, err = schemas.Create(ctx, "employees", tableSchema)
+	if err != nil {
+		panic(err)
 	}
-	s.createdSchemaLock.Unlock()
 }
 
 // Function to map PostgreSQL data types to Avro data types
