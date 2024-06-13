@@ -71,8 +71,6 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 }
 
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
-	s.fetchSchema(ctx)
-
 	pool, err := pgxpool.New(ctx, s.config.URL)
 	if err != nil {
 		return fmt.Errorf("failed to create a connection pool to database: %w", err)
@@ -121,6 +119,9 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		// shouldn't happen, config was validated
 		return fmt.Errorf("unsupported CDC mode %q", s.config.CDCMode)
 	}
+
+	s.fetchSchema(ctx)
+
 	return nil
 }
 
