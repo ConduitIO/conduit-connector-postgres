@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,7 +47,7 @@ func TestSubscription_WithRepmgr(t *testing.T) {
 	table1 := test.SetupTestTable(ctx, t, conn)
 	table2 := test.SetupTestTable(ctx, t, conn)
 
-	_, messages := setupSubscription(ctx, t, replConn, table1, table2)
+	sub, messages := setupSubscription(ctx, t, replConn, table1, table2)
 
 	fetchAndAssertMessageTypes := func(is *is.I, m chan pglogrepl.Message, msgTypes ...pglogrepl.MessageType) []pglogrepl.Message {
 		out := make([]pglogrepl.Message, len(msgTypes))
@@ -131,6 +132,17 @@ func TestSubscription_WithRepmgr(t *testing.T) {
 			pglogrepl.MessageTypeUpdate,
 			pglogrepl.MessageTypeCommit,
 		)
+	})
+
+	t.Run("Last WAL written is behind keepalive", func(t *testing.T) {
+		is := is.New(t)
+		time.Sleep(2 * time.Second)
+
+		walFlushed := pglogrepl.LSN(atomic.LoadUint64((*uint64)(&sub.walFlushed)))
+		serverWALEnd := pglogrepl.LSN(atomic.LoadUint64((*uint64)(&sub.serverWALEnd)))
+
+		is.True(serverWALEnd >= sub.walWritten)
+		is.True(sub.walWritten > walFlushed)
 	})
 
 	t.Run("no more messages", func(t *testing.T) {
@@ -221,16 +233,18 @@ func setupSubscription(
 		publication,
 		tables,
 		0,
-		func(ctx context.Context, msg pglogrepl.Message, _ pglogrepl.LSN) error {
+		func(ctx context.Context, msg pglogrepl.Message, lsn pglogrepl.LSN) (pglogrepl.LSN, error) {
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return 0, ctx.Err()
 			case messages <- msg:
-				return nil
+				return lsn, nil
 			}
 		},
 	)
 	is.NoErr(err)
+
+	sub.StatusTimeout = 1 * time.Second
 
 	go func() {
 		err := sub.Run(ctx)

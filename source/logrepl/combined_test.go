@@ -211,7 +211,6 @@ func TestCombinedIterator_Next(t *testing.T) {
 
 	t.Run("next_connector_resume_cdc_6", func(t *testing.T) {
 		is := is.New(t)
-
 		i, err := NewCombinedIterator(ctx, pool, Config{
 			Position:        lastPos,
 			Tables:          []string{table},

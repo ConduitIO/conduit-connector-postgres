@@ -34,13 +34,14 @@ const (
 
 // Subscription manages a subscription to a logical replication slot.
 type Subscription struct {
-	SlotName      string
-	Publication   string
-	Tables        []string
-	StartLSN      pglogrepl.LSN
-	Handler       Handler
-	StatusTimeout time.Duration
-	TXSnapshotID  string
+	SlotName          string
+	Publication       string
+	Tables            []string
+	StartLSN          pglogrepl.LSN
+	ConsistentSlotLSN pglogrepl.LSN
+	Handler           Handler
+	StatusTimeout     time.Duration
+	TXSnapshotID      string
 
 	conn *pgconn.PgConn
 
@@ -50,11 +51,12 @@ type Subscription struct {
 	done    chan struct{}
 	doneErr error
 
-	walWritten pglogrepl.LSN
-	walFlushed pglogrepl.LSN
+	walWritten   pglogrepl.LSN
+	walFlushed   pglogrepl.LSN
+	serverWALEnd pglogrepl.LSN
 }
 
-type Handler func(context.Context, pglogrepl.Message, pglogrepl.LSN) error
+type Handler func(context.Context, pglogrepl.Message, pglogrepl.LSN) (pglogrepl.LSN, error)
 
 // CreateSubscription initializes the logical replication subscriber by creating the replication slot.
 func CreateSubscription(
@@ -66,6 +68,8 @@ func CreateSubscription(
 	startLSN pglogrepl.LSN,
 	h Handler,
 ) (*Subscription, error) {
+	var slotLSN pglogrepl.LSN
+
 	result, err := pglogrepl.CreateReplicationSlot(
 		ctx,
 		conn,
@@ -87,14 +91,26 @@ func CreateSubscription(
 			Msgf("replication slot %q already exists", slotName)
 	}
 
+	// If a ConsistentPoint is available use it, otherwise fall back to the startLSN
+	slotLSN, err = pglogrepl.ParseLSN(result.ConsistentPoint)
+	if err != nil {
+		if startLSN == 0 {
+			sdk.Logger(ctx).Warn().
+				Msg("start LSN is zero, using existing replication slot without position")
+		}
+
+		slotLSN = startLSN
+	}
+
 	return &Subscription{
-		SlotName:      slotName,
-		Publication:   publication,
-		Tables:        tables,
-		StartLSN:      startLSN,
-		Handler:       h,
-		StatusTimeout: 10 * time.Second,
-		TXSnapshotID:  result.SnapshotName,
+		SlotName:          slotName,
+		Publication:       publication,
+		Tables:            tables,
+		StartLSN:          startLSN,
+		ConsistentSlotLSN: slotLSN,
+		Handler:           h,
+		StatusTimeout:     10 * time.Second,
+		TXSnapshotID:      result.SnapshotName,
 
 		conn: conn,
 
@@ -158,13 +174,11 @@ func (s *Subscription) listen(ctx context.Context) error {
 
 		switch copyDataMsg.Data[0] {
 		case pglogrepl.PrimaryKeepaliveMessageByteID:
-			err := s.handlePrimaryKeepaliveMessage(ctx, copyDataMsg)
-			if err != nil {
+			if err := s.handlePrimaryKeepaliveMessage(ctx, copyDataMsg); err != nil {
 				return err
 			}
 		case pglogrepl.XLogDataByteID:
-			err := s.handleXLogData(ctx, copyDataMsg)
-			if err != nil {
+			if err := s.handleXLogData(ctx, copyDataMsg); err != nil {
 				return err
 			}
 		default:
@@ -184,11 +198,15 @@ func (s *Subscription) handlePrimaryKeepaliveMessage(ctx context.Context, copyDa
 	if err != nil {
 		return fmt.Errorf("failed to parse primary keepalive message: %w", err)
 	}
+
+	atomic.StoreUint64((*uint64)(&s.serverWALEnd), uint64(pkm.ServerWALEnd))
+
 	if pkm.ReplyRequested {
-		if err = s.sendStandbyStatusUpdate(ctx); err != nil {
+		if err := s.sendStandbyStatusUpdate(ctx); err != nil {
 			return fmt.Errorf("failed to send status: %w", err)
 		}
 	}
+
 	return nil
 }
 
@@ -210,13 +228,21 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 		return fmt.Errorf("invalid message: %w", err)
 	}
 
-	if err = s.Handler(ctx, logicalMsg, xld.WALStart); err != nil {
+	writtenLSN, err := s.Handler(ctx, logicalMsg, xld.WALStart)
+	if err != nil {
 		return fmt.Errorf("handler error: %w", err)
 	}
 
-	if xld.WALStart > 0 {
-		s.walWritten = xld.WALStart
+	// When starting on an existing slot without having a consistent slot LSN,
+	// set the flushed WAL LSN to just before the received LSN
+	if s.walWritten == 0 && s.ConsistentSlotLSN == 0 {
+		atomic.StoreUint64((*uint64)(&s.walFlushed), uint64(writtenLSN-1))
 	}
+
+	if writtenLSN > 0 {
+		s.walWritten = writtenLSN
+	}
+
 	return nil
 }
 
@@ -315,20 +341,40 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 		return fmt.Errorf("walWrite (%s) should be >= walFlush (%s)", s.walWritten, walFlushed)
 	}
 
+	// N.B. Manage replication slot lag, by responding with the last server LSN, when
+	//      all previous slot relevant msgs have been written and flushed
+	replyWithWALEnd := walFlushed == s.walWritten && walFlushed < s.serverWALEnd
+
 	sdk.Logger(ctx).Trace().
-		Str("walWrite", s.walWritten.String()).
-		Str("walFlush", walFlushed.String()).
-		Str("walApply", walFlushed.String()).
+		Stringer("wal_write", s.walWritten).
+		Stringer("wal_flush", walFlushed).
+		Stringer("server_wal_end", s.serverWALEnd).
+		Bool("server_wal_end_sent", replyWithWALEnd).
 		Msg("sending standby status update")
 
-	err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn, pglogrepl.StandbyStatusUpdate{
+	if replyWithWALEnd {
+		if err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn, pglogrepl.StandbyStatusUpdate{
+			WALWritePosition: s.serverWALEnd,
+		}); err != nil {
+			return fmt.Errorf("failed to send standby status update with server end lsn: %w", err)
+		}
+
+		return nil
+	}
+
+	// No messages have been flushed, in this case set the flushed
+	// to just before the slot consistent LSN. This prevents flushed
+	// to be automatically assigned the written LSN by the pglogrepl pkg
+	if walFlushed == 0 {
+		walFlushed = s.ConsistentSlotLSN - 1
+	}
+
+	if err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn, pglogrepl.StandbyStatusUpdate{
 		WALWritePosition: s.walWritten,
 		WALFlushPosition: walFlushed,
 		WALApplyPosition: walFlushed,
-		ClientTime:       time.Now(),
 		ReplyRequested:   false,
-	})
-	if err != nil {
+	}); err != nil {
 		return fmt.Errorf("failed to send standby status update: %w", err)
 	}
 
