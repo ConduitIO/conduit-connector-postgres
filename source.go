@@ -19,17 +19,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	schema2 "github.com/conduitio/conduit-commons/schema"
-	"github.com/hamba/avro/v2"
 	"log"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/conduitio/conduit-commons/csync"
+	schema2 "github.com/conduitio/conduit-commons/schema"
 	"github.com/conduitio/conduit-connector-postgres/source"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/hamba/avro/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -72,13 +72,6 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 	s.fetchSchema(ctx)
-
-	go func() {
-		for {
-			s.fetchSchema(ctx)
-			time.Sleep(10 * time.Second)
-		}
-	}()
 
 	pool, err := pgxpool.New(ctx, s.config.URL)
 	if err != nil {

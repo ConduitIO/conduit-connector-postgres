@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/hamba/avro/v2"
 	"log"
 	"strconv"
 	"strings"
@@ -26,6 +25,7 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/conduitio/conduit-connector-postgres/destination"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/hamba/avro/v2"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -393,6 +393,10 @@ func (d *Destination) updateSchema(ctx context.Context, rec sdk.Record) error {
 		return fmt.Errorf("failed to get table name for write: %w", err)
 	}
 
+	if d.tableExists(tableName) {
+		return nil
+	}
+
 	cmdTag, err := d.conn.Exec(ctx, generateSQL(schema, tableName))
 	if err != nil {
 		return err
@@ -400,6 +404,25 @@ func (d *Destination) updateSchema(ctx context.Context, rec sdk.Record) error {
 	sdk.Logger(ctx).Info().Msgf("got command tag: %v", cmdTag)
 
 	return nil
+}
+
+func (d *Destination) tableExists(tableName string) bool {
+	query := `
+		SELECT EXISTS (
+			SELECT 1 
+			FROM information_schema.tables 
+			WHERE table_schema = 'public' 
+			AND table_name = $1
+		)
+	`
+
+	var exists bool
+	err := d.conn.QueryRow(context.Background(), query, tableName).Scan(&exists)
+	if err != nil {
+		panic(err)
+	}
+
+	return exists
 }
 
 // getSQLType maps Avro types to SQL types
