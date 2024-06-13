@@ -18,6 +18,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/hamba/avro/v2"
+	"log"
+	"strconv"
 	"strings"
 
 	sq "github.com/Masterminds/squirrel"
@@ -78,6 +81,11 @@ func (d *Destination) Open(ctx context.Context) error {
 // Write routes incoming records to their appropriate handler based on the
 // operation.
 func (d *Destination) Write(ctx context.Context, recs []sdk.Record) (int, error) {
+	err := d.updateSchema(ctx, recs[0])
+	if err != nil {
+		return 0, err
+	}
+
 	b := &pgx.Batch{}
 	for _, rec := range recs {
 		var err error
@@ -355,4 +363,95 @@ func (d *Destination) getKeyColumnName(key sdk.StructuredData, defaultKeyName st
 
 func (d *Destination) hasKey(e sdk.Record) bool {
 	return e.Key != nil && len(e.Key.Bytes()) > 0
+}
+
+func (d *Destination) updateSchema(ctx context.Context, rec sdk.Record) error {
+	sname := rec.Metadata["opencdc.schema.name"]
+	sversion, err := strconv.Atoi(rec.Metadata["opencdc.schema.version"])
+	if err != nil {
+		return err
+	}
+
+	service, err := sdk.NewSchemaService(ctx)
+	if err != nil {
+		return fmt.Errorf("error acquiring schema service: %w", err)
+	}
+
+	schemaInstance, err := service.Get(ctx, sname, sversion)
+	if err != nil {
+		return err
+	}
+	schema, err := avro.ParseBytes(schemaInstance.Bytes)
+	if err != nil {
+		return err
+	}
+
+	sdk.Logger(ctx).Info().Msgf("got schema: %v", schema)
+
+	tableName, err := d.getTableName(rec)
+	if err != nil {
+		return fmt.Errorf("failed to get table name for write: %w", err)
+	}
+
+	cmdTag, err := d.conn.Exec(ctx, generateSQL(schema, tableName))
+	if err != nil {
+		return err
+	}
+	sdk.Logger(ctx).Info().Msgf("got command tag: %v", cmdTag)
+
+	return nil
+}
+
+// getSQLType maps Avro types to SQL types
+func getSQLType(avroType avro.Type) string {
+	switch avroType {
+	case avro.Int:
+		return "INT"
+	case avro.Long:
+		return "BIGINT"
+	case avro.String:
+		return "VARCHAR(255)"
+	case avro.Boolean:
+		return "BOOLEAN"
+	case avro.Float:
+		return "FLOAT"
+	case avro.Double:
+		return "DOUBLE"
+	case avro.Bytes:
+		return "BLOB"
+	case avro.Union:
+		// For unions, pick the first non-null type
+		return "VARCHAR(255)" // default fallback type for complex types
+	default:
+		return "VARCHAR(255)" // default fallback type
+	}
+}
+
+// generateSQL generates the SQL CREATE TABLE statement
+func generateSQL(schema avro.Schema, tableName string) string {
+	recordSchema, ok := schema.(*avro.RecordSchema)
+	if !ok {
+		log.Fatalf("Schema is not a record schema")
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("CREATE TABLE %s (\n", tableName))
+
+	for i, field := range recordSchema.Fields() {
+		fieldType := getSQLType(field.Type().Type())
+		nullable := ""
+		if field.HasDefault() || field.Type().Type() == avro.Union {
+			nullable = ""
+		} else {
+			nullable = " NOT NULL"
+		}
+
+		sb.WriteString(fmt.Sprintf("    %s %s%s", field.Name(), fieldType, nullable))
+		if i < len(recordSchema.Fields())-1 {
+			sb.WriteString(",\n")
+		}
+	}
+	sb.WriteString("\n);")
+
+	return sb.String()
 }

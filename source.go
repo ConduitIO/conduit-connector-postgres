@@ -15,9 +15,15 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	schema2 "github.com/conduitio/conduit-commons/schema"
+	"github.com/hamba/avro/v2"
+	"log"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/conduitio/conduit-commons/csync"
@@ -32,10 +38,12 @@ import (
 type Source struct {
 	sdk.UnimplementedSource
 
-	iterator  source.Iterator
-	config    source.Config
-	pool      *pgxpool.Pool
-	tableKeys map[string]string
+	iterator          source.Iterator
+	config            source.Config
+	pool              *pgxpool.Pool
+	tableKeys         map[string]string
+	createdSchema     schema2.Instance
+	createdSchemaLock sync.Mutex
 }
 
 func NewSource() sdk.Source {
@@ -63,6 +71,15 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 }
 
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
+	s.fetchSchema(ctx)
+
+	go func() {
+		for {
+			s.fetchSchema(ctx)
+			time.Sleep(10 * time.Second)
+		}
+	}()
+
 	pool, err := pgxpool.New(ctx, s.config.URL)
 	if err != nil {
 		return fmt.Errorf("failed to create a connection pool to database: %w", err)
@@ -115,7 +132,12 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 }
 
 func (s *Source) Read(ctx context.Context) (sdk.Record, error) {
-	return s.iterator.Next(ctx)
+	rec, err := s.iterator.Next(ctx)
+	if err == nil {
+		rec.Metadata["opencdc.schema.name"] = s.createdSchema.Name
+		rec.Metadata["opencdc.schema.version"] = strconv.Itoa(s.createdSchema.Version)
+	}
+	return rec, err
 }
 
 func (s *Source) Ack(ctx context.Context, pos sdk.Position) error {
@@ -222,4 +244,127 @@ func (s *Source) getPrimaryKey(ctx context.Context, tableName string) (string, e
 	}
 
 	return colName, nil
+}
+
+func (s *Source) getTableSchema(ctx context.Context) ([]byte, error) {
+	// Table name
+	tableName := "employees"
+
+	// Query to get column names and data types
+	query := `
+		SELECT column_name, data_type
+		FROM information_schema.columns
+		WHERE table_name = $1
+	`
+
+	rows, err := s.pool.Query(ctx, query, tableName)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rows.Close()
+
+	// Map to store column names and their corresponding Avro types
+	columns := make(map[string]avro.Schema)
+
+	for rows.Next() {
+		var columnName, dataType string
+		if err := rows.Scan(&columnName, &dataType); err != nil {
+			log.Fatal(err)
+		}
+
+		// Map PostgreSQL data types to Avro data types
+		avroType, err := postgresToAvroType(dataType)
+		if err != nil {
+			log.Fatalf("Unsupported data type: %s", dataType)
+		}
+		columns[columnName] = avroType
+	}
+
+	// Handle any error encountered during iteration
+	if err := rows.Err(); err != nil {
+		log.Fatal(err)
+	}
+
+	// Create Avro schema
+	schema, err := createAvroSchema(tableName, columns)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println(schema)
+
+	return []byte(schema), nil
+}
+
+func (s *Source) fetchSchema(ctx context.Context) {
+	sdk.Logger(ctx).Info().Msg("fetching table schema")
+
+	tableSchema, err := s.getTableSchema(ctx)
+	if err != nil {
+		panic(err)
+	}
+
+	schemas, err := sdk.NewSchemaService(ctx)
+	if err != nil {
+		panic(fmt.Errorf("failed acquiring schema service: %w", err))
+	}
+
+	s.createdSchemaLock.Lock()
+	if !bytes.Equal(s.createdSchema.Bytes, tableSchema) {
+		s.createdSchema, err = schemas.Create(ctx, "employees", tableSchema)
+		if err != nil {
+			panic(err)
+		}
+	}
+	s.createdSchemaLock.Unlock()
+}
+
+// Function to map PostgreSQL data types to Avro data types
+func postgresToAvroType(pgType string) (avro.Schema, error) {
+	switch pgType {
+	case "integer", "serial":
+		return avro.NewPrimitiveSchema(avro.Int, nil), nil
+	case "bigint", "bigserial":
+		return avro.NewPrimitiveSchema(avro.Long, nil), nil
+	case "real":
+		return avro.NewPrimitiveSchema(avro.Float, nil), nil
+	case "double precision":
+		return avro.NewPrimitiveSchema(avro.Double, nil), nil
+	case "boolean":
+		return avro.NewPrimitiveSchema(avro.Boolean, nil), nil
+	case "text", "varchar", "char", "uuid":
+		return avro.NewPrimitiveSchema(avro.String, nil), nil
+	default:
+		return nil, fmt.Errorf("unsupported PostgreSQL type: %s", pgType)
+	}
+}
+
+// Function to create Avro schema from column definitions
+func createAvroSchema(tableName string, columns map[string]avro.Schema) (string, error) {
+	fields := make([]*avro.Field, 0, len(columns))
+
+	for name, avroType := range columns {
+		field, err := avro.NewField(name, avroType)
+		if err != nil {
+			return "", err
+		}
+
+		fields = append(fields, field)
+	}
+
+	recordSchema, err := avro.NewRecordSchema(
+		tableName,
+		tableName+"_namespace",
+		fields,
+	)
+	if err != nil {
+		return "", err
+	}
+
+	schema, err := avro.Parse(recordSchema.String())
+	if err != nil {
+		return "", err
+	}
+
+	return schema.String(), nil
 }
