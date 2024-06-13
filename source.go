@@ -326,7 +326,7 @@ func postgresToAvroType(pgType string) (avro.Schema, error) {
 		return avro.NewPrimitiveSchema(avro.Double, nil), nil
 	case "boolean":
 		return avro.NewPrimitiveSchema(avro.Boolean, nil), nil
-	case "text", "varchar", "char", "uuid":
+	case "character varying", "text", "varchar", "char", "uuid":
 		return avro.NewPrimitiveSchema(avro.String, nil), nil
 	default:
 		return nil, fmt.Errorf("unsupported PostgreSQL type: %s", pgType)
