@@ -102,7 +102,7 @@ func (i *CDCIterator) StartSubscriber(ctx context.Context) error {
 	sdk.Logger(ctx).Info().
 		Str("slot", i.config.SlotName).
 		Str("publication", i.config.PublicationName).
-		Msg("Starting logical replication")
+		Msgf("Starting logical replication at %s", i.sub.StartLSN)
 
 	go func() {
 		if err := i.sub.Run(ctx); err != nil {
