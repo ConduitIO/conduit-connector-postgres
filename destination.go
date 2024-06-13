@@ -393,11 +393,7 @@ func (d *Destination) updateSchema(ctx context.Context, rec sdk.Record) error {
 		return fmt.Errorf("failed to get table name for write: %w", err)
 	}
 
-	if d.tableExists(tableName) {
-		return nil
-	}
-
-	cmdTag, err := d.conn.Exec(ctx, generateSQL(schema, tableName))
+	cmdTag, err := d.conn.Exec(ctx, generateSQL(schema, tableName, d.tableExists(tableName)))
 	if err != nil {
 		return err
 	}
@@ -451,14 +447,18 @@ func getSQLType(avroType avro.Type) string {
 }
 
 // generateSQL generates the SQL CREATE TABLE statement
-func generateSQL(schema avro.Schema, tableName string) string {
+func generateSQL(schema avro.Schema, tableName string, exists bool) string {
 	recordSchema, ok := schema.(*avro.RecordSchema)
 	if !ok {
 		log.Fatalf("Schema is not a record schema")
 	}
 
+	operation := "CREATE"
+	if exists {
+		operation = "UPDATE"
+	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("CREATE TABLE %s (\n", tableName))
+	sb.WriteString(fmt.Sprintf(operation+" TABLE %s (\n", tableName))
 
 	for i, field := range recordSchema.Fields() {
 		fieldType := getSQLType(field.Type().Type())

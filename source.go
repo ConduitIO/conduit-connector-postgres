@@ -118,6 +118,12 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 	}
 
 	s.fetchSchema(ctx)
+	go func() {
+		for {
+			time.Sleep(10 * time.Second)
+			s.fetchSchema(ctx)
+		}
+	}()
 
 	return nil
 }
