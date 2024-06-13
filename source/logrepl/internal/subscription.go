@@ -95,7 +95,8 @@ func CreateSubscription(
 	slotLSN, err = pglogrepl.ParseLSN(result.ConsistentPoint)
 	if err != nil {
 		if startLSN == 0 {
-			return nil, fmt.Errorf("failed to parse consistent wal lsn: %w", err)
+			sdk.Logger(ctx).Warn().
+				Msg("start LSN is zero, using existing replication slot without position")
 		}
 
 		slotLSN = startLSN
@@ -230,6 +231,12 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 	writtenLSN, err := s.Handler(ctx, logicalMsg, xld.WALStart)
 	if err != nil {
 		return fmt.Errorf("handler error: %w", err)
+	}
+
+	// When starting on an existing slot without having a consistent slot LSN,
+	// set the flushed WAL LSN to just before the received LSN
+	if s.walWritten == 0 && s.ConsistentSlotLSN == 0 {
+		atomic.StoreUint64((*uint64)(&s.walFlushed), uint64(writtenLSN-1))
 	}
 
 	if writtenLSN > 0 {
