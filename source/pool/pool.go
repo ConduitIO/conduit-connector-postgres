@@ -1,4 +1,4 @@
-// Copyright © 2022 Meroxa, Inc.
+// Copyright © 2024 Meroxa, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,7 +22,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var WithReplCtxKey = struct{}{}
+type replicationCtxKey struct{}
+
+func WithReplication(ctx context.Context) context.Context {
+	return context.WithValue(ctx, replicationCtxKey{}, true)
+}
 
 // New returns new pgxpool.Pool with added hooks.
 func New(ctx context.Context, conninfo string) (*pgxpool.Pool, error) {
