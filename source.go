@@ -22,8 +22,8 @@ import (
 
 	"github.com/conduitio/conduit-commons/csync"
 	"github.com/conduitio/conduit-connector-postgres/source"
+	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
-	cpool "github.com/conduitio/conduit-connector-postgres/source/pool"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package pool
+package cpool
 
 import (
 	"context"
@@ -51,7 +51,7 @@ func New(ctx context.Context, conninfo string) (*pgxpool.Pool, error) {
 // * If a replication connection is requested, ensure the connection has replication enabled.
 // * If a regular connection is requested, return non-replication connections.
 func beforeAcquireHook(ctx context.Context, conn *pgx.Conn) bool {
-	replReq := ctx.Value(WithReplCtxKey) != nil
+	replReq := ctx.Value(replicationCtxKey{}) != nil
 	replOn := conn.Config().RuntimeParams["replication"] != ""
 
 	return replReq == replOn
@@ -59,7 +59,7 @@ func beforeAcquireHook(ctx context.Context, conn *pgx.Conn) bool {
 
 // beforeConnectHook customizes the configuration of the new connection.
 func beforeConnectHook(ctx context.Context, config *pgx.ConnConfig) error {
-	if v := ctx.Value(WithReplCtxKey); v != nil {
+	if v := ctx.Value(replicationCtxKey{}); v != nil {
 		config.RuntimeParams["replication"] = "database"
 	}
 

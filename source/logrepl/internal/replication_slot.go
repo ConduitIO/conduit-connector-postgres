@@ -26,22 +26,22 @@ import (
 
 var ErrMissingSlot = errors.New("replication slot missing")
 
-type ReplicationSlotResult struct {
+type ReadReplicationSlotResult struct {
 	Name              string
 	ConfirmedFlushLSN pglogrepl.LSN
 	RestartLSN        pglogrepl.LSN
 }
 
 // ReadReplicationSlot returns state of an existing replication slot.
-func ReadReplicationSlot(ctx context.Context, conn *pgxpool.Pool, name string) (ReplicationSlotResult, error) {
-	var r ReplicationSlotResult
+func ReadReplicationSlot(ctx context.Context, conn *pgxpool.Pool, name string) (ReadReplicationSlotResult, error) {
+	var r ReadReplicationSlotResult
 
 	qr := conn.QueryRow(ctx, "SELECT slot_name, confirmed_flush_lsn, restart_lsn FROM pg_replication_slots WHERE slot_name=$1", name)
 	if err := qr.Scan(&r.Name, &r.ConfirmedFlushLSN, &r.RestartLSN); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return ReplicationSlotResult{}, fmt.Errorf("%s: %w", name, ErrMissingSlot)
+			return ReadReplicationSlotResult{}, fmt.Errorf("%s: %w", name, ErrMissingSlot)
 		}
-		return ReplicationSlotResult{}, fmt.Errorf("failed to read replication slot %q: %w", name, err)
+		return ReadReplicationSlotResult{}, fmt.Errorf("failed to read replication slot %q: %w", name, err)
 	}
 
 	return r, nil

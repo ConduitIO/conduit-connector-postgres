@@ -21,7 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	cpool "github.com/conduitio/conduit-connector-postgres/source/pool"
+	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgproto3"
@@ -68,8 +68,10 @@ func CreateSubscription(
 	startLSN pglogrepl.LSN,
 	h Handler,
 ) (*Subscription, error) {
+	var err error
+
 	// Request a replication connection
-	conn, err := pool.Acquire(context.WithValue(ctx, cpool.WithReplCtxKey, true))
+	conn, err := pool.Acquire(cpool.WithReplication(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("could not establish replication connection: %w", err)
 	}
