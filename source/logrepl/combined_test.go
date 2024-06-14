@@ -137,7 +137,7 @@ func TestCombinedIterator_New(t *testing.T) {
 }
 
 func TestCombinedIterator_Next(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
 	defer cancel()
 
 	is := is.New(t)
@@ -220,6 +220,7 @@ func TestCombinedIterator_Next(t *testing.T) {
 			WithSnapshot:    true,
 		})
 		is.NoErr(err)
+
 		_, err = pool.Exec(ctx, fmt.Sprintf(
 			`INSERT INTO %s (id, column1, column2, column3, column4, column5)
 				VALUES (7, 'buzz', 10101, true, 121.9, 51)`,

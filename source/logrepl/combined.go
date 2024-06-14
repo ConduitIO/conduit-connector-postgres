@@ -171,7 +171,7 @@ func (c *CombinedIterator) initCDCIterator(ctx context.Context, pos position.Pos
 		return fmt.Errorf("failed to parse LSN in position: %w", err)
 	}
 
-	cdcIterator, err := NewCDCIterator(ctx, &c.pool.Config().ConnConfig.Config, CDCConfig{
+	cdcIterator, err := NewCDCIterator(ctx, c.pool, CDCConfig{
 		LSN:             lsn,
 		SlotName:        c.conf.SlotName,
 		PublicationName: c.conf.PublicationName,

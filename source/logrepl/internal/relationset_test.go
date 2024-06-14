@@ -49,12 +49,11 @@ func TestRelationSetAllTypes(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
 
-	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-	replConn := test.ConnectReplication(ctx, t, test.RepmgrConnString)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
 
-	table := setupTableAllTypes(ctx, t, conn)
-	_, messages := setupSubscription(ctx, t, replConn, table)
-	insertRowAllTypes(ctx, t, conn, table)
+	table := setupTableAllTypes(ctx, t, pool)
+	_, messages := setupSubscription(ctx, t, pool, table)
+	insertRowAllTypes(ctx, t, pool, table)
 
 	var rel *pglogrepl.RelationMessage
 	var ins *pglogrepl.InsertMessage

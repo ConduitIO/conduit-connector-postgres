@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // CreatePublicationOptions contains additional options for creating a publication.
@@ -31,7 +31,7 @@ type CreatePublicationOptions struct {
 }
 
 // CreatePublication creates a publication.
-func CreatePublication(ctx context.Context, conn *pgconn.PgConn, name string, opts CreatePublicationOptions) error {
+func CreatePublication(ctx context.Context, conn *pgxpool.Pool, name string, opts CreatePublicationOptions) error {
 	if len(opts.Tables) == 0 {
 		return fmt.Errorf("publication %q requires at least one table", name)
 	}
@@ -43,10 +43,14 @@ func CreatePublication(ctx context.Context, conn *pgconn.PgConn, name string, op
 		publicationParams = fmt.Sprintf("WITH (%s)", strings.Join(opts.PublicationParams, ", "))
 	}
 
-	sql := fmt.Sprintf("CREATE PUBLICATION %q %s %s", name, forTableString, publicationParams)
+	if _, err := conn.Exec(
+		ctx,
+		fmt.Sprintf("CREATE PUBLICATION %q %s %s", name, forTableString, publicationParams),
+	); err != nil {
+		return fmt.Errorf("failed to create publication %q: %w", name, err)
+	}
 
-	mrr := conn.Exec(ctx, sql)
-	return mrr.Close()
+	return nil
 }
 
 // DropPublicationOptions contains additional options for dropping a publication.
@@ -55,14 +59,18 @@ type DropPublicationOptions struct {
 }
 
 // DropPublication drops a publication.
-func DropPublication(ctx context.Context, conn *pgconn.PgConn, publicationName string, options DropPublicationOptions) error {
+func DropPublication(ctx context.Context, conn *pgxpool.Pool, name string, opts DropPublicationOptions) error {
 	var ifExistsString string
-	if options.IfExists {
+	if opts.IfExists {
 		ifExistsString = "IF EXISTS"
 	}
 
-	sql := fmt.Sprintf("DROP PUBLICATION %s %q", ifExistsString, publicationName)
+	if _, err := conn.Exec(
+		ctx,
+		fmt.Sprintf("DROP PUBLICATION %s %q", ifExistsString, name),
+	); err != nil {
+		return fmt.Errorf("failed to drop publication %q: %w", name, err)
+	}
 
-	mrr := conn.Exec(ctx, sql)
-	return mrr.Close()
+	return nil
 }

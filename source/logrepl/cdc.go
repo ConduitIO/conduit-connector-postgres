@@ -18,17 +18,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
-	"github.com/jackc/pgx/v5/pgconn"
-)
-
-const (
-	subscriberDoneTimeout = time.Second * 2
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Config holds configuration values for CDCIterator.
@@ -45,21 +40,15 @@ type CDCConfig struct {
 type CDCIterator struct {
 	config  CDCConfig
 	records chan sdk.Record
-	pgconn  *pgconn.PgConn
 
 	sub *internal.Subscription
 }
 
 // NewCDCIterator initializes logical replication by creating the publication and subscription manager.
-func NewCDCIterator(ctx context.Context, pgconf *pgconn.Config, c CDCConfig) (*CDCIterator, error) {
-	conn, err := pgconn.ConnectConfig(ctx, withReplication(pgconf))
-	if err != nil {
-		return nil, fmt.Errorf("could not establish replication connection: %w", err)
-	}
-
+func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCIterator, error) {
 	if err := internal.CreatePublication(
 		ctx,
-		conn,
+		pool,
 		c.PublicationName,
 		internal.CreatePublicationOptions{Tables: c.Tables},
 	); err != nil {
@@ -77,7 +66,7 @@ func NewCDCIterator(ctx context.Context, pgconf *pgconn.Config, c CDCConfig) (*C
 
 	sub, err := internal.CreateSubscription(
 		ctx,
-		conn,
+		pool,
 		c.SlotName,
 		c.PublicationName,
 		c.Tables,
@@ -91,7 +80,6 @@ func NewCDCIterator(ctx context.Context, pgconf *pgconn.Config, c CDCConfig) (*C
 	return &CDCIterator{
 		config:  c,
 		records: records,
-		pgconn:  conn,
 		sub:     sub,
 	}, nil
 }
@@ -181,14 +169,11 @@ func (i *CDCIterator) Ack(_ context.Context, sdkPos sdk.Position) error {
 // or the context gets canceled. If the subscription stopped with an unexpected
 // error, the error is returned.
 func (i *CDCIterator) Teardown(ctx context.Context) error {
-	defer i.pgconn.Close(ctx)
-
-	if !i.subscriberReady() {
-		return nil
+	if i.sub != nil {
+		return i.sub.Teardown(ctx)
 	}
 
-	i.sub.Stop()
-	return i.sub.Wait(ctx, subscriberDoneTimeout)
+	return nil
 }
 
 // subscriberReady returns true when the subscriber is running.
@@ -206,17 +191,4 @@ func (i *CDCIterator) subscriberReady() bool {
 // iterator is resuming.
 func (i *CDCIterator) TXSnapshotID() string {
 	return i.sub.TXSnapshotID
-}
-
-// withReplication adds the `replication` parameter to the connection config.
-// This will uprgade a regular command connection to accept replication commands.
-func withReplication(pgconf *pgconn.Config) *pgconn.Config {
-	c := pgconf.Copy()
-	if c.RuntimeParams == nil {
-		c.RuntimeParams = make(map[string]string)
-	}
-	// enable replication on connection
-	c.RuntimeParams["replication"] = "database"
-
-	return c
 }

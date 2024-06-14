@@ -28,7 +28,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/jackc/pglogrepl"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
 )
@@ -40,12 +39,10 @@ func TestCDCIterator_New(t *testing.T) {
 	tests := []struct {
 		name    string
 		setup   func(t *testing.T) CDCConfig
-		pgconf  *pgconn.Config
 		wantErr error
 	}{
 		{
-			name:   "publication already exists",
-			pgconf: &pool.Config().ConnConfig.Config,
+			name: "publication already exists",
 			setup: func(t *testing.T) CDCConfig {
 				is := is.New(t)
 				table := test.SetupTestTable(ctx, t, pool)
@@ -66,21 +63,7 @@ func TestCDCIterator_New(t *testing.T) {
 			},
 		},
 		{
-			name: "fails to connect",
-			pgconf: func() *pgconn.Config {
-				c := pool.Config().ConnConfig.Config
-				c.Port = 31337
-
-				return &c
-			}(),
-			setup: func(*testing.T) CDCConfig {
-				return CDCConfig{}
-			},
-			wantErr: errors.New("could not establish replication connection"),
-		},
-		{
-			name:   "fails to create publication",
-			pgconf: &pool.Config().ConnConfig.Config,
+			name: "fails to create publication",
 			setup: func(*testing.T) CDCConfig {
 				return CDCConfig{
 					PublicationName: "foobar",
@@ -89,8 +72,7 @@ func TestCDCIterator_New(t *testing.T) {
 			wantErr: errors.New("requires at least one table"),
 		},
 		{
-			name:   "fails to create subscription",
-			pgconf: &pool.Config().ConnConfig.Config,
+			name: "fails to create subscription",
 			setup: func(t *testing.T) CDCConfig {
 				is := is.New(t)
 				table := test.SetupTestTable(ctx, t, pool)
@@ -118,7 +100,7 @@ func TestCDCIterator_New(t *testing.T) {
 
 			config := tt.setup(t)
 
-			_, err := NewCDCIterator(ctx, tt.pgconf, config)
+			i, err := NewCDCIterator(ctx, pool, config)
 			if tt.wantErr != nil {
 				if match := strings.Contains(err.Error(), tt.wantErr.Error()); !match {
 					t.Logf("%s != %s", err.Error(), tt.wantErr.Error())
@@ -126,6 +108,9 @@ func TestCDCIterator_New(t *testing.T) {
 				}
 			} else {
 				is.NoErr(err)
+			}
+			if i != nil {
+				is.NoErr(i.Teardown(ctx))
 			}
 		})
 	}
@@ -276,8 +261,6 @@ func TestCDCIterator_Next_Fail(t *testing.T) {
 }
 
 func TestCDCIterator_EnsureLSN(t *testing.T) {
-	// t.Skip()
-
 	ctx := context.Background()
 	is := is.New(t)
 
@@ -370,13 +353,6 @@ func TestCDCIterator_Ack(t *testing.T) {
 	}
 }
 
-func Test_withReplication(t *testing.T) {
-	is := is.New(t)
-
-	c := withReplication(&pgconn.Config{})
-	is.Equal(c.RuntimeParams["replication"], "database")
-}
-
 func testCDCIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string, start bool) *CDCIterator {
 	is := is.New(t)
 	config := CDCConfig{
@@ -386,7 +362,7 @@ func testCDCIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, tabl
 		SlotName:        table, // table is random, reuse for slot name
 	}
 
-	i, err := NewCDCIterator(ctx, &pool.Config().ConnConfig.Config, config)
+	i, err := NewCDCIterator(ctx, pool, config)
 	is.NoErr(err)
 
 	i.sub.StatusTimeout = 1 * time.Second
