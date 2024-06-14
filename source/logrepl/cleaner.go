@@ -21,8 +21,7 @@ import (
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/jackc/pglogrepl"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type CleanupConfig struct {
@@ -36,21 +35,11 @@ type CleanupConfig struct {
 func Cleanup(ctx context.Context, c CleanupConfig) error {
 	logger := sdk.Logger(ctx)
 
-	pgconfig, err := pgconn.ParseConfig(c.URL)
+	pool, err := pgxpool.New(ctx, c.URL)
 	if err != nil {
-		return fmt.Errorf("failed to parse config URL: %w", err)
+		return fmt.Errorf("failed to connect to database: %w", err)
 	}
-
-	if pgconfig.RuntimeParams == nil {
-		pgconfig.RuntimeParams = make(map[string]string)
-	}
-	pgconfig.RuntimeParams["replication"] = "database"
-
-	conn, err := pgconn.ConnectConfig(ctx, pgconfig)
-	if err != nil {
-		return fmt.Errorf("could not establish replication connection: %w", err)
-	}
-	defer conn.Close(ctx)
+	defer pool.Close()
 
 	var errs []error
 
@@ -61,18 +50,16 @@ func Cleanup(ctx context.Context, c CleanupConfig) error {
 
 	if c.SlotName != "" {
 		// Terminate any outstanding backends which are consuming the slot before deleting it.
-		mrr := conn.Exec(ctx, fmt.Sprintf(
-			"SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots WHERE slot_name='%s' AND active=true", c.SlotName,
-		))
-		if err := mrr.Close(); err != nil {
+		if _, err := pool.Exec(
+			ctx,
+			"SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots WHERE slot_name=$1 AND active=true", c.SlotName,
+		); err != nil {
 			errs = append(errs, fmt.Errorf("failed to terminate active backends on slot: %w", err))
 		}
 
-		if err := pglogrepl.DropReplicationSlot(
+		if _, err := pool.Exec(
 			ctx,
-			conn,
-			c.SlotName,
-			pglogrepl.DropReplicationSlotOptions{},
+			"SELECT pg_drop_replication_slot($1)", c.SlotName,
 		); err != nil {
 			errs = append(errs, fmt.Errorf("failed to clean up replication slot %q: %w", c.SlotName, err))
 		}
@@ -83,7 +70,7 @@ func Cleanup(ctx context.Context, c CleanupConfig) error {
 	if c.PublicationName != "" {
 		if err := internal.DropPublication(
 			ctx,
-			conn,
+			pool,
 			c.PublicationName,
 			internal.DropPublicationOptions{IfExists: true},
 		); err != nil {

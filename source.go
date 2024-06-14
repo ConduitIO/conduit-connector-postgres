@@ -23,6 +23,7 @@ import (
 	"github.com/conduitio/conduit-commons/csync"
 	"github.com/conduitio/conduit-connector-postgres/source"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
+	cpool "github.com/conduitio/conduit-connector-postgres/source/pool"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -63,7 +64,7 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 }
 
 func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
-	pool, err := pgxpool.New(ctx, s.config.URL)
+	pool, err := cpool.New(ctx, s.config.URL)
 	if err != nil {
 		return fmt.Errorf("failed to create a connection pool to database: %w", err)
 	}

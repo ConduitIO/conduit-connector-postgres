@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-commons/csync"
+	cpool "github.com/conduitio/conduit-connector-postgres/source/pool"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -42,11 +44,12 @@ type Querier interface {
 
 func ConnectPool(ctx context.Context, t *testing.T, connString string) *pgxpool.Pool {
 	is := is.New(t)
-	pool, err := pgxpool.New(ctx, connString)
+	pool, err := cpool.New(ctx, connString)
 	is.NoErr(err)
 	t.Cleanup(func() {
 		// close connection with fresh context
-		pool.Close()
+		is := is.New(t)
+		is.NoErr(csync.RunTimeout(context.Background(), pool.Close, time.Second*10))
 	})
 	return pool
 }
@@ -60,17 +63,6 @@ func ConnectSimple(ctx context.Context, t *testing.T, connString string) *pgx.Co
 		conn.Release()
 	})
 	return conn.Conn()
-}
-
-func ConnectReplication(ctx context.Context, t *testing.T, connString string) *pgconn.PgConn {
-	is := is.New(t)
-
-	conn, err := pgconn.Connect(ctx, connString+"&replication=database")
-	is.NoErr(err)
-	t.Cleanup(func() {
-		is.NoErr(conn.Close(context.Background()))
-	})
-	return conn
 }
 
 // SetupTestTable creates a new table and returns its name.
