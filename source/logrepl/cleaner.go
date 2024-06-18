@@ -34,6 +34,7 @@ type CleanupConfig struct {
 // It will terminate any backends consuming the replication slot before deletion.
 func Cleanup(ctx context.Context, c CleanupConfig) error {
 	logger := sdk.Logger(ctx)
+	logger.Debug().Msg("Cleanup() called")
 
 	pool, err := pgxpool.New(ctx, c.URL)
 	if err != nil {
@@ -49,8 +50,8 @@ func Cleanup(ctx context.Context, c CleanupConfig) error {
 		Msg("removing replication slot and publication")
 
 	if c.SlotName != "" {
-		sdk.Logger(ctx).Info().Msgf("attempting to terminate outstanding backends consumingreplication slot: %s")
-		
+		sdk.Logger(ctx).Info().Msgf("attempting to terminate outstanding backends consuming replication slot: %s", c.SlotName)
+
 		// Terminate any outstanding backends which are consuming the slot before deleting it.
 		if _, err := pool.Exec(
 			ctx,
@@ -58,8 +59,9 @@ func Cleanup(ctx context.Context, c CleanupConfig) error {
 		); err != nil {
 			errs = append(errs, fmt.Errorf("failed to terminate active backends on slot: %w", err))
 		}
+		sdk.Logger(ctx).Info().Msgf("terminated outstanding backends consuming replication slot: %s", c.SlotName)
 		
-		sdk.Logger(ctx).Info().Msgf("attempting to remove replication slot: %s")
+		sdk.Logger(ctx).Info().Msgf("attempting to remove replication slot: %s", c.SlotName)
 
 		if _, err := pool.Exec(
 			ctx,
@@ -67,6 +69,8 @@ func Cleanup(ctx context.Context, c CleanupConfig) error {
 		); err != nil {
 			errs = append(errs, fmt.Errorf("failed to clean up replication slot %q: %w", c.SlotName, err))
 		}
+		
+		sdk.Logger(ctx).Info().Msgf("removed replication slot: %s", c.SlotName)
 	} else {
 		logger.Warn().Msg("cleanup: skipping replication slot cleanup, name is empty")
 	}
