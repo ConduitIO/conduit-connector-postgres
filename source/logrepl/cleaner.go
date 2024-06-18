@@ -49,6 +49,8 @@ func Cleanup(ctx context.Context, c CleanupConfig) error {
 		Msg("removing replication slot and publication")
 
 	if c.SlotName != "" {
+		sdk.Logger(ctx).Info().Msgf("attempting to terminate outstanding backends consumingreplication slot: %s")
+		
 		// Terminate any outstanding backends which are consuming the slot before deleting it.
 		if _, err := pool.Exec(
 			ctx,
@@ -56,6 +58,8 @@ func Cleanup(ctx context.Context, c CleanupConfig) error {
 		); err != nil {
 			errs = append(errs, fmt.Errorf("failed to terminate active backends on slot: %w", err))
 		}
+		
+		sdk.Logger(ctx).Info().Msgf("attempting to remove replication slot: %s")
 
 		if _, err := pool.Exec(
 			ctx,
