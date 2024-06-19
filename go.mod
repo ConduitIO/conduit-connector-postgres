@@ -5,7 +5,7 @@ go 1.22
 require (
 	github.com/Masterminds/sprig/v3 v3.2.3
 	github.com/Masterminds/squirrel v1.5.4
-	github.com/conduitio/conduit-commons v0.2.1-0.20240613095004-061edf8e3a04
+	github.com/conduitio/conduit-commons v0.2.1-0.20240529171657-31b922714201
 	github.com/conduitio/conduit-connector-sdk v0.9.2-0.20240619162120-d9dfde0b370d
 	github.com/daixiang0/gci v0.13.4
 	github.com/golangci/golangci-lint v1.59.0
