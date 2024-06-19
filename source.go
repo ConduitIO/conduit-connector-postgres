@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/conduitio/conduit-commons/csync"
-	schema2 "github.com/conduitio/conduit-commons/schema"
+	cschema "github.com/conduitio/conduit-commons/schema"
 	"github.com/conduitio/conduit-connector-postgres/source"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -40,7 +40,7 @@ type Source struct {
 	config        source.Config
 	pool          *pgxpool.Pool
 	tableKeys     map[string]string
-	createdSchema schema2.Instance
+	createdSchema cschema.Instance
 }
 
 func NewSource() sdk.Source {
@@ -132,7 +132,7 @@ func (s *Source) Read(ctx context.Context) (sdk.Record, error) {
 	rec, err := s.iterator.Next(ctx)
 	if err == nil {
 		rec.Metadata["opencdc.schema.name"] = s.createdSchema.Name
-		rec.Metadata["opencdc.schema.version"] = strconv.Itoa(s.createdSchema.Version)
+		rec.Metadata["opencdc.schema.version"] = strconv.FormatInt(int64(s.createdSchema.Version), 10)
 	}
 	return rec, err
 }
@@ -306,7 +306,7 @@ func (s *Source) fetchSchema(ctx context.Context) {
 		panic(fmt.Errorf("failed acquiring schema service: %w", err))
 	}
 
-	s.createdSchema, err = schemas.Create(ctx, "employees", tableSchema)
+	s.createdSchema, err = schemas.Create(ctx, cschema.TypeAvro, "employees", tableSchema)
 	if err != nil {
 		panic(err)
 	}
