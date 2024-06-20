@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	"github.com/conduitio/conduit-commons/csync"
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,7 +30,7 @@ import (
 var ErrIteratorDone = errors.New("snapshot complete")
 
 type Config struct {
-	Position     sdk.Position
+	Position     opencdc.Position
 	Tables       []string
 	TableKeys    map[string]string
 	TXSnapshotID string
@@ -77,19 +78,19 @@ func NewIterator(ctx context.Context, db *pgxpool.Pool, c Config) (*Iterator, er
 	return i, nil
 }
 
-func (i *Iterator) Next(ctx context.Context) (sdk.Record, error) {
+func (i *Iterator) Next(ctx context.Context) (opencdc.Record, error) {
 	select {
 	case <-ctx.Done():
-		return sdk.Record{}, fmt.Errorf("iterator stopped: %w", ctx.Err())
+		return opencdc.Record{}, fmt.Errorf("iterator stopped: %w", ctx.Err())
 	case d, ok := <-i.data:
 		if !ok { // closed
 			if err := i.t.Err(); err != nil {
-				return sdk.Record{}, fmt.Errorf("fetchers exited unexpectedly: %w", err)
+				return opencdc.Record{}, fmt.Errorf("fetchers exited unexpectedly: %w", err)
 			}
 			if err := i.acks.Wait(ctx); err != nil {
-				return sdk.Record{}, fmt.Errorf("failed to wait for acks: %w", err)
+				return opencdc.Record{}, fmt.Errorf("failed to wait for acks: %w", err)
 			}
-			return sdk.Record{}, ErrIteratorDone
+			return opencdc.Record{}, ErrIteratorDone
 		}
 
 		i.acks.Add(1)
@@ -97,7 +98,7 @@ func (i *Iterator) Next(ctx context.Context) (sdk.Record, error) {
 	}
 }
 
-func (i *Iterator) Ack(_ context.Context, _ sdk.Position) error {
+func (i *Iterator) Ack(_ context.Context, _ opencdc.Position) error {
 	i.acks.Done()
 	return nil
 }
@@ -110,13 +111,13 @@ func (i *Iterator) Teardown(_ context.Context) error {
 	return nil
 }
 
-func (i *Iterator) buildRecord(d FetchData) sdk.Record {
+func (i *Iterator) buildRecord(d FetchData) opencdc.Record {
 	// merge this position with latest position
 	i.lastPosition.Type = position.TypeSnapshot
 	i.lastPosition.Snapshots[d.Table] = d.Position
 
 	pos := i.lastPosition.ToSDKPosition()
-	metadata := make(sdk.Metadata)
+	metadata := make(opencdc.Metadata)
 	metadata["postgres.table"] = d.Table
 
 	return sdk.Util.Source.NewRecordSnapshot(pos, metadata, d.Key, d.Payload)

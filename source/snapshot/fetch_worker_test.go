@@ -22,9 +22,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
-	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -233,7 +233,7 @@ func Test_FetcherRun_Initial(t *testing.T) {
 	is.NoErr(tt.Err())
 	is.True(len(dd) == 4)
 
-	expectedMatch := []sdk.StructuredData{
+	expectedMatch := []opencdc.StructuredData{
 		{"id": int64(1), "key": []uint8{49}, "column1": "foo", "column2": int32(123), "column3": false, "column4": 12.2, "column5": int64(4)},
 		{"id": int64(2), "key": []uint8{50}, "column1": "bar", "column2": int32(456), "column3": true, "column4": 13.42, "column5": int64(8)},
 		{"id": int64(3), "key": []uint8{51}, "column1": "baz", "column2": int32(789), "column3": false, "column4": nil, "column5": int64(9)},
@@ -243,7 +243,7 @@ func Test_FetcherRun_Initial(t *testing.T) {
 	for i, d := range dd {
 		t.Run(fmt.Sprintf("payload_%d", i+1), func(t *testing.T) {
 			is := is.New(t)
-			is.Equal(d.Key, sdk.StructuredData{"id": int64(i + 1)})
+			is.Equal(d.Key, opencdc.StructuredData{"id": int64(i + 1)})
 			is.Equal("", cmp.Diff(expectedMatch[i], d.Payload))
 
 			is.Equal(d.Position, position.SnapshotPosition{
@@ -298,8 +298,8 @@ func Test_FetcherRun_Resume(t *testing.T) {
 	is.True(len(dd) == 1)
 
 	// validate generated record
-	is.Equal(dd[0].Key, sdk.StructuredData{"id": int64(3)})
-	is.Equal("", cmp.Diff(dd[0].Payload, sdk.StructuredData{
+	is.Equal(dd[0].Key, opencdc.StructuredData{"id": int64(3)})
+	is.Equal("", cmp.Diff(dd[0].Payload, opencdc.StructuredData{
 		"id":      int64(3),
 		"key":     []uint8{51},
 		"column1": "baz",

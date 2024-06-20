@@ -20,7 +20,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/conduitio/conduit-commons/config"
 	"github.com/conduitio/conduit-commons/csync"
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source"
 	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
@@ -48,12 +50,12 @@ func NewSource() sdk.Source {
 	)
 }
 
-func (s *Source) Parameters() map[string]sdk.Parameter {
+func (s *Source) Parameters() config.Parameters {
 	return s.config.Parameters()
 }
 
-func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
-	err := sdk.Util.ParseConfig(cfg, &s.config)
+func (s *Source) Configure(_ context.Context, cfg config.Config) error {
+	err := sdk.Util.ParseConfig(ctx, cfg, &s.config)
 	if err != nil {
 		return err
 	}
@@ -63,7 +65,7 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 	return s.config.Validate()
 }
 
-func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
+func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 	pool, err := cpool.New(ctx, s.config.URL)
 	if err != nil {
 		return fmt.Errorf("failed to create a connection pool to database: %w", err)
@@ -116,11 +118,11 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 	return nil
 }
 
-func (s *Source) Read(ctx context.Context) (sdk.Record, error) {
+func (s *Source) Read(ctx context.Context) (opencdc.Record, error) {
 	return s.iterator.Next(ctx)
 }
 
-func (s *Source) Ack(ctx context.Context, pos sdk.Position) error {
+func (s *Source) Ack(ctx context.Context, pos opencdc.Position) error {
 	return s.iterator.Ack(ctx, pos)
 }
 

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/snapshot"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -26,8 +27,8 @@ import (
 )
 
 type iterator interface {
-	Next(context.Context) (sdk.Record, error)
-	Ack(context.Context, sdk.Position) error
+	Next(context.Context) (opencdc.Record, error)
+	Ack(context.Context, opencdc.Position) error
 	Teardown(context.Context) error
 }
 
@@ -41,7 +42,7 @@ type CombinedIterator struct {
 }
 
 type Config struct {
-	Position          sdk.Position
+	Position          opencdc.Position
 	SlotName          string
 	PublicationName   string
 	Tables            []string
@@ -112,16 +113,16 @@ func NewCombinedIterator(ctx context.Context, pool *pgxpool.Pool, conf Config) (
 // Next provides the next available record from the snapshot or CDC stream.
 // If the end of the snapshot is reached, next will switch to the CDC iterator and retrive
 // the next available record. Failure to switch the iterator will return an error.
-func (c *CombinedIterator) Next(ctx context.Context) (sdk.Record, error) {
+func (c *CombinedIterator) Next(ctx context.Context) (opencdc.Record, error) {
 	r, err := c.activeIterator.Next(ctx)
 	if err != nil {
 		// Snapshot iterator is done, handover to CDC iterator
 		if !errors.Is(err, snapshot.ErrIteratorDone) {
-			return sdk.Record{}, fmt.Errorf("failed to fetch next record: %w", err)
+			return opencdc.Record{}, fmt.Errorf("failed to fetch next record: %w", err)
 		}
 
 		if err := c.useCDCIterator(ctx); err != nil {
-			return sdk.Record{}, err
+			return opencdc.Record{}, err
 		}
 		sdk.Logger(ctx).Debug().Msg("Snapshot completed, switching to CDC mode")
 
@@ -132,7 +133,7 @@ func (c *CombinedIterator) Next(ctx context.Context) (sdk.Record, error) {
 	return r, nil
 }
 
-func (c *CombinedIterator) Ack(ctx context.Context, p sdk.Position) error {
+func (c *CombinedIterator) Ack(ctx context.Context, p opencdc.Position) error {
 	return c.activeIterator.Ack(ctx, p)
 }
 

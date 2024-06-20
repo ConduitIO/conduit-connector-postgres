@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -39,7 +40,7 @@ type CDCConfig struct {
 // slot and returns them to the caller through Next.
 type CDCIterator struct {
 	config  CDCConfig
-	records chan sdk.Record
+	records chan opencdc.Record
 
 	sub *internal.Subscription
 }
@@ -62,7 +63,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 			Msgf("Publication %q already exists.", c.PublicationName)
 	}
 
-	records := make(chan sdk.Record)
+	records := make(chan opencdc.Record)
 
 	sub, err := internal.CreateSubscription(
 		ctx,
@@ -114,27 +115,27 @@ func (i *CDCIterator) StartSubscriber(ctx context.Context) error {
 // block until either a record is returned from the subscription, the
 // subscription stops because of an error or the context gets canceled.
 // Returns error when the subscription has been started.
-func (i *CDCIterator) Next(ctx context.Context) (sdk.Record, error) {
+func (i *CDCIterator) Next(ctx context.Context) (opencdc.Record, error) {
 	if !i.subscriberReady() {
-		return sdk.Record{}, errors.New("logical replication has not been started")
+		return opencdc.Record{}, errors.New("logical replication has not been started")
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			return sdk.Record{}, ctx.Err()
+			return opencdc.Record{}, ctx.Err()
 		case <-i.sub.Done():
 			if err := i.sub.Err(); err != nil {
-				return sdk.Record{}, fmt.Errorf("logical replication error: %w", err)
+				return opencdc.Record{}, fmt.Errorf("logical replication error: %w", err)
 			}
 			if err := ctx.Err(); err != nil {
 				// subscription is done because the context is canceled, we went
 				// into the wrong case by chance
-				return sdk.Record{}, err
+				return opencdc.Record{}, err
 			}
 			// subscription stopped without an error and the context is still
 			// open, this is a strange case, shouldn't actually happen
-			return sdk.Record{}, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
+			return opencdc.Record{}, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
 		case r := <-i.records:
 			return r, nil
 		}
@@ -142,7 +143,7 @@ func (i *CDCIterator) Next(ctx context.Context) (sdk.Record, error) {
 }
 
 // Ack forwards the acknowledgment to the subscription.
-func (i *CDCIterator) Ack(_ context.Context, sdkPos sdk.Position) error {
+func (i *CDCIterator) Ack(_ context.Context, sdkPos opencdc.Position) error {
 	pos, err := position.ParseSDKPosition(sdkPos)
 	if err != nil {
 		return err

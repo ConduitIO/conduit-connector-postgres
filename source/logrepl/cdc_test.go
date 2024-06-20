@@ -22,9 +22,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
-	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/jackc/pglogrepl"
@@ -130,7 +130,7 @@ func TestCDCIterator_Next(t *testing.T) {
 	tests := []struct {
 		name       string
 		setupQuery string
-		want       sdk.Record
+		want       opencdc.Record
 		wantErr    bool
 	}{
 		{
@@ -138,15 +138,15 @@ func TestCDCIterator_Next(t *testing.T) {
 			setupQuery: `INSERT INTO %s (id, column1, column2, column3, column4, column5)
 				VALUES (6, 'bizz', 456, false, 12.3, 14)`,
 			wantErr: false,
-			want: sdk.Record{
-				Operation: sdk.OperationCreate,
+			want: opencdc.Record{
+				Operation: opencdc.OperationCreate,
 				Metadata: map[string]string{
-					sdk.MetadataCollection: table,
+					opencdc.MetadataCollection: table,
 				},
-				Key: sdk.StructuredData{"id": int64(6)},
-				Payload: sdk.Change{
+				Key: opencdc.StructuredData{"id": int64(6)},
+				Payload: opencdc.Change{
 					Before: nil,
-					After: sdk.StructuredData{
+					After: opencdc.StructuredData{
 						"id":      int64(6),
 						"column1": "bizz",
 						"column2": int32(456),
@@ -164,15 +164,15 @@ func TestCDCIterator_Next(t *testing.T) {
 				SET column1 = 'test cdc updates'
 				WHERE key = '1'`,
 			wantErr: false,
-			want: sdk.Record{
-				Operation: sdk.OperationUpdate,
+			want: opencdc.Record{
+				Operation: opencdc.OperationUpdate,
 				Metadata: map[string]string{
-					sdk.MetadataCollection: table,
+					opencdc.MetadataCollection: table,
 				},
-				Key: sdk.StructuredData{"id": int64(1)},
-				Payload: sdk.Change{
+				Key: opencdc.StructuredData{"id": int64(1)},
+				Payload: opencdc.Change{
 					Before: nil, // TODO
-					After: sdk.StructuredData{
+					After: opencdc.StructuredData{
 						"id":      int64(1),
 						"column1": "test cdc updates",
 						"column2": int32(123),
@@ -188,12 +188,12 @@ func TestCDCIterator_Next(t *testing.T) {
 			name:       "should detect delete",
 			setupQuery: `DELETE FROM %s WHERE id = 3`,
 			wantErr:    false,
-			want: sdk.Record{
-				Operation: sdk.OperationDelete,
+			want: opencdc.Record{
+				Operation: opencdc.OperationDelete,
 				Metadata: map[string]string{
-					sdk.MetadataCollection: table,
+					opencdc.MetadataCollection: table,
 				},
-				Key: sdk.StructuredData{"id": int64(3)},
+				Key: opencdc.StructuredData{"id": int64(3)},
 			},
 		},
 	}
@@ -217,10 +217,10 @@ func TestCDCIterator_Next(t *testing.T) {
 			is.NoErr(err)
 			is.True(readAt.After(now)) // ReadAt should be after now
 			is.True(len(got.Position) > 0)
-			tt.want.Metadata[sdk.MetadataReadAt] = got.Metadata[sdk.MetadataReadAt]
+			tt.want.Metadata[opencdc.MetadataReadAt] = got.Metadata[opencdc.MetadataReadAt]
 			tt.want.Position = got.Position
 
-			is.Equal("", cmp.Diff(tt.want, got, cmpopts.IgnoreUnexported(sdk.Record{})))
+			is.Equal("", cmp.Diff(tt.want, got, cmpopts.IgnoreUnexported(opencdc.Record{})))
 			is.NoErr(i.Ack(ctx, got.Position))
 		})
 	}
@@ -305,12 +305,12 @@ func TestCDCIterator_Ack(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		pos     sdk.Position
+		pos     opencdc.Position
 		wantErr error
 	}{
 		{
 			name:    "failed to parse position",
-			pos:     sdk.Position([]byte("{")),
+			pos:     opencdc.Position([]byte("{")),
 			wantErr: errors.New("invalid position: unexpected end of JSON input"),
 		},
 		{
