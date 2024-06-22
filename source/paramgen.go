@@ -35,6 +35,12 @@ func (Config) Parameters() map[string]sdk.Parameter {
 			Type:        sdk.ParameterTypeString,
 			Validations: []sdk.Validation{},
 		},
+		"logrepl.withAvroSchema": {
+			Default:     "false",
+			Description: "logrepl.withAvroSchema determines whether the connector should attach an avro schema on each record.",
+			Type:        sdk.ParameterTypeBool,
+			Validations: []sdk.Validation{},
+		},
 		"snapshot.fetchSize": {
 			Default:     "50000",
 			Description: "Snapshot fetcher size determines the number of rows to retrieve at a time.",

@@ -49,6 +49,7 @@ const (
 type Config struct {
 	// URL is the connection string for the Postgres database.
 	URL string `json:"url" validate:"required"`
+
 	// Tables is a List of table names to read from, separated by a comma, e.g.:"table1,table2".
 	// Use "*" if you'd like to listen to all tables.
 	Tables []string `json:"tables"`
@@ -74,6 +75,10 @@ type Config struct {
 	// LogreplAutoCleanup determines if the replication slot and publication should be
 	// removed when the connector is deleted.
 	LogreplAutoCleanup bool `json:"logrepl.autoCleanup" default:"true"`
+
+	// WithAvroSchema determines whether the connector should attach an avro schema on each
+	// record.
+	WithAvroSchema bool `json:"logrepl.withAvroSchema" default:"false"`
 }
 
 // Validate validates the provided config values.

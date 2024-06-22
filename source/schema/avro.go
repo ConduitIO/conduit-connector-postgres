@@ -12,15 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package avro
+package schema
 
 import (
+	"cmp"
 	"fmt"
 	"math"
+	"slices"
 
 	"github.com/hamba/avro/v2"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+)
+
+const (
+	avroNS = "conduit.postgres"
 )
 
 var Avro = &avroExtractor{
@@ -41,7 +47,7 @@ var Avro = &avroExtractor{
 		),
 		"timestamp": avro.NewPrimitiveSchema(
 			avro.Long,
-			avro.NewPrimitiveLogicalSchema(avro.TimestampMicros),
+			avro.NewPrimitiveLogicalSchema(avro.LocalTimestampMicros),
 		),
 		"date": avro.NewPrimitiveSchema(
 			avro.Int,
@@ -59,7 +65,7 @@ type avroExtractor struct {
 	avroMap map[string]*avro.PrimitiveSchema
 }
 
-func (a *avroExtractor) Extract(fields []pgconn.FieldDescription, values []any) (avro.Schema, error) {
+func (a *avroExtractor) Extract(name string, fields []pgconn.FieldDescription, values []any) (avro.Schema, error) {
 	var avroFields []*avro.Field
 
 	for i, f := range fields {
@@ -73,7 +79,7 @@ func (a *avroExtractor) Extract(fields []pgconn.FieldDescription, values []any) 
 			return nil, err
 		}
 
-		af, err := avro.NewField(f.Name, ps, nil)
+		af, err := avro.NewField(f.Name, ps)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create avro field %q: %w", f.Name, err)
 		}
@@ -81,7 +87,11 @@ func (a *avroExtractor) Extract(fields []pgconn.FieldDescription, values []any) 
 		avroFields = append(avroFields, af)
 	}
 
-	sch, err := avro.NewRecordSchema("name", "ns", avroFields)
+	slices.SortFunc(avroFields, func(a, b *avro.Field) int {
+		return cmp.Compare(a.Name(), b.Name())
+	})
+
+	sch, err := avro.NewRecordSchema(name, avroNS, avroFields)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create avro schema: %w", err)
 	}

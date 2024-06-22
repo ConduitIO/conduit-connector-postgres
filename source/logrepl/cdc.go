@@ -33,6 +33,7 @@ type CDCConfig struct {
 	PublicationName string
 	Tables          []string
 	TableKeys       map[string]string
+	WithAvroSchema  bool
 }
 
 // CDCIterator asynchronously listens for events from the logical replication

@@ -23,9 +23,11 @@ import (
 	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/source/position"
+	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	"github.com/conduitio/conduit-connector-postgres/source/types"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/google/uuid"
+	"github.com/hamba/avro/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -39,11 +41,12 @@ var supportedKeyTypes = []string{
 }
 
 type FetchConfig struct {
-	Table        string
-	Key          string
-	TXSnapshotID string
-	FetchSize    int
-	Position     position.Position
+	Table          string
+	Key            string
+	TXSnapshotID   string
+	FetchSize      int
+	Position       position.Position
+	WithAvroSchema bool
 }
 
 var (
@@ -73,16 +76,18 @@ func (c FetchConfig) Validate() error {
 }
 
 type FetchData struct {
-	Key      sdk.StructuredData
-	Payload  sdk.StructuredData
-	Position position.SnapshotPosition
-	Table    string
+	Key        sdk.StructuredData
+	Payload    sdk.StructuredData
+	Position   position.SnapshotPosition
+	Table      string
+	AvroSchema avro.Schema
 }
 
 type FetchWorker struct {
-	conf FetchConfig
-	db   *pgxpool.Pool
-	out  chan<- FetchData
+	conf       FetchConfig
+	db         *pgxpool.Pool
+	out        chan<- FetchData
+	avroSchema avro.Schema
 
 	snapshotEnd int64
 	lastRead    int64
@@ -282,6 +287,15 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 			return 0, fmt.Errorf("failed to get values: %w", err)
 		}
 
+		if f.conf.WithAvroSchema && f.avroSchema == nil {
+			sch, err := schema.Avro.Extract(f.conf.Table, rows.FieldDescriptions(), values)
+			if err != nil {
+				return 0, fmt.Errorf("failed to extract schema: %w", err)
+			}
+
+			f.avroSchema = sch
+		}
+
 		data, err := f.buildFetchData(fields, values)
 		if err != nil {
 			return nread, fmt.Errorf("failed to build fetch data: %w", err)
@@ -328,10 +342,11 @@ func (f *FetchWorker) buildFetchData(fields []string, values []any) (FetchData, 
 	}
 
 	return FetchData{
-		Key:      key,
-		Payload:  payload,
-		Position: pos,
-		Table:    f.conf.Table,
+		Key:        key,
+		Payload:    payload,
+		Position:   pos,
+		Table:      f.conf.Table,
+		AvroSchema: f.avroSchema,
 	}, nil
 }
 

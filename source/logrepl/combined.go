@@ -48,6 +48,7 @@ type Config struct {
 	TableKeys         map[string]string
 	WithSnapshot      bool
 	SnapshotFetchSize int
+	WithAvroSchema    bool
 }
 
 // Validate performs validation tasks on the config.
@@ -177,6 +178,7 @@ func (c *CombinedIterator) initCDCIterator(ctx context.Context, pos position.Pos
 		PublicationName: c.conf.PublicationName,
 		Tables:          c.conf.Tables,
 		TableKeys:       c.conf.TableKeys,
+		WithAvroSchema:  c.conf.WithAvroSchema,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create CDC iterator: %w", err)
@@ -198,11 +200,12 @@ func (c *CombinedIterator) initSnapshotIterator(ctx context.Context, pos positio
 	}
 
 	snapshotIterator, err := snapshot.NewIterator(ctx, c.pool, snapshot.Config{
-		Position:     c.conf.Position,
-		Tables:       c.conf.Tables,
-		TableKeys:    c.conf.TableKeys,
-		TXSnapshotID: c.cdcIterator.TXSnapshotID(),
-		FetchSize:    c.conf.SnapshotFetchSize,
+		Position:       c.conf.Position,
+		Tables:         c.conf.Tables,
+		TableKeys:      c.conf.TableKeys,
+		TXSnapshotID:   c.cdcIterator.TXSnapshotID(),
+		FetchSize:      c.conf.SnapshotFetchSize,
+		WithAvroSchema: c.conf.WithAvroSchema,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create snapshot iterator: %w", err)

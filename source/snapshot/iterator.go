@@ -29,11 +29,12 @@ import (
 var ErrIteratorDone = errors.New("snapshot complete")
 
 type Config struct {
-	Position     sdk.Position
-	Tables       []string
-	TableKeys    map[string]string
-	TXSnapshotID string
-	FetchSize    int
+	Position       sdk.Position
+	Tables         []string
+	TableKeys      map[string]string
+	TXSnapshotID   string
+	FetchSize      int
+	WithAvroSchema bool
 }
 
 type Iterator struct {
@@ -119,6 +120,10 @@ func (i *Iterator) buildRecord(d FetchData) sdk.Record {
 	metadata := make(sdk.Metadata)
 	metadata["postgres.table"] = d.Table
 
+	if i.conf.WithAvroSchema {
+		metadata["postgres.avro.schema"] = d.AvroSchema.String()
+	}
+
 	return sdk.Util.Source.NewRecordSnapshot(pos, metadata, d.Key, d.Payload)
 }
 
@@ -129,11 +134,12 @@ func (i *Iterator) initFetchers(ctx context.Context) error {
 
 	for j, t := range i.conf.Tables {
 		w := NewFetchWorker(i.db, i.data, FetchConfig{
-			Table:        t,
-			Key:          i.conf.TableKeys[t],
-			TXSnapshotID: i.conf.TXSnapshotID,
-			Position:     i.lastPosition,
-			FetchSize:    i.conf.FetchSize,
+			Table:          t,
+			Key:            i.conf.TableKeys[t],
+			TXSnapshotID:   i.conf.TXSnapshotID,
+			Position:       i.lastPosition,
+			FetchSize:      i.conf.FetchSize,
+			WithAvroSchema: i.conf.WithAvroSchema,
 		})
 
 		if err := w.Validate(ctx); err != nil {
