@@ -21,6 +21,7 @@ import (
 
 	"github.com/conduitio/conduit-commons/csync"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
+	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"gopkg.in/tomb.v2"
@@ -121,7 +122,7 @@ func (i *Iterator) buildRecord(d FetchData) sdk.Record {
 	metadata["postgres.table"] = d.Table
 
 	if i.conf.WithAvroSchema {
-		metadata["postgres.avro.schema"] = d.AvroSchema.String()
+		metadata[schema.AvroMetadataKey] = d.AvroSchema.String()
 	}
 
 	return sdk.Util.Source.NewRecordSnapshot(pos, metadata, d.Key, d.Payload)

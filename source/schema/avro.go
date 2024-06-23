@@ -21,6 +21,7 @@ import (
 	"slices"
 
 	"github.com/hamba/avro/v2"
+	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -63,6 +64,29 @@ var Avro = &avroExtractor{
 type avroExtractor struct {
 	pgMap   *pgtype.Map
 	avroMap map[string]*avro.PrimitiveSchema
+}
+
+func (a avroExtractor) ExtractLogrepl(rel *pglogrepl.RelationMessage, row *pglogrepl.TupleData) (avro.Schema, error) {
+	var (
+		fields []pgconn.FieldDescription
+		values []any
+	)
+
+	for i, tuple := range row.Columns {
+		fields = append(fields, pgconn.FieldDescription{
+			Name:        rel.Columns[i].Name,
+			DataTypeOID: rel.Columns[i].DataType,
+		})
+
+		v, err := a.decodeColumnValue(rel.Columns[i], tuple.Data)
+		if err != nil {
+			return nil, err
+		}
+
+		values = append(values, v)
+	}
+
+	return a.Extract(rel.RelationName, fields, values)
 }
 
 func (a *avroExtractor) Extract(name string, fields []pgconn.FieldDescription, values []any) (avro.Schema, error) {
@@ -114,4 +138,20 @@ func (a *avroExtractor) extractType(t *pgtype.Type, val any) (*avro.PrimitiveSch
 	default:
 		return nil, fmt.Errorf("cannot resolve field %q of type %T", t.Name, tt)
 	}
+}
+
+func (a *avroExtractor) decodeColumnValue(col *pglogrepl.RelationMessageColumn, data []byte) (any, error) {
+	var t *pgtype.Type
+
+	t, ok := a.pgMap.TypeForOID(col.DataType)
+	if !ok {
+		t, _ = a.pgMap.TypeForOID(pgtype.UnknownOID)
+	}
+
+	v, err := t.Codec.DecodeValue(a.pgMap, col.DataType, pgtype.TextFormatCode, data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode %q tuple: %w", col.Name, err)
+	}
+
+	return v, nil
 }

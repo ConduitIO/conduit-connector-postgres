@@ -20,7 +20,9 @@ import (
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
+	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/hamba/avro/v2"
 	"github.com/jackc/pglogrepl"
 )
 
@@ -31,17 +33,23 @@ type CDCHandler struct {
 	relationSet *internal.RelationSet
 	out         chan<- sdk.Record
 	lastTXLSN   pglogrepl.LSN
+
+	relAvroSchema  map[string]avro.Schema
+	withAvroSchema bool
 }
 
 func NewCDCHandler(
 	rs *internal.RelationSet,
 	tableKeys map[string]string,
+	withAvroSchema bool,
 	out chan<- sdk.Record,
 ) *CDCHandler {
 	return &CDCHandler{
-		tableKeys:   tableKeys,
-		relationSet: rs,
-		out:         out,
+		tableKeys:      tableKeys,
+		relationSet:    rs,
+		out:            out,
+		withAvroSchema: withAvroSchema,
+		relAvroSchema:  make(map[string]avro.Schema),
 	}
 }
 
@@ -100,6 +108,10 @@ func (h *CDCHandler) handleInsert(
 		return fmt.Errorf("failed to decode new values: %w", err)
 	}
 
+	if err := h.updateAvroSchema(rel, msg.Tuple); err != nil {
+		return fmt.Errorf("failed to update avro schema: %w", err)
+	}
+
 	rec := sdk.Util.Source.NewRecordCreate(
 		h.buildPosition(lsn),
 		h.buildRecordMetadata(rel),
@@ -125,6 +137,10 @@ func (h *CDCHandler) handleUpdate(
 	newValues, err := h.relationSet.Values(msg.RelationID, msg.NewTuple)
 	if err != nil {
 		return fmt.Errorf("failed to decode new values: %w", err)
+	}
+
+	if err := h.updateAvroSchema(rel, msg.NewTuple); err != nil {
+		return fmt.Errorf("failed to update avro schema: %w", err)
 	}
 
 	oldValues, err := h.relationSet.Values(msg.RelationID, msg.OldTuple)
@@ -180,10 +196,16 @@ func (h *CDCHandler) send(ctx context.Context, rec sdk.Record) error {
 	}
 }
 
-func (h *CDCHandler) buildRecordMetadata(relation *pglogrepl.RelationMessage) map[string]string {
-	return map[string]string{
-		sdk.MetadataCollection: relation.RelationName,
+func (h *CDCHandler) buildRecordMetadata(rel *pglogrepl.RelationMessage) map[string]string {
+	m := map[string]string{
+		sdk.MetadataCollection: rel.RelationName,
 	}
+
+	if h.withAvroSchema {
+		m[schema.AvroMetadataKey] = h.relAvroSchema[rel.RelationName].String()
+	}
+
+	return m
 }
 
 // buildRecordKey takes the values from the message and extracts the key that
@@ -209,9 +231,27 @@ func (h *CDCHandler) buildRecordPayload(values map[string]any) sdk.Data {
 	return sdk.StructuredData(values)
 }
 
+// buildPosition stores the LSN in position and converts it to bytes.
 func (*CDCHandler) buildPosition(lsn pglogrepl.LSN) sdk.Position {
 	return position.Position{
 		Type:    position.TypeCDC,
 		LastLSN: lsn.String(),
 	}.ToSDKPosition()
+}
+
+// updateAvroSchema generates and stores avro schema based on the relation's row,
+// when usage of avro schema is requested.
+func (h *CDCHandler) updateAvroSchema(rel *pglogrepl.RelationMessage, row *pglogrepl.TupleData) error {
+	if !h.withAvroSchema {
+		return nil
+	}
+
+	sch, err := schema.Avro.ExtractLogrepl(rel, row)
+	if err != nil {
+		return err
+	}
+
+	h.relAvroSchema[rel.RelationName] = sch
+
+	return nil
 }
