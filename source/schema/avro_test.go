@@ -127,6 +127,14 @@ func avroTestSchema(t *testing.T, table string) avro.Schema {
 		return f
 	}
 
+	fs, err := avro.NewFixedSchema(
+		string(avro.Decimal),
+		"conduit.postgres",
+		38,
+		avro.NewDecimalLogicalSchema(38, 2),
+	)
+	is.NoErr(err)
+
 	fields := []*avro.Field{
 		assert(avro.NewField("col_boolean", avro.NewPrimitiveSchema(avro.Boolean, nil))),
 		assert(avro.NewField("col_bytea", avro.NewPrimitiveSchema(avro.Bytes, nil))),
@@ -137,10 +145,7 @@ func avroTestSchema(t *testing.T, table string) avro.Schema {
 		assert(avro.NewField("col_int4", avro.NewPrimitiveSchema(avro.Int, nil))),
 		assert(avro.NewField("col_int8", avro.NewPrimitiveSchema(avro.Long, nil))),
 		assert(avro.NewField("col_text", avro.NewPrimitiveSchema(avro.String, nil))),
-		assert(avro.NewField("col_numeric", avro.NewPrimitiveSchema(
-			avro.Fixed,
-			avro.NewDecimalLogicalSchema(38, 2),
-		))),
+		assert(avro.NewField("col_numeric", fs)),
 		assert(avro.NewField("col_date", avro.NewPrimitiveSchema(
 			avro.Int,
 			avro.NewPrimitiveLogicalSchema(avro.Date),

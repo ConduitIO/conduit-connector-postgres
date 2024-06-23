@@ -135,7 +135,7 @@ func (a *avroExtractor) extractType(ns string, t *pgtype.Type, val any) (*avro.F
 		// N.B.: Default to 38 positions and pick the exponent as the scale.
 		fs, err := avro.NewFixedSchema(
 			string(avro.Decimal),
-			"conduit.postgres",
+			ns,
 			38, // TODO: what size should we put?
 			avro.NewDecimalLogicalSchema(38, int(math.Abs(float64(tt.Exp)))),
 		)
