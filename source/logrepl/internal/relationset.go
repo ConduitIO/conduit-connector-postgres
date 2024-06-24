@@ -71,7 +71,7 @@ func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]a
 			return nil, fmt.Errorf("failed to decode tuple %d: %w", i, err)
 		}
 
-		v, err := types.Format(val)
+		v, err := types.Format(col.DataType, val)
 		if err != nil {
 			return nil, fmt.Errorf("failed to format column %q type %T: %w", col.Name, val, err)
 		}

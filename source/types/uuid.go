@@ -1,4 +1,4 @@
-// Copyright © 2024 Meroxa, Inc.
+// Copyright © 2022 Meroxa, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,34 +15,28 @@
 package types
 
 import (
-	"time"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-var (
-	Numeric = NumericFormatter{}
-	Time    = TimeFormatter{}
-	UUID    = UUIDFormatter{}
-)
+type UUIDFormatter struct{}
 
-var WithBuiltinPlugin = true
-
-func Format(oid uint32, v any) (any, error) {
-	if oid == pgtype.UUIDOID {
-		return UUID.Format(v)
+// Format returns:
+// * string format of Time when connectorn is not builtin
+// * time type in UTC when connector is builtin
+func (UUIDFormatter) Format(v any) (string, error) {
+	b, ok := v.([16]byte)
+	if !ok {
+		return "", fmt.Errorf("failed to parse uuid byte array %v", v)
 	}
 
-	switch t := v.(type) {
-	case pgtype.Numeric:
-		return Numeric.Format(t)
-	case *pgtype.Numeric:
-		return Numeric.Format(*t)
-	case time.Time:
-		return Time.Format(t)
-	case *time.Time:
-		return Time.Format(*t)
-	default:
-		return t, nil
+	uuid := pgtype.UUID{Bytes: b, Valid: true}
+
+	uv, err := uuid.Value()
+	if err != nil {
+		return "", fmt.Errorf("failed to format uuid: %w", err)
 	}
+
+	return uv.(string), nil
 }

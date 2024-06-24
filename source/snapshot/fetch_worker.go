@@ -29,6 +29,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/hamba/avro/v2"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -274,10 +275,7 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 		Dur("fetch_elapsed", time.Since(start)).
 		Msg("cursor fetched data")
 
-	var fields []string
-	for _, f := range rows.FieldDescriptions() {
-		fields = append(fields, f.Name)
-	}
+	fields := rows.FieldDescriptions()
 
 	var nread int
 
@@ -288,7 +286,7 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 		}
 
 		if f.conf.WithAvroSchema && f.avroSchema == nil {
-			sch, err := schema.Avro.Extract(f.conf.Table, rows.FieldDescriptions(), values)
+			sch, err := schema.Avro.Extract(f.conf.Table, fields, values)
 			if err != nil {
 				return 0, fmt.Errorf("failed to extract schema: %w", err)
 			}
@@ -330,7 +328,7 @@ func (f *FetchWorker) send(ctx context.Context, d FetchData) error {
 	}
 }
 
-func (f *FetchWorker) buildFetchData(fields []string, values []any) (FetchData, error) {
+func (f *FetchWorker) buildFetchData(fields []pgconn.FieldDescription, values []any) (FetchData, error) {
 	pos, err := f.buildSnapshotPosition(fields, values)
 	if err != nil {
 		return FetchData{}, fmt.Errorf("failed to build snapshot position: %w", err)
@@ -350,9 +348,9 @@ func (f *FetchWorker) buildFetchData(fields []string, values []any) (FetchData, 
 	}, nil
 }
 
-func (f *FetchWorker) buildSnapshotPosition(fields []string, values []any) (position.SnapshotPosition, error) {
-	for i, name := range fields {
-		if name == f.conf.Key {
+func (f *FetchWorker) buildSnapshotPosition(fields []pgconn.FieldDescription, values []any) (position.SnapshotPosition, error) {
+	for i, fd := range fields {
+		if fd.Name == f.conf.Key {
 			// Always coerce snapshot position to bigint, pk may be any type of integer.
 			lastRead, err := keyInt64(values[i])
 			if err != nil {
@@ -367,26 +365,28 @@ func (f *FetchWorker) buildSnapshotPosition(fields []string, values []any) (posi
 	return position.SnapshotPosition{}, fmt.Errorf("key %q not found in fields", f.conf.Key)
 }
 
-func (f *FetchWorker) buildRecordData(fields []string, values []any) (sdk.StructuredData, sdk.StructuredData, error) {
+func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values []any) (sdk.StructuredData, sdk.StructuredData, error) {
 	var (
 		key     = make(sdk.StructuredData)
 		payload = make(sdk.StructuredData)
 	)
 
-	for i, name := range fields {
-		v, err := types.Format(values[i])
-		if err != nil {
-			return key, payload, fmt.Errorf("failed to format payload field %q: %w", name, err)
+	for i, fd := range fields {
+		if fd.Name == f.conf.Key {
+			k, err := types.Format(fd.DataTypeOID, values[i])
+			if err != nil {
+				return key, payload, fmt.Errorf("failed to format key %q: %w", f.conf.Key, err)
+			}
+
+			key[f.conf.Key] = k
 		}
-		payload[name] = v
-	}
 
-	k, err := types.Format(payload[f.conf.Key])
-	if err != nil {
-		return key, payload, fmt.Errorf("failed to format key %q: %w", f.conf.Key, err)
+		v, err := types.Format(fd.DataTypeOID, values[i])
+		if err != nil {
+			return key, payload, fmt.Errorf("failed to format payload field %q: %w", fd.Name, err)
+		}
+		payload[fd.Name] = v
 	}
-
-	key[f.conf.Key] = k
 
 	return key, payload, nil
 }

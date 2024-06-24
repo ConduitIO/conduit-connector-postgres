@@ -28,6 +28,7 @@ func Test_Format(t *testing.T) {
 	tests := []struct {
 		name        string
 		input       []any
+		inputOID    []uint32
 		expect      []any
 		withBuiltin bool
 	}{
@@ -35,6 +36,9 @@ func Test_Format(t *testing.T) {
 			name: "int float string bool",
 			input: []any{
 				1021, 199.2, "foo", true,
+			},
+			inputOID: []uint32{
+				0, 0, 0, 0,
 			},
 			expect: []any{
 				1021, 199.2, "foo", true,
@@ -44,6 +48,9 @@ func Test_Format(t *testing.T) {
 			name: "pgtype.Numeric",
 			input: []any{
 				pgxNumeric(t, "12.2121"), pgxNumeric(t, "101"), &pgtype.Numeric{}, nil,
+			},
+			inputOID: []uint32{
+				0, 0, 0, 0,
 			},
 			expect: []any{
 				float64(12.2121), int64(101), nil, nil,
@@ -61,6 +68,9 @@ func Test_Format(t *testing.T) {
 				}(),
 				nil,
 			},
+			inputOID: []uint32{
+				0, 0,
+			},
 			expect: []any{
 				"2009-11-10 23:00:00 +0000 UTC", nil,
 			},
@@ -70,10 +80,25 @@ func Test_Format(t *testing.T) {
 			input: []any{
 				now,
 			},
+			inputOID: []uint32{
+				0,
+			},
 			expect: []any{
 				now,
 			},
 			withBuiltin: true,
+		},
+		{
+			name: "uuid",
+			input: []any{
+				[16]uint8{0xbd, 0x94, 0xee, 0x0b, 0x56, 0x4f, 0x40, 0x88, 0xbf, 0x4e, 0x8d, 0x5e, 0x62, 0x6c, 0xaf, 0x66},
+			},
+			inputOID: []uint32{
+				pgtype.UUIDOID,
+			},
+			expect: []any{
+				"bd94ee0b-564f-4088-bf4e-8d5e626caf66",
+			},
 		},
 	}
 	_ = time.Now()
@@ -90,7 +115,7 @@ func Test_Format(t *testing.T) {
 			})
 
 			for i, in := range tc.input {
-				v, err := Format(in)
+				v, err := Format(tc.inputOID[i], in)
 				is.NoErr(err)
 				is.Equal(v, tc.expect[i])
 			}

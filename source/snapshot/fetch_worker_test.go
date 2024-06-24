@@ -27,6 +27,7 @@ import (
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
 	"gopkg.in/tomb.v2"
@@ -403,7 +404,7 @@ func Test_FetchWorker_buildRecordData(t *testing.T) {
 		now = time.Now().UTC()
 
 		// special case fields
-		fields       = []string{"id", "time"}
+		fields       = []pgconn.FieldDescription{{Name: "id"}, {Name: "time"}}
 		values       = []any{1, now}
 		expectValues = []any{1, now}
 	)
@@ -414,8 +415,8 @@ func Test_FetchWorker_buildRecordData(t *testing.T) {
 
 	is.NoErr(err)
 	is.Equal(len(payload), 2)
-	for i, k := range fields {
-		is.Equal(payload[k], expectValues[i])
+	for i, fd := range fields {
+		is.Equal(payload[fd.Name], expectValues[i])
 	}
 
 	is.Equal(len(key), 1)
