@@ -18,11 +18,16 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"math/big"
 	"slices"
 	"testing"
+	"time"
 
+	"github.com/conduitio/conduit-connector-postgres/source/types"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/hamba/avro/v2"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/matryer/is"
 )
 
@@ -45,10 +50,62 @@ func Test_AvroExtract(t *testing.T) {
 
 	fields := rows.FieldDescriptions()
 
-	s, err := Avro.Extract(table, fields, values)
-	is.NoErr(err)
+	sch, err := Avro.Extract(table, fields, values)
 
-	is.Equal(s, avroTestSchema(t, table))
+	t.Run("schema is parsable", func(t *testing.T) {
+		is := is.New(t)
+		is.NoErr(err)
+		is.Equal(sch, avroTestSchema(t, table))
+
+		_, err = avro.Parse(sch.String())
+		is.NoErr(err)
+	})
+
+	t.Run("serde row", func(t *testing.T) {
+		is := is.New(t)
+
+		row := avrolizeMap(fields, values)
+
+		sch, err := avro.Parse(sch.String())
+		is.NoErr(err)
+
+		data, err := avro.Marshal(sch, row)
+		is.NoErr(err)
+		is.True(len(data) > 0)
+
+		decoded := make(map[string]any)
+		is.NoErr(avro.Unmarshal(sch, data, &decoded))
+
+		is.Equal(len(decoded), len(row))
+		is.Equal(row["col_boolean"], decoded["col_boolean"])
+		is.Equal(row["col_bytea"], decoded["col_bytea"])
+		is.Equal(row["col_varchar"], decoded["col_varchar"])
+		is.Equal(row["col_date"], decoded["col_date"])
+		is.Equal(row["col_float4"], decoded["col_float4"])
+		is.Equal(row["col_float8"], decoded["col_float8"])
+
+		colInt2 := int(row["col_int2"].(int16))
+		is.Equal(colInt2, decoded["col_int2"])
+
+		colInt4 := int(row["col_int4"].(int32))
+		is.Equal(colInt4, decoded["col_int4"])
+
+		is.Equal(row["col_int8"], decoded["col_int8"])
+
+		numRow := row["col_numeric"].(*big.Rat)
+		numDecoded := decoded["col_numeric"].(*big.Rat)
+		is.Equal(numRow.RatString(), numDecoded.RatString())
+
+		is.Equal(row["col_text"], decoded["col_text"])
+
+		rowTS, colTS := row["col_timestamp"].(time.Time), decoded["col_timestamp"].(time.Time)
+		is.Equal(rowTS.UTC().String(), colTS.UTC().String())
+
+		rowTSTZ, colTSTZ := row["col_timestamptz"].(time.Time), decoded["col_timestamptz"].(time.Time)
+		is.Equal(rowTSTZ.UTC().String(), colTSTZ.UTC().String())
+
+		is.Equal(row["col_uuid"], decoded["col_uuid"])
+	})
 }
 
 func setupAvroTestTable(ctx context.Context, t *testing.T, conn test.Querier) string {
@@ -121,20 +178,6 @@ func insertAvroTestRow(ctx context.Context, t *testing.T, conn test.Querier, tab
 func avroTestSchema(t *testing.T, table string) avro.Schema {
 	is := is.New(t)
 
-	assert := func(f *avro.Field, err error) *avro.Field {
-		is := is.New(t)
-		is.NoErr(err)
-		return f
-	}
-
-	fs, err := avro.NewFixedSchema(
-		string(avro.Decimal),
-		"conduit.postgres",
-		38,
-		avro.NewDecimalLogicalSchema(38, 2),
-	)
-	is.NoErr(err)
-
 	fields := []*avro.Field{
 		assert(avro.NewField("col_boolean", avro.NewPrimitiveSchema(avro.Boolean, nil))),
 		assert(avro.NewField("col_bytea", avro.NewPrimitiveSchema(avro.Bytes, nil))),
@@ -145,7 +188,10 @@ func avroTestSchema(t *testing.T, table string) avro.Schema {
 		assert(avro.NewField("col_int4", avro.NewPrimitiveSchema(avro.Int, nil))),
 		assert(avro.NewField("col_int8", avro.NewPrimitiveSchema(avro.Long, nil))),
 		assert(avro.NewField("col_text", avro.NewPrimitiveSchema(avro.String, nil))),
-		assert(avro.NewField("col_numeric", fs)),
+		assert(avro.NewField("col_numeric", assert(avro.NewFixedSchema(string(avro.Decimal), "",
+			38,
+			avro.NewDecimalLogicalSchema(38, 2),
+		)))),
 		assert(avro.NewField("col_date", avro.NewPrimitiveSchema(
 			avro.Int,
 			avro.NewPrimitiveLogicalSchema(avro.Date),
@@ -159,7 +205,7 @@ func avroTestSchema(t *testing.T, table string) avro.Schema {
 			avro.NewPrimitiveLogicalSchema(avro.TimestampMicros),
 		))),
 		assert(avro.NewField("col_uuid", avro.NewPrimitiveSchema(
-			avro.Int,
+			avro.String,
 			avro.NewPrimitiveLogicalSchema(avro.UUID),
 		))),
 	}
@@ -172,4 +218,31 @@ func avroTestSchema(t *testing.T, table string) avro.Schema {
 	is.NoErr(err)
 
 	return s
+}
+
+func avrolizeMap(fields []pgconn.FieldDescription, values []any) map[string]any {
+	row := make(map[string]any)
+
+	for i, f := range fields {
+		switch f.DataTypeOID {
+		case pgtype.NumericOID:
+			n := new(big.Rat)
+			n.SetString(fmt.Sprint(types.Format(values[i])))
+			row[f.Name] = n
+		case pgtype.UUIDOID:
+			row[f.Name] = fmt.Sprint(values[i])
+		default:
+			row[f.Name] = values[i]
+		}
+	}
+
+	return row
+}
+
+func assert[T any](a T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+
+	return a
 }

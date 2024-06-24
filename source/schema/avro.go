@@ -55,7 +55,7 @@ var Avro = &avroExtractor{
 			avro.NewPrimitiveLogicalSchema(avro.Date),
 		),
 		"uuid": avro.NewPrimitiveSchema(
-			avro.Int,
+			avro.String,
 			avro.NewPrimitiveLogicalSchema(avro.UUID),
 		),
 	},
@@ -98,15 +98,9 @@ func (a *avroExtractor) Extract(name string, fields []pgconn.FieldDescription, v
 			return nil, fmt.Errorf("field %q with OID %d cannot be resolved", f.Name, f.DataTypeOID)
 		}
 
-		var s avro.Schema
-		if ps, ok := a.avroMap[t.Name]; ok {
-			s = ps
-		} else {
-			ds, err := a.extractType("conduit.postgres", t, values[i])
-			if err != nil {
-				return nil, err
-			}
-			s = ds
+		s, err := a.extractType(t, values[i])
+		if err != nil {
+			return nil, err
 		}
 
 		af, err := avro.NewField(f.Name, s)
@@ -129,14 +123,16 @@ func (a *avroExtractor) Extract(name string, fields []pgconn.FieldDescription, v
 	return sch, nil
 }
 
-func (a *avroExtractor) extractType(ns string, t *pgtype.Type, val any) (*avro.FixedSchema, error) {
+func (a *avroExtractor) extractType(t *pgtype.Type, val any) (avro.Schema, error) {
+	if ps, ok := a.avroMap[t.Name]; ok {
+		return ps, nil
+	}
+
 	switch tt := val.(type) {
 	case pgtype.Numeric:
 		// N.B.: Default to 38 positions and pick the exponent as the scale.
-		fs, err := avro.NewFixedSchema(
-			string(avro.Decimal),
-			ns,
-			38, // TODO: what size should we put?
+		fs, err := avro.NewFixedSchema(string(avro.Decimal), "",
+			38,
 			avro.NewDecimalLogicalSchema(38, int(math.Abs(float64(tt.Exp)))),
 		)
 		if err != nil {
