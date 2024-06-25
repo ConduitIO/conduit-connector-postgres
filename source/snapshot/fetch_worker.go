@@ -39,6 +39,7 @@ var supportedKeyTypes = []string{
 	"smallint",
 	"integer",
 	"bigint",
+	"uuid",
 }
 
 type FetchConfig struct {
