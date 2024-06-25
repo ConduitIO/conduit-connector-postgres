@@ -255,7 +255,7 @@ func (f *FetchWorker) updateSnapshotEnd(ctx context.Context, tx pgx.Tx) error {
 
 	if err := tx.QueryRow(
 		ctx,
-		fmt.Sprintf("SELECT max(%s) FROM %s", f.conf.Key, f.conf.Table),
+		fmt.Sprintf("SELECT %s FROM %s ORDER BY %s DESC LIMIT 1", f.conf.Key, f.conf.Table, f.conf.Key),
 	).Scan(&f.snapshotEnd); err != nil {
 		return fmt.Errorf("failed to query max on %q.%q: %w", f.conf.Table, f.conf.Key, err)
 	}
