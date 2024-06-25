@@ -344,7 +344,7 @@ func isValuesAllTypes(is *is.I, got map[string]any) {
 		"col_timestamptz": time.Date(2022, 3, 14, 15+8, 16, 17, 0, time.UTC).UTC(),
 		"col_tsquery":     "'fat' & ( 'rat' | 'cat' )",
 		"col_tsvector":    "'a' 'and' 'ate' 'cat' 'fat' 'mat' 'on' 'rat' 'sat'",
-		"col_uuid":        [16]uint8{0xbd, 0x94, 0xee, 0x0b, 0x56, 0x4f, 0x40, 0x88, 0xbf, 0x4e, 0x8d, 0x5e, 0x62, 0x6c, 0xaf, 0x66},
+		"col_uuid":        "bd94ee0b-564f-4088-bf4e-8d5e626caf66", // [16]uint8{0xbd, 0x94, 0xee, 0x0b, 0x56, 0x4f, 0x40, 0x88, 0xbf, 0x4e, 0x8d, 0x5e, 0x62, 0x6c, 0xaf, 0x66}
 		"col_xml":         "<foo>bar</foo>",
 	}
 	is.Equal("", cmp.Diff(want, got,
@@ -440,7 +440,7 @@ func isValuesAllTypesStandalone(is *is.I, got map[string]any) {
 		"col_timestamptz": time.Date(2022, 3, 14, 15+8, 16, 17, 0, time.UTC).UTC().String(),
 		"col_tsquery":     "'fat' & ( 'rat' | 'cat' )",
 		"col_tsvector":    "'a' 'and' 'ate' 'cat' 'fat' 'mat' 'on' 'rat' 'sat'",
-		"col_uuid":        [16]uint8{0xbd, 0x94, 0xee, 0x0b, 0x56, 0x4f, 0x40, 0x88, 0xbf, 0x4e, 0x8d, 0x5e, 0x62, 0x6c, 0xaf, 0x66},
+		"col_uuid":        "bd94ee0b-564f-4088-bf4e-8d5e626caf66", // [16]uint8{0xbd, 0x94, 0xee, 0x0b, 0x56, 0x4f, 0x40, 0x88, 0xbf, 0x4e, 0x8d, 0x5e, 0x62, 0x6c, 0xaf, 0x66}
 		"col_xml":         "<foo>bar</foo>",
 	}
 	is.Equal("", cmp.Diff(want, got,

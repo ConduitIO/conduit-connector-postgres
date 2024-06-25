@@ -104,6 +104,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 			TableKeys:         s.tableKeys,
 			WithSnapshot:      s.config.SnapshotMode == source.SnapshotModeInitial,
 			SnapshotFetchSize: s.config.SnapshotFetchSize,
+			WithAvroSchema:    s.config.WithAvroSchema,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create logical replication iterator: %w", err)

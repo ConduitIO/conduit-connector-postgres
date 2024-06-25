@@ -33,6 +33,7 @@ type CDCConfig struct {
 	PublicationName string
 	Tables          []string
 	TableKeys       map[string]string
+	WithAvroSchema  bool
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -63,6 +64,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	}
 
 	records := make(chan sdk.Record)
+	handler := NewCDCHandler(internal.NewRelationSet(), c.TableKeys, c.WithAvroSchema, records)
 
 	sub, err := internal.CreateSubscription(
 		ctx,
@@ -71,7 +73,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		c.PublicationName,
 		c.Tables,
 		c.LSN,
-		NewCDCHandler(internal.NewRelationSet(), c.TableKeys, records).Handle,
+		handler.Handle,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize subscription: %w", err)

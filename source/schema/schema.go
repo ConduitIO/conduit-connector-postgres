@@ -12,37 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package types
+package schema
 
-import (
-	"time"
-
-	"github.com/jackc/pgx/v5/pgtype"
-)
-
-var (
-	Numeric = NumericFormatter{}
-	Time    = TimeFormatter{}
-	UUID    = UUIDFormatter{}
-)
-
-var WithBuiltinPlugin = true
-
-func Format(oid uint32, v any) (any, error) {
-	if oid == pgtype.UUIDOID {
-		return UUID.Format(v)
-	}
-
-	switch t := v.(type) {
-	case pgtype.Numeric:
-		return Numeric.Format(t)
-	case *pgtype.Numeric:
-		return Numeric.Format(*t)
-	case time.Time:
-		return Time.Format(t)
-	case *time.Time:
-		return Time.Format(*t)
-	default:
-		return t, nil
-	}
-}
+const AvroMetadataKey = "postgres.avro.schema"
