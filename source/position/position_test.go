@@ -27,7 +27,7 @@ func Test_ToSDKPosition(t *testing.T) {
 	p := Position{
 		Type: TypeSnapshot,
 		Snapshots: SnapshotPositions{
-			"orders": {LastRead: 1, SnapshotEnd: 2},
+			"orders": {LastRead: "1", SnapshotEnd: "2"},
 		},
 		LastLSN: "4/137515E8",
 	}
@@ -35,7 +35,7 @@ func Test_ToSDKPosition(t *testing.T) {
 	sdkPos := p.ToSDKPosition()
 	is.Equal(
 		string(sdkPos),
-		`{"type":1,"snapshots":{"orders":{"last_read":1,"snapshot_end":2}},"last_lsn":"4/137515E8"}`,
+		`{"type":1,"snapshots":{"orders":{"last_read":"1","snapshot_end":"2"}},"last_lsn":"4/137515E8"}`,
 	)
 }
 
@@ -58,7 +58,7 @@ func Test_ParseSDKPosition(t *testing.T) {
 
 	valid := sdk.Position(
 		[]byte(
-			`{"type":1,"snapshots":{"orders":{"last_read":1,"snapshot_end":2}},"last_lsn":"4/137515E8"}`,
+			`{"type":1,"snapshots":{"orders":{"last_read":"1","snapshot_end":"2"}},"last_lsn":"4/137515E8"}`,
 		),
 	)
 
@@ -68,7 +68,7 @@ func Test_ParseSDKPosition(t *testing.T) {
 	is.Equal(p, Position{
 		Type: TypeSnapshot,
 		Snapshots: SnapshotPositions{
-			"orders": {LastRead: 1, SnapshotEnd: 2},
+			"orders": {LastRead: "1", SnapshotEnd: "2"},
 		},
 		LastLSN: "4/137515E8",
 	})

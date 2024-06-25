@@ -35,11 +35,18 @@ import (
 
 const defaultFetchSize = 50000
 
+const (
+	pgUUID     = "uuid"
+	pgSmallint = "smallint"
+	pgInteger  = "integer"
+	pgBigint   = "bigint"
+)
+
 var supportedKeyTypes = []string{
-	"smallint",
-	"integer",
-	"bigint",
-	"uuid",
+	pgSmallint,
+	pgInteger,
+	pgBigint,
+	pgUUID,
 }
 
 type FetchConfig struct {
@@ -91,8 +98,9 @@ type FetchWorker struct {
 	out        chan<- FetchData
 	avroSchema avro.Schema
 
-	snapshotEnd int64
-	lastRead    int64
+	keyType     string
+	snapshotEnd string
+	lastRead    string
 	cursorName  string
 }
 
@@ -180,8 +188,8 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 	sdk.Logger(ctx).Info().
 		Int("fetchSize", f.conf.FetchSize).
 		Str("tx.snapshot", f.conf.TXSnapshotID).
-		Int64("startAt", f.lastRead).
-		Int64("snapshotEnd", f.snapshotEnd).
+		Str("startAt", f.lastRead).
+		Str("snapshotEnd", f.snapshotEnd).
 		Msgf("starting fetcher %s", f.cursorName)
 
 	closeCursor, err := f.createCursor(ctx, tx)
@@ -208,7 +216,8 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 			Int("rows", nfetched).
 			Str("table", f.conf.Table).
 			Dur("elapsed", time.Since(start)).
-			Str("completed_perc", fmt.Sprintf("%.2f", (float64(nfetched)/float64(f.snapshotEnd))*100)).
+			// need to adjust this to fetch the size of the snapshot
+			// Str("completed_perc", fmt.Sprintf("%.2f", (float64(nfetched)/float64(f.snapshotEnd))*100)).
 			Str("rate_per_min", fmt.Sprintf("%.0f", float64(nfetched)/time.Since(start).Minutes())).
 			Msg("fetching rows")
 	}
@@ -223,16 +232,32 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 }
 
 func (f *FetchWorker) createCursor(ctx context.Context, tx pgx.Tx) (func(), error) {
+	// set zero values
+	lastReadStr := f.lastRead
+	snapshotEndstr := f.snapshotEnd
+	if lastReadStr == "" {
+		switch f.keyType {
+		case pgUUID:
+			lastReadStr = "'00000000-0000-0000-0000-000000000000'"
+			snapshotEndstr = fmt.Sprintf("'%s'", f.snapshotEnd)
+		case pgSmallint, pgInteger, pgBigint:
+			lastReadStr = "0"
+			f.lastRead = "0"
+		}
+	}
+
 	// This query will scan the table for rows based on the conditions.
 	selectQuery := fmt.Sprintf(
-		"SELECT * FROM %s WHERE %s > %d AND %s <= %d ORDER BY %s",
+		"SELECT * FROM %s WHERE %s >= %s AND %s <= %s ORDER BY %s",
 		f.conf.Table,
-		f.conf.Key, f.lastRead, // range start
-		f.conf.Key, f.snapshotEnd, // range end,
+		f.conf.Key, lastReadStr, // range start
+		f.conf.Key, snapshotEndstr, // range end,
 		f.conf.Key, // order by
 	)
 
 	cursorQuery := fmt.Sprintf("DECLARE %s CURSOR FOR(%s)", f.cursorName, selectQuery)
+
+	sdk.Logger(ctx).Debug().Msgf("cursor query: %s", cursorQuery)
 
 	if _, err := tx.Exec(ctx, cursorQuery); err != nil {
 		return nil, err
@@ -249,16 +274,37 @@ func (f *FetchWorker) createCursor(ctx context.Context, tx pgx.Tx) (func(), erro
 }
 
 func (f *FetchWorker) updateSnapshotEnd(ctx context.Context, tx pgx.Tx) error {
-	if f.snapshotEnd > 0 {
+	if f.snapshotEnd > "" {
 		return nil
 	}
 
-	if err := tx.QueryRow(
+	var (
+		snapshotEndStr string
+		snapshotEndInt int64
+		err            error
+	)
+	row := tx.QueryRow(
 		ctx,
 		fmt.Sprintf("SELECT %s FROM %s ORDER BY %s DESC LIMIT 1", f.conf.Key, f.conf.Table, f.conf.Key),
-	).Scan(&f.snapshotEnd); err != nil {
+	)
+	if err != nil {
 		return fmt.Errorf("failed to query max on %q.%q: %w", f.conf.Table, f.conf.Key, err)
 	}
+
+	switch f.keyType {
+	case pgUUID:
+		if err = row.Scan(&snapshotEndStr); err != nil {
+			return fmt.Errorf("failed to query max on %q.%q: %w", f.conf.Table, f.conf.Key, err)
+		}
+		f.snapshotEnd = snapshotEndStr
+	case pgSmallint, pgInteger, pgBigint:
+		if err = row.Scan(&snapshotEndInt); err != nil {
+			return fmt.Errorf("failed to query max on %q.%q: %w", f.conf.Table, f.conf.Key, err)
+		}
+		f.snapshotEnd = fmt.Sprint(snapshotEndInt)
+	}
+
+	sdk.Logger(ctx).Debug().Msgf("snapshot end after conv: %s", f.snapshotEnd)
 
 	return nil
 }
@@ -352,14 +398,9 @@ func (f *FetchWorker) buildFetchData(fields []pgconn.FieldDescription, values []
 func (f *FetchWorker) buildSnapshotPosition(fields []pgconn.FieldDescription, values []any) (position.SnapshotPosition, error) {
 	for i, fd := range fields {
 		if fd.Name == f.conf.Key {
-			// Always coerce snapshot position to bigint, pk may be any type of integer.
-			lastRead, err := keyInt64(values[i])
-			if err != nil {
-				return position.SnapshotPosition{}, fmt.Errorf("failed to parse key: %w", err)
-			}
 			return position.SnapshotPosition{
-				LastRead:    lastRead,
 				SnapshotEnd: f.snapshotEnd,
+				LastRead:    fmt.Sprint(values[i]),
 			}, nil
 		}
 	}
@@ -409,7 +450,7 @@ func (f *FetchWorker) withSnapshot(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-func (*FetchWorker) validateKey(ctx context.Context, table, key string, tx pgx.Tx) error {
+func (f *FetchWorker) validateKey(ctx context.Context, table, key string, tx pgx.Tx) error {
 	var dataType string
 
 	if err := tx.QueryRow(
@@ -427,6 +468,8 @@ func (*FetchWorker) validateKey(ctx context.Context, table, key string, tx pgx.T
 	if !slices.Contains(supportedKeyTypes, dataType) {
 		return fmt.Errorf("key %q of type %q is unsupported", key, dataType)
 	}
+
+	f.keyType = dataType
 
 	var isPK bool
 

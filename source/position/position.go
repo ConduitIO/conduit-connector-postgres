@@ -41,8 +41,8 @@ type Position struct {
 type SnapshotPositions map[string]SnapshotPosition
 
 type SnapshotPosition struct {
-	LastRead    int64 `json:"last_read"`
-	SnapshotEnd int64 `json:"snapshot_end"`
+	LastRead    string `json:"last_read"`
+	SnapshotEnd string `json:"snapshot_end"`
 }
 
 func ParseSDKPosition(sdkPos sdk.Position) (Position, error) {

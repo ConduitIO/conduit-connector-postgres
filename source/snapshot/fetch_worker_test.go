@@ -38,8 +38,8 @@ func Test_NewFetcher(t *testing.T) {
 		is := is.New(t)
 		f := NewFetchWorker(&pgxpool.Pool{}, make(chan<- FetchData), FetchConfig{})
 
-		is.Equal(f.snapshotEnd, int64(0))
-		is.Equal(f.lastRead, int64(0))
+		is.Equal(f.snapshotEnd, "")
+		is.Equal(f.lastRead, "")
 	})
 
 	t.Run("with missing position data", func(t *testing.T) {
@@ -50,8 +50,8 @@ func Test_NewFetcher(t *testing.T) {
 			},
 		})
 
-		is.Equal(f.snapshotEnd, int64(0))
-		is.Equal(f.lastRead, int64(0))
+		is.Equal(f.snapshotEnd, "")
+		is.Equal(f.lastRead, "")
 	})
 
 	t.Run("resume from position", func(t *testing.T) {
@@ -61,14 +61,14 @@ func Test_NewFetcher(t *testing.T) {
 			Position: position.Position{
 				Type: position.TypeSnapshot,
 				Snapshots: position.SnapshotPositions{
-					"mytable": {SnapshotEnd: 10, LastRead: 5},
+					"mytable": {SnapshotEnd: "10", LastRead: "5"},
 				},
 			},
 			Table: "mytable",
 		})
 
-		is.Equal(f.snapshotEnd, int64(10))
-		is.Equal(f.lastRead, int64(5))
+		is.Equal(f.snapshotEnd, "10")
+		is.Equal(f.lastRead, "5")
 	})
 }
 
@@ -248,8 +248,8 @@ func Test_FetcherRun_Initial(t *testing.T) {
 			is.Equal("", cmp.Diff(expectedMatch[i], d.Payload))
 
 			is.Equal(d.Position, position.SnapshotPosition{
-				LastRead:    int64(i + 1),
-				SnapshotEnd: 4,
+				LastRead:    fmt.Sprint(int64(i + 1)),
+				SnapshotEnd: "4",
 			})
 			is.Equal(d.Table, table)
 		})
@@ -273,8 +273,8 @@ func Test_FetcherRun_Resume(t *testing.T) {
 			Type: position.TypeSnapshot,
 			Snapshots: position.SnapshotPositions{
 				table: {
-					SnapshotEnd: 3,
-					LastRead:    2,
+					SnapshotEnd: "3",
+					LastRead:    "2",
 				},
 			},
 		},
@@ -311,8 +311,8 @@ func Test_FetcherRun_Resume(t *testing.T) {
 	}))
 
 	is.Equal(dd[0].Position, position.SnapshotPosition{
-		LastRead:    3,
-		SnapshotEnd: 3,
+		LastRead:    "3",
+		SnapshotEnd: "3",
 	})
 	is.Equal(dd[0].Table, table)
 }
@@ -438,7 +438,7 @@ func Test_FetchWorker_updateSnapshotEnd(t *testing.T) {
 	tests := []struct {
 		desc     string
 		w        *FetchWorker
-		expected int64
+		expected string
 		wantErr  error
 	}{
 		{
@@ -447,12 +447,12 @@ func Test_FetchWorker_updateSnapshotEnd(t *testing.T) {
 				Table: table,
 				Key:   "id",
 			}},
-			expected: 4,
+			expected: "4",
 		},
 		{
 			desc:     "skip update when set",
-			w:        &FetchWorker{snapshotEnd: 10},
-			expected: 10,
+			w:        &FetchWorker{snapshotEnd: "10"},
+			expected: "10",
 		},
 		{
 			desc: "fails to get range",
@@ -489,8 +489,8 @@ func Test_FetchWorker_createCursor(t *testing.T) {
 	)
 
 	f := FetchWorker{
-		lastRead:    10,
-		snapshotEnd: 15,
+		lastRead:    "10",
+		snapshotEnd: "15",
 		cursorName:  "cursor123",
 		conf: FetchConfig{
 			Table: table,
