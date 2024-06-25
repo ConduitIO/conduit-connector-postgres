@@ -5,7 +5,7 @@ go 1.22
 require (
 	github.com/Masterminds/sprig/v3 v3.2.3
 	github.com/Masterminds/squirrel v1.5.4
-	github.com/conduitio/conduit-commons v0.2.1-0.20240613095004-061edf8e3a04
+	github.com/conduitio/conduit-commons v0.2.1-0.20240621181508-bcad84fa5ac9
 	github.com/conduitio/conduit-connector-sdk v0.9.2-0.20240619164540-4cc0cd86e1ad
 	github.com/daixiang0/gci v0.13.4
 	github.com/golangci/golangci-lint v1.59.0
@@ -56,7 +56,7 @@ require (
 	github.com/charithe/durationcheck v0.0.10 // indirect
 	github.com/chavacava/garif v0.1.0 // indirect
 	github.com/ckaznocha/intrange v0.1.2 // indirect
-	github.com/conduitio/conduit-connector-protocol v0.6.1-0.20240619164503-2476e664cc54 // indirect
+	github.com/conduitio/conduit-connector-protocol v0.6.1-0.20240621181654-3e374e4cfa9c // indirect
 	github.com/curioswitch/go-reassign v0.2.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/denis-tingaikin/go-header v0.5.0 // indirect
@@ -228,3 +228,7 @@ require (
 	honnef.co/go/tools v0.4.7 // indirect
 	mvdan.cc/unparam v0.0.0-20240427195214-063aff900ca1 // indirect
 )
+
+replace github.com/conduitio/conduit-connector-sdk => ../conduit-connector-sdk
+replace	github.com/conduitio/conduit-connector-protocol => ../conduit-connector-protocol
+replace github.com/conduitio/conduit-commons => ../conduit-commons

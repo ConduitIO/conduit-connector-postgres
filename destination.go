@@ -25,6 +25,7 @@ import (
 	sq "github.com/Masterminds/squirrel"
 	"github.com/conduitio/conduit-connector-postgres/destination"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/conduitio/conduit-connector-sdk/schema"
 	"github.com/hamba/avro/v2"
 	"github.com/jackc/pgx/v5"
 )
@@ -372,12 +373,7 @@ func (d *Destination) updateSchema(ctx context.Context, rec sdk.Record) error {
 		return err
 	}
 
-	service, err := sdk.NewSchemaService(ctx)
-	if err != nil {
-		return fmt.Errorf("error acquiring schema service: %w", err)
-	}
-
-	schemaInstance, err := service.Get(ctx, sname, sversion)
+	schemaInstance, err := schema.Get(ctx, sname, sversion)
 	if err != nil {
 		return err
 	}

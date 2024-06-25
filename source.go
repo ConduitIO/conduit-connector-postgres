@@ -27,6 +27,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/conduitio/conduit-connector-sdk/schema"
 	"github.com/hamba/avro/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -131,7 +132,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 func (s *Source) Read(ctx context.Context) (sdk.Record, error) {
 	rec, err := s.iterator.Next(ctx)
 	if err == nil {
-		rec.Metadata["opencdc.schema.name"] = s.createdSchema.Name
+		rec.Metadata["opencdc.schema.name"] = s.createdSchema.Subject
 		rec.Metadata["opencdc.schema.version"] = strconv.FormatInt(int64(s.createdSchema.Version), 10)
 	}
 	return rec, err
@@ -301,12 +302,7 @@ func (s *Source) fetchSchema(ctx context.Context) {
 		panic(err)
 	}
 
-	schemas, err := sdk.NewSchemaService(ctx)
-	if err != nil {
-		panic(fmt.Errorf("failed acquiring schema service: %w", err))
-	}
-
-	s.createdSchema, err = schemas.Create(ctx, cschema.TypeAvro, "employees", tableSchema)
+	s.createdSchema, err = schema.Create(ctx, cschema.TypeAvro, "employees", tableSchema)
 	if err != nil {
 		panic(err)
 	}
