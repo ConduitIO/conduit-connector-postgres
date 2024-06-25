@@ -12,17 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package types
 
 import (
-	postgres "github.com/conduitio/conduit-connector-postgres"
-	"github.com/conduitio/conduit-connector-postgres/source/types"
-	sdk "github.com/conduitio/conduit-connector-sdk"
+	"time"
 )
 
-func main() {
-	// Running as standalone plugin
-	types.WithBuiltinPlugin = false
+type TimeFormatter struct{}
 
-	sdk.Serve(postgres.Connector)
+// Format returns:
+// * string format of Time when connectorn is not builtin
+// * time type in UTC when connector is builtin
+func (n TimeFormatter) Format(t time.Time) (any, error) {
+	if WithBuiltinPlugin {
+		return t.UTC(), nil
+	}
+	return t.UTC().String(), nil
 }

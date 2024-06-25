@@ -21,9 +21,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
-	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/google/go-cmp/cmp"
 	"github.com/matryer/is"
 )
@@ -55,7 +55,7 @@ func TestCombinedIterator_New(t *testing.T) {
 		is := is.New(t)
 
 		_, err := NewCombinedIterator(ctx, nil, Config{
-			Position: sdk.Position(`{`),
+			Position: opencdc.Position(`{`),
 		})
 		is.Equal(err.Error(), "failed to create logrepl iterator: invalid position: unexpected end of JSON input")
 	})
@@ -64,7 +64,7 @@ func TestCombinedIterator_New(t *testing.T) {
 		is := is.New(t)
 
 		i, err := NewCombinedIterator(ctx, pool, Config{
-			Position:        sdk.Position{},
+			Position:        opencdc.Position{},
 			Tables:          []string{table},
 			TableKeys:       map[string]string{table: "id"},
 			PublicationName: table,
@@ -89,7 +89,7 @@ func TestCombinedIterator_New(t *testing.T) {
 		is := is.New(t)
 
 		i, err := NewCombinedIterator(ctx, pool, Config{
-			Position:        sdk.Position{},
+			Position:        opencdc.Position{},
 			Tables:          []string{table},
 			TableKeys:       map[string]string{table: "id"},
 			PublicationName: table,
@@ -114,7 +114,7 @@ func TestCombinedIterator_New(t *testing.T) {
 		is := is.New(t)
 
 		i, err := NewCombinedIterator(ctx, pool, Config{
-			Position:        sdk.Position(`{"type":2, "last_lsn":"0/0"}`),
+			Position:        opencdc.Position(`{"type":2, "last_lsn":"0/0"}`),
 			Tables:          []string{table},
 			TableKeys:       map[string]string{table: "id"},
 			PublicationName: table,
@@ -137,7 +137,7 @@ func TestCombinedIterator_New(t *testing.T) {
 }
 
 func TestCombinedIterator_Next(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
 	defer cancel()
 
 	is := is.New(t)
@@ -145,7 +145,7 @@ func TestCombinedIterator_Next(t *testing.T) {
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
 	table := test.SetupTestTable(ctx, t, pool)
 	i, err := NewCombinedIterator(ctx, pool, Config{
-		Position:        sdk.Position{},
+		Position:        opencdc.Position{},
 		Tables:          []string{table},
 		TableKeys:       map[string]string{table: "id"},
 		PublicationName: table,
@@ -155,12 +155,13 @@ func TestCombinedIterator_Next(t *testing.T) {
 	is.NoErr(err)
 
 	_, err = pool.Exec(ctx, fmt.Sprintf(
-		`INSERT INTO %s (id, column1, column2, column3) VALUES (6, 'bizz', 1010, false)`,
+		`INSERT INTO %s (id, column1, column2, column3, column4, column5)
+			VALUES (6, 'bizz', 1010, false, 872.2, 101)`,
 		table,
 	))
 	is.NoErr(err)
 
-	var lastPos sdk.Position
+	var lastPos opencdc.Position
 
 	expectedRecords := testRecords()
 
@@ -176,7 +177,7 @@ func TestCombinedIterator_Next(t *testing.T) {
 
 			is.Equal("", cmp.Diff(
 				expectedRecords[id],
-				r.Payload.After.(sdk.StructuredData),
+				r.Payload.After.(opencdc.StructuredData),
 			))
 
 			is.NoErr(i.Ack(ctx, r.Position))
@@ -199,7 +200,7 @@ func TestCombinedIterator_Next(t *testing.T) {
 
 		is.Equal("", cmp.Diff(
 			expectedRecords[5],
-			r.Payload.After.(sdk.StructuredData),
+			r.Payload.After.(opencdc.StructuredData),
 		))
 
 		is.NoErr(i.Ack(ctx, r.Position))
@@ -210,7 +211,6 @@ func TestCombinedIterator_Next(t *testing.T) {
 
 	t.Run("next_connector_resume_cdc_6", func(t *testing.T) {
 		is := is.New(t)
-
 		i, err := NewCombinedIterator(ctx, pool, Config{
 			Position:        lastPos,
 			Tables:          []string{table},
@@ -220,8 +220,10 @@ func TestCombinedIterator_Next(t *testing.T) {
 			WithSnapshot:    true,
 		})
 		is.NoErr(err)
+
 		_, err = pool.Exec(ctx, fmt.Sprintf(
-			`INSERT INTO %s (id, column1, column2, column3) VALUES (7, 'buzz', 10101, true)`,
+			`INSERT INTO %s (id, column1, column2, column3, column4, column5)
+				VALUES (7, 'buzz', 10101, true, 121.9, 51)`,
 			table,
 		))
 		is.NoErr(err)
@@ -239,7 +241,7 @@ func TestCombinedIterator_Next(t *testing.T) {
 
 		is.Equal("", cmp.Diff(
 			expectedRecords[6],
-			r.Payload.After.(sdk.StructuredData),
+			r.Payload.After.(opencdc.StructuredData),
 		))
 
 		is.NoErr(i.Ack(ctx, r.Position))
@@ -253,8 +255,8 @@ func TestCombinedIterator_Next(t *testing.T) {
 	}))
 }
 
-func testRecords() []sdk.StructuredData {
-	return []sdk.StructuredData{
+func testRecords() []opencdc.StructuredData {
+	return []opencdc.StructuredData{
 		{},
 		{
 			"id":      int64(1),
@@ -262,6 +264,8 @@ func testRecords() []sdk.StructuredData {
 			"column1": "foo",
 			"column2": int32(123),
 			"column3": false,
+			"column4": 12.2,
+			"column5": int64(4),
 		},
 		{
 			"id":      int64(2),
@@ -269,6 +273,8 @@ func testRecords() []sdk.StructuredData {
 			"column1": "bar",
 			"column2": int32(456),
 			"column3": true,
+			"column4": 13.42,
+			"column5": int64(8),
 		},
 		{
 			"id":      int64(3),
@@ -276,6 +282,8 @@ func testRecords() []sdk.StructuredData {
 			"column1": "baz",
 			"column2": int32(789),
 			"column3": false,
+			"column4": nil,
+			"column5": int64(9),
 		},
 		{
 			"id":      int64(4),
@@ -283,6 +291,8 @@ func testRecords() []sdk.StructuredData {
 			"column1": nil,
 			"column2": nil,
 			"column3": nil,
+			"column4": 91.1,
+			"column5": nil,
 		},
 		{
 			"id":      int64(6),
@@ -290,6 +300,8 @@ func testRecords() []sdk.StructuredData {
 			"column1": "bizz",
 			"column2": int32(1010),
 			"column3": false,
+			"column4": 872.2,
+			"column5": int64(101),
 		},
 		{
 			"id":      int64(7),
@@ -297,6 +309,8 @@ func testRecords() []sdk.StructuredData {
 			"column1": "buzz",
 			"column2": int32(10101),
 			"column3": true,
+			"column4": 121.9,
+			"column5": int64(51),
 		},
 	}
 }

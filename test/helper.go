@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-commons/csync"
+	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -42,11 +44,12 @@ type Querier interface {
 
 func ConnectPool(ctx context.Context, t *testing.T, connString string) *pgxpool.Pool {
 	is := is.New(t)
-	pool, err := pgxpool.New(ctx, connString)
+	pool, err := cpool.New(ctx, connString)
 	is.NoErr(err)
 	t.Cleanup(func() {
 		// close connection with fresh context
-		pool.Close()
+		is := is.New(t)
+		is.NoErr(csync.RunTimeout(context.Background(), pool.Close, time.Second*10))
 	})
 	return pool
 }
@@ -62,17 +65,6 @@ func ConnectSimple(ctx context.Context, t *testing.T, connString string) *pgx.Co
 	return conn.Conn()
 }
 
-func ConnectReplication(ctx context.Context, t *testing.T, connString string) *pgconn.PgConn {
-	is := is.New(t)
-
-	conn, err := pgconn.Connect(ctx, connString+"&replication=database")
-	is.NoErr(err)
-	t.Cleanup(func() {
-		is.NoErr(conn.Close(context.Background()))
-	})
-	return conn
-}
-
 // SetupTestTable creates a new table and returns its name.
 func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 	is := is.New(t)
@@ -85,7 +77,10 @@ func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 		key bytea,
 		column1 varchar(256),
 		column2 integer,
-		column3 boolean)`
+		column3 boolean,
+		column4 numeric(16,3),
+		column5 numeric(5)
+	)`
 	query = fmt.Sprintf(query, table)
 	_, err := conn.Exec(ctx, query)
 	is.NoErr(err)
@@ -98,11 +93,11 @@ func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 	})
 
 	query = `
-		INSERT INTO %s (key, column1, column2, column3)
-		VALUES ('1', 'foo', 123, false),
-		('2', 'bar', 456, true),
-		('3', 'baz', 789, false),
-		('4', null, null, null)`
+		INSERT INTO %s (key, column1, column2, column3, column4, column5)
+		VALUES ('1', 'foo', 123, false, 12.2, 4),
+		('2', 'bar', 456, true, 13.42, 8),
+		('3', 'baz', 789, false, null, 9),
+		('4', null, null, null, 91.1, null)`
 	query = fmt.Sprintf(query, table)
 	_, err = conn.Exec(ctx, query)
 	is.NoErr(err)

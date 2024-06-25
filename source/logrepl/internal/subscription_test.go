@@ -18,35 +18,35 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/jackc/pglogrepl"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
 )
 
 func TestSubscription_Create(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
-	conn := test.ConnectReplication(ctx, t, test.RepmgrConnString)
-	conn.Close(ctx)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	pool.Close()
 
-	_, err := CreateSubscription(ctx, conn, "slotname", "pubname", nil, 0, nil)
-	is.Equal(err.Error(), "conn closed")
+	_, err := CreateSubscription(ctx, pool, "slotname", "pubname", nil, 0, nil)
+	is.Equal(err.Error(), "could not establish replication connection: closed pool")
 }
 
 func TestSubscription_WithRepmgr(t *testing.T) {
-	ctx := context.Background()
+	var (
+		ctx    = context.Background()
+		pool   = test.ConnectPool(ctx, t, test.RepmgrConnString)
+		table1 = test.SetupTestTable(ctx, t, pool)
+		table2 = test.SetupTestTable(ctx, t, pool)
+	)
 
-	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-	replConn := test.ConnectReplication(ctx, t, test.RepmgrConnString)
-
-	table1 := test.SetupTestTable(ctx, t, conn)
-	table2 := test.SetupTestTable(ctx, t, conn)
-
-	_, messages := setupSubscription(ctx, t, replConn, table1, table2)
+	sub, messages := setupSubscription(ctx, t, pool, table1, table2)
 
 	fetchAndAssertMessageTypes := func(is *is.I, m chan pglogrepl.Message, msgTypes ...pglogrepl.MessageType) []pglogrepl.Message {
 		out := make([]pglogrepl.Message, len(msgTypes))
@@ -66,7 +66,7 @@ func TestSubscription_WithRepmgr(t *testing.T) {
 		is := is.New(t)
 		query := `INSERT INTO %s (id, column1, column2, column3)
 		VALUES (6, 'bizz', 456, false)`
-		_, err := conn.Exec(ctx, fmt.Sprintf(query, table1))
+		_, err := pool.Exec(ctx, fmt.Sprintf(query, table1))
 		is.NoErr(err)
 
 		_ = fetchAndAssertMessageTypes(
@@ -84,7 +84,7 @@ func TestSubscription_WithRepmgr(t *testing.T) {
 		is := is.New(t)
 		query := `INSERT INTO %s (id, column1, column2, column3)
 		VALUES (7, 'bizz', 456, false)`
-		_, err := conn.Exec(ctx, fmt.Sprintf(query, table1))
+		_, err := pool.Exec(ctx, fmt.Sprintf(query, table1))
 		is.NoErr(err)
 
 		_ = fetchAndAssertMessageTypes(
@@ -100,7 +100,7 @@ func TestSubscription_WithRepmgr(t *testing.T) {
 	t.Run("first update table2", func(t *testing.T) {
 		is := is.New(t)
 		query := `UPDATE %s SET column1 = 'foo' WHERE id = 1`
-		_, err := conn.Exec(ctx, fmt.Sprintf(query, table2))
+		_, err := pool.Exec(ctx, fmt.Sprintf(query, table2))
 		is.NoErr(err)
 
 		_ = fetchAndAssertMessageTypes(
@@ -117,7 +117,7 @@ func TestSubscription_WithRepmgr(t *testing.T) {
 	t.Run("update all table 2", func(t *testing.T) {
 		is := is.New(t)
 		query := `UPDATE %s SET column1 = 'bar'` // update all rows
-		_, err := conn.Exec(ctx, fmt.Sprintf(query, table2))
+		_, err := pool.Exec(ctx, fmt.Sprintf(query, table2))
 		is.NoErr(err)
 
 		_ = fetchAndAssertMessageTypes(
@@ -133,6 +133,17 @@ func TestSubscription_WithRepmgr(t *testing.T) {
 		)
 	})
 
+	t.Run("Last WAL written is behind keepalive", func(t *testing.T) {
+		is := is.New(t)
+		time.Sleep(2 * time.Second)
+
+		walFlushed := pglogrepl.LSN(atomic.LoadUint64((*uint64)(&sub.walFlushed)))
+		serverWALEnd := pglogrepl.LSN(atomic.LoadUint64((*uint64)(&sub.serverWALEnd)))
+
+		is.True(serverWALEnd >= sub.walWritten)
+		is.True(sub.walWritten > walFlushed)
+	})
+
 	t.Run("no more messages", func(t *testing.T) {
 		isNoMoreMessages(t, messages, time.Millisecond*500)
 	})
@@ -140,18 +151,19 @@ func TestSubscription_WithRepmgr(t *testing.T) {
 
 func TestSubscription_ClosedContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	is := is.New(t)
 
-	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-	replConn := test.ConnectReplication(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTable(ctx, t, conn)
+	var (
+		is    = is.New(t)
+		pool  = test.ConnectPool(ctx, t, test.RepmgrConnString)
+		table = test.SetupTestTable(ctx, t, pool)
+	)
 
-	sub, messages := setupSubscription(ctx, t, replConn, table)
+	sub, messages := setupSubscription(ctx, t, pool, table)
 
 	// insert to get new messages into publication
 	query := `INSERT INTO %s (id, column1, column2, column3)
 		VALUES (6, 'bizz', 456, false)`
-	_, err := conn.Exec(ctx, fmt.Sprintf(query, table))
+	_, err := pool.Exec(ctx, fmt.Sprintf(query, table))
 	is.NoErr(err)
 
 	cancel()
@@ -201,7 +213,7 @@ func TestSubscription_Stop(t *testing.T) {
 func setupSubscription(
 	ctx context.Context,
 	t *testing.T,
-	replConn *pgconn.PgConn,
+	pool *pgxpool.Pool,
 	tables ...string,
 ) (*Subscription, chan pglogrepl.Message) {
 	is := is.New(t)
@@ -209,28 +221,28 @@ func setupSubscription(
 	slotName := test.RandomIdentifier(t)
 	publication := test.RandomIdentifier(t)
 
-	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-
-	test.CreatePublication(t, conn, publication, tables)
+	test.CreatePublication(t, pool, publication, tables)
 
 	messages := make(chan pglogrepl.Message)
 	sub, err := CreateSubscription(
 		ctx,
-		replConn,
+		pool,
 		slotName,
 		publication,
 		tables,
 		0,
-		func(ctx context.Context, msg pglogrepl.Message, _ pglogrepl.LSN) error {
+		func(ctx context.Context, msg pglogrepl.Message, lsn pglogrepl.LSN) (pglogrepl.LSN, error) {
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return 0, ctx.Err()
 			case messages <- msg:
-				return nil
+				return lsn, nil
 			}
 		},
 	)
 	is.NoErr(err)
+
+	sub.StatusTimeout = 1 * time.Second
 
 	go func() {
 		err := sub.Run(ctx)
@@ -250,12 +262,11 @@ func setupSubscription(
 
 	t.Cleanup(func() {
 		// stop subscription
-		sub.Stop()
-		cctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		is.NoErr(sub.Wait(cctx, 0))
+		cctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		is.NoErr(sub.Teardown(cctx))
 		cancel()
 
-		_, err := conn.Exec(
+		_, err := pool.Exec(
 			context.Background(),
 			"SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name=$1",
 			slotName,

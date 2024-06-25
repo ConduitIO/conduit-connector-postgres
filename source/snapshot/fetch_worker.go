@@ -22,7 +22,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
+	"github.com/conduitio/conduit-connector-postgres/source/types"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -72,8 +74,8 @@ func (c FetchConfig) Validate() error {
 }
 
 type FetchData struct {
-	Key      sdk.StructuredData
-	Payload  sdk.StructuredData
+	Key      opencdc.StructuredData
+	Payload  opencdc.StructuredData
 	Position position.SnapshotPosition
 	Table    string
 }
@@ -169,6 +171,13 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to update fetch limit: %w", err)
 	}
 
+	sdk.Logger(ctx).Info().
+		Int("fetchSize", f.conf.FetchSize).
+		Str("tx.snapshot", f.conf.TXSnapshotID).
+		Int64("startAt", f.lastRead).
+		Int64("snapshotEnd", f.snapshotEnd).
+		Msgf("starting fetcher %s", f.cursorName)
+
 	closeCursor, err := f.createCursor(ctx, tx)
 	if err != nil {
 		return fmt.Errorf("failed to create cursor: %w", err)
@@ -193,11 +202,14 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 			Int("rows", nfetched).
 			Str("table", f.conf.Table).
 			Dur("elapsed", time.Since(start)).
+			Str("completed_perc", fmt.Sprintf("%.2f", (float64(nfetched)/float64(f.snapshotEnd))*100)).
+			Str("rate_per_min", fmt.Sprintf("%.0f", float64(nfetched)/time.Since(start).Minutes())).
 			Msg("fetching rows")
 	}
 
 	sdk.Logger(ctx).Info().
 		Dur("elapsed", time.Since(start)).
+		Str("rate_per_min", fmt.Sprintf("%.0f", float64(nfetched)/time.Since(start).Minutes())).
 		Str("table", f.conf.Table).
 		Msgf("%q snapshot completed", f.conf.Table)
 
@@ -205,18 +217,18 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 }
 
 func (f *FetchWorker) createCursor(ctx context.Context, tx pgx.Tx) (func(), error) {
-	// N.B. Prepare as much as possible when the cursor is created.
-	//      Table and columns cannot be prepared.
-	//      This query will scan the table for rows based on the conditions.
-	selectQuery := "SELECT * FROM " + f.conf.Table + " WHERE " + f.conf.Key + " > $1 AND " + f.conf.Key + " <= $2 ORDER BY $3"
+	// This query will scan the table for rows based on the conditions.
+	selectQuery := fmt.Sprintf(
+		"SELECT * FROM %s WHERE %s > %d AND %s <= %d ORDER BY %s",
+		f.conf.Table,
+		f.conf.Key, f.lastRead, // range start
+		f.conf.Key, f.snapshotEnd, // range end,
+		f.conf.Key, // order by
+	)
 
-	if _, err := tx.Exec(
-		ctx,
-		"DECLARE "+f.cursorName+" CURSOR FOR("+selectQuery+")",
-		f.lastRead,    // range start
-		f.snapshotEnd, // range end
-		f.conf.Key,    // order by this
-	); err != nil {
+	cursorQuery := fmt.Sprintf("DECLARE %s CURSOR FOR(%s)", f.cursorName, selectQuery)
+
+	if _, err := tx.Exec(ctx, cursorQuery); err != nil {
 		return nil, err
 	}
 
@@ -246,11 +258,17 @@ func (f *FetchWorker) updateSnapshotEnd(ctx context.Context, tx pgx.Tx) error {
 }
 
 func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
+	start := time.Now().UTC()
+
 	rows, err := tx.Query(ctx, fmt.Sprintf("FETCH %d FROM %s", f.conf.FetchSize, f.cursorName))
 	if err != nil {
 		return 0, fmt.Errorf("failed to fetch rows: %w", err)
 	}
 	defer rows.Close()
+
+	sdk.Logger(ctx).Info().
+		Dur("fetch_elapsed", time.Since(start)).
+		Msg("cursor fetched data")
 
 	var fields []string
 	for _, f := range rows.FieldDescriptions() {
@@ -284,6 +302,13 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 }
 
 func (f *FetchWorker) send(ctx context.Context, d FetchData) error {
+	start := time.Now().UTC()
+	defer func() {
+		sdk.Logger(ctx).Trace().
+			Dur("send_elapsed", time.Since(start)).
+			Msg("sending data to chan")
+	}()
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -297,7 +322,12 @@ func (f *FetchWorker) buildFetchData(fields []string, values []any) (FetchData, 
 	if err != nil {
 		return FetchData{}, fmt.Errorf("failed to build snapshot position: %w", err)
 	}
-	key, payload := f.buildRecordData(fields, values)
+
+	key, payload, err := f.buildRecordData(fields, values)
+	if err != nil {
+		return FetchData{}, fmt.Errorf("failed to encode record data: %w", err)
+	}
+
 	return FetchData{
 		Key:      key,
 		Payload:  payload,
@@ -323,23 +353,28 @@ func (f *FetchWorker) buildSnapshotPosition(fields []string, values []any) (posi
 	return position.SnapshotPosition{}, fmt.Errorf("key %q not found in fields", f.conf.Key)
 }
 
-func (f *FetchWorker) buildRecordData(fields []string, values []any) (key sdk.StructuredData, payload sdk.StructuredData) {
-	payload = make(sdk.StructuredData)
+func (f *FetchWorker) buildRecordData(fields []string, values []any) (opencdc.StructuredData, opencdc.StructuredData, error) {
+	var (
+		key     = make(opencdc.StructuredData)
+		payload = make(opencdc.StructuredData)
+	)
 
 	for i, name := range fields {
-		switch t := values[i].(type) {
-		case time.Time: // type not supported in sdk.Record
-			payload[name] = t.UTC().String()
-		default:
-			payload[name] = t
+		v, err := types.Format(values[i])
+		if err != nil {
+			return key, payload, fmt.Errorf("failed to format payload field %q: %w", name, err)
 		}
+		payload[name] = v
 	}
 
-	key = sdk.StructuredData{
-		f.conf.Key: payload[f.conf.Key],
+	k, err := types.Format(payload[f.conf.Key])
+	if err != nil {
+		return key, payload, fmt.Errorf("failed to format key %q: %w", f.conf.Key, err)
 	}
 
-	return key, payload
+	key[f.conf.Key] = k
+
+	return key, payload, nil
 }
 
 func (f *FetchWorker) withSnapshot(ctx context.Context, tx pgx.Tx) error {

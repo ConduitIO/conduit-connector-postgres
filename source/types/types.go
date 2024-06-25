@@ -1,4 +1,4 @@
-// Copyright © 2022 Meroxa, Inc.
+// Copyright © 2024 Meroxa, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,17 +12,32 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package types
 
 import (
-	postgres "github.com/conduitio/conduit-connector-postgres"
-	"github.com/conduitio/conduit-connector-postgres/source/types"
-	sdk "github.com/conduitio/conduit-connector-sdk"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
-func main() {
-	// Running as standalone plugin
-	types.WithBuiltinPlugin = false
+var (
+	Numeric = NumericFormatter{}
+	Time    = TimeFormatter{}
+)
 
-	sdk.Serve(postgres.Connector)
+var WithBuiltinPlugin = true
+
+func Format(v any) (any, error) {
+	switch t := v.(type) {
+	case pgtype.Numeric:
+		return Numeric.Format(t)
+	case *pgtype.Numeric:
+		return Numeric.Format(*t)
+	case time.Time:
+		return Time.Format(t)
+	case *time.Time:
+		return Time.Format(*t)
+	default: // supported type
+		return t, nil
+	}
 }

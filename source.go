@@ -22,9 +22,12 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/conduitio/conduit-commons/config"
 	"github.com/conduitio/conduit-commons/csync"
+	"github.com/conduitio/conduit-commons/opencdc"
 	cschema "github.com/conduitio/conduit-commons/schema"
 	"github.com/conduitio/conduit-connector-postgres/source"
+	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/conduitio/conduit-connector-sdk/schema"
@@ -53,12 +56,12 @@ func NewSource() sdk.Source {
 	)
 }
 
-func (s *Source) Parameters() map[string]sdk.Parameter {
+func (s *Source) Parameters() config.Parameters {
 	return s.config.Parameters()
 }
 
-func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
-	err := sdk.Util.ParseConfig(cfg, &s.config)
+func (s *Source) Configure(ctx context.Context, cfg config.Config) error {
+	err := sdk.Util.ParseConfig(ctx, cfg, &s.config, NewSource().Parameters())
 	if err != nil {
 		return err
 	}
@@ -68,8 +71,8 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 	return s.config.Validate()
 }
 
-func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
-	pool, err := pgxpool.New(ctx, s.config.URL)
+func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
+	pool, err := cpool.New(ctx, s.config.URL)
 	if err != nil {
 		return fmt.Errorf("failed to create a connection pool to database: %w", err)
 	}
@@ -102,12 +105,13 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 		fallthrough
 	case source.CDCModeLogrepl:
 		i, err := logrepl.NewCombinedIterator(ctx, s.pool, logrepl.Config{
-			Position:        pos,
-			SlotName:        s.config.LogreplSlotName,
-			PublicationName: s.config.LogreplPublicationName,
-			Tables:          s.config.Tables,
-			TableKeys:       s.tableKeys,
-			WithSnapshot:    s.config.SnapshotMode == source.SnapshotModeInitial,
+			Position:          pos,
+			SlotName:          s.config.LogreplSlotName,
+			PublicationName:   s.config.LogreplPublicationName,
+			Tables:            s.config.Tables,
+			TableKeys:         s.tableKeys,
+			WithSnapshot:      s.config.SnapshotMode == source.SnapshotModeInitial,
+			SnapshotFetchSize: s.config.SnapshotFetchSize,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create logical replication iterator: %w", err)
@@ -129,7 +133,7 @@ func (s *Source) Open(ctx context.Context, pos sdk.Position) error {
 	return nil
 }
 
-func (s *Source) Read(ctx context.Context) (sdk.Record, error) {
+func (s *Source) Read(ctx context.Context) (opencdc.Record, error) {
 	rec, err := s.iterator.Next(ctx)
 	if err == nil {
 		rec.Metadata["opencdc.schema.name"] = s.createdSchema.Subject
@@ -138,7 +142,7 @@ func (s *Source) Read(ctx context.Context) (sdk.Record, error) {
 	return rec, err
 }
 
-func (s *Source) Ack(ctx context.Context, pos sdk.Position) error {
+func (s *Source) Ack(ctx context.Context, pos opencdc.Position) error {
 	return s.iterator.Ack(ctx, pos)
 }
 
@@ -163,7 +167,27 @@ func (s *Source) Teardown(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-func (s *Source) LifecycleOnDeleted(ctx context.Context, _ map[string]string) error {
+func (s *Source) LifecycleOnDeleted(ctx context.Context, cfg config.Config) error {
+	if err := s.Configure(ctx, cfg); err != nil {
+		return fmt.Errorf("fail to handle lifecycle delete event: %w", err)
+	}
+
+	// N.B. This should not stay in here for long, enrich the default.
+	//      Events are not passed enriched config with defaults.
+	params := s.config.Parameters()
+
+	if _, ok := cfg["logrepl.autoCleanup"]; !ok { // not set
+		s.config.LogreplAutoCleanup = params["logrepl.autoCleanup"].Default == "true"
+	}
+
+	if _, ok := cfg["logrepl.slotName"]; !ok {
+		s.config.LogreplSlotName = params["logrepl.slotName"].Default
+	}
+
+	if _, ok := cfg["logrepl.publicationName"]; !ok {
+		s.config.LogreplPublicationName = params["logrepl.publicationName"].Default
+	}
+
 	switch s.config.CDCMode {
 	case source.CDCModeAuto:
 		fallthrough // TODO: Adjust as `auto` changes.
@@ -179,6 +203,7 @@ func (s *Source) LifecycleOnDeleted(ctx context.Context, _ map[string]string) er
 			PublicationName: s.config.LogreplPublicationName,
 		})
 	default:
+		sdk.Logger(ctx).Warn().Msgf("cannot handle CDC mode %q", s.config.CDCMode)
 		return nil
 	}
 }

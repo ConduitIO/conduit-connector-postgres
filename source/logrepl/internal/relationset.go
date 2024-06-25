@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/conduitio/conduit-connector-postgres/source/types"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -70,7 +71,12 @@ func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]a
 			return nil, fmt.Errorf("failed to decode tuple %d: %w", i, err)
 		}
 
-		values[col.Name] = val
+		v, err := types.Format(val)
+		if err != nil {
+			return nil, fmt.Errorf("failed to format column %q type %T: %w", col.Name, val, err)
+		}
+
+		values[col.Name] = v
 	}
 
 	return values, nil

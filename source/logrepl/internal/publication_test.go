@@ -26,7 +26,7 @@ import (
 
 func TestCreatePublication(t *testing.T) {
 	ctx := context.Background()
-	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
+	pool := test.ConnectPool(ctx, t, test.RegularConnString)
 
 	pubNames := []string{"testpub", "123", "test-hyphen", "test=equal"}
 	pubParams := [][]string{
@@ -36,8 +36,8 @@ func TestCreatePublication(t *testing.T) {
 	}
 
 	tables := []string{
-		test.SetupTestTable(ctx, t, conn),
-		test.SetupTestTable(ctx, t, conn),
+		test.SetupTestTable(ctx, t, pool),
+		test.SetupTestTable(ctx, t, pool),
 	}
 
 	for _, givenPubName := range pubNames {
@@ -47,7 +47,7 @@ func TestCreatePublication(t *testing.T) {
 				is := is.New(t)
 				err := CreatePublication(
 					ctx,
-					conn.PgConn(),
+					pool,
 					givenPubName,
 					CreatePublicationOptions{
 						Tables:            tables,
@@ -56,7 +56,7 @@ func TestCreatePublication(t *testing.T) {
 				)
 				is.NoErr(err)
 				// cleanup
-				is.NoErr(DropPublication(ctx, conn.PgConn(), givenPubName, DropPublicationOptions{}))
+				is.NoErr(DropPublication(ctx, pool, givenPubName, DropPublicationOptions{}))
 			})
 		}
 	}
@@ -73,11 +73,11 @@ func TestCreatePublication(t *testing.T) {
 func TestCreatePublicationForTables(t *testing.T) {
 	ctx := context.Background()
 	pub := test.RandomIdentifier(t)
-	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	pool := test.ConnectPool(ctx, t, test.RegularConnString)
 
 	tables := [][]string{
-		{test.SetupTestTable(ctx, t, conn)},
-		{test.SetupTestTable(ctx, t, conn), test.SetupTestTable(ctx, t, conn)},
+		{test.SetupTestTable(ctx, t, pool)},
+		{test.SetupTestTable(ctx, t, pool), test.SetupTestTable(ctx, t, pool)},
 	}
 
 	for _, givenTables := range tables {
@@ -86,7 +86,7 @@ func TestCreatePublicationForTables(t *testing.T) {
 			is := is.New(t)
 			err := CreatePublication(
 				ctx,
-				conn.PgConn(),
+				pool,
 				pub,
 				CreatePublicationOptions{
 					Tables: givenTables,
@@ -94,7 +94,7 @@ func TestCreatePublicationForTables(t *testing.T) {
 			)
 			is.NoErr(err)
 			// cleanup
-			is.NoErr(DropPublication(ctx, conn.PgConn(), pub, DropPublicationOptions{}))
+			is.NoErr(DropPublication(ctx, pool, pub, DropPublicationOptions{}))
 		})
 	}
 }
@@ -104,10 +104,10 @@ func TestDropPublication(t *testing.T) {
 	is := is.New(t)
 	pub := test.RandomIdentifier(t)
 
-	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	pool := test.ConnectPool(ctx, t, test.RegularConnString)
 	err := DropPublication(
 		ctx,
-		conn.PgConn(),
+		pool,
 		pub,
 		DropPublicationOptions{
 			IfExists: false, // fail if pub doesn't exist
@@ -118,7 +118,7 @@ func TestDropPublication(t *testing.T) {
 	// next connect with repmgr
 	err = DropPublication(
 		ctx,
-		conn.PgConn(),
+		pool,
 		pub,
 		DropPublicationOptions{
 			IfExists: true, // fail if pub doesn't exist

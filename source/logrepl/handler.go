@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -29,13 +30,14 @@ import (
 type CDCHandler struct {
 	tableKeys   map[string]string
 	relationSet *internal.RelationSet
-	out         chan<- sdk.Record
+	out         chan<- opencdc.Record
+	lastTXLSN   pglogrepl.LSN
 }
 
 func NewCDCHandler(
 	rs *internal.RelationSet,
 	tableKeys map[string]string,
-	out chan<- sdk.Record,
+	out chan<- opencdc.Record,
 ) *CDCHandler {
 	return &CDCHandler{
 		tableKeys:   tableKeys,
@@ -45,7 +47,8 @@ func NewCDCHandler(
 }
 
 // Handle is the handler function that receives all logical replication messages.
-func (h *CDCHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogrepl.LSN) error {
+// Returns non-zero LSN when a record was emitted for the message.
+func (h *CDCHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogrepl.LSN) (pglogrepl.LSN, error) {
 	sdk.Logger(ctx).Trace().
 		Str("lsn", lsn.String()).
 		Str("messageType", m.Type().String()).
@@ -53,27 +56,32 @@ func (h *CDCHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogr
 
 	switch m := m.(type) {
 	case *pglogrepl.RelationMessage:
-		// We have to add the Relations to our Set so that we can
-		// decode our own output
+		// We have to add the Relations to our Set so that we can decode our own output
 		h.relationSet.Add(m)
 	case *pglogrepl.InsertMessage:
-		err := h.handleInsert(ctx, m, lsn)
-		if err != nil {
-			return fmt.Errorf("logrepl handler insert: %w", err)
+		if err := h.handleInsert(ctx, m, lsn); err != nil {
+			return 0, fmt.Errorf("logrepl handler insert: %w", err)
 		}
+		return lsn, nil
 	case *pglogrepl.UpdateMessage:
-		err := h.handleUpdate(ctx, m, lsn)
-		if err != nil {
-			return fmt.Errorf("logrepl handler update: %w", err)
+		if err := h.handleUpdate(ctx, m, lsn); err != nil {
+			return 0, fmt.Errorf("logrepl handler update: %w", err)
 		}
+		return lsn, nil
 	case *pglogrepl.DeleteMessage:
-		err := h.handleDelete(ctx, m, lsn)
-		if err != nil {
-			return fmt.Errorf("logrepl handler delete: %w", err)
+		if err := h.handleDelete(ctx, m, lsn); err != nil {
+			return 0, fmt.Errorf("logrepl handler delete: %w", err)
+		}
+		return lsn, nil
+	case *pglogrepl.BeginMessage:
+		h.lastTXLSN = m.FinalLSN
+	case *pglogrepl.CommitMessage:
+		if h.lastTXLSN != 0 && h.lastTXLSN != m.CommitLSN {
+			return 0, fmt.Errorf("out of order commit %s, expected %s", m.CommitLSN, h.lastTXLSN)
 		}
 	}
 
-	return nil
+	return 0, nil
 }
 
 // handleInsert formats a Record with INSERT event data from Postgres and sends
@@ -164,7 +172,7 @@ func (h *CDCHandler) handleDelete(
 
 // send the record to the output channel or detect the cancellation of the
 // context and return the context error.
-func (h *CDCHandler) send(ctx context.Context, rec sdk.Record) error {
+func (h *CDCHandler) send(ctx context.Context, rec opencdc.Record) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -175,15 +183,15 @@ func (h *CDCHandler) send(ctx context.Context, rec sdk.Record) error {
 
 func (h *CDCHandler) buildRecordMetadata(relation *pglogrepl.RelationMessage) map[string]string {
 	return map[string]string{
-		sdk.MetadataCollection: relation.RelationName,
+		opencdc.MetadataCollection: relation.RelationName,
 	}
 }
 
 // buildRecordKey takes the values from the message and extracts the key that
 // matches the configured keyColumnName.
-func (h *CDCHandler) buildRecordKey(values map[string]any, table string) sdk.Data {
+func (h *CDCHandler) buildRecordKey(values map[string]any, table string) opencdc.Data {
 	keyColumn := h.tableKeys[table]
-	key := make(sdk.StructuredData)
+	key := make(opencdc.StructuredData)
 	for k, v := range values {
 		if keyColumn == k {
 			key[k] = v
@@ -195,14 +203,14 @@ func (h *CDCHandler) buildRecordKey(values map[string]any, table string) sdk.Dat
 
 // buildRecordPayload takes the values from the message and extracts the payload
 // for the record.
-func (h *CDCHandler) buildRecordPayload(values map[string]any) sdk.Data {
+func (h *CDCHandler) buildRecordPayload(values map[string]any) opencdc.Data {
 	if len(values) == 0 {
 		return nil
 	}
-	return sdk.StructuredData(values)
+	return opencdc.StructuredData(values)
 }
 
-func (*CDCHandler) buildPosition(lsn pglogrepl.LSN) sdk.Position {
+func (*CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 	return position.Position{
 		Type:    position.TypeCDC,
 		LastLSN: lsn.String(),

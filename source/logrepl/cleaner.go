@@ -21,8 +21,7 @@ import (
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/jackc/pglogrepl"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type CleanupConfig struct {
@@ -34,58 +33,51 @@ type CleanupConfig struct {
 // Cleanup drops the provided replication slot and publication.
 // It will terminate any backends consuming the replication slot before deletion.
 func Cleanup(ctx context.Context, c CleanupConfig) error {
-	pgconfig, err := pgconn.ParseConfig(c.URL)
-	if err != nil {
-		return fmt.Errorf("failed to parse config URL: %w", err)
-	}
+	logger := sdk.Logger(ctx)
 
-	if pgconfig.RuntimeParams == nil {
-		pgconfig.RuntimeParams = make(map[string]string)
-	}
-	pgconfig.RuntimeParams["replication"] = "database"
-
-	conn, err := pgconn.ConnectConfig(ctx, pgconfig)
+	pool, err := pgxpool.New(ctx, c.URL)
 	if err != nil {
-		return fmt.Errorf("could not establish replication connection: %w", err)
+		return fmt.Errorf("failed to connect to database: %w", err)
 	}
-	defer conn.Close(ctx)
+	defer pool.Close()
 
 	var errs []error
 
+	logger.Debug().
+		Str("slot", c.SlotName).
+		Str("publication", c.PublicationName).
+		Msg("removing replication slot and publication")
+
 	if c.SlotName != "" {
 		// Terminate any outstanding backends which are consuming the slot before deleting it.
-		mrr := conn.Exec(ctx, fmt.Sprintf(
-			"SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots WHERE slot_name='%s' AND active=true", c.SlotName,
-		))
-		if err := mrr.Close(); err != nil {
+		if _, err := pool.Exec(
+			ctx,
+			"SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots WHERE slot_name=$1 AND active=true", c.SlotName,
+		); err != nil {
 			errs = append(errs, fmt.Errorf("failed to terminate active backends on slot: %w", err))
 		}
 
-		if err := pglogrepl.DropReplicationSlot(
+		if _, err := pool.Exec(
 			ctx,
-			conn,
-			c.SlotName,
-			pglogrepl.DropReplicationSlotOptions{},
+			"SELECT pg_drop_replication_slot($1)", c.SlotName,
 		); err != nil {
 			errs = append(errs, fmt.Errorf("failed to clean up replication slot %q: %w", c.SlotName, err))
 		}
 	} else {
-		sdk.Logger(ctx).Warn().
-			Msg("cleanup: skipping replication slot cleanup, name is empty")
+		logger.Warn().Msg("cleanup: skipping replication slot cleanup, name is empty")
 	}
 
 	if c.PublicationName != "" {
 		if err := internal.DropPublication(
 			ctx,
-			conn,
+			pool,
 			c.PublicationName,
 			internal.DropPublicationOptions{IfExists: true},
 		); err != nil {
 			errs = append(errs, fmt.Errorf("failed to clean up publication %q: %w", c.PublicationName, err))
 		}
 	} else {
-		sdk.Logger(ctx).Warn().
-			Msg("cleanup: skipping publication cleanup, name is empty")
+		logger.Warn().Msg("cleanup: skipping publication cleanup, name is empty")
 	}
 
 	return errors.Join(errs...)

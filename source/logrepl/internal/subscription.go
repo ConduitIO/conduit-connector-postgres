@@ -21,10 +21,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
@@ -42,7 +43,7 @@ type Subscription struct {
 	StatusTimeout time.Duration
 	TXSnapshotID  string
 
-	conn *pgconn.PgConn
+	conn *pgxpool.Conn
 
 	stop context.CancelFunc
 
@@ -50,25 +51,39 @@ type Subscription struct {
 	done    chan struct{}
 	doneErr error
 
-	walWritten pglogrepl.LSN
-	walFlushed pglogrepl.LSN
+	walWritten   pglogrepl.LSN
+	walFlushed   pglogrepl.LSN
+	serverWALEnd pglogrepl.LSN
 }
 
-type Handler func(context.Context, pglogrepl.Message, pglogrepl.LSN) error
+type Handler func(context.Context, pglogrepl.Message, pglogrepl.LSN) (pglogrepl.LSN, error)
 
 // CreateSubscription initializes the logical replication subscriber by creating the replication slot.
 func CreateSubscription(
 	ctx context.Context,
-	conn *pgconn.PgConn,
+	pool *pgxpool.Pool,
 	slotName,
 	publication string,
 	tables []string,
 	startLSN pglogrepl.LSN,
 	h Handler,
 ) (*Subscription, error) {
+	var err error
+
+	// Request a replication connection
+	conn, err := pool.Acquire(cpool.WithReplication(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("could not establish replication connection: %w", err)
+	}
+	defer func() { // release connection on error
+		if err != nil {
+			conn.Release()
+		}
+	}()
+
 	result, err := pglogrepl.CreateReplicationSlot(
 		ctx,
-		conn,
+		conn.Conn().PgConn(),
 		slotName,
 		pgOutputPlugin,
 		pglogrepl.CreateReplicationSlotOptions{
@@ -85,6 +100,27 @@ func CreateSubscription(
 
 		sdk.Logger(ctx).Warn().
 			Msgf("replication slot %q already exists", slotName)
+	}
+
+	slotInfo, err := ReadReplicationSlot(ctx, pool, slotName)
+	if err != nil {
+		return nil, err
+	}
+
+	// Reset positional data, start LSN is not valid.
+	if startLSN == 0 {
+		startLSN = slotInfo.RestartLSN
+	}
+
+	// Reset start LSN to the last known available WAL location from this slot.
+	if startLSN < slotInfo.RestartLSN {
+		sdk.Logger(ctx).Warn().
+			Stringer("start_lsn", startLSN).
+			Stringer("restart_lsn", slotInfo.RestartLSN).
+			Stringer("confirmed_flush_lsn", slotInfo.ConfirmedFlushLSN).
+			Msgf("restart LSN is earlier than available WAL, resetting to last restart point")
+
+		startLSN = slotInfo.RestartLSN
 	}
 
 	return &Subscription{
@@ -129,6 +165,7 @@ func (s *Subscription) listen(ctx context.Context) error {
 	// signal that the subscription is ready and is receiving messages
 	close(s.ready)
 	nextStatusUpdateAt := time.Now().Add(s.StatusTimeout)
+
 	for {
 		if time.Now().After(nextStatusUpdateAt) {
 			err := s.sendStandbyStatusUpdate(ctx)
@@ -158,13 +195,11 @@ func (s *Subscription) listen(ctx context.Context) error {
 
 		switch copyDataMsg.Data[0] {
 		case pglogrepl.PrimaryKeepaliveMessageByteID:
-			err := s.handlePrimaryKeepaliveMessage(ctx, copyDataMsg)
-			if err != nil {
+			if err := s.handlePrimaryKeepaliveMessage(ctx, copyDataMsg); err != nil {
 				return err
 			}
 		case pglogrepl.XLogDataByteID:
-			err := s.handleXLogData(ctx, copyDataMsg)
-			if err != nil {
+			if err := s.handleXLogData(ctx, copyDataMsg); err != nil {
 				return err
 			}
 		default:
@@ -184,11 +219,15 @@ func (s *Subscription) handlePrimaryKeepaliveMessage(ctx context.Context, copyDa
 	if err != nil {
 		return fmt.Errorf("failed to parse primary keepalive message: %w", err)
 	}
+
+	atomic.StoreUint64((*uint64)(&s.serverWALEnd), uint64(pkm.ServerWALEnd))
+
 	if pkm.ReplyRequested {
-		if err = s.sendStandbyStatusUpdate(ctx); err != nil {
+		if err := s.sendStandbyStatusUpdate(ctx); err != nil {
 			return fmt.Errorf("failed to send status: %w", err)
 		}
 	}
+
 	return nil
 }
 
@@ -210,13 +249,15 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 		return fmt.Errorf("invalid message: %w", err)
 	}
 
-	if err = s.Handler(ctx, logicalMsg, xld.WALStart); err != nil {
+	writtenLSN, err := s.Handler(ctx, logicalMsg, xld.WALStart)
+	if err != nil {
 		return fmt.Errorf("handler error: %w", err)
 	}
 
-	if xld.WALStart > 0 {
-		s.walWritten = xld.WALStart
+	if writtenLSN > 0 {
+		s.walWritten = writtenLSN
 	}
+
 	return nil
 }
 
@@ -253,6 +294,23 @@ func (s *Subscription) Wait(ctx context.Context, timeout time.Duration) error {
 	}
 }
 
+func (s *Subscription) Teardown(ctx context.Context) error {
+	defer func() {
+		if s.conn != nil {
+			s.conn.Release()
+		}
+	}()
+
+	s.Stop()
+
+	select {
+	case <-s.ready:
+		return s.Wait(ctx, closeReplicationTimeout)
+	default:
+		return nil
+	}
+}
+
 // Ready returns a channel that is closed when the subscription is ready and
 // receiving messages.
 func (s *Subscription) Ready() <-chan struct{} {
@@ -279,7 +337,7 @@ func (s *Subscription) startReplication(ctx context.Context) error {
 
 	if err := pglogrepl.StartReplication(
 		ctx,
-		s.conn,
+		s.conn.Conn().PgConn(),
 		s.SlotName,
 		s.StartLSN,
 		pglogrepl.StartReplicationOptions{
@@ -298,7 +356,7 @@ func (s *Subscription) startReplication(ctx context.Context) error {
 // replication is done.
 func (s *Subscription) sendStandbyCopyDone(ctx context.Context) error {
 	sdk.Logger(ctx).Trace().Msg("sending standby copy done message")
-	_, err := pglogrepl.SendStandbyCopyDone(ctx, s.conn)
+	_, err := pglogrepl.SendStandbyCopyDone(ctx, s.conn.Conn().PgConn())
 	if err != nil {
 		return fmt.Errorf("failed to send standby copy done: %w", err)
 	}
@@ -315,20 +373,33 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 		return fmt.Errorf("walWrite (%s) should be >= walFlush (%s)", s.walWritten, walFlushed)
 	}
 
+	// N.B. Manage replication slot lag, by responding with the last server LSN, when
+	//      all previous slot relevant msgs have been written and flushed
+	replyWithWALEnd := walFlushed == s.walWritten && walFlushed < s.serverWALEnd
+
 	sdk.Logger(ctx).Trace().
-		Str("walWrite", s.walWritten.String()).
-		Str("walFlush", walFlushed.String()).
-		Str("walApply", walFlushed.String()).
+		Stringer("wal_write", s.walWritten).
+		Stringer("wal_flush", walFlushed).
+		Stringer("server_wal_end", s.serverWALEnd).
+		Bool("server_wal_end_sent", replyWithWALEnd).
 		Msg("sending standby status update")
 
-	err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn, pglogrepl.StandbyStatusUpdate{
+	if replyWithWALEnd {
+		if err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn.Conn().PgConn(), pglogrepl.StandbyStatusUpdate{
+			WALWritePosition: s.serverWALEnd,
+		}); err != nil {
+			return fmt.Errorf("failed to send standby status update with server end lsn: %w", err)
+		}
+
+		return nil
+	}
+
+	if err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn.Conn().PgConn(), pglogrepl.StandbyStatusUpdate{
 		WALWritePosition: s.walWritten,
 		WALFlushPosition: walFlushed,
 		WALApplyPosition: walFlushed,
-		ClientTime:       time.Now(),
 		ReplyRequested:   false,
-	})
-	if err != nil {
+	}); err != nil {
 		return fmt.Errorf("failed to send standby status update: %w", err)
 	}
 
@@ -343,7 +414,7 @@ func (s *Subscription) receiveMessage(ctx context.Context, deadline time.Time) (
 	defer cancel()
 
 	sdk.Logger(ctx).Trace().Msg("receiving message")
-	msg, err := s.conn.ReceiveMessage(wctx)
+	msg, err := s.conn.Conn().PgConn().ReceiveMessage(wctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to receive message: %w", err)
 	}

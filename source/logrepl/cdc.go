@@ -18,17 +18,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
-	"github.com/jackc/pgx/v5/pgconn"
-)
-
-const (
-	subscriberDoneTimeout = time.Second * 2
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Config holds configuration values for CDCIterator.
@@ -44,22 +40,16 @@ type CDCConfig struct {
 // slot and returns them to the caller through Next.
 type CDCIterator struct {
 	config  CDCConfig
-	records chan sdk.Record
-	pgconn  *pgconn.PgConn
+	records chan opencdc.Record
 
 	sub *internal.Subscription
 }
 
 // NewCDCIterator initializes logical replication by creating the publication and subscription manager.
-func NewCDCIterator(ctx context.Context, pgconf *pgconn.Config, c CDCConfig) (*CDCIterator, error) {
-	conn, err := pgconn.ConnectConfig(ctx, withReplication(pgconf))
-	if err != nil {
-		return nil, fmt.Errorf("could not establish replication connection: %w", err)
-	}
-
+func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCIterator, error) {
 	if err := internal.CreatePublication(
 		ctx,
-		conn,
+		pool,
 		c.PublicationName,
 		internal.CreatePublicationOptions{Tables: c.Tables},
 	); err != nil {
@@ -73,11 +63,11 @@ func NewCDCIterator(ctx context.Context, pgconf *pgconn.Config, c CDCConfig) (*C
 			Msgf("Publication %q already exists.", c.PublicationName)
 	}
 
-	records := make(chan sdk.Record)
+	records := make(chan opencdc.Record)
 
 	sub, err := internal.CreateSubscription(
 		ctx,
-		conn,
+		pool,
 		c.SlotName,
 		c.PublicationName,
 		c.Tables,
@@ -91,7 +81,6 @@ func NewCDCIterator(ctx context.Context, pgconf *pgconn.Config, c CDCConfig) (*C
 	return &CDCIterator{
 		config:  c,
 		records: records,
-		pgconn:  conn,
 		sub:     sub,
 	}, nil
 }
@@ -102,7 +91,7 @@ func (i *CDCIterator) StartSubscriber(ctx context.Context) error {
 	sdk.Logger(ctx).Info().
 		Str("slot", i.config.SlotName).
 		Str("publication", i.config.PublicationName).
-		Msg("Starting logical replication")
+		Msgf("Starting logical replication at %s", i.sub.StartLSN)
 
 	go func() {
 		if err := i.sub.Run(ctx); err != nil {
@@ -126,27 +115,27 @@ func (i *CDCIterator) StartSubscriber(ctx context.Context) error {
 // block until either a record is returned from the subscription, the
 // subscription stops because of an error or the context gets canceled.
 // Returns error when the subscription has been started.
-func (i *CDCIterator) Next(ctx context.Context) (sdk.Record, error) {
+func (i *CDCIterator) Next(ctx context.Context) (opencdc.Record, error) {
 	if !i.subscriberReady() {
-		return sdk.Record{}, errors.New("logical replication has not been started")
+		return opencdc.Record{}, errors.New("logical replication has not been started")
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			return sdk.Record{}, ctx.Err()
+			return opencdc.Record{}, ctx.Err()
 		case <-i.sub.Done():
 			if err := i.sub.Err(); err != nil {
-				return sdk.Record{}, fmt.Errorf("logical replication error: %w", err)
+				return opencdc.Record{}, fmt.Errorf("logical replication error: %w", err)
 			}
 			if err := ctx.Err(); err != nil {
 				// subscription is done because the context is canceled, we went
 				// into the wrong case by chance
-				return sdk.Record{}, err
+				return opencdc.Record{}, err
 			}
 			// subscription stopped without an error and the context is still
 			// open, this is a strange case, shouldn't actually happen
-			return sdk.Record{}, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
+			return opencdc.Record{}, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
 		case r := <-i.records:
 			return r, nil
 		}
@@ -154,7 +143,7 @@ func (i *CDCIterator) Next(ctx context.Context) (sdk.Record, error) {
 }
 
 // Ack forwards the acknowledgment to the subscription.
-func (i *CDCIterator) Ack(_ context.Context, sdkPos sdk.Position) error {
+func (i *CDCIterator) Ack(_ context.Context, sdkPos opencdc.Position) error {
 	pos, err := position.ParseSDKPosition(sdkPos)
 	if err != nil {
 		return err
@@ -181,14 +170,11 @@ func (i *CDCIterator) Ack(_ context.Context, sdkPos sdk.Position) error {
 // or the context gets canceled. If the subscription stopped with an unexpected
 // error, the error is returned.
 func (i *CDCIterator) Teardown(ctx context.Context) error {
-	defer i.pgconn.Close(ctx)
-
-	if !i.subscriberReady() {
-		return nil
+	if i.sub != nil {
+		return i.sub.Teardown(ctx)
 	}
 
-	i.sub.Stop()
-	return i.sub.Wait(ctx, subscriberDoneTimeout)
+	return nil
 }
 
 // subscriberReady returns true when the subscriber is running.
@@ -206,17 +192,4 @@ func (i *CDCIterator) subscriberReady() bool {
 // iterator is resuming.
 func (i *CDCIterator) TXSnapshotID() string {
 	return i.sub.TXSnapshotID
-}
-
-// withReplication adds the `replication` parameter to the connection config.
-// This will uprgade a regular command connection to accept replication commands.
-func withReplication(pgconf *pgconn.Config) *pgconn.Config {
-	c := pgconf.Copy()
-	if c.RuntimeParams == nil {
-		c.RuntimeParams = make(map[string]string)
-	}
-	// enable replication on connection
-	c.RuntimeParams["replication"] = "database"
-
-	return c
 }

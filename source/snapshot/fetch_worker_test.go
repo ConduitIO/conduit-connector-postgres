@@ -22,9 +22,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
-	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
@@ -232,22 +233,25 @@ func Test_FetcherRun_Initial(t *testing.T) {
 	is.NoErr(tt.Err())
 	is.True(len(dd) == 4)
 
-	expectedMatch := []sdk.StructuredData{
-		{"id": int64(1), "key": []uint8{49}, "column1": "foo", "column2": int32(123), "column3": false},
-		{"id": int64(2), "key": []uint8{50}, "column1": "bar", "column2": int32(456), "column3": true},
-		{"id": int64(3), "key": []uint8{51}, "column1": "baz", "column2": int32(789), "column3": false},
-		{"id": int64(4), "key": []uint8{52}, "column1": nil, "column2": nil, "column3": nil},
+	expectedMatch := []opencdc.StructuredData{
+		{"id": int64(1), "key": []uint8{49}, "column1": "foo", "column2": int32(123), "column3": false, "column4": 12.2, "column5": int64(4)},
+		{"id": int64(2), "key": []uint8{50}, "column1": "bar", "column2": int32(456), "column3": true, "column4": 13.42, "column5": int64(8)},
+		{"id": int64(3), "key": []uint8{51}, "column1": "baz", "column2": int32(789), "column3": false, "column4": nil, "column5": int64(9)},
+		{"id": int64(4), "key": []uint8{52}, "column1": nil, "column2": nil, "column3": nil, "column4": 91.1, "column5": nil},
 	}
 
 	for i, d := range dd {
-		is.Equal(d.Key, sdk.StructuredData{"id": int64(i + 1)})
-		is.Equal(d.Payload, expectedMatch[i])
+		t.Run(fmt.Sprintf("payload_%d", i+1), func(t *testing.T) {
+			is := is.New(t)
+			is.Equal(d.Key, opencdc.StructuredData{"id": int64(i + 1)})
+			is.Equal("", cmp.Diff(expectedMatch[i], d.Payload))
 
-		is.Equal(d.Position, position.SnapshotPosition{
-			LastRead:    int64(i + 1),
-			SnapshotEnd: 4,
+			is.Equal(d.Position, position.SnapshotPosition{
+				LastRead:    int64(i + 1),
+				SnapshotEnd: 4,
+			})
+			is.Equal(d.Table, table)
 		})
-		is.Equal(d.Table, table)
 	}
 }
 
@@ -294,14 +298,16 @@ func Test_FetcherRun_Resume(t *testing.T) {
 	is.True(len(dd) == 1)
 
 	// validate generated record
-	is.Equal(dd[0].Key, sdk.StructuredData{"id": int64(3)})
-	is.Equal(dd[0].Payload, sdk.StructuredData{
+	is.Equal(dd[0].Key, opencdc.StructuredData{"id": int64(3)})
+	is.Equal("", cmp.Diff(dd[0].Payload, opencdc.StructuredData{
 		"id":      int64(3),
 		"key":     []uint8{51},
 		"column1": "baz",
 		"column2": int32(789),
 		"column3": false,
-	})
+		"column4": nil,
+		"column5": int64(9),
+	}))
 
 	is.Equal(dd[0].Position, position.SnapshotPosition{
 		LastRead:    3,
@@ -399,13 +405,14 @@ func Test_FetchWorker_buildRecordData(t *testing.T) {
 		// special case fields
 		fields       = []string{"id", "time"}
 		values       = []any{1, now}
-		expectValues = []any{1, now.String()}
+		expectValues = []any{1, now}
 	)
 
-	key, payload := (&FetchWorker{
+	key, payload, err := (&FetchWorker{
 		conf: FetchConfig{Table: "mytable", Key: "id"},
 	}).buildRecordData(fields, values)
 
+	is.NoErr(err)
 	is.Equal(len(payload), 2)
 	for i, k := range fields {
 		is.Equal(payload[k], expectValues[i])
@@ -470,4 +477,44 @@ func Test_FetchWorker_updateSnapshotEnd(t *testing.T) {
 			}
 		})
 	}
+}
+
+func Test_FetchWorker_createCursor(t *testing.T) {
+	var (
+		pool  = test.ConnectPool(context.Background(), t, test.RegularConnString)
+		table = test.SetupTestTable(context.Background(), t, pool)
+		is    = is.New(t)
+		ctx   = context.Background()
+	)
+
+	f := FetchWorker{
+		lastRead:    10,
+		snapshotEnd: 15,
+		cursorName:  "cursor123",
+		conf: FetchConfig{
+			Table: table,
+			Key:   "id",
+		},
+	}
+
+	tx, err := pool.Begin(ctx)
+	is.NoErr(err)
+
+	cleanup, err := f.createCursor(ctx, tx)
+	is.NoErr(err)
+
+	t.Cleanup(func() {
+		cleanup()
+	})
+
+	var cursorDef string
+	is.NoErr(tx.QueryRow(context.Background(), "SELECT statement FROM pg_cursors WHERE name=$1", f.cursorName).
+		Scan(&cursorDef),
+	)
+	is.Equal(
+		cursorDef,
+		fmt.Sprintf("DECLARE cursor123 CURSOR FOR(SELECT * FROM %s WHERE id > 10 AND id <= 15 ORDER BY id)", table),
+	)
+
+	is.NoErr(tx.Rollback(ctx))
 }
