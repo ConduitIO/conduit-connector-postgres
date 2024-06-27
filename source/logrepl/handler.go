@@ -179,7 +179,7 @@ func (h *CDCHandler) handleDelete(
 
 	rec := sdk.Util.Source.NewRecordDelete(
 		h.buildPosition(lsn),
-		h.buildRecordMetadata(rel),
+		h.buildRecordMetadata(rel, sdk.OperationDelete),
 		h.buildRecordKey(oldValues, rel.RelationName),
 	)
 	return h.send(ctx, rec)
