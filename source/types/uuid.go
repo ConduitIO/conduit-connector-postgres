@@ -26,6 +26,10 @@ type UUIDFormatter struct{}
 // * string format of Time when connectorn is not builtin
 // * time type in UTC when connector is builtin
 func (UUIDFormatter) Format(v any) (string, error) {
+	if v == nil {
+		return "", nil
+	}
+
 	b, ok := v.([16]byte)
 	if !ok {
 		return "", fmt.Errorf("failed to parse uuid byte array %v", v)

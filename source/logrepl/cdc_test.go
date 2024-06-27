@@ -128,15 +128,20 @@ func TestCDCIterator_Next(t *testing.T) {
 	<-i.sub.Ready()
 
 	tests := []struct {
-		name       string
-		setupQuery string
-		want       sdk.Record
-		wantErr    bool
+		name    string
+		setup   func(t *testing.T)
+		want    sdk.Record
+		wantErr bool
 	}{
 		{
 			name: "should detect insert",
-			setupQuery: `INSERT INTO %s (id, column1, column2, column3, column4, column5)
-				VALUES (6, 'bizz', 456, false, 12.3, 14)`,
+			setup: func(t *testing.T) {
+				is := is.New(t)
+				query := fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5)
+							VALUES (6, 'bizz', 456, false, 12.3, 14)`, table)
+				_, err := pool.Exec(ctx, query)
+				is.NoErr(err)
+			},
 			wantErr: false,
 			want: sdk.Record{
 				Operation: sdk.OperationCreate,
@@ -160,9 +165,12 @@ func TestCDCIterator_Next(t *testing.T) {
 		},
 		{
 			name: "should detect update",
-			setupQuery: `UPDATE %s
-				SET column1 = 'test cdc updates'
-				WHERE key = '1'`,
+			setup: func(t *testing.T) {
+				is := is.New(t)
+				query := fmt.Sprintf(`UPDATE %s SET column1 = 'test cdc updates' WHERE key = '1'`, table)
+				_, err := pool.Exec(ctx, query)
+				is.NoErr(err)
+			},
 			wantErr: false,
 			want: sdk.Record{
 				Operation: sdk.OperationUpdate,
@@ -171,7 +179,6 @@ func TestCDCIterator_Next(t *testing.T) {
 				},
 				Key: sdk.StructuredData{"id": int64(1)},
 				Payload: sdk.Change{
-					Before: nil, // TODO
 					After: sdk.StructuredData{
 						"id":      int64(1),
 						"column1": "test cdc updates",
@@ -185,27 +192,112 @@ func TestCDCIterator_Next(t *testing.T) {
 			},
 		},
 		{
-			name:       "should detect delete",
-			setupQuery: `DELETE FROM %s WHERE id = 3`,
-			wantErr:    false,
+			name: "should detect full update",
+			setup: func(t *testing.T) {
+				is := is.New(t)
+				_, err := pool.Exec(ctx, fmt.Sprintf("ALTER TABLE %s REPLICA IDENTITY FULL", table))
+				is.NoErr(err)
+				query := fmt.Sprintf(`UPDATE %s SET column1 = 'test cdc full updates' WHERE key = '1'`, table)
+				_, err = pool.Exec(ctx, query)
+				is.NoErr(err)
+			},
+			wantErr: false,
+			want: sdk.Record{
+				Operation: sdk.OperationUpdate,
+				Metadata: map[string]string{
+					sdk.MetadataCollection: table,
+				},
+				Key: sdk.StructuredData{"id": int64(1)},
+				Payload: sdk.Change{
+					Before: sdk.StructuredData{
+						"id":      int64(1),
+						"column1": "test cdc updates",
+						"column2": int32(123),
+						"column3": false,
+						"column4": 12.2,
+						"column5": int64(4),
+						"key":     []uint8("1"),
+					},
+					After: sdk.StructuredData{
+						"id":      int64(1),
+						"column1": "test cdc full updates",
+						"column2": int32(123),
+						"column3": false,
+						"column4": 12.2,
+						"column5": int64(4),
+						"key":     []uint8("1"),
+					},
+				},
+			},
+		},
+		{
+			name: "should detect delete",
+			setup: func(t *testing.T) {
+				is := is.New(t)
+				_, err := pool.Exec(ctx, fmt.Sprintf("ALTER TABLE %s REPLICA IDENTITY DEFAULT", table))
+				is.NoErr(err)
+				query := fmt.Sprintf(`DELETE FROM %s WHERE id = 4`, table)
+				_, err = pool.Exec(ctx, query)
+				is.NoErr(err)
+			},
+			wantErr: false,
+			want: sdk.Record{
+				Operation: sdk.OperationDelete,
+				Metadata: map[string]string{
+					sdk.MetadataCollection: table,
+				},
+				Key: sdk.StructuredData{"id": int64(4)},
+				Payload: sdk.Change{
+					Before: sdk.StructuredData{
+						"id":      int64(4),
+						"column1": nil,
+						"column2": nil,
+						"column3": nil,
+						"column4": nil,
+						"column5": nil,
+						"key":     nil,
+					},
+				},
+			},
+		},
+		{
+			name: "should detect full delete",
+			setup: func(t *testing.T) {
+				is := is.New(t)
+				_, err := pool.Exec(ctx, fmt.Sprintf("ALTER TABLE %s REPLICA IDENTITY FULL", table))
+				is.NoErr(err)
+				query := fmt.Sprintf(`DELETE FROM %s WHERE id = 3`, table)
+				_, err = pool.Exec(ctx, query)
+				is.NoErr(err)
+			},
+			wantErr: false,
 			want: sdk.Record{
 				Operation: sdk.OperationDelete,
 				Metadata: map[string]string{
 					sdk.MetadataCollection: table,
 				},
 				Key: sdk.StructuredData{"id": int64(3)},
+				Payload: sdk.Change{
+					Before: sdk.StructuredData{
+						"id":      int64(3),
+						"key":     []uint8("3"),
+						"column1": "baz",
+						"column2": int32(789),
+						"column3": false,
+						"column4": nil,
+						"column5": int64(9),
+					},
+				},
 			},
 		},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			is := is.New(t)
 			now := time.Now()
 
-			// execute change
-			query := fmt.Sprintf(tt.setupQuery, table)
-			_, err := pool.Exec(ctx, query)
-			is.NoErr(err)
+			tt.setup(t)
 
 			// fetch the change
 			nextCtx, cancel := context.WithTimeout(ctx, time.Second*10)

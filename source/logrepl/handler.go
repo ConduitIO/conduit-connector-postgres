@@ -177,11 +177,21 @@ func (h *CDCHandler) handleDelete(
 		return fmt.Errorf("failed to decode old values: %w", err)
 	}
 
+	if err := h.updateAvroSchema(rel, msg.OldTuple); err != nil {
+		return fmt.Errorf("failed to update avro schema: %w", err)
+	}
+
 	rec := sdk.Util.Source.NewRecordDelete(
 		h.buildPosition(lsn),
 		h.buildRecordMetadata(rel),
 		h.buildRecordKey(oldValues, rel.RelationName),
 	)
+
+	rec.Payload = sdk.Change{
+		Before: h.buildRecordPayload(oldValues),
+		After:  nil,
+	}
+
 	return h.send(ctx, rec)
 }
 
