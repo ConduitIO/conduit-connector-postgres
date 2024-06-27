@@ -22,10 +22,13 @@ import (
 
 type UUIDFormatter struct{}
 
-// Format returns:
-// * string format of Time when connectorn is not builtin
-// * time type in UTC when connector is builtin
+// Format takes a slice of bytes and returns a UUID in string format
+// Returns error when byte array cannot be parsed.
 func (UUIDFormatter) Format(v any) (string, error) {
+	if v == nil {
+		return "", nil
+	}
+
 	b, ok := v.([16]byte)
 	if !ok {
 		return "", fmt.Errorf("failed to parse uuid byte array %v", v)
