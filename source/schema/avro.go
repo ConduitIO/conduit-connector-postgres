@@ -18,6 +18,7 @@ import (
 	"cmp"
 	"fmt"
 	"math"
+	"reflect"
 	"slices"
 
 	"github.com/hamba/avro/v2"
@@ -136,21 +137,27 @@ func (a *avroExtractor) extractType(t *pgtype.Type, val any) (avro.Schema, error
 		return ps, nil
 	}
 
-	switch tt := val.(type) {
-	case pgtype.Numeric:
-		// N.B.: Default to 38 positions and pick the exponent as the scale.
+	switch t.Name {
+	case "numeric":
+		// default to max avro scale, which cannot exceed precision
+		scale := avroDecimalFixedSize
+		if tt, ok := val.(pgtype.Numeric); ok {
+			// pick the exponent as the scale
+			scale = int(math.Abs(float64(tt.Exp))) 
+		}
+		// N.B.: Default to 38 positions
 		fs, err := avro.NewFixedSchema(
 			string(avro.Decimal),
 			avroNS,
 			avroDecimalFixedSize,
-			avro.NewDecimalLogicalSchema(avroDecimalPrecision, int(math.Abs(float64(tt.Exp)))),
+			avro.NewDecimalLogicalSchema(avroDecimalPrecision, scale),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create avro.FixedSchema: %w", err)
 		}
 		return fs, nil
 	default:
-		return nil, fmt.Errorf("cannot resolve field %q of type %T", t.Name, tt)
+		return nil, fmt.Errorf("cannot resolve field %q of type %T", t.Name, reflect.TypeOf(val))
 	}
 }
 
