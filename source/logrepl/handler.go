@@ -114,7 +114,7 @@ func (h *CDCHandler) handleInsert(
 
 	rec := sdk.Util.Source.NewRecordCreate(
 		h.buildPosition(lsn),
-		h.buildRecordMetadata(rel),
+		h.buildRecordMetadata(rel, sdk.OperationCreate),
 		h.buildRecordKey(newValues, rel.RelationName),
 		h.buildRecordPayload(newValues),
 	)
@@ -152,7 +152,7 @@ func (h *CDCHandler) handleUpdate(
 
 	rec := sdk.Util.Source.NewRecordUpdate(
 		h.buildPosition(lsn),
-		h.buildRecordMetadata(rel),
+		h.buildRecordMetadata(rel, sdk.OperationUpdate),
 		h.buildRecordKey(newValues, rel.RelationName),
 		h.buildRecordPayload(oldValues),
 		h.buildRecordPayload(newValues),
@@ -196,12 +196,12 @@ func (h *CDCHandler) send(ctx context.Context, rec sdk.Record) error {
 	}
 }
 
-func (h *CDCHandler) buildRecordMetadata(rel *pglogrepl.RelationMessage) map[string]string {
+func (h *CDCHandler) buildRecordMetadata(rel *pglogrepl.RelationMessage, op sdk.Operation) map[string]string {
 	m := map[string]string{
 		sdk.MetadataCollection: rel.RelationName,
 	}
 
-	if h.withAvroSchema {
+	if h.withAvroSchema && op != sdk.OperationDelete {
 		m[schema.AvroMetadataKey] = h.relAvroSchema[rel.RelationName].String()
 	}
 
