@@ -27,14 +27,7 @@ import (
 
 const (
 	avroNS = "conduit.postgres"
-	// The default decimal precision is pretty generous, but it is in excess of what
-	// pgx provides by default. All numeric values by default are coded to float64/int64.
-	// Ideally in the future the decimal precision can be adjusted to fit the definition in postgres.
-	avroDecimalPrecision = 38
-	// The size of the storage in which a decimal may be encoded depends on the underlying numeric definition.
-	// Unfortunately similarly to the decimal precision, this is dependent on the size of the numeric, which
-	// by default is constraint to 8 bytes. This default is generously allocating four times larger width.
-	avroDecimalFixedSize = 8 * 4
+	avroDecimalPadding = 8
 )
 
 var Avro = &avroExtractor{
@@ -133,7 +126,7 @@ func (a *avroExtractor) extractType(t *pgtype.Type, typeMod int32) (avro.Schema,
 		fs, err := avro.NewFixedSchema(
 			string(avro.Decimal),
 			avroNS,
-			avroDecimalFixedSize,
+			precision + scale + avroDecimalPadding,
 			avro.NewDecimalLogicalSchema(precision, scale),
 		)
 		if err != nil {
