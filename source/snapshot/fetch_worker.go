@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	"github.com/conduitio/conduit-connector-postgres/source/types"
@@ -77,8 +78,8 @@ func (c FetchConfig) Validate() error {
 }
 
 type FetchData struct {
-	Key        sdk.StructuredData
-	Payload    sdk.StructuredData
+	Key        opencdc.StructuredData
+	Payload    opencdc.StructuredData
 	Position   position.SnapshotPosition
 	Table      string
 	AvroSchema avro.Schema
@@ -365,10 +366,10 @@ func (f *FetchWorker) buildSnapshotPosition(fields []pgconn.FieldDescription, va
 	return position.SnapshotPosition{}, fmt.Errorf("key %q not found in fields", f.conf.Key)
 }
 
-func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values []any) (sdk.StructuredData, sdk.StructuredData, error) {
+func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values []any) (opencdc.StructuredData, opencdc.StructuredData, error) {
 	var (
-		key     = make(sdk.StructuredData)
-		payload = make(sdk.StructuredData)
+		key     = make(opencdc.StructuredData)
+		payload = make(opencdc.StructuredData)
 	)
 
 	for i, fd := range fields {
