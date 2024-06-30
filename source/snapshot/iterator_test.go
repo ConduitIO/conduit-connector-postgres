@@ -20,9 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
-	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/matryer/is"
 )
 
@@ -51,7 +51,7 @@ func Test_Iterator_Next(t *testing.T) {
 		for j := 1; j <= 4; j++ {
 			r, err := i.Next(ctx)
 			is.NoErr(err)
-			is.Equal(r.Operation, sdk.OperationSnapshot)
+			is.Equal(r.Operation, opencdc.OperationSnapshot)
 		}
 
 		for j := 1; j <= 4; j++ {

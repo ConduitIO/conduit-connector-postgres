@@ -39,7 +39,6 @@ func TestSource_Open(t *testing.T) {
 			"tables":                  tableName,
 			"snapshotMode":            "initial",
 			"cdcMode":                 "logrepl",
-			"tableKeys":               "'id",
 			"logrepl.slotName":        slotName,
 			"logrepl.publicationName": publicationName,
 		},

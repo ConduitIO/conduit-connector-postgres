@@ -19,8 +19,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/test"
-	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
 	"github.com/matryer/is"
 )
@@ -49,17 +49,17 @@ func TestDestination_Write(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		record sdk.Record
+		record opencdc.Record
 	}{
 		{
 			name: "snapshot",
-			record: sdk.Record{
-				Position:  sdk.Position("foo"),
-				Operation: sdk.OperationSnapshot,
-				Metadata:  map[string]string{sdk.MetadataCollection: tableName},
-				Key:       sdk.StructuredData{"id": 5000},
-				Payload: sdk.Change{
-					After: sdk.StructuredData{
+			record: opencdc.Record{
+				Position:  opencdc.Position("foo"),
+				Operation: opencdc.OperationSnapshot,
+				Metadata:  map[string]string{opencdc.MetadataCollection: tableName},
+				Key:       opencdc.StructuredData{"id": 5000},
+				Payload: opencdc.Change{
+					After: opencdc.StructuredData{
 						"column1": "foo",
 						"column2": 123,
 						"column3": true,
@@ -68,13 +68,13 @@ func TestDestination_Write(t *testing.T) {
 			},
 		}, {
 			name: "create",
-			record: sdk.Record{
-				Position:  sdk.Position("foo"),
-				Operation: sdk.OperationCreate,
-				Metadata:  map[string]string{sdk.MetadataCollection: tableName},
-				Key:       sdk.StructuredData{"id": 5},
-				Payload: sdk.Change{
-					After: sdk.StructuredData{
+			record: opencdc.Record{
+				Position:  opencdc.Position("foo"),
+				Operation: opencdc.OperationCreate,
+				Metadata:  map[string]string{opencdc.MetadataCollection: tableName},
+				Key:       opencdc.StructuredData{"id": 5},
+				Payload: opencdc.Change{
+					After: opencdc.StructuredData{
 						"column1": "foo",
 						"column2": 456,
 						"column3": false,
@@ -83,13 +83,13 @@ func TestDestination_Write(t *testing.T) {
 			},
 		}, {
 			name: "insert on update (upsert)",
-			record: sdk.Record{
-				Position:  sdk.Position("foo"),
-				Operation: sdk.OperationUpdate,
-				Metadata:  map[string]string{sdk.MetadataCollection: tableName},
-				Key:       sdk.StructuredData{"id": 6},
-				Payload: sdk.Change{
-					After: sdk.StructuredData{
+			record: opencdc.Record{
+				Position:  opencdc.Position("foo"),
+				Operation: opencdc.OperationUpdate,
+				Metadata:  map[string]string{opencdc.MetadataCollection: tableName},
+				Key:       opencdc.StructuredData{"id": 6},
+				Payload: opencdc.Change{
+					After: opencdc.StructuredData{
 						"column1": "bar",
 						"column2": 567,
 						"column3": true,
@@ -98,13 +98,13 @@ func TestDestination_Write(t *testing.T) {
 			},
 		}, {
 			name: "update on conflict",
-			record: sdk.Record{
-				Position:  sdk.Position("foo"),
-				Operation: sdk.OperationUpdate,
-				Metadata:  map[string]string{sdk.MetadataCollection: tableName},
-				Key:       sdk.StructuredData{"id": 1},
-				Payload: sdk.Change{
-					After: sdk.StructuredData{
+			record: opencdc.Record{
+				Position:  opencdc.Position("foo"),
+				Operation: opencdc.OperationUpdate,
+				Metadata:  map[string]string{opencdc.MetadataCollection: tableName},
+				Key:       opencdc.StructuredData{"id": 1},
+				Payload: opencdc.Change{
+					After: opencdc.StructuredData{
 						"column1": "foobar",
 						"column2": 567,
 						"column3": true,
@@ -113,29 +113,29 @@ func TestDestination_Write(t *testing.T) {
 			},
 		}, {
 			name: "delete",
-			record: sdk.Record{
-				Position:  sdk.Position("foo"),
-				Metadata:  map[string]string{sdk.MetadataCollection: tableName},
-				Operation: sdk.OperationDelete,
-				Key:       sdk.StructuredData{"id": 4},
+			record: opencdc.Record{
+				Position:  opencdc.Position("foo"),
+				Metadata:  map[string]string{opencdc.MetadataCollection: tableName},
+				Operation: opencdc.OperationDelete,
+				Key:       opencdc.StructuredData{"id": 4},
 			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			is = is.New(t)
-			id := tt.record.Key.(sdk.StructuredData)["id"]
+			id := tt.record.Key.(opencdc.StructuredData)["id"]
 
-			i, err := d.Write(ctx, []sdk.Record{tt.record})
+			i, err := d.Write(ctx, []opencdc.Record{tt.record})
 			is.NoErr(err)
 			is.Equal(i, 1)
 
 			got, err := queryTestTable(ctx, conn, tableName, id)
 			switch tt.record.Operation {
-			case sdk.OperationCreate, sdk.OperationSnapshot, sdk.OperationUpdate:
+			case opencdc.OperationCreate, opencdc.OperationSnapshot, opencdc.OperationUpdate:
 				is.NoErr(err)
 				is.Equal(tt.record.Payload.After, got)
-			case sdk.OperationDelete:
+			case opencdc.OperationDelete:
 				is.Equal(err, pgx.ErrNoRows)
 			}
 		})
@@ -158,34 +158,34 @@ func TestDestination_Batch(t *testing.T) {
 		is.NoErr(err)
 	}()
 
-	records := []sdk.Record{{
-		Position:  sdk.Position("foo1"),
-		Operation: sdk.OperationCreate,
-		Key:       sdk.StructuredData{"id": 5},
-		Payload: sdk.Change{
-			After: sdk.StructuredData{
+	records := []opencdc.Record{{
+		Position:  opencdc.Position("foo1"),
+		Operation: opencdc.OperationCreate,
+		Key:       opencdc.StructuredData{"id": 5},
+		Payload: opencdc.Change{
+			After: opencdc.StructuredData{
 				"column1": "foo1",
 				"column2": 1,
 				"column3": false,
 			},
 		},
 	}, {
-		Position:  sdk.Position("foo2"),
-		Operation: sdk.OperationCreate,
-		Key:       sdk.StructuredData{"id": 6},
-		Payload: sdk.Change{
-			After: sdk.StructuredData{
+		Position:  opencdc.Position("foo2"),
+		Operation: opencdc.OperationCreate,
+		Key:       opencdc.StructuredData{"id": 6},
+		Payload: opencdc.Change{
+			After: opencdc.StructuredData{
 				"column1": "foo2",
 				"column2": 2,
 				"column3": true,
 			},
 		},
 	}, {
-		Position:  sdk.Position("foo3"),
-		Operation: sdk.OperationCreate,
-		Key:       sdk.StructuredData{"id": 7},
-		Payload: sdk.Change{
-			After: sdk.StructuredData{
+		Position:  opencdc.Position("foo3"),
+		Operation: opencdc.OperationCreate,
+		Key:       opencdc.StructuredData{"id": 7},
+		Payload: opencdc.Change{
+			After: opencdc.StructuredData{
 				"column1": "foo3",
 				"column2": 3,
 				"column3": false,
@@ -198,13 +198,13 @@ func TestDestination_Batch(t *testing.T) {
 	is.Equal(i, len(records))
 
 	for _, rec := range records {
-		got, err := queryTestTable(ctx, conn, tableName, rec.Key.(sdk.StructuredData)["id"])
+		got, err := queryTestTable(ctx, conn, tableName, rec.Key.(opencdc.StructuredData)["id"])
 		is.NoErr(err)
 		is.Equal(rec.Payload.After, got)
 	}
 }
 
-func queryTestTable(ctx context.Context, conn test.Querier, tableName string, id any) (sdk.StructuredData, error) {
+func queryTestTable(ctx context.Context, conn test.Querier, tableName string, id any) (opencdc.StructuredData, error) {
 	row := conn.QueryRow(
 		ctx,
 		fmt.Sprintf("SELECT column1, column2, column3 FROM %s WHERE id = $1", tableName),
@@ -221,7 +221,7 @@ func queryTestTable(ctx context.Context, conn test.Querier, tableName string, id
 		return nil, err
 	}
 
-	return sdk.StructuredData{
+	return opencdc.StructuredData{
 		"column1": col1,
 		"column2": col2,
 		"column3": col3,

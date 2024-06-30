@@ -21,6 +21,8 @@ import (
 	"strings"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/conduitio/conduit-commons/config"
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/destination"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
@@ -43,12 +45,12 @@ func NewDestination() sdk.Destination {
 	return sdk.DestinationWithMiddleware(d, sdk.DefaultDestinationMiddleware()...)
 }
 
-func (d *Destination) Parameters() map[string]sdk.Parameter {
+func (d *Destination) Parameters() config.Parameters {
 	return d.config.Parameters()
 }
 
-func (d *Destination) Configure(_ context.Context, cfg map[string]string) error {
-	err := sdk.Util.ParseConfig(cfg, &d.config)
+func (d *Destination) Configure(ctx context.Context, cfg config.Config) error {
+	err := sdk.Util.ParseConfig(ctx, cfg, &d.config, NewDestination().Parameters())
 	if err != nil {
 		return err
 	}
@@ -77,18 +79,18 @@ func (d *Destination) Open(ctx context.Context) error {
 
 // Write routes incoming records to their appropriate handler based on the
 // operation.
-func (d *Destination) Write(ctx context.Context, recs []sdk.Record) (int, error) {
+func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, error) {
 	b := &pgx.Batch{}
 	for _, rec := range recs {
 		var err error
 		switch rec.Operation {
-		case sdk.OperationCreate:
+		case opencdc.OperationCreate:
 			err = d.handleInsert(ctx, rec, b)
-		case sdk.OperationUpdate:
+		case opencdc.OperationUpdate:
 			err = d.handleUpdate(ctx, rec, b)
-		case sdk.OperationDelete:
+		case opencdc.OperationDelete:
 			err = d.handleDelete(ctx, rec, b)
-		case sdk.OperationSnapshot:
+		case opencdc.OperationSnapshot:
 			err = d.handleInsert(ctx, rec, b)
 		default:
 			return 0, fmt.Errorf("invalid operation %q", rec.Operation)
@@ -123,7 +125,7 @@ func (d *Destination) Teardown(ctx context.Context) error {
 // table. It checks for the existence of a key. If no key is present or a key
 // exists and no key column name is configured, it will plainly insert the data.
 // Otherwise it upserts the record.
-func (d *Destination) handleInsert(ctx context.Context, r sdk.Record, b *pgx.Batch) error {
+func (d *Destination) handleInsert(ctx context.Context, r opencdc.Record, b *pgx.Batch) error {
 	if !d.hasKey(r) || d.config.Key == "" {
 		return d.insert(ctx, r, b)
 	}
@@ -132,7 +134,7 @@ func (d *Destination) handleInsert(ctx context.Context, r sdk.Record, b *pgx.Bat
 
 // handleUpdate adds a query to the batch that updates the record in the target
 // table. It assumes the record has a key and fails if one is not present.
-func (d *Destination) handleUpdate(ctx context.Context, r sdk.Record, b *pgx.Batch) error {
+func (d *Destination) handleUpdate(ctx context.Context, r opencdc.Record, b *pgx.Batch) error {
 	if !d.hasKey(r) {
 		return fmt.Errorf("key must be provided on update actions")
 	}
@@ -142,14 +144,14 @@ func (d *Destination) handleUpdate(ctx context.Context, r sdk.Record, b *pgx.Bat
 
 // handleDelete adds a query to the batch that deletes the record from the
 // target table. It assumes the record has a key and fails if one is not present.
-func (d *Destination) handleDelete(ctx context.Context, r sdk.Record, b *pgx.Batch) error {
+func (d *Destination) handleDelete(ctx context.Context, r opencdc.Record, b *pgx.Batch) error {
 	if !d.hasKey(r) {
 		return fmt.Errorf("key must be provided on delete actions")
 	}
 	return d.remove(ctx, r, b)
 }
 
-func (d *Destination) upsert(ctx context.Context, r sdk.Record, b *pgx.Batch) error {
+func (d *Destination) upsert(ctx context.Context, r opencdc.Record, b *pgx.Batch) error {
 	payload, err := d.getPayload(r)
 	if err != nil {
 		return fmt.Errorf("failed to get payload: %w", err)
@@ -180,7 +182,7 @@ func (d *Destination) upsert(ctx context.Context, r sdk.Record, b *pgx.Batch) er
 	return nil
 }
 
-func (d *Destination) remove(ctx context.Context, r sdk.Record, b *pgx.Batch) error {
+func (d *Destination) remove(ctx context.Context, r opencdc.Record, b *pgx.Batch) error {
 	key, err := d.getKey(r)
 	if err != nil {
 		return err
@@ -210,7 +212,7 @@ func (d *Destination) remove(ctx context.Context, r sdk.Record, b *pgx.Batch) er
 // insert is an append-only operation that doesn't care about keys, but
 // can error on constraints violations so should only be used when no table
 // key or unique constraints are otherwise present.
-func (d *Destination) insert(ctx context.Context, r sdk.Record, b *pgx.Batch) error {
+func (d *Destination) insert(ctx context.Context, r opencdc.Record, b *pgx.Batch) error {
 	tableName, err := d.getTableName(r)
 	if err != nil {
 		return err
@@ -243,30 +245,30 @@ func (d *Destination) insert(ctx context.Context, r sdk.Record, b *pgx.Batch) er
 	return nil
 }
 
-func (d *Destination) getPayload(r sdk.Record) (sdk.StructuredData, error) {
+func (d *Destination) getPayload(r opencdc.Record) (opencdc.StructuredData, error) {
 	if r.Payload.After == nil {
-		return sdk.StructuredData{}, nil
+		return opencdc.StructuredData{}, nil
 	}
 	return d.structuredDataFormatter(r.Payload.After)
 }
 
-func (d *Destination) getKey(r sdk.Record) (sdk.StructuredData, error) {
+func (d *Destination) getKey(r opencdc.Record) (opencdc.StructuredData, error) {
 	if r.Key == nil {
-		return sdk.StructuredData{}, nil
+		return opencdc.StructuredData{}, nil
 	}
 	return d.structuredDataFormatter(r.Key)
 }
 
-func (d *Destination) structuredDataFormatter(data sdk.Data) (sdk.StructuredData, error) {
+func (d *Destination) structuredDataFormatter(data opencdc.Data) (opencdc.StructuredData, error) {
 	if data == nil {
-		return sdk.StructuredData{}, nil
+		return opencdc.StructuredData{}, nil
 	}
-	if sdata, ok := data.(sdk.StructuredData); ok {
+	if sdata, ok := data.(opencdc.StructuredData); ok {
 		return sdata, nil
 	}
 	raw := data.Bytes()
 	if len(raw) == 0 {
-		return sdk.StructuredData{}, nil
+		return opencdc.StructuredData{}, nil
 	}
 
 	m := make(map[string]interface{})
@@ -284,8 +286,8 @@ func (d *Destination) structuredDataFormatter(data sdk.Data) (sdk.StructuredData
 // * If other schema constraints prevent a write, this won't upsert on
 // that conflict.
 func (d *Destination) formatUpsertQuery(
-	key sdk.StructuredData,
-	payload sdk.StructuredData,
+	key opencdc.StructuredData,
+	payload opencdc.StructuredData,
 	keyColumnName string,
 	tableName string,
 ) (string, []interface{}, error) {
@@ -319,7 +321,7 @@ func (d *Destination) formatUpsertQuery(
 
 // formatColumnsAndValues turns the key and payload into a slice of ordered
 // columns and values for upserting into Postgres.
-func (d *Destination) formatColumnsAndValues(key, payload sdk.StructuredData) ([]string, []interface{}) {
+func (d *Destination) formatColumnsAndValues(key, payload opencdc.StructuredData) ([]string, []interface{}) {
 	var colArgs []string
 	var valArgs []interface{}
 
@@ -341,7 +343,7 @@ func (d *Destination) formatColumnsAndValues(key, payload sdk.StructuredData) ([
 
 // getKeyColumnName will return the name of the first item in the key or the
 // connector-configured default name of the key column name.
-func (d *Destination) getKeyColumnName(key sdk.StructuredData, defaultKeyName string) string {
+func (d *Destination) getKeyColumnName(key opencdc.StructuredData, defaultKeyName string) string {
 	if len(key) > 1 {
 		// Go maps aren't order preserving, so anything over len 1 will have
 		// non deterministic results until we handle composite keys.
@@ -353,6 +355,6 @@ func (d *Destination) getKeyColumnName(key sdk.StructuredData, defaultKeyName st
 	return defaultKeyName
 }
 
-func (d *Destination) hasKey(e sdk.Record) bool {
+func (d *Destination) hasKey(e opencdc.Record) bool {
 	return e.Key != nil && len(e.Key.Bytes()) > 0
 }

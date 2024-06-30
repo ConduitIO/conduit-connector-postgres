@@ -23,10 +23,10 @@ import (
 	"text/template"
 
 	"github.com/Masterminds/sprig/v3"
-	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/conduitio/conduit-commons/opencdc"
 )
 
-type TableFn func(sdk.Record) (string, error)
+type TableFn func(opencdc.Record) (string, error)
 
 type Config struct {
 	// URL is the connection string for the Postgres database.
@@ -43,7 +43,7 @@ type Config struct {
 func (c Config) TableFunction() (f TableFn, err error) {
 	// Not a template, i.e. it's a static table name
 	if !strings.HasPrefix(c.Table, "{{") && !strings.HasSuffix(c.Table, "}}") {
-		return func(_ sdk.Record) (string, error) {
+		return func(_ opencdc.Record) (string, error) {
 			return c.Table, nil
 		}, nil
 	}
@@ -57,7 +57,7 @@ func (c Config) TableFunction() (f TableFn, err error) {
 
 	// The table is a valid template, return TableFn.
 	var buf bytes.Buffer
-	return func(r sdk.Record) (string, error) {
+	return func(r opencdc.Record) (string, error) {
 		buf.Reset()
 		if err := t.Execute(&buf, r); err != nil {
 			return "", fmt.Errorf("failed to execute table template: %w", err)

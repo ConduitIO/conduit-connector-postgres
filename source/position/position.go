@@ -18,7 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/jackc/pglogrepl"
 )
 
@@ -45,7 +45,7 @@ type SnapshotPosition struct {
 	SnapshotEnd int64 `json:"snapshot_end"`
 }
 
-func ParseSDKPosition(sdkPos sdk.Position) (Position, error) {
+func ParseSDKPosition(sdkPos opencdc.Position) (Position, error) {
 	var p Position
 
 	if len(sdkPos) == 0 {
@@ -58,7 +58,7 @@ func ParseSDKPosition(sdkPos sdk.Position) (Position, error) {
 	return p, nil
 }
 
-func (p Position) ToSDKPosition() sdk.Position {
+func (p Position) ToSDKPosition() opencdc.Position {
 	v, err := json.Marshal(p)
 	if err != nil {
 		// This should never happen, all Position structs should be valid.

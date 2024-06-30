@@ -17,7 +17,7 @@ package position
 import (
 	"testing"
 
-	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/matryer/is"
 )
 
@@ -56,7 +56,7 @@ func Test_PositionLSN(t *testing.T) {
 func Test_ParseSDKPosition(t *testing.T) {
 	is := is.New(t)
 
-	valid := sdk.Position(
+	valid := opencdc.Position(
 		[]byte(
 			`{"type":1,"snapshots":{"orders":{"last_read":1,"snapshot_end":2}},"last_lsn":"4/137515E8"}`,
 		),
@@ -73,7 +73,7 @@ func Test_ParseSDKPosition(t *testing.T) {
 		LastLSN: "4/137515E8",
 	})
 
-	_, invalidErr := ParseSDKPosition(sdk.Position("{"))
+	_, invalidErr := ParseSDKPosition(opencdc.Position("{"))
 	is.True(invalidErr != nil)
 	is.Equal(invalidErr.Error(), "invalid position: unexpected end of JSON input")
 }
