@@ -54,8 +54,8 @@ func (s *Source) Parameters() config.Parameters {
 	return s.config.Parameters()
 }
 
-func (s *Source) Configure(_ context.Context, cfg config.Config) error {
-	err := sdk.Util.ParseConfig(ctx, cfg, &s.config)
+func (s *Source) Configure(ctx context.Context, cfg config.Config) error {
+	err := sdk.Util.ParseConfig(ctx, cfg, &s.config, NewSource().Parameters())
 	if err != nil {
 		return err
 	}
@@ -148,7 +148,7 @@ func (s *Source) Teardown(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-func (s *Source) LifecycleOnDeleted(ctx context.Context, cfg map[string]string) error {
+func (s *Source) LifecycleOnDeleted(ctx context.Context, cfg config.Config) error {
 	if err := s.Configure(ctx, cfg); err != nil {
 		return fmt.Errorf("fail to handle lifecycle delete event: %w", err)
 	}

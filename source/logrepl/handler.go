@@ -186,12 +186,8 @@ func (h *CDCHandler) handleDelete(
 		h.buildPosition(lsn),
 		h.buildRecordMetadata(rel),
 		h.buildRecordKey(oldValues, rel.RelationName),
+		h.buildRecordPayload(oldValues),
 	)
-
-	rec.Payload = opencdc.Change{
-		Before: h.buildRecordPayload(oldValues),
-		After:  nil,
-	}
 
 	return h.send(ctx, rec)
 }
