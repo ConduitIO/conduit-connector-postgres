@@ -44,7 +44,7 @@ type Source struct {
 	config        source.Config
 	pool          *pgxpool.Pool
 	tableKeys     map[string]string
-	createdSchema cschema.Instance
+	createdSchema cschema.Schema
 }
 
 func NewSource() sdk.Source {

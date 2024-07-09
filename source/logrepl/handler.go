@@ -166,6 +166,7 @@ func (h *CDCHandler) handleDelete(
 		h.buildPosition(lsn),
 		h.buildRecordMetadata(rel),
 		h.buildRecordKey(oldValues, rel.RelationName),
+		nil,
 	)
 	return h.send(ctx, rec)
 }
