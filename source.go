@@ -122,14 +122,6 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 		return fmt.Errorf("unsupported CDC mode %q", s.config.CDCMode)
 	}
 
-	s.fetchSchema(ctx)
-	go func() {
-		for {
-			time.Sleep(10 * time.Second)
-			s.fetchSchema(ctx)
-		}
-	}()
-
 	return nil
 }
 
@@ -139,6 +131,8 @@ func (s *Source) Read(ctx context.Context) (opencdc.Record, error) {
 		rec.Metadata["opencdc.schema.name"] = s.createdSchema.Subject
 		rec.Metadata["opencdc.schema.version"] = strconv.FormatInt(int64(s.createdSchema.Version), 10)
 	}
+
+	s.fetchSchema(ctx)
 	return rec, err
 }
 
