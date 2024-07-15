@@ -9,7 +9,7 @@ require (
 	github.com/Masterminds/squirrel v1.5.4
 	github.com/conduitio/conduit-commons v0.2.1-0.20240709142247-d973cba9694c
 	github.com/conduitio/conduit-connector-protocol v0.6.1-0.20240715113540-5c6d68ebc3fd
-	github.com/conduitio/conduit-connector-sdk v0.9.2-0.20240715135646-5f68ee5d4e54
+	github.com/conduitio/conduit-connector-sdk v0.9.2-0.20240715151035-73d79e3a66ee
 	github.com/daixiang0/gci v0.13.4
 	github.com/golangci/golangci-lint v1.59.1
 	github.com/google/go-cmp v0.6.0
