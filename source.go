@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/conduitio/conduit-connector-protocol/pconduit"
 	"log"
 	"strconv"
 	"time"
@@ -132,6 +133,7 @@ func (s *Source) Read(ctx context.Context) (opencdc.Record, error) {
 		rec.Metadata["opencdc.schema.version"] = strconv.FormatInt(int64(s.createdSchema.Version), 10)
 	}
 
+	sdk.Logger(ctx).Info().Str("connector_token", pconduit.ConnectorTokenFromContext(ctx)).Msg("got token")
 	s.fetchSchema(ctx)
 	return rec, err
 }
