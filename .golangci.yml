@@ -16,12 +16,18 @@ linters-settings:
     values:
       regexp:
         copyright-year: 20[2-9]\d
-
+  forbidigo:
+    forbid:
+      - p: ^pgxpool\.New.*$
+        msg: "Use github.com/conduitio/conduit-connector-postgres/source/cpool.New instead."
 issues:
   exclude-rules:
     - path: test/helper\.go
       linters:
         - gosec
+    - path: source/cpool/cpool\.go
+      linters:
+      - forbidigo
 
 linters:
   # please, do not use `enable-all`: it's deprecated and will be removed soon.
@@ -38,7 +44,7 @@ linters:
     # - exhaustive
     # - exhaustivestruct
     - exportloopref
-    # - forbidigo
+    - forbidigo
     # - forcetypeassert
     # - funlen
     # - gochecknoinits
