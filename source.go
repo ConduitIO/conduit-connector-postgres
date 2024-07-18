@@ -128,13 +128,15 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 
 func (s *Source) Read(ctx context.Context) (opencdc.Record, error) {
 	rec, err := s.iterator.Next(ctx)
-	if err == nil {
-		rec.Metadata["opencdc.schema.name"] = s.createdSchema.Subject
-		rec.Metadata["opencdc.schema.version"] = strconv.FormatInt(int64(s.createdSchema.Version), 10)
+	if err != nil {
+		return opencdc.Record{}, err
 	}
 
 	sdk.Logger(ctx).Info().Str("connector_token", pconduit.ConnectorTokenFromContext(ctx)).Msg("got token")
 	s.fetchSchema(ctx)
+	rec.Metadata["opencdc.schema.subject"] = s.createdSchema.Subject
+	rec.Metadata["opencdc.schema.version"] = strconv.FormatInt(int64(s.createdSchema.Version), 10)
+
 	return rec, err
 }
 

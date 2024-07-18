@@ -369,7 +369,7 @@ func (d *Destination) hasKey(e opencdc.Record) bool {
 }
 
 func (d *Destination) updateSchema(ctx context.Context, rec opencdc.Record) error {
-	sname := rec.Metadata["opencdc.schema.name"]
+	sname := rec.Metadata["opencdc.schema.subject"]
 	sversion, err := strconv.Atoi(rec.Metadata["opencdc.schema.version"])
 	if err != nil {
 		return err
