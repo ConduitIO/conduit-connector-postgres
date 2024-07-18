@@ -165,6 +165,16 @@ func TestCombinedIterator_Next(t *testing.T) {
 
 	expectedRecords := testRecords()
 
+	// interrupt repl connection
+	var terminated bool
+	is.NoErr(pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE
+			query ILIKE '%%CREATE_REPLICATION_SLOT %s%%' and pid <> pg_backend_pid()
+		`,
+		table,
+	)).Scan(&terminated))
+	is.True(terminated)
+
 	// compare snapshot
 	for id := 1; id < 5; id++ {
 		t.Run(fmt.Sprint("next_snapshot", id), func(t *testing.T) {
