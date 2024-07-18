@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	avroNS = "conduit.postgres"
+	avroNS             = "conduit.postgres"
 	avroDecimalPadding = 8
 )
 
@@ -126,7 +126,7 @@ func (a *avroExtractor) extractType(t *pgtype.Type, typeMod int32) (avro.Schema,
 		fs, err := avro.NewFixedSchema(
 			string(avro.Decimal),
 			avroNS,
-			precision + scale + avroDecimalPadding,
+			precision+scale+avroDecimalPadding,
 			avro.NewDecimalLogicalSchema(precision, scale),
 		)
 		if err != nil {
@@ -137,4 +137,3 @@ func (a *avroExtractor) extractType(t *pgtype.Type, typeMod int32) (avro.Schema,
 		return nil, fmt.Errorf("cannot resolve field type %q ", t.Name)
 	}
 }
-

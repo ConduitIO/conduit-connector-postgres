@@ -59,6 +59,10 @@ func beforeAcquireHook(ctx context.Context, conn *pgx.Conn) bool {
 
 // beforeConnectHook customizes the configuration of the new connection.
 func beforeConnectHook(ctx context.Context, config *pgx.ConnConfig) error {
+	if config.RuntimeParams["application_name"] == "" {
+		config.RuntimeParams["application_name"] = "conduit-connector-postgres"
+	}
+
 	if v := ctx.Value(replicationCtxKey{}); v != nil {
 		config.RuntimeParams["replication"] = "database"
 	}
