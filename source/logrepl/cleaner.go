@@ -19,9 +19,9 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type CleanupConfig struct {
@@ -35,7 +35,7 @@ type CleanupConfig struct {
 func Cleanup(ctx context.Context, c CleanupConfig) error {
 	logger := sdk.Logger(ctx)
 
-	pool, err := pgxpool.New(ctx, c.URL)
+	pool, err := cpool.New(ctx, c.URL)
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}

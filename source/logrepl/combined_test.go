@@ -184,6 +184,16 @@ func TestCombinedIterator_Next(t *testing.T) {
 		})
 	}
 
+	// interrupt repl connection
+	var terminated bool
+	is.NoErr(pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE
+			query ILIKE '%%CREATE_REPLICATION_SLOT %s%%' and pid <> pg_backend_pid()
+		`,
+		table,
+	)).Scan(&terminated))
+	is.True(terminated)
+
 	t.Run("next_cdc_5", func(t *testing.T) {
 		is := is.New(t)
 

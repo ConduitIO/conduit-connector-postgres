@@ -44,6 +44,7 @@ type Subscription struct {
 	TXSnapshotID  string
 
 	conn *pgxpool.Conn
+	pool *pgxpool.Pool
 
 	stop context.CancelFunc
 
@@ -133,6 +134,7 @@ func CreateSubscription(
 		TXSnapshotID:  result.SnapshotName,
 
 		conn: conn,
+		pool: pool,
 
 		ready: make(chan struct{}),
 		done:  make(chan struct{}),
@@ -144,6 +146,7 @@ func (s *Subscription) Run(ctx context.Context) error {
 	defer s.doneReplication()
 
 	if err := s.startReplication(ctx); err != nil {
+		close(s.ready) // ready to fail.
 		return err
 	}
 
@@ -330,6 +333,18 @@ func (s *Subscription) Err() error {
 
 // startReplication starts replication with a specific start LSN.
 func (s *Subscription) startReplication(ctx context.Context) error {
+	// N.B. Snapshots may take long time and connection may timeout.
+	// 		Safer to refresh the connection before replication begins.
+
+	s.conn.Release()
+
+	conn, err := s.pool.Acquire(cpool.WithReplication(ctx))
+	if err != nil {
+		return fmt.Errorf("could not establish replication connection: %w", err)
+	}
+
+	s.conn = conn
+
 	pluginArgs := []string{
 		`"proto_version" '1'`,
 		fmt.Sprintf(`"publication_names" '%s'`, s.Publication),

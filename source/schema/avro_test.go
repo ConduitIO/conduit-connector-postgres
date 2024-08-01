@@ -50,7 +50,7 @@ func Test_AvroExtract(t *testing.T) {
 
 	fields := rows.FieldDescriptions()
 
-	sch, err := Avro.Extract(table, fields, values)
+	sch, err := Avro.Extract(table, fields)
 
 	t.Run("schema is parsable", func(t *testing.T) {
 		is := is.New(t)
@@ -191,8 +191,8 @@ func avroTestSchema(t *testing.T, table string) avro.Schema {
 		assert(avro.NewField("col_numeric",
 			assert(avro.NewFixedSchema(string(avro.Decimal),
 				avroNS,
-				avroDecimalFixedSize,
-				avro.NewDecimalLogicalSchema(avroDecimalPrecision, 2),
+				18,
+				avro.NewDecimalLogicalSchema(8, 2),
 			)))),
 		assert(avro.NewField("col_date", avro.NewPrimitiveSchema(
 			avro.Int,

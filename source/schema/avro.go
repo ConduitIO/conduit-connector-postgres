@@ -17,7 +17,6 @@ package schema
 import (
 	"cmp"
 	"fmt"
-	"math"
 	"slices"
 
 	"github.com/hamba/avro/v2"
@@ -27,15 +26,8 @@ import (
 )
 
 const (
-	avroNS = "conduit.postgres"
-	// The default decimal precision is pretty generous, but it is in excess of what
-	// pgx provides by default. All numeric values by default are coded to float64/int64.
-	// Ideally in the future the decimal precision can be adjusted to fit the definition in postgres.
-	avroDecimalPrecision = 38
-	// The size of the storage in which a decimal may be encoded depends on the underlying numeric definition.
-	// Unfortunately similarly to the decimal precision, this is dependent on the size of the numeric, which
-	// by default is constraint to 8 bytes. This default is generously allocating four times larger width.
-	avroDecimalFixedSize = 8 * 4
+	avroNS             = "conduit.postgres"
+	avroDecimalPadding = 8
 )
 
 var Avro = &avroExtractor{
@@ -75,38 +67,29 @@ type avroExtractor struct {
 }
 
 func (a avroExtractor) ExtractLogrepl(rel *pglogrepl.RelationMessage, row *pglogrepl.TupleData) (avro.Schema, error) {
-	var (
-		fields []pgconn.FieldDescription
-		values []any
-	)
+	var fields []pgconn.FieldDescription
 
-	for i, tuple := range row.Columns {
+	for i := range row.Columns {
 		fields = append(fields, pgconn.FieldDescription{
-			Name:        rel.Columns[i].Name,
-			DataTypeOID: rel.Columns[i].DataType,
+			Name:         rel.Columns[i].Name,
+			DataTypeOID:  rel.Columns[i].DataType,
+			TypeModifier: rel.Columns[i].TypeModifier,
 		})
-
-		v, err := a.decodeColumnValue(rel.Columns[i], tuple.Data)
-		if err != nil {
-			return nil, err
-		}
-
-		values = append(values, v)
 	}
 
-	return a.Extract(rel.RelationName, fields, values)
+	return a.Extract(rel.RelationName, fields)
 }
 
-func (a *avroExtractor) Extract(name string, fields []pgconn.FieldDescription, values []any) (avro.Schema, error) {
+func (a *avroExtractor) Extract(name string, fields []pgconn.FieldDescription) (avro.Schema, error) {
 	var avroFields []*avro.Field
 
-	for i, f := range fields {
+	for _, f := range fields {
 		t, ok := a.pgMap.TypeForOID(f.DataTypeOID)
 		if !ok {
 			return nil, fmt.Errorf("field %q with OID %d cannot be resolved", f.Name, f.DataTypeOID)
 		}
 
-		s, err := a.extractType(t, values[i])
+		s, err := a.extractType(t, f.TypeModifier)
 		if err != nil {
 			return nil, err
 		}
@@ -131,41 +114,26 @@ func (a *avroExtractor) Extract(name string, fields []pgconn.FieldDescription, v
 	return sch, nil
 }
 
-func (a *avroExtractor) extractType(t *pgtype.Type, val any) (avro.Schema, error) {
+func (a *avroExtractor) extractType(t *pgtype.Type, typeMod int32) (avro.Schema, error) {
 	if ps, ok := a.avroMap[t.Name]; ok {
 		return ps, nil
 	}
 
-	switch tt := val.(type) {
-	case pgtype.Numeric:
-		// N.B.: Default to 38 positions and pick the exponent as the scale.
+	switch t.OID {
+	case pgtype.NumericOID:
+		scale := int((typeMod - 4) & 65535)
+		precision := int(((typeMod - 4) >> 16) & 65535)
 		fs, err := avro.NewFixedSchema(
 			string(avro.Decimal),
 			avroNS,
-			avroDecimalFixedSize,
-			avro.NewDecimalLogicalSchema(avroDecimalPrecision, int(math.Abs(float64(tt.Exp)))),
+			precision+scale+avroDecimalPadding,
+			avro.NewDecimalLogicalSchema(precision, scale),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create avro.FixedSchema: %w", err)
 		}
 		return fs, nil
 	default:
-		return nil, fmt.Errorf("cannot resolve field %q of type %T", t.Name, tt)
+		return nil, fmt.Errorf("cannot resolve field type %q ", t.Name)
 	}
-}
-
-func (a *avroExtractor) decodeColumnValue(col *pglogrepl.RelationMessageColumn, data []byte) (any, error) {
-	var t *pgtype.Type
-
-	t, ok := a.pgMap.TypeForOID(col.DataType)
-	if !ok {
-		t, _ = a.pgMap.TypeForOID(pgtype.UnknownOID)
-	}
-
-	v, err := t.Codec.DecodeValue(a.pgMap, col.DataType, pgtype.TextFormatCode, data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode %q tuple: %w", col.Name, err)
-	}
-
-	return v, nil
 }

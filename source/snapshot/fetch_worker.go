@@ -287,7 +287,7 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 		}
 
 		if f.conf.WithAvroSchema && f.avroSchema == nil {
-			sch, err := schema.Avro.Extract(f.conf.Table, fields, values)
+			sch, err := schema.Avro.Extract(f.conf.Table, fields)
 			if err != nil {
 				return 0, fmt.Errorf("failed to extract schema: %w", err)
 			}
