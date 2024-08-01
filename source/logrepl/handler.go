@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/schema"
@@ -31,7 +32,7 @@ import (
 type CDCHandler struct {
 	tableKeys   map[string]string
 	relationSet *internal.RelationSet
-	out         chan<- sdk.Record
+	out         chan<- opencdc.Record
 	lastTXLSN   pglogrepl.LSN
 
 	relAvroSchema  map[string]avro.Schema
@@ -42,7 +43,7 @@ func NewCDCHandler(
 	rs *internal.RelationSet,
 	tableKeys map[string]string,
 	withAvroSchema bool,
-	out chan<- sdk.Record,
+	out chan<- opencdc.Record,
 ) *CDCHandler {
 	return &CDCHandler{
 		tableKeys:      tableKeys,
@@ -185,19 +186,15 @@ func (h *CDCHandler) handleDelete(
 		h.buildPosition(lsn),
 		h.buildRecordMetadata(rel),
 		h.buildRecordKey(oldValues, rel.RelationName),
+		h.buildRecordPayload(oldValues),
 	)
-
-	rec.Payload = sdk.Change{
-		Before: h.buildRecordPayload(oldValues),
-		After:  nil,
-	}
 
 	return h.send(ctx, rec)
 }
 
 // send the record to the output channel or detect the cancellation of the
 // context and return the context error.
-func (h *CDCHandler) send(ctx context.Context, rec sdk.Record) error {
+func (h *CDCHandler) send(ctx context.Context, rec opencdc.Record) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -208,7 +205,7 @@ func (h *CDCHandler) send(ctx context.Context, rec sdk.Record) error {
 
 func (h *CDCHandler) buildRecordMetadata(rel *pglogrepl.RelationMessage) map[string]string {
 	m := map[string]string{
-		sdk.MetadataCollection: rel.RelationName,
+		opencdc.MetadataCollection: rel.RelationName,
 	}
 
 	if h.withAvroSchema {
@@ -220,9 +217,9 @@ func (h *CDCHandler) buildRecordMetadata(rel *pglogrepl.RelationMessage) map[str
 
 // buildRecordKey takes the values from the message and extracts the key that
 // matches the configured keyColumnName.
-func (h *CDCHandler) buildRecordKey(values map[string]any, table string) sdk.Data {
+func (h *CDCHandler) buildRecordKey(values map[string]any, table string) opencdc.Data {
 	keyColumn := h.tableKeys[table]
-	key := make(sdk.StructuredData)
+	key := make(opencdc.StructuredData)
 	for k, v := range values {
 		if keyColumn == k {
 			key[k] = v
@@ -234,15 +231,15 @@ func (h *CDCHandler) buildRecordKey(values map[string]any, table string) sdk.Dat
 
 // buildRecordPayload takes the values from the message and extracts the payload
 // for the record.
-func (h *CDCHandler) buildRecordPayload(values map[string]any) sdk.Data {
+func (h *CDCHandler) buildRecordPayload(values map[string]any) opencdc.Data {
 	if len(values) == 0 {
 		return nil
 	}
-	return sdk.StructuredData(values)
+	return opencdc.StructuredData(values)
 }
 
 // buildPosition stores the LSN in position and converts it to bytes.
-func (*CDCHandler) buildPosition(lsn pglogrepl.LSN) sdk.Position {
+func (*CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 	return position.Position{
 		Type:    position.TypeCDC,
 		LastLSN: lsn.String(),
