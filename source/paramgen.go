@@ -7,9 +7,22 @@ import (
 	"github.com/conduitio/conduit-commons/config"
 )
 
+const (
+	ConfigCdcMode                = "cdcMode"
+	ConfigLogreplAutoCleanup     = "logrepl.autoCleanup"
+	ConfigLogreplPublicationName = "logrepl.publicationName"
+	ConfigLogreplSlotName        = "logrepl.slotName"
+	ConfigLogreplWithAvroSchema  = "logrepl.withAvroSchema"
+	ConfigSnapshotFetchSize      = "snapshot.fetchSize"
+	ConfigSnapshotMode           = "snapshotMode"
+	ConfigTable                  = "table"
+	ConfigTables                 = "tables"
+	ConfigUrl                    = "url"
+)
+
 func (Config) Parameters() map[string]config.Parameter {
 	return map[string]config.Parameter{
-		"cdcMode": {
+		ConfigCdcMode: {
 			Default:     "auto",
 			Description: "CDCMode determines how the connector should listen to changes.",
 			Type:        config.ParameterTypeString,
@@ -17,37 +30,37 @@ func (Config) Parameters() map[string]config.Parameter {
 				config.ValidationInclusion{List: []string{"auto", "logrepl"}},
 			},
 		},
-		"logrepl.autoCleanup": {
+		ConfigLogreplAutoCleanup: {
 			Default:     "true",
 			Description: "LogreplAutoCleanup determines if the replication slot and publication should be\nremoved when the connector is deleted.",
 			Type:        config.ParameterTypeBool,
 			Validations: []config.Validation{},
 		},
-		"logrepl.publicationName": {
+		ConfigLogreplPublicationName: {
 			Default:     "conduitpub",
 			Description: "LogreplPublicationName determines the publication name in case the\nconnector uses logical replication to listen to changes (see CDCMode).",
 			Type:        config.ParameterTypeString,
 			Validations: []config.Validation{},
 		},
-		"logrepl.slotName": {
+		ConfigLogreplSlotName: {
 			Default:     "conduitslot",
 			Description: "LogreplSlotName determines the replication slot name in case the\nconnector uses logical replication to listen to changes (see CDCMode).",
 			Type:        config.ParameterTypeString,
 			Validations: []config.Validation{},
 		},
-		"logrepl.withAvroSchema": {
+		ConfigLogreplWithAvroSchema: {
 			Default:     "false",
 			Description: "WithAvroSchema determines whether the connector should attach an avro schema on each\nrecord.",
 			Type:        config.ParameterTypeBool,
 			Validations: []config.Validation{},
 		},
-		"snapshot.fetchSize": {
+		ConfigSnapshotFetchSize: {
 			Default:     "50000",
 			Description: "Snapshot fetcher size determines the number of rows to retrieve at a time.",
 			Type:        config.ParameterTypeInt,
 			Validations: []config.Validation{},
 		},
-		"snapshotMode": {
+		ConfigSnapshotMode: {
 			Default:     "initial",
 			Description: "SnapshotMode is whether the plugin will take a snapshot of the entire table before starting cdc mode.",
 			Type:        config.ParameterTypeString,
@@ -55,19 +68,19 @@ func (Config) Parameters() map[string]config.Parameter {
 				config.ValidationInclusion{List: []string{"initial", "never"}},
 			},
 		},
-		"table": {
+		ConfigTable: {
 			Default:     "",
 			Description: "Deprecated: use `tables` instead.",
 			Type:        config.ParameterTypeString,
 			Validations: []config.Validation{},
 		},
-		"tables": {
+		ConfigTables: {
 			Default:     "",
 			Description: "Tables is a List of table names to read from, separated by a comma, e.g.:\"table1,table2\".\nUse \"*\" if you'd like to listen to all tables.",
 			Type:        config.ParameterTypeString,
 			Validations: []config.Validation{},
 		},
-		"url": {
+		ConfigUrl: {
 			Default:     "",
 			Description: "URL is the connection string for the Postgres database.",
 			Type:        config.ParameterTypeString,
