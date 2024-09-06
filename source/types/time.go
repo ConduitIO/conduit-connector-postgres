@@ -21,7 +21,7 @@ import (
 type TimeFormatter struct{}
 
 // Format returns:
-// * string format of Time when connectorn is not builtin
+// * string format of Time when connector is not builtin
 // * time type in UTC when connector is builtin
 func (n TimeFormatter) Format(t time.Time) (any, error) {
 	if WithBuiltinPlugin {
