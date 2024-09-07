@@ -22,6 +22,7 @@ import (
 
 	"github.com/conduitio/conduit-commons/config"
 	"github.com/conduitio/conduit-commons/csync"
+	"github.com/conduitio/conduit-commons/lang"
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source"
 	"github.com/conduitio/conduit-connector-postgres/source/cpool"
@@ -46,7 +47,13 @@ func NewSource() sdk.Source {
 		&Source{
 			tableKeys: make(map[string]string),
 		},
-		sdk.DefaultSourceMiddleware()...,
+		sdk.DefaultSourceMiddleware(
+			// disable schema extraction by default, postgres will build its own schema
+			sdk.SourceWithSchemaExtractionConfig{
+				PayloadEnabled: lang.Ptr(false),
+				KeyEnabled:     lang.Ptr(false),
+			},
+		)...,
 	)
 }
 
