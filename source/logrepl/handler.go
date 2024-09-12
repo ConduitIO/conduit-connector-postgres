@@ -17,6 +17,7 @@ package logrepl
 import (
 	"context"
 	"fmt"
+
 	"github.com/conduitio/conduit-commons/opencdc"
 	cschema "github.com/conduitio/conduit-commons/schema"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
