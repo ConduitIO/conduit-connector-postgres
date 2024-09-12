@@ -92,8 +92,8 @@ type FetchWorker struct {
 	db   *pgxpool.Pool
 	out  chan<- FetchData
 
-	keySchema     cschema.Schema
-	payloadSchema cschema.Schema
+	keySchema     *cschema.Schema
+	payloadSchema *cschema.Schema
 
 	snapshotEnd int64
 	lastRead    int64
@@ -281,10 +281,6 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 		Msg("cursor fetched data")
 
 	fields := rows.FieldDescriptions()
-	err = f.initSchemas(ctx, fields)
-	if err != nil {
-		return 0, fmt.Errorf("failed to init schemas: %w", err)
-	}
 
 	var nread int
 	for rows.Next() {
@@ -343,8 +339,8 @@ func (f *FetchWorker) buildFetchData(fields []pgconn.FieldDescription, values []
 		Payload:       payload,
 		Position:      pos,
 		Table:         f.conf.Table,
-		PayloadSchema: f.payloadSchema,
-		KeySchema:     f.keySchema,
+		PayloadSchema: *f.payloadSchema,
+		KeySchema:     *f.keySchema,
 	}, nil
 }
 
@@ -469,35 +465,39 @@ func (*FetchWorker) validateTable(ctx context.Context, table string, tx pgx.Tx) 
 
 // todo this should happen only once?
 func (f *FetchWorker) initSchemas(ctx context.Context, fields []pgconn.FieldDescription) error {
-	avroPayloadSch, err := schema.Avro.Extract(f.conf.Table, fields)
-	if err != nil {
-		return fmt.Errorf("failed to extract payload schema for table %v: %w", f.conf.Table, err)
+	if f.payloadSchema == nil {
+		avroPayloadSch, err := schema.Avro.Extract(f.conf.Table, fields)
+		if err != nil {
+			return fmt.Errorf("failed to extract payload schema for table %v: %w", f.conf.Table, err)
+		}
+		ps, err := sdkschema.Create(
+			ctx,
+			cschema.TypeAvro,
+			avroPayloadSch.Name(),
+			[]byte(avroPayloadSch.String()),
+		)
+		if err != nil {
+			return fmt.Errorf("failed creating payload schema for table %v: %w", f.conf.Table, err)
+		}
+		f.payloadSchema = &ps
 	}
-	ps, err := sdkschema.Create(
-		ctx,
-		cschema.TypeAvro,
-		avroPayloadSch.Name(),
-		[]byte(avroPayloadSch.String()),
-	)
-	if err != nil {
-		return fmt.Errorf("failed creating payload schema for table %v: %w", f.conf.Table, err)
-	}
-	f.payloadSchema = ps
 
-	avroKeySch, err := schema.Avro.Extract(f.conf.Table+"_key", fields, f.conf.Key)
-	if err != nil {
-		return fmt.Errorf("failed to extract key schema for table %v: %w", f.conf.Table, err)
+	if f.keySchema == nil {
+		avroKeySch, err := schema.Avro.Extract(f.conf.Table+"_key", fields, f.conf.Key)
+		if err != nil {
+			return fmt.Errorf("failed to extract key schema for table %v: %w", f.conf.Table, err)
+		}
+		ks, err := sdkschema.Create(
+			ctx,
+			cschema.TypeAvro,
+			avroKeySch.Name(),
+			[]byte(avroKeySch.String()),
+		)
+		if err != nil {
+			return fmt.Errorf("failed creating key schema for table %v: %w", f.conf.Table, err)
+		}
+		f.keySchema = &ks
 	}
-	ks, err := sdkschema.Create(
-		ctx,
-		cschema.TypeAvro,
-		avroKeySch.Name(),
-		[]byte(avroKeySch.String()),
-	)
-	if err != nil {
-		return fmt.Errorf("failed creating key schema for table %v: %w", f.conf.Table, err)
-	}
-	f.keySchema = ks
 
 	return nil
 }
