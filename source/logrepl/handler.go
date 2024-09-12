@@ -17,12 +17,13 @@ package logrepl
 import (
 	"context"
 	"fmt"
-
 	"github.com/conduitio/conduit-commons/opencdc"
+	cschema "github.com/conduitio/conduit-commons/schema"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	sdkschema "github.com/conduitio/conduit-connector-sdk/schema"
 	"github.com/hamba/avro/v2"
 	"github.com/jackc/pglogrepl"
 )
@@ -35,8 +36,7 @@ type CDCHandler struct {
 	out         chan<- opencdc.Record
 	lastTXLSN   pglogrepl.LSN
 
-	relAvroSchema  map[string]avro.Schema
-	withAvroSchema bool
+	relAvroSchema map[string]avro.Schema
 }
 
 func NewCDCHandler(
@@ -46,11 +46,10 @@ func NewCDCHandler(
 	out chan<- opencdc.Record,
 ) *CDCHandler {
 	return &CDCHandler{
-		tableKeys:      tableKeys,
-		relationSet:    rs,
-		out:            out,
-		withAvroSchema: withAvroSchema,
-		relAvroSchema:  make(map[string]avro.Schema),
+		tableKeys:     tableKeys,
+		relationSet:   rs,
+		out:           out,
+		relAvroSchema: make(map[string]avro.Schema),
 	}
 }
 
@@ -98,10 +97,10 @@ func (h *CDCHandler) handleInsert(
 	ctx context.Context,
 	msg *pglogrepl.InsertMessage,
 	lsn pglogrepl.LSN,
-) (err error) {
+) error {
 	rel, err := h.relationSet.Get(msg.RelationID)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed getting relation %v: %w", msg.RelationID, err)
 	}
 
 	newValues, err := h.relationSet.Values(msg.RelationID, msg.Tuple)
@@ -119,6 +118,11 @@ func (h *CDCHandler) handleInsert(
 		h.buildRecordKey(newValues, rel.RelationName),
 		h.buildRecordPayload(newValues),
 	)
+
+	err = h.attachSchema(ctx, rec, rel.RelationName)
+	if err != nil {
+		return fmt.Errorf("failed to attach schema: %w", err)
+	}
 
 	return h.send(ctx, rec)
 }
@@ -158,6 +162,12 @@ func (h *CDCHandler) handleUpdate(
 		h.buildRecordPayload(oldValues),
 		h.buildRecordPayload(newValues),
 	)
+
+	err = h.attachSchema(ctx, rec, rel.RelationName)
+	if err != nil {
+		return fmt.Errorf("failed to attach schema: %w", err)
+	}
+
 	return h.send(ctx, rec)
 }
 
@@ -189,6 +199,11 @@ func (h *CDCHandler) handleDelete(
 		h.buildRecordPayload(oldValues),
 	)
 
+	err = h.attachSchema(ctx, rec, rel.RelationName)
+	if err != nil {
+		return fmt.Errorf("failed to attach schema: %w", err)
+	}
+
 	return h.send(ctx, rec)
 }
 
@@ -206,10 +221,6 @@ func (h *CDCHandler) send(ctx context.Context, rec opencdc.Record) error {
 func (h *CDCHandler) buildRecordMetadata(rel *pglogrepl.RelationMessage) map[string]string {
 	m := map[string]string{
 		opencdc.MetadataCollection: rel.RelationName,
-	}
-
-	if h.withAvroSchema {
-		m[schema.AvroMetadataKey] = h.relAvroSchema[rel.RelationName].String()
 	}
 
 	return m
@@ -249,16 +260,29 @@ func (*CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 // updateAvroSchema generates and stores avro schema based on the relation's row,
 // when usage of avro schema is requested.
 func (h *CDCHandler) updateAvroSchema(rel *pglogrepl.RelationMessage, row *pglogrepl.TupleData) error {
-	if !h.withAvroSchema {
-		return nil
-	}
-
-	sch, err := schema.Avro.ExtractLogrepl(rel, row)
+	sch, err := schema.Avro.ExtractLogrepl(rel)
 	if err != nil {
 		return err
 	}
 
 	h.relAvroSchema[rel.RelationName] = sch
+
+	return nil
+}
+
+func (h *CDCHandler) attachSchema(ctx context.Context, rec opencdc.Record, relationName string) error {
+	sch, err := sdkschema.Create(
+		ctx,
+		cschema.TypeAvro,
+		relationName,
+		[]byte(h.relAvroSchema[relationName].String()),
+	)
+	if err != nil {
+		return fmt.Errorf("failed creating schema for relation %v: %w", relationName, err)
+	}
+
+	// todo attach key schema
+	cschema.AttachPayloadSchemaToRecord(rec, sch)
 
 	return nil
 }

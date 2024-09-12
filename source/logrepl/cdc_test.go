@@ -146,7 +146,9 @@ func TestCDCIterator_Next(t *testing.T) {
 			want: opencdc.Record{
 				Operation: opencdc.OperationCreate,
 				Metadata: map[string]string{
-					opencdc.MetadataCollection: table,
+					opencdc.MetadataCollection:           table,
+					opencdc.MetadataPayloadSchemaSubject: table,
+					opencdc.MetadataPayloadSchemaVersion: "1",
 				},
 				Key: opencdc.StructuredData{"id": int64(6)},
 				Payload: opencdc.Change{
@@ -175,7 +177,9 @@ func TestCDCIterator_Next(t *testing.T) {
 			want: opencdc.Record{
 				Operation: opencdc.OperationUpdate,
 				Metadata: map[string]string{
-					opencdc.MetadataCollection: table,
+					opencdc.MetadataCollection:           table,
+					opencdc.MetadataPayloadSchemaSubject: table,
+					opencdc.MetadataPayloadSchemaVersion: "1",
 				},
 				Key: opencdc.StructuredData{"id": int64(1)},
 				Payload: opencdc.Change{
@@ -205,7 +209,9 @@ func TestCDCIterator_Next(t *testing.T) {
 			want: opencdc.Record{
 				Operation: opencdc.OperationUpdate,
 				Metadata: map[string]string{
-					opencdc.MetadataCollection: table,
+					opencdc.MetadataCollection:           table,
+					opencdc.MetadataPayloadSchemaSubject: table,
+					opencdc.MetadataPayloadSchemaVersion: "1",
 				},
 				Key: opencdc.StructuredData{"id": int64(1)},
 				Payload: opencdc.Change{
@@ -244,7 +250,9 @@ func TestCDCIterator_Next(t *testing.T) {
 			want: opencdc.Record{
 				Operation: opencdc.OperationDelete,
 				Metadata: map[string]string{
-					opencdc.MetadataCollection: table,
+					opencdc.MetadataCollection:           table,
+					opencdc.MetadataPayloadSchemaSubject: table,
+					opencdc.MetadataPayloadSchemaVersion: "1",
 				},
 				Key: opencdc.StructuredData{"id": int64(4)},
 				Payload: opencdc.Change{
@@ -274,7 +282,9 @@ func TestCDCIterator_Next(t *testing.T) {
 			want: opencdc.Record{
 				Operation: opencdc.OperationDelete,
 				Metadata: map[string]string{
-					opencdc.MetadataCollection: table,
+					opencdc.MetadataCollection:           table,
+					opencdc.MetadataPayloadSchemaSubject: table,
+					opencdc.MetadataPayloadSchemaVersion: "1",
 				},
 				Key: opencdc.StructuredData{"id": int64(3)},
 				Payload: opencdc.Change{

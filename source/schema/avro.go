@@ -66,10 +66,10 @@ type avroExtractor struct {
 	avroMap map[string]*avro.PrimitiveSchema
 }
 
-func (a avroExtractor) ExtractLogrepl(rel *pglogrepl.RelationMessage, row *pglogrepl.TupleData) (avro.Schema, error) {
+func (a avroExtractor) ExtractLogrepl(rel *pglogrepl.RelationMessage) (avro.Schema, error) {
 	var fields []pgconn.FieldDescription
 
-	for i := range row.Columns {
+	for i := range rel.Columns {
 		fields = append(fields, pgconn.FieldDescription{
 			Name:         rel.Columns[i].Name,
 			DataTypeOID:  rel.Columns[i].DataType,
@@ -80,7 +80,7 @@ func (a avroExtractor) ExtractLogrepl(rel *pglogrepl.RelationMessage, row *pglog
 	return a.Extract(rel.RelationName, fields)
 }
 
-func (a *avroExtractor) Extract(name string, fields []pgconn.FieldDescription) (avro.Schema, error) {
+func (a *avroExtractor) Extract(name string, fields []pgconn.FieldDescription) (*avro.RecordSchema, error) {
 	var avroFields []*avro.Field
 
 	for _, f := range fields {

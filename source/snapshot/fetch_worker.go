@@ -43,12 +43,11 @@ var supportedKeyTypes = []string{
 }
 
 type FetchConfig struct {
-	Table          string
-	Key            string
-	TXSnapshotID   string
-	FetchSize      int
-	Position       position.Position
-	WithAvroSchema bool
+	Table        string
+	Key          string
+	TXSnapshotID string
+	FetchSize    int
+	Position     position.Position
 }
 
 var (
@@ -82,14 +81,14 @@ type FetchData struct {
 	Payload    opencdc.StructuredData
 	Position   position.SnapshotPosition
 	Table      string
-	AvroSchema avro.Schema
+	AvroSchema *avro.RecordSchema
 }
 
 type FetchWorker struct {
 	conf       FetchConfig
 	db         *pgxpool.Pool
 	out        chan<- FetchData
-	avroSchema avro.Schema
+	avroSchema *avro.RecordSchema
 
 	snapshotEnd int64
 	lastRead    int64
@@ -286,7 +285,7 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 			return 0, fmt.Errorf("failed to get values: %w", err)
 		}
 
-		if f.conf.WithAvroSchema && f.avroSchema == nil {
+		if f.avroSchema == nil {
 			sch, err := schema.Avro.Extract(f.conf.Table, fields)
 			if err != nil {
 				return 0, fmt.Errorf("failed to extract schema: %w", err)

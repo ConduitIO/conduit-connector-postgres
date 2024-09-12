@@ -18,11 +18,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	cschema "github.com/conduitio/conduit-commons/schema"
+	sdkschema "github.com/conduitio/conduit-connector-sdk/schema"
+	"github.com/hamba/avro/v2"
 
 	"github.com/conduitio/conduit-commons/csync"
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
-	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"gopkg.in/tomb.v2"
@@ -31,12 +33,11 @@ import (
 var ErrIteratorDone = errors.New("snapshot complete")
 
 type Config struct {
-	Position       opencdc.Position
-	Tables         []string
-	TableKeys      map[string]string
-	TXSnapshotID   string
-	FetchSize      int
-	WithAvroSchema bool
+	Position     opencdc.Position
+	Tables       []string
+	TableKeys    map[string]string
+	TXSnapshotID string
+	FetchSize    int
 }
 
 type Iterator struct {
@@ -96,7 +97,7 @@ func (i *Iterator) Next(ctx context.Context) (opencdc.Record, error) {
 		}
 
 		i.acks.Add(1)
-		return i.buildRecord(d), nil
+		return i.buildRecord(ctx, d)
 	}
 }
 
@@ -113,7 +114,7 @@ func (i *Iterator) Teardown(_ context.Context) error {
 	return nil
 }
 
-func (i *Iterator) buildRecord(d FetchData) opencdc.Record {
+func (i *Iterator) buildRecord(ctx context.Context, d FetchData) (opencdc.Record, error) {
 	// merge this position with latest position
 	i.lastPosition.Type = position.TypeSnapshot
 	i.lastPosition.Snapshots[d.Table] = d.Position
@@ -122,11 +123,13 @@ func (i *Iterator) buildRecord(d FetchData) opencdc.Record {
 	metadata := make(opencdc.Metadata)
 	metadata["postgres.table"] = d.Table
 
-	if i.conf.WithAvroSchema {
-		metadata[schema.AvroMetadataKey] = d.AvroSchema.String()
+	rec := sdk.Util.Source.NewRecordSnapshot(pos, metadata, d.Key, d.Payload)
+	err := i.attachSchema(ctx, rec, d.AvroSchema)
+	if err != nil {
+		return opencdc.Record{}, fmt.Errorf("failed to attach schema: %w", err)
 	}
 
-	return sdk.Util.Source.NewRecordSnapshot(pos, metadata, d.Key, d.Payload)
+	return rec, nil
 }
 
 func (i *Iterator) initFetchers(ctx context.Context) error {
@@ -136,12 +139,11 @@ func (i *Iterator) initFetchers(ctx context.Context) error {
 
 	for j, t := range i.conf.Tables {
 		w := NewFetchWorker(i.db, i.data, FetchConfig{
-			Table:          t,
-			Key:            i.conf.TableKeys[t],
-			TXSnapshotID:   i.conf.TXSnapshotID,
-			Position:       i.lastPosition,
-			FetchSize:      i.conf.FetchSize,
-			WithAvroSchema: i.conf.WithAvroSchema,
+			Table:        t,
+			Key:          i.conf.TableKeys[t],
+			TXSnapshotID: i.conf.TXSnapshotID,
+			Position:     i.lastPosition,
+			FetchSize:    i.conf.FetchSize,
 		})
 
 		if err := w.Validate(ctx); err != nil {
@@ -169,4 +171,21 @@ func (i *Iterator) startWorkers() {
 		<-i.t.Dead()
 		close(i.data)
 	}()
+}
+
+func (i *Iterator) attachSchema(ctx context.Context, rec opencdc.Record, schema *avro.RecordSchema) error {
+	sch, err := sdkschema.Create(
+		ctx,
+		cschema.TypeAvro,
+		schema.Name(),
+		[]byte(schema.String()),
+	)
+	if err != nil {
+		return fmt.Errorf("failed creating schema %v: %w", schema.Name(), err)
+	}
+
+	// todo attach key schema
+	cschema.AttachPayloadSchemaToRecord(rec, sch)
+
+	return nil
 }
