@@ -471,7 +471,7 @@ func (*FetchWorker) validateTable(ctx context.Context, table string, tx pgx.Tx) 
 // todo this should happen only once?
 func (f *FetchWorker) initSchemas(ctx context.Context, fields []pgconn.FieldDescription) error {
 	if f.payloadSchema == nil {
-		avroPayloadSch, err := schema.Avro.Extract(f.conf.Table, fields)
+		avroPayloadSch, err := schema.Avro.Extract(f.conf.Table+"_payload", fields)
 		if err != nil {
 			return fmt.Errorf("failed to extract payload schema for table %v: %w", f.conf.Table, err)
 		}

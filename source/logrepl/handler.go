@@ -245,7 +245,7 @@ func (*CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 // when usage of avro schema is requested.
 func (h *CDCHandler) updateAvroSchema(ctx context.Context, rel *pglogrepl.RelationMessage) error {
 	// Payload schema
-	avroPayloadSch, err := schema.Avro.ExtractLogrepl(rel.RelationName, rel)
+	avroPayloadSch, err := schema.Avro.ExtractLogrepl(rel.RelationName+"_payload", rel)
 	if err != nil {
 		return fmt.Errorf("failed to extract payload schema: %w", err)
 	}
