@@ -281,12 +281,17 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 		Msg("cursor fetched data")
 
 	fields := rows.FieldDescriptions()
-
 	var nread int
+
 	for rows.Next() {
 		values, err := rows.Values()
 		if err != nil {
 			return 0, fmt.Errorf("failed to get values: %w", err)
+		}
+
+		err = f.initSchemas(ctx, fields)
+		if err != nil {
+			return 0, fmt.Errorf("failed to init schemas: %w", err)
 		}
 
 		data, err := f.buildFetchData(fields, values)
