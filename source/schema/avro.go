@@ -66,7 +66,7 @@ type avroExtractor struct {
 	avroMap map[string]*avro.PrimitiveSchema
 }
 
-func (a avroExtractor) ExtractLogrepl(schemaName string, rel *pglogrepl.RelationMessage) (*avro.RecordSchema, error) {
+func (a avroExtractor) ExtractLogrepl(schemaName string, rel *pglogrepl.RelationMessage, fieldNames ...string) (*avro.RecordSchema, error) {
 	var fields []pgconn.FieldDescription
 
 	for i := range rel.Columns {
@@ -77,21 +77,7 @@ func (a avroExtractor) ExtractLogrepl(schemaName string, rel *pglogrepl.Relation
 		})
 	}
 
-	return a.Extract(schemaName, fields)
-}
-
-func (a avroExtractor) ExtractLogreplFields(schemaName string, rel *pglogrepl.RelationMessage, fieldName string) (*avro.RecordSchema, error) {
-	var fields []pgconn.FieldDescription
-
-	for i := range rel.Columns {
-		fields = append(fields, pgconn.FieldDescription{
-			Name:         rel.Columns[i].Name,
-			DataTypeOID:  rel.Columns[i].DataType,
-			TypeModifier: rel.Columns[i].TypeModifier,
-		})
-	}
-
-	return a.Extract(schemaName, fields, fieldName)
+	return a.Extract(schemaName, fields, fieldNames...)
 }
 
 func (a *avroExtractor) Extract(schemaName string, fields []pgconn.FieldDescription, fieldNames ...string) (*avro.RecordSchema, error) {
@@ -101,6 +87,7 @@ func (a *avroExtractor) Extract(schemaName string, fields []pgconn.FieldDescript
 		if len(fieldNames) > 0 && !slices.Contains(fieldNames, f.Name) {
 			continue
 		}
+
 		t, ok := a.pgMap.TypeForOID(f.DataTypeOID)
 		if !ok {
 			return nil, fmt.Errorf("field %q with OID %d cannot be resolved", f.Name, f.DataTypeOID)

@@ -18,13 +18,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
-	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	"github.com/conduitio/conduit-connector-postgres/source/types"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/google/uuid"
@@ -85,6 +85,7 @@ type FetchData struct {
 	KeySchema     *avro.RecordSchema
 }
 
+// FetchWorker fetches snapshot data from a single table
 type FetchWorker struct {
 	conf FetchConfig
 	db   *pgxpool.Pool
@@ -279,30 +280,16 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 		Msg("cursor fetched data")
 
 	fields := rows.FieldDescriptions()
+	err = f.initSchemas(fields)
+	if err != nil {
+		return 0, fmt.Errorf("failed to init schemas: %w", err)
+	}
 
 	var nread int
-
 	for rows.Next() {
 		values, err := rows.Values()
 		if err != nil {
 			return 0, fmt.Errorf("failed to get values: %w", err)
-		}
-
-		if f.payloadSchema == nil {
-			ps, err := schema.Avro.Extract(f.conf.Table, fields)
-			if err != nil {
-				return 0, fmt.Errorf("failed to extract schema: %w", err)
-			}
-
-			f.payloadSchema = ps
-		}
-		if f.keySchema == nil {
-			ks, err := schema.Avro.Extract(f.conf.Table+"_key", fields, f.conf.Key)
-			if err != nil {
-				return 0, fmt.Errorf("failed to extract schema: %w", err)
-			}
-
-			f.keySchema = ks
 		}
 
 		data, err := f.buildFetchData(fields, values)
@@ -474,6 +461,28 @@ func (*FetchWorker) validateTable(ctx context.Context, table string, tx pgx.Tx) 
 
 	if !tableExists {
 		return fmt.Errorf("table %q does not exist", table)
+	}
+
+	return nil
+}
+
+func (f *FetchWorker) initSchemas(fields []pgconn.FieldDescription) error {
+	if f.payloadSchema == nil {
+		ps, err := schema.Avro.Extract(f.conf.Table, fields)
+		if err != nil {
+			return fmt.Errorf("failed to extract schema: %w", err)
+		}
+
+		f.payloadSchema = ps
+	}
+
+	if f.keySchema == nil {
+		ks, err := schema.Avro.Extract(f.conf.Table+"_key", fields, f.conf.Key)
+		if err != nil {
+			return fmt.Errorf("failed to extract schema: %w", err)
+		}
+
+		f.keySchema = ks
 	}
 
 	return nil
