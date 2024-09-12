@@ -18,17 +18,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
+	cschema "github.com/conduitio/conduit-commons/schema"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
+	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	"github.com/conduitio/conduit-connector-postgres/source/types"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	sdkschema "github.com/conduitio/conduit-connector-sdk/schema"
 	"github.com/google/uuid"
-	"github.com/hamba/avro/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -81,8 +82,8 @@ type FetchData struct {
 	Payload       opencdc.StructuredData
 	Position      position.SnapshotPosition
 	Table         string
-	PayloadSchema *avro.RecordSchema
-	KeySchema     *avro.RecordSchema
+	PayloadSchema cschema.Schema
+	KeySchema     cschema.Schema
 }
 
 // FetchWorker fetches snapshot data from a single table
@@ -91,8 +92,8 @@ type FetchWorker struct {
 	db   *pgxpool.Pool
 	out  chan<- FetchData
 
-	keySchema     *avro.RecordSchema
-	payloadSchema *avro.RecordSchema
+	keySchema     cschema.Schema
+	payloadSchema cschema.Schema
 
 	snapshotEnd int64
 	lastRead    int64
@@ -280,7 +281,7 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 		Msg("cursor fetched data")
 
 	fields := rows.FieldDescriptions()
-	err = f.initSchemas(fields)
+	err = f.initSchemas(ctx, fields)
 	if err != nil {
 		return 0, fmt.Errorf("failed to init schemas: %w", err)
 	}
@@ -466,24 +467,37 @@ func (*FetchWorker) validateTable(ctx context.Context, table string, tx pgx.Tx) 
 	return nil
 }
 
-func (f *FetchWorker) initSchemas(fields []pgconn.FieldDescription) error {
-	if f.payloadSchema == nil {
-		ps, err := schema.Avro.Extract(f.conf.Table, fields)
-		if err != nil {
-			return fmt.Errorf("failed to extract schema: %w", err)
-		}
-
-		f.payloadSchema = ps
+// todo this should happen only once?
+func (f *FetchWorker) initSchemas(ctx context.Context, fields []pgconn.FieldDescription) error {
+	avroPayloadSch, err := schema.Avro.Extract(f.conf.Table, fields)
+	if err != nil {
+		return fmt.Errorf("failed to extract payload schema for table %v: %w", f.conf.Table, err)
 	}
-
-	if f.keySchema == nil {
-		ks, err := schema.Avro.Extract(f.conf.Table+"_key", fields, f.conf.Key)
-		if err != nil {
-			return fmt.Errorf("failed to extract schema: %w", err)
-		}
-
-		f.keySchema = ks
+	ps, err := sdkschema.Create(
+		ctx,
+		cschema.TypeAvro,
+		avroPayloadSch.Name(),
+		[]byte(avroPayloadSch.String()),
+	)
+	if err != nil {
+		return fmt.Errorf("failed creating payload schema for table %v: %w", f.conf.Table, err)
 	}
+	f.payloadSchema = ps
+
+	avroKeySch, err := schema.Avro.Extract(f.conf.Table+"_key", fields, f.conf.Key)
+	if err != nil {
+		return fmt.Errorf("failed to extract key schema for table %v: %w", f.conf.Table, err)
+	}
+	ks, err := sdkschema.Create(
+		ctx,
+		cschema.TypeAvro,
+		avroKeySch.Name(),
+		[]byte(avroKeySch.String()),
+	)
+	if err != nil {
+		return fmt.Errorf("failed creating key schema for table %v: %w", f.conf.Table, err)
+	}
+	f.keySchema = ks
 
 	return nil
 }

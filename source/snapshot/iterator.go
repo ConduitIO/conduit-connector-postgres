@@ -18,12 +18,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	cschema "github.com/conduitio/conduit-commons/schema"
-	sdkschema "github.com/conduitio/conduit-connector-sdk/schema"
-	"github.com/hamba/avro/v2"
-
 	"github.com/conduitio/conduit-commons/csync"
 	"github.com/conduitio/conduit-commons/opencdc"
+	cschema "github.com/conduitio/conduit-commons/schema"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -97,7 +94,7 @@ func (i *Iterator) Next(ctx context.Context) (opencdc.Record, error) {
 		}
 
 		i.acks.Add(1)
-		return i.buildRecord(ctx, d)
+		return i.buildRecord(d), nil
 	}
 }
 
@@ -114,7 +111,7 @@ func (i *Iterator) Teardown(_ context.Context) error {
 	return nil
 }
 
-func (i *Iterator) buildRecord(ctx context.Context, d FetchData) (opencdc.Record, error) {
+func (i *Iterator) buildRecord(d FetchData) opencdc.Record {
 	// merge this position with latest position
 	i.lastPosition.Type = position.TypeSnapshot
 	i.lastPosition.Snapshots[d.Table] = d.Position
@@ -124,12 +121,10 @@ func (i *Iterator) buildRecord(ctx context.Context, d FetchData) (opencdc.Record
 	metadata["postgres.table"] = d.Table
 
 	rec := sdk.Util.Source.NewRecordSnapshot(pos, metadata, d.Key, d.Payload)
-	err := i.attachSchemas(ctx, rec, d.PayloadSchema, d.KeySchema)
-	if err != nil {
-		return opencdc.Record{}, fmt.Errorf("failed to attach schema: %w", err)
-	}
+	cschema.AttachKeySchemaToRecord(rec, d.KeySchema)
+	cschema.AttachPayloadSchemaToRecord(rec, d.PayloadSchema)
 
-	return rec, nil
+	return rec
 }
 
 func (i *Iterator) initFetchers(ctx context.Context) error {
@@ -171,30 +166,4 @@ func (i *Iterator) startWorkers() {
 		<-i.t.Dead()
 		close(i.data)
 	}()
-}
-
-func (i *Iterator) attachSchemas(ctx context.Context, rec opencdc.Record, payloadSchema *avro.RecordSchema, keySchema *avro.RecordSchema) error {
-	ps, err := sdkschema.Create(
-		ctx,
-		cschema.TypeAvro,
-		payloadSchema.Name(),
-		[]byte(payloadSchema.String()),
-	)
-	if err != nil {
-		return fmt.Errorf("failed creating schema %v: %w", payloadSchema.Name(), err)
-	}
-	cschema.AttachPayloadSchemaToRecord(rec, ps)
-
-	ks, err := sdkschema.Create(
-		ctx,
-		cschema.TypeAvro,
-		keySchema.Name(),
-		[]byte(keySchema.String()),
-	)
-	if err != nil {
-		return fmt.Errorf("failed creating schema %v: %w", keySchema.Name(), err)
-	}
-	cschema.AttachKeySchemaToRecord(rec, ks)
-
-	return nil
 }
