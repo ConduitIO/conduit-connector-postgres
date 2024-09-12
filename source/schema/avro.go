@@ -66,6 +66,8 @@ type avroExtractor struct {
 	avroMap map[string]*avro.PrimitiveSchema
 }
 
+// ExtractLogrepl extracts an Avro schema from the given pglogrepl.RelationMessage.
+// If `fieldNames` are specified, then only the given fields will be included in the schema.
 func (a avroExtractor) ExtractLogrepl(schemaName string, rel *pglogrepl.RelationMessage, fieldNames ...string) (*avro.RecordSchema, error) {
 	var fields []pgconn.FieldDescription
 
@@ -80,6 +82,8 @@ func (a avroExtractor) ExtractLogrepl(schemaName string, rel *pglogrepl.Relation
 	return a.Extract(schemaName, fields, fieldNames...)
 }
 
+// Extract extracts an Avro schema from the given Postgres field descriptions.
+// If `fieldNames` are specified, then only the given fields will be included in the schema.
 func (a *avroExtractor) Extract(schemaName string, fields []pgconn.FieldDescription, fieldNames ...string) (*avro.RecordSchema, error) {
 	var avroFields []*avro.Field
 

@@ -289,9 +289,9 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 			return 0, fmt.Errorf("failed to get values: %w", err)
 		}
 
-		err = f.initSchemas(ctx, fields)
+		err = f.extractSchemas(ctx, fields)
 		if err != nil {
-			return 0, fmt.Errorf("failed to init schemas: %w", err)
+			return 0, fmt.Errorf("failed to extract schemas: %w", err)
 		}
 
 		data, err := f.buildFetchData(fields, values)
@@ -468,8 +468,7 @@ func (*FetchWorker) validateTable(ctx context.Context, table string, tx pgx.Tx) 
 	return nil
 }
 
-// todo this should happen only once?
-func (f *FetchWorker) initSchemas(ctx context.Context, fields []pgconn.FieldDescription) error {
+func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldDescription) error {
 	if f.payloadSchema == nil {
 		avroPayloadSch, err := schema.Avro.Extract(f.conf.Table+"_payload", fields)
 		if err != nil {
