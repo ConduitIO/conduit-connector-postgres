@@ -102,7 +102,8 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 
 	switch s.config.CDCMode {
 	case source.CDCModeAuto:
-		// TODO add logic that checks if the DB supports logical replication (since that's the only thing we support at the moment)
+		// TODO add logic that checks if the DB supports logical replication
+		// (since that's the only thing we support at the moment)
 		fallthrough
 	case source.CDCModeLogrepl:
 		i, err := logrepl.NewCombinedIterator(ctx, s.pool, logrepl.Config{

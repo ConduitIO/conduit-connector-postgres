@@ -124,7 +124,7 @@ func (i *Iterator) buildRecord(ctx context.Context, d FetchData) (opencdc.Record
 	metadata["postgres.table"] = d.Table
 
 	rec := sdk.Util.Source.NewRecordSnapshot(pos, metadata, d.Key, d.Payload)
-	err := i.attachSchema(ctx, rec, d.AvroSchema)
+	err := i.attachSchemas(ctx, rec, d.PayloadSchema, d.KeySchema)
 	if err != nil {
 		return opencdc.Record{}, fmt.Errorf("failed to attach schema: %w", err)
 	}
@@ -173,19 +173,28 @@ func (i *Iterator) startWorkers() {
 	}()
 }
 
-func (i *Iterator) attachSchema(ctx context.Context, rec opencdc.Record, schema *avro.RecordSchema) error {
-	sch, err := sdkschema.Create(
+func (i *Iterator) attachSchemas(ctx context.Context, rec opencdc.Record, payloadSchema *avro.RecordSchema, keySchema *avro.RecordSchema) error {
+	ps, err := sdkschema.Create(
 		ctx,
 		cschema.TypeAvro,
-		schema.Name(),
-		[]byte(schema.String()),
+		payloadSchema.Name(),
+		[]byte(payloadSchema.String()),
 	)
 	if err != nil {
-		return fmt.Errorf("failed creating schema %v: %w", schema.Name(), err)
+		return fmt.Errorf("failed creating schema %v: %w", payloadSchema.Name(), err)
 	}
+	cschema.AttachPayloadSchemaToRecord(rec, ps)
 
-	// todo attach key schema
-	cschema.AttachPayloadSchemaToRecord(rec, sch)
+	ks, err := sdkschema.Create(
+		ctx,
+		cschema.TypeAvro,
+		keySchema.Name(),
+		[]byte(keySchema.String()),
+	)
+	if err != nil {
+		return fmt.Errorf("failed creating schema %v: %w", keySchema.Name(), err)
+	}
+	cschema.AttachKeySchemaToRecord(rec, ks)
 
 	return nil
 }

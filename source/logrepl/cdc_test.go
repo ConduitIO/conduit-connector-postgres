@@ -147,6 +147,8 @@ func TestCDCIterator_Next(t *testing.T) {
 				Operation: opencdc.OperationCreate,
 				Metadata: map[string]string{
 					opencdc.MetadataCollection:           table,
+					opencdc.MetadataKeySchemaSubject:     table + "_key",
+					opencdc.MetadataKeySchemaVersion:     "1",
 					opencdc.MetadataPayloadSchemaSubject: table,
 					opencdc.MetadataPayloadSchemaVersion: "1",
 				},
@@ -178,6 +180,8 @@ func TestCDCIterator_Next(t *testing.T) {
 				Operation: opencdc.OperationUpdate,
 				Metadata: map[string]string{
 					opencdc.MetadataCollection:           table,
+					opencdc.MetadataKeySchemaSubject:     table + "_key",
+					opencdc.MetadataKeySchemaVersion:     "1",
 					opencdc.MetadataPayloadSchemaSubject: table,
 					opencdc.MetadataPayloadSchemaVersion: "1",
 				},
@@ -210,6 +214,8 @@ func TestCDCIterator_Next(t *testing.T) {
 				Operation: opencdc.OperationUpdate,
 				Metadata: map[string]string{
 					opencdc.MetadataCollection:           table,
+					opencdc.MetadataKeySchemaSubject:     table + "_key",
+					opencdc.MetadataKeySchemaVersion:     "1",
 					opencdc.MetadataPayloadSchemaSubject: table,
 					opencdc.MetadataPayloadSchemaVersion: "1",
 				},
@@ -251,6 +257,8 @@ func TestCDCIterator_Next(t *testing.T) {
 				Operation: opencdc.OperationDelete,
 				Metadata: map[string]string{
 					opencdc.MetadataCollection:           table,
+					opencdc.MetadataKeySchemaSubject:     table + "_key",
+					opencdc.MetadataKeySchemaVersion:     "1",
 					opencdc.MetadataPayloadSchemaSubject: table,
 					opencdc.MetadataPayloadSchemaVersion: "1",
 				},
@@ -283,6 +291,8 @@ func TestCDCIterator_Next(t *testing.T) {
 				Operation: opencdc.OperationDelete,
 				Metadata: map[string]string{
 					opencdc.MetadataCollection:           table,
+					opencdc.MetadataKeySchemaSubject:     table + "_key",
+					opencdc.MetadataKeySchemaVersion:     "1",
 					opencdc.MetadataPayloadSchemaSubject: table,
 					opencdc.MetadataPayloadSchemaVersion: "1",
 				},

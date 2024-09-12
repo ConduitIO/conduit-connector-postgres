@@ -77,18 +77,21 @@ func (c FetchConfig) Validate() error {
 }
 
 type FetchData struct {
-	Key        opencdc.StructuredData
-	Payload    opencdc.StructuredData
-	Position   position.SnapshotPosition
-	Table      string
-	AvroSchema *avro.RecordSchema
+	Key           opencdc.StructuredData
+	Payload       opencdc.StructuredData
+	Position      position.SnapshotPosition
+	Table         string
+	PayloadSchema *avro.RecordSchema
+	KeySchema     *avro.RecordSchema
 }
 
 type FetchWorker struct {
-	conf       FetchConfig
-	db         *pgxpool.Pool
-	out        chan<- FetchData
-	avroSchema *avro.RecordSchema
+	conf FetchConfig
+	db   *pgxpool.Pool
+	out  chan<- FetchData
+
+	keySchema     *avro.RecordSchema
+	payloadSchema *avro.RecordSchema
 
 	snapshotEnd int64
 	lastRead    int64
@@ -285,13 +288,21 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 			return 0, fmt.Errorf("failed to get values: %w", err)
 		}
 
-		if f.avroSchema == nil {
-			sch, err := schema.Avro.Extract(f.conf.Table, fields)
+		if f.payloadSchema == nil {
+			ps, err := schema.Avro.Extract(f.conf.Table, fields)
 			if err != nil {
 				return 0, fmt.Errorf("failed to extract schema: %w", err)
 			}
 
-			f.avroSchema = sch
+			f.payloadSchema = ps
+		}
+		if f.keySchema == nil {
+			ks, err := schema.Avro.Extract(f.conf.Table+"_key", fields, f.conf.Key)
+			if err != nil {
+				return 0, fmt.Errorf("failed to extract schema: %w", err)
+			}
+
+			f.keySchema = ks
 		}
 
 		data, err := f.buildFetchData(fields, values)
@@ -340,11 +351,12 @@ func (f *FetchWorker) buildFetchData(fields []pgconn.FieldDescription, values []
 	}
 
 	return FetchData{
-		Key:        key,
-		Payload:    payload,
-		Position:   pos,
-		Table:      f.conf.Table,
-		AvroSchema: f.avroSchema,
+		Key:           key,
+		Payload:       payload,
+		Position:      pos,
+		Table:         f.conf.Table,
+		PayloadSchema: f.payloadSchema,
+		KeySchema:     f.keySchema,
 	}, nil
 }
 

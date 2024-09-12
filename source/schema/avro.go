@@ -66,7 +66,7 @@ type avroExtractor struct {
 	avroMap map[string]*avro.PrimitiveSchema
 }
 
-func (a avroExtractor) ExtractLogrepl(rel *pglogrepl.RelationMessage) (avro.Schema, error) {
+func (a avroExtractor) ExtractLogrepl(schemaName string, rel *pglogrepl.RelationMessage) (*avro.RecordSchema, error) {
 	var fields []pgconn.FieldDescription
 
 	for i := range rel.Columns {
@@ -77,13 +77,30 @@ func (a avroExtractor) ExtractLogrepl(rel *pglogrepl.RelationMessage) (avro.Sche
 		})
 	}
 
-	return a.Extract(rel.RelationName, fields)
+	return a.Extract(schemaName, fields)
 }
 
-func (a *avroExtractor) Extract(name string, fields []pgconn.FieldDescription) (*avro.RecordSchema, error) {
+func (a avroExtractor) ExtractLogreplFields(schemaName string, rel *pglogrepl.RelationMessage, fieldName string) (*avro.RecordSchema, error) {
+	var fields []pgconn.FieldDescription
+
+	for i := range rel.Columns {
+		fields = append(fields, pgconn.FieldDescription{
+			Name:         rel.Columns[i].Name,
+			DataTypeOID:  rel.Columns[i].DataType,
+			TypeModifier: rel.Columns[i].TypeModifier,
+		})
+	}
+
+	return a.Extract(schemaName, fields, fieldName)
+}
+
+func (a *avroExtractor) Extract(schemaName string, fields []pgconn.FieldDescription, fieldNames ...string) (*avro.RecordSchema, error) {
 	var avroFields []*avro.Field
 
 	for _, f := range fields {
+		if len(fieldNames) > 0 && !slices.Contains(fieldNames, f.Name) {
+			continue
+		}
 		t, ok := a.pgMap.TypeForOID(f.DataTypeOID)
 		if !ok {
 			return nil, fmt.Errorf("field %q with OID %d cannot be resolved", f.Name, f.DataTypeOID)
@@ -106,7 +123,7 @@ func (a *avroExtractor) Extract(name string, fields []pgconn.FieldDescription) (
 		return cmp.Compare(a.Name(), b.Name())
 	})
 
-	sch, err := avro.NewRecordSchema(name, avroNS, avroFields)
+	sch, err := avro.NewRecordSchema(schemaName, avroNS, avroFields)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create avro schema: %w", err)
 	}
