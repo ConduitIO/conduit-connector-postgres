@@ -18,18 +18,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/conduitio/conduit-commons/schema"
-	sdkschema "github.com/conduitio/conduit-connector-sdk/schema"
-	"github.com/hamba/avro/v2"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-commons/schema"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
+	sdkschema "github.com/conduitio/conduit-connector-sdk/schema"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/hamba/avro/v2"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
@@ -551,6 +551,7 @@ func TestCDCIterator_Schema(t *testing.T) {
 		is := is.New(t)
 
 		_, err := pool.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN column6 timestamp;`, table))
+		is.NoErr(err)
 
 		_, err = pool.Exec(
 			ctx,
@@ -570,6 +571,7 @@ func TestCDCIterator_Schema(t *testing.T) {
 		is := is.New(t)
 
 		_, err := pool.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s DROP COLUMN column4, DROP COLUMN column5;`, table))
+		is.NoErr(err)
 
 		_, err = pool.Exec(
 			ctx,
@@ -588,6 +590,7 @@ func TestCDCIterator_Schema(t *testing.T) {
 
 func assertPayloadSchemaOK(ctx context.Context, is *is.I, wantSchemaTemplate string, table string, r opencdc.Record) {
 	gotConduitSch, err := getPayloadSchema(ctx, r)
+	is.NoErr(err)
 
 	want, err := avro.Parse(fmt.Sprintf(wantSchemaTemplate, table+"_payload"))
 	is.NoErr(err)
@@ -600,6 +603,7 @@ func assertPayloadSchemaOK(ctx context.Context, is *is.I, wantSchemaTemplate str
 
 func assertKeySchemaOK(ctx context.Context, is *is.I, table string, r opencdc.Record) {
 	gotConduitSch, err := getKeySchema(ctx, r)
+	is.NoErr(err)
 
 	want, err := avro.Parse(fmt.Sprintf(test.TestTableKeyAvroSchema, table+"_key"))
 	is.NoErr(err)
