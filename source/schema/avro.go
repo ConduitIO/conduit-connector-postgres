@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	avroNS             = "conduit.postgres"
+	avroNS             = ""
 	avroDecimalPadding = 8
 )
 
@@ -132,7 +132,7 @@ func (a *avroExtractor) extractType(t *pgtype.Type, typeMod int32) (avro.Schema,
 		scale := int((typeMod - 4) & 65535)
 		precision := int(((typeMod - 4) >> 16) & 65535)
 		fs, err := avro.NewFixedSchema(
-			string(avro.Decimal),
+			fmt.Sprintf("%s_%d_%d", avro.Decimal, precision, scale),
 			avroNS,
 			precision+scale+avroDecimalPadding,
 			avro.NewDecimalLogicalSchema(precision, scale),

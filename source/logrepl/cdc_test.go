@@ -18,6 +18,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/conduitio/conduit-commons/schema"
+	sdkschema "github.com/conduitio/conduit-connector-sdk/schema"
+	"github.com/hamba/avro/v2"
 	"strings"
 	"testing"
 	"time"
@@ -516,4 +519,131 @@ func fetchSlotStats(t *testing.T, c test.Querier, slotName string) (pglogrepl.LS
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+func TestCDCIterator_Schema(t *testing.T) {
+	ctx := context.Background()
+
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupTestTable(ctx, t, pool)
+
+	i := testCDCIterator(ctx, t, pool, table, true)
+	<-i.sub.Ready()
+
+	t.Run("initial table schema", func(t *testing.T) {
+		is := is.New(t)
+
+		_, err := pool.Exec(
+			ctx,
+			fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5)
+				VALUES (6, 'bizz', 456, false, 12.3, 14)`, table),
+		)
+		is.NoErr(err)
+
+		r, err := i.Next(ctx)
+		is.NoErr(err)
+
+		assertPayloadSchemaOK(ctx, is, test.TestTableAvroSchemaV1, table, r)
+		assertKeySchemaOK(ctx, is, table, r)
+	})
+
+	t.Run("column added", func(t *testing.T) {
+		is := is.New(t)
+
+		_, err := pool.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN column6 timestamp;`, table))
+
+		_, err = pool.Exec(
+			ctx,
+			fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, column5, column6)
+				VALUES (7, decode('aabbcc', 'hex'), 'example data 1', 100, true, 12345.678, 12345, '2023-09-09 10:00:00');`, table),
+		)
+		is.NoErr(err)
+
+		r, err := i.Next(ctx)
+		is.NoErr(err)
+
+		assertPayloadSchemaOK(ctx, is, test.TestTableAvroSchemaV2, table, r)
+		assertKeySchemaOK(ctx, is, table, r)
+	})
+
+	t.Run("column removed", func(t *testing.T) {
+		is := is.New(t)
+
+		_, err := pool.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s DROP COLUMN column4, DROP COLUMN column5;`, table))
+
+		_, err = pool.Exec(
+			ctx,
+			fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column6)
+				VALUES (8, decode('aabbcc', 'hex'), 'example data 1', 100, true, '2023-09-09 10:00:00');`, table),
+		)
+		is.NoErr(err)
+
+		r, err := i.Next(ctx)
+		is.NoErr(err)
+
+		assertPayloadSchemaOK(ctx, is, test.TestTableAvroSchemaV3, table, r)
+		assertKeySchemaOK(ctx, is, table, r)
+	})
+}
+
+func assertPayloadSchemaOK(ctx context.Context, is *is.I, wantSchemaTemplate string, table string, r opencdc.Record) {
+	gotConduitSch, err := getPayloadSchema(ctx, r)
+
+	want, err := avro.Parse(fmt.Sprintf(wantSchemaTemplate, table+"_payload"))
+	is.NoErr(err)
+
+	got, err := avro.ParseBytes(gotConduitSch.Bytes)
+	is.NoErr(err)
+
+	is.Equal(want.String(), got.String())
+}
+
+func assertKeySchemaOK(ctx context.Context, is *is.I, table string, r opencdc.Record) {
+	gotConduitSch, err := getKeySchema(ctx, r)
+
+	want, err := avro.Parse(fmt.Sprintf(test.TestTableKeyAvroSchema, table+"_key"))
+	is.NoErr(err)
+
+	got, err := avro.ParseBytes(gotConduitSch.Bytes)
+	is.NoErr(err)
+
+	is.Equal(want.String(), got.String())
+}
+
+func getPayloadSchema(ctx context.Context, r opencdc.Record) (schema.Schema, error) {
+	payloadSubj, err := r.Metadata.GetPayloadSchemaSubject()
+	if err != nil {
+		return schema.Schema{}, fmt.Errorf("GetPayloadSchemaSubject failed: %w", err)
+	}
+
+	payloadV, err := r.Metadata.GetPayloadSchemaVersion()
+	if err != nil {
+		return schema.Schema{}, fmt.Errorf("GetPayloadSchemaVersion failed: %w", err)
+	}
+
+	payloadSch, err := sdkschema.Get(ctx, payloadSubj, payloadV)
+	if err != nil {
+		return schema.Schema{}, fmt.Errorf("failed getting schema: %w", err)
+	}
+
+	return payloadSch, nil
+}
+
+func getKeySchema(ctx context.Context, r opencdc.Record) (schema.Schema, error) {
+	keySubj, err := r.Metadata.GetKeySchemaSubject()
+	if err != nil {
+		return schema.Schema{}, fmt.Errorf("GetKeySchemaSubject failed: %w", err)
+	}
+
+	keyV, err := r.Metadata.GetKeySchemaVersion()
+	if err != nil {
+		return schema.Schema{}, fmt.Errorf("GetKeySchemaVersion failed: %w", err)
+	}
+
+	keySch, err := sdkschema.Get(ctx, keySubj, keyV)
+	if err != nil {
+		return schema.Schema{}, fmt.Errorf("failed getting schema: %w", err)
+	}
+
+	return keySch, nil
 }
