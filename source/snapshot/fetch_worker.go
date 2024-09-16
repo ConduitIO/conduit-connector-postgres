@@ -470,6 +470,9 @@ func (*FetchWorker) validateTable(ctx context.Context, table string, tx pgx.Tx) 
 
 func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldDescription) error {
 	if f.payloadSchema == nil {
+		sdk.Logger(ctx).Debug().
+			Msgf("extracting payload schema for %v fields in %v", len(fields), f.conf.Table)
+
 		avroPayloadSch, err := schema.Avro.Extract(f.conf.Table+"_payload", fields)
 		if err != nil {
 			return fmt.Errorf("failed to extract payload schema for table %v: %w", f.conf.Table, err)
@@ -487,6 +490,9 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 	}
 
 	if f.keySchema == nil {
+		sdk.Logger(ctx).Debug().
+			Msgf("extracting schema for key %v in %v", f.conf.Key, f.conf.Table)
+
 		avroKeySch, err := schema.Avro.Extract(f.conf.Table+"_key", fields, f.conf.Key)
 		if err != nil {
 			return fmt.Errorf("failed to extract key schema for table %v: %w", f.conf.Table, err)

@@ -132,6 +132,8 @@ func (a *avroExtractor) extractType(t *pgtype.Type, typeMod int32) (avro.Schema,
 		scale := int((typeMod - 4) & 65535)
 		precision := int(((typeMod - 4) >> 16) & 65535)
 		fs, err := avro.NewFixedSchema(
+			// It's not possible to have multiple schemas with different properties
+			// and the same name.
 			fmt.Sprintf("%s_%d_%d", avro.Decimal, precision, scale),
 			avroNS,
 			precision+scale+avroDecimalPadding,

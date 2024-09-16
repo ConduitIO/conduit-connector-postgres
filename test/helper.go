@@ -75,6 +75,7 @@ const TestTableAvroSchemaV1 = `{
     ]
 }`
 
+// TestTableAvroSchemaV2 is TestTableAvroSchemaV1 with `column6` (local-timestamp-micros) added.
 const TestTableAvroSchemaV2 = `{
     "type": "record",
     "name": "%s",
@@ -106,13 +107,13 @@ const TestTableAvroSchemaV2 = `{
                 "precision": 5
             }
         },
-		{"name":"column6","type":{"type":"long","logicalType":"local-timestamp-micros"}},
+        {"name":"column6","type":{"type":"long","logicalType":"local-timestamp-micros"}},
         {"name":"id","type":"long"},
         {"name":"key","type":"bytes"}
     ]
 }`
 
-// TestTableAvroSchemaV3 is TestTableAvroSchemaV1 with `column4` and `column5` dropped
+// TestTableAvroSchemaV3 is TestTableAvroSchemaV1 with `column4` and `column5` dropped.
 const TestTableAvroSchemaV3 = `{
     "type": "record",
     "name": "%s",
@@ -127,6 +128,7 @@ const TestTableAvroSchemaV3 = `{
     ]
 }`
 
+// TestTableKeyAvroSchema is the Avro schema for the test table's key column.
 const TestTableKeyAvroSchema = `{
     "type": "record",
     "name": "%s",
