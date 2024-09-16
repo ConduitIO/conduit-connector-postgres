@@ -26,7 +26,6 @@ import (
 )
 
 const (
-	avroNS             = "conduit.postgres"
 	avroDecimalPadding = 8
 )
 
@@ -66,10 +65,12 @@ type avroExtractor struct {
 	avroMap map[string]*avro.PrimitiveSchema
 }
 
-func (a avroExtractor) ExtractLogrepl(rel *pglogrepl.RelationMessage, row *pglogrepl.TupleData) (avro.Schema, error) {
+// ExtractLogrepl extracts an Avro schema from the given pglogrepl.RelationMessage.
+// If `fieldNames` are specified, then only the given fields will be included in the schema.
+func (a avroExtractor) ExtractLogrepl(schemaName string, rel *pglogrepl.RelationMessage, fieldNames ...string) (*avro.RecordSchema, error) {
 	var fields []pgconn.FieldDescription
 
-	for i := range row.Columns {
+	for i := range rel.Columns {
 		fields = append(fields, pgconn.FieldDescription{
 			Name:         rel.Columns[i].Name,
 			DataTypeOID:  rel.Columns[i].DataType,
@@ -77,13 +78,19 @@ func (a avroExtractor) ExtractLogrepl(rel *pglogrepl.RelationMessage, row *pglog
 		})
 	}
 
-	return a.Extract(rel.RelationName, fields)
+	return a.Extract(schemaName, fields, fieldNames...)
 }
 
-func (a *avroExtractor) Extract(name string, fields []pgconn.FieldDescription) (avro.Schema, error) {
+// Extract extracts an Avro schema from the given Postgres field descriptions.
+// If `fieldNames` are specified, then only the given fields will be included in the schema.
+func (a *avroExtractor) Extract(schemaName string, fields []pgconn.FieldDescription, fieldNames ...string) (*avro.RecordSchema, error) {
 	var avroFields []*avro.Field
 
 	for _, f := range fields {
+		if len(fieldNames) > 0 && !slices.Contains(fieldNames, f.Name) {
+			continue
+		}
+
 		t, ok := a.pgMap.TypeForOID(f.DataTypeOID)
 		if !ok {
 			return nil, fmt.Errorf("field %q with OID %d cannot be resolved", f.Name, f.DataTypeOID)
@@ -106,7 +113,7 @@ func (a *avroExtractor) Extract(name string, fields []pgconn.FieldDescription) (
 		return cmp.Compare(a.Name(), b.Name())
 	})
 
-	sch, err := avro.NewRecordSchema(name, avroNS, avroFields)
+	sch, err := avro.NewRecordSchema(schemaName, "", avroFields)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create avro schema: %w", err)
 	}
@@ -124,8 +131,10 @@ func (a *avroExtractor) extractType(t *pgtype.Type, typeMod int32) (avro.Schema,
 		scale := int((typeMod - 4) & 65535)
 		precision := int(((typeMod - 4) >> 16) & 65535)
 		fs, err := avro.NewFixedSchema(
-			string(avro.Decimal),
-			avroNS,
+			// It's not possible to have multiple schemas with different properties
+			// and the same name.
+			fmt.Sprintf("%s_%d_%d", avro.Decimal, precision, scale),
+			"",
 			precision+scale+avroDecimalPadding,
 			avro.NewDecimalLogicalSchema(precision, scale),
 		)

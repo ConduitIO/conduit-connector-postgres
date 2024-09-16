@@ -23,12 +23,13 @@ import (
 	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
+	cschema "github.com/conduitio/conduit-commons/schema"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	"github.com/conduitio/conduit-connector-postgres/source/types"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	sdkschema "github.com/conduitio/conduit-connector-sdk/schema"
 	"github.com/google/uuid"
-	"github.com/hamba/avro/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -43,12 +44,11 @@ var supportedKeyTypes = []string{
 }
 
 type FetchConfig struct {
-	Table          string
-	Key            string
-	TXSnapshotID   string
-	FetchSize      int
-	Position       position.Position
-	WithAvroSchema bool
+	Table        string
+	Key          string
+	TXSnapshotID string
+	FetchSize    int
+	Position     position.Position
 }
 
 var (
@@ -78,18 +78,22 @@ func (c FetchConfig) Validate() error {
 }
 
 type FetchData struct {
-	Key        opencdc.StructuredData
-	Payload    opencdc.StructuredData
-	Position   position.SnapshotPosition
-	Table      string
-	AvroSchema avro.Schema
+	Key           opencdc.StructuredData
+	Payload       opencdc.StructuredData
+	Position      position.SnapshotPosition
+	Table         string
+	PayloadSchema cschema.Schema
+	KeySchema     cschema.Schema
 }
 
+// FetchWorker fetches snapshot data from a single table
 type FetchWorker struct {
-	conf       FetchConfig
-	db         *pgxpool.Pool
-	out        chan<- FetchData
-	avroSchema avro.Schema
+	conf FetchConfig
+	db   *pgxpool.Pool
+	out  chan<- FetchData
+
+	keySchema     *cschema.Schema
+	payloadSchema *cschema.Schema
 
 	snapshotEnd int64
 	lastRead    int64
@@ -277,7 +281,6 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 		Msg("cursor fetched data")
 
 	fields := rows.FieldDescriptions()
-
 	var nread int
 
 	for rows.Next() {
@@ -286,13 +289,9 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 			return 0, fmt.Errorf("failed to get values: %w", err)
 		}
 
-		if f.conf.WithAvroSchema && f.avroSchema == nil {
-			sch, err := schema.Avro.Extract(f.conf.Table, fields)
-			if err != nil {
-				return 0, fmt.Errorf("failed to extract schema: %w", err)
-			}
-
-			f.avroSchema = sch
+		err = f.extractSchemas(ctx, fields)
+		if err != nil {
+			return 0, fmt.Errorf("failed to extract schemas: %w", err)
 		}
 
 		data, err := f.buildFetchData(fields, values)
@@ -341,11 +340,12 @@ func (f *FetchWorker) buildFetchData(fields []pgconn.FieldDescription, values []
 	}
 
 	return FetchData{
-		Key:        key,
-		Payload:    payload,
-		Position:   pos,
-		Table:      f.conf.Table,
-		AvroSchema: f.avroSchema,
+		Key:           key,
+		Payload:       payload,
+		Position:      pos,
+		Table:         f.conf.Table,
+		PayloadSchema: *f.payloadSchema,
+		KeySchema:     *f.keySchema,
 	}, nil
 }
 
@@ -463,6 +463,50 @@ func (*FetchWorker) validateTable(ctx context.Context, table string, tx pgx.Tx) 
 
 	if !tableExists {
 		return fmt.Errorf("table %q does not exist", table)
+	}
+
+	return nil
+}
+
+func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldDescription) error {
+	if f.payloadSchema == nil {
+		sdk.Logger(ctx).Debug().
+			Msgf("extracting payload schema for %v fields in %v", len(fields), f.conf.Table)
+
+		avroPayloadSch, err := schema.Avro.Extract(f.conf.Table+"_payload", fields)
+		if err != nil {
+			return fmt.Errorf("failed to extract payload schema for table %v: %w", f.conf.Table, err)
+		}
+		ps, err := sdkschema.Create(
+			ctx,
+			cschema.TypeAvro,
+			avroPayloadSch.Name(),
+			[]byte(avroPayloadSch.String()),
+		)
+		if err != nil {
+			return fmt.Errorf("failed creating payload schema for table %v: %w", f.conf.Table, err)
+		}
+		f.payloadSchema = &ps
+	}
+
+	if f.keySchema == nil {
+		sdk.Logger(ctx).Debug().
+			Msgf("extracting schema for key %v in %v", f.conf.Key, f.conf.Table)
+
+		avroKeySch, err := schema.Avro.Extract(f.conf.Table+"_key", fields, f.conf.Key)
+		if err != nil {
+			return fmt.Errorf("failed to extract key schema for table %v: %w", f.conf.Table, err)
+		}
+		ks, err := sdkschema.Create(
+			ctx,
+			cschema.TypeAvro,
+			avroKeySch.Name(),
+			[]byte(avroKeySch.String()),
+		)
+		if err != nil {
+			return fmt.Errorf("failed creating key schema for table %v: %w", f.conf.Table, err)
+		}
+		f.keySchema = &ks
 	}
 
 	return nil

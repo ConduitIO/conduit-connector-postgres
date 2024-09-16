@@ -36,6 +36,120 @@ const RepmgrConnString = "postgres://repmgr:repmgrmeroxa@127.0.0.1:5433/meroxadb
 // RegularConnString is a non-replication user connection string for the test postgres.
 const RegularConnString = "postgres://meroxauser:meroxapass@127.0.0.1:5433/meroxadb?sslmode=disable"
 
+// TestTableAvroSchemaV1 is the Avro schema representation of the test table
+// defined through testTableCreateQuery.
+// The fields are sorted by name.
+const TestTableAvroSchemaV1 = `{
+    "type": "record",
+    "name": "%s",
+    "fields":
+    [
+        {"name":"column1","type":"string"},
+        {"name":"column2","type":"int"},
+        {"name":"column3","type":"boolean"},
+        {
+            "name": "column4",
+            "type":
+            {
+                "name": "decimal_16_3",
+                "type": "fixed",
+                "size": 27,
+                "logicalType": "decimal",
+                "precision": 16,
+                "scale": 3
+            }
+        },
+        {
+            "name": "column5",
+            "type":
+            {
+                "name": "decimal_5_0",
+                "type": "fixed",
+                "size": 13,
+                "logicalType": "decimal",
+                "precision": 5
+            }
+        },
+        {"name":"id","type":"long"},
+        {"name":"key","type":"bytes"}
+    ]
+}`
+
+// TestTableAvroSchemaV2 is TestTableAvroSchemaV1 with `column6` (local-timestamp-micros) added.
+const TestTableAvroSchemaV2 = `{
+    "type": "record",
+    "name": "%s",
+    "fields":
+    [
+        {"name":"column1","type":"string"},
+        {"name":"column2","type":"int"},
+        {"name":"column3","type":"boolean"},
+        {
+            "name": "column4",
+            "type":
+            {
+                "name": "decimal_16_3",
+                "type": "fixed",
+                "size": 27,
+                "logicalType": "decimal",
+                "precision": 16,
+                "scale": 3
+            }
+        },
+        {
+            "name": "column5",
+            "type":
+            {
+                "name": "decimal_5_0",
+                "type": "fixed",
+                "size": 13,
+                "logicalType": "decimal",
+                "precision": 5
+            }
+        },
+        {"name":"column6","type":{"type":"long","logicalType":"local-timestamp-micros"}},
+        {"name":"id","type":"long"},
+        {"name":"key","type":"bytes"}
+    ]
+}`
+
+// TestTableAvroSchemaV3 is TestTableAvroSchemaV1 with `column4` and `column5` dropped.
+const TestTableAvroSchemaV3 = `{
+    "type": "record",
+    "name": "%s",
+    "fields":
+    [
+        {"name":"column1","type":"string"},
+        {"name":"column2","type":"int"},
+        {"name":"column3","type":"boolean"},
+		{"name":"column6","type":{"type":"long","logicalType":"local-timestamp-micros"}},
+        {"name":"id","type":"long"},
+        {"name":"key","type":"bytes"}
+    ]
+}`
+
+// TestTableKeyAvroSchema is the Avro schema for the test table's key column.
+const TestTableKeyAvroSchema = `{
+    "type": "record",
+    "name": "%s",
+    "fields":
+    [
+        {"name":"id","type":"long"}
+    ]
+}`
+
+// When updating this table, TestTableAvroSchemaV1 needs to be updated too.
+const testTableCreateQuery = `
+		CREATE TABLE %s (
+		id bigserial PRIMARY KEY,
+		key bytea,
+		column1 varchar(256),
+		column2 integer,
+		column3 boolean,
+		column4 numeric(16,3),
+		column5 numeric(5)
+	)`
+
 type Querier interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
@@ -71,17 +185,7 @@ func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 
 	table := RandomIdentifier(t)
 
-	query := `
-		CREATE TABLE %s (
-		id bigserial PRIMARY KEY,
-		key bytea,
-		column1 varchar(256),
-		column2 integer,
-		column3 boolean,
-		column4 numeric(16,3),
-		column5 numeric(5)
-	)`
-	query = fmt.Sprintf(query, table)
+	query := fmt.Sprintf(testTableCreateQuery, table)
 	_, err := conn.Exec(ctx, query)
 	is.NoErr(err)
 

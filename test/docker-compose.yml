@@ -1,4 +1,3 @@
-version: '3.4'
 services:
   pg-0:
     image: docker.io/bitnami/postgresql-repmgr:16

@@ -19,11 +19,12 @@ import (
 	"fmt"
 
 	"github.com/conduitio/conduit-commons/opencdc"
+	cschema "github.com/conduitio/conduit-commons/schema"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/hamba/avro/v2"
+	sdkschema "github.com/conduitio/conduit-connector-sdk/schema"
 	"github.com/jackc/pglogrepl"
 )
 
@@ -35,22 +36,17 @@ type CDCHandler struct {
 	out         chan<- opencdc.Record
 	lastTXLSN   pglogrepl.LSN
 
-	relAvroSchema  map[string]avro.Schema
-	withAvroSchema bool
+	keySchemas     map[string]cschema.Schema
+	payloadSchemas map[string]cschema.Schema
 }
 
-func NewCDCHandler(
-	rs *internal.RelationSet,
-	tableKeys map[string]string,
-	withAvroSchema bool,
-	out chan<- opencdc.Record,
-) *CDCHandler {
+func NewCDCHandler(rs *internal.RelationSet, tableKeys map[string]string, out chan<- opencdc.Record) *CDCHandler {
 	return &CDCHandler{
 		tableKeys:      tableKeys,
 		relationSet:    rs,
 		out:            out,
-		withAvroSchema: withAvroSchema,
-		relAvroSchema:  make(map[string]avro.Schema),
+		keySchemas:     make(map[string]cschema.Schema),
+		payloadSchemas: make(map[string]cschema.Schema),
 	}
 }
 
@@ -98,10 +94,10 @@ func (h *CDCHandler) handleInsert(
 	ctx context.Context,
 	msg *pglogrepl.InsertMessage,
 	lsn pglogrepl.LSN,
-) (err error) {
+) error {
 	rel, err := h.relationSet.Get(msg.RelationID)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed getting relation %v: %w", msg.RelationID, err)
 	}
 
 	newValues, err := h.relationSet.Values(msg.RelationID, msg.Tuple)
@@ -109,7 +105,7 @@ func (h *CDCHandler) handleInsert(
 		return fmt.Errorf("failed to decode new values: %w", err)
 	}
 
-	if err := h.updateAvroSchema(rel, msg.Tuple); err != nil {
+	if err := h.updateAvroSchema(ctx, rel); err != nil {
 		return fmt.Errorf("failed to update avro schema: %w", err)
 	}
 
@@ -119,6 +115,7 @@ func (h *CDCHandler) handleInsert(
 		h.buildRecordKey(newValues, rel.RelationName),
 		h.buildRecordPayload(newValues),
 	)
+	h.attachSchemas(rec, rel.RelationName)
 
 	return h.send(ctx, rec)
 }
@@ -140,7 +137,7 @@ func (h *CDCHandler) handleUpdate(
 		return fmt.Errorf("failed to decode new values: %w", err)
 	}
 
-	if err := h.updateAvroSchema(rel, msg.NewTuple); err != nil {
+	if err := h.updateAvroSchema(ctx, rel); err != nil {
 		return fmt.Errorf("failed to update avro schema: %w", err)
 	}
 
@@ -158,6 +155,8 @@ func (h *CDCHandler) handleUpdate(
 		h.buildRecordPayload(oldValues),
 		h.buildRecordPayload(newValues),
 	)
+	h.attachSchemas(rec, rel.RelationName)
+
 	return h.send(ctx, rec)
 }
 
@@ -178,7 +177,7 @@ func (h *CDCHandler) handleDelete(
 		return fmt.Errorf("failed to decode old values: %w", err)
 	}
 
-	if err := h.updateAvroSchema(rel, msg.OldTuple); err != nil {
+	if err := h.updateAvroSchema(ctx, rel); err != nil {
 		return fmt.Errorf("failed to update avro schema: %w", err)
 	}
 
@@ -188,6 +187,7 @@ func (h *CDCHandler) handleDelete(
 		h.buildRecordKey(oldValues, rel.RelationName),
 		h.buildRecordPayload(oldValues),
 	)
+	h.attachSchemas(rec, rel.RelationName)
 
 	return h.send(ctx, rec)
 }
@@ -206,10 +206,6 @@ func (h *CDCHandler) send(ctx context.Context, rec opencdc.Record) error {
 func (h *CDCHandler) buildRecordMetadata(rel *pglogrepl.RelationMessage) map[string]string {
 	m := map[string]string{
 		opencdc.MetadataCollection: rel.RelationName,
-	}
-
-	if h.withAvroSchema {
-		m[schema.AvroMetadataKey] = h.relAvroSchema[rel.RelationName].String()
 	}
 
 	return m
@@ -248,17 +244,43 @@ func (*CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 
 // updateAvroSchema generates and stores avro schema based on the relation's row,
 // when usage of avro schema is requested.
-func (h *CDCHandler) updateAvroSchema(rel *pglogrepl.RelationMessage, row *pglogrepl.TupleData) error {
-	if !h.withAvroSchema {
-		return nil
-	}
-
-	sch, err := schema.Avro.ExtractLogrepl(rel, row)
+func (h *CDCHandler) updateAvroSchema(ctx context.Context, rel *pglogrepl.RelationMessage) error {
+	// Payload schema
+	avroPayloadSch, err := schema.Avro.ExtractLogrepl(rel.RelationName+"_payload", rel)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to extract payload schema: %w", err)
 	}
+	ps, err := sdkschema.Create(
+		ctx,
+		cschema.TypeAvro,
+		avroPayloadSch.Name(),
+		[]byte(avroPayloadSch.String()),
+	)
+	if err != nil {
+		return fmt.Errorf("failed creating payload schema for relation %v: %w", rel.RelationName, err)
+	}
+	h.payloadSchemas[rel.RelationName] = ps
 
-	h.relAvroSchema[rel.RelationName] = sch
+	// Key schema
+	avroKeySch, err := schema.Avro.ExtractLogrepl(rel.RelationName+"_key", rel, h.tableKeys[rel.RelationName])
+	if err != nil {
+		return fmt.Errorf("failed to extract key schema: %w", err)
+	}
+	ks, err := sdkschema.Create(
+		ctx,
+		cschema.TypeAvro,
+		avroKeySch.Name(),
+		[]byte(avroKeySch.String()),
+	)
+	if err != nil {
+		return fmt.Errorf("failed creating key schema for relation %v: %w", rel.RelationName, err)
+	}
+	h.keySchemas[rel.RelationName] = ks
 
 	return nil
+}
+
+func (h *CDCHandler) attachSchemas(rec opencdc.Record, relationName string) {
+	cschema.AttachPayloadSchemaToRecord(rec, h.payloadSchemas[relationName])
+	cschema.AttachKeySchemaToRecord(rec, h.keySchemas[relationName])
 }

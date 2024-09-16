@@ -189,8 +189,8 @@ func avroTestSchema(t *testing.T, table string) avro.Schema {
 		assert(avro.NewField("col_int8", avro.NewPrimitiveSchema(avro.Long, nil))),
 		assert(avro.NewField("col_text", avro.NewPrimitiveSchema(avro.String, nil))),
 		assert(avro.NewField("col_numeric",
-			assert(avro.NewFixedSchema(string(avro.Decimal),
-				avroNS,
+			assert(avro.NewFixedSchema(fmt.Sprintf("%s_%d_%d", avro.Decimal, 8, 2),
+				"",
 				18,
 				avro.NewDecimalLogicalSchema(8, 2),
 			)))),
@@ -216,7 +216,7 @@ func avroTestSchema(t *testing.T, table string) avro.Schema {
 		return cmp.Compare(a.Name(), b.Name())
 	})
 
-	s, err := avro.NewRecordSchema(table, avroNS, fields)
+	s, err := avro.NewRecordSchema(table, "", fields)
 	is.NoErr(err)
 
 	return s

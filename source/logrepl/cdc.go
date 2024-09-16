@@ -27,7 +27,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Config holds configuration values for CDCIterator.
+// CDCConfig holds configuration values for CDCIterator.
 type CDCConfig struct {
 	LSN             pglogrepl.LSN
 	SlotName        string
@@ -65,7 +65,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	}
 
 	records := make(chan opencdc.Record)
-	handler := NewCDCHandler(internal.NewRelationSet(), c.TableKeys, c.WithAvroSchema, records)
+	handler := NewCDCHandler(internal.NewRelationSet(), c.TableKeys, records)
 
 	sub, err := internal.CreateSubscription(
 		ctx,
