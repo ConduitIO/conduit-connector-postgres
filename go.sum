@@ -82,8 +82,8 @@ github.com/conduitio/conduit-commons v0.3.0 h1:nxQ++O4dK1p717upkyzbCQu0FLIFyP3Or
 github.com/conduitio/conduit-commons v0.3.0/go.mod h1:roxZ88dv+fpbEjjTzkdGwwbmcpunSuiD8he43y0lAoo=
 github.com/conduitio/conduit-connector-protocol v0.7.0 h1:h8gc7fcxJaQbdL/oqC2q0q4ulR9Z7PwOTZqfdg6jYcE=
 github.com/conduitio/conduit-connector-protocol v0.7.0/go.mod h1:cnTjjLCX5dEex/7blKvcjTkoy10DXPD+J3Ok/zRycJw=
-github.com/conduitio/conduit-connector-sdk v0.10.0 h1:cUXYtG9JlBEDprsLOgLly+hppPO00TAlMuyeLPfmnC8=
-github.com/conduitio/conduit-connector-sdk v0.10.0/go.mod h1:tPg02DCZBF69Ek8rvx8R5FGsw02qnJA9h3G9HKpuKro=
+github.com/conduitio/conduit-connector-sdk v0.10.1 h1:buqbpymeQzLbLIMByPnNLZ+8Ec6MiFKczJSK1CzqJKc=
+github.com/conduitio/conduit-connector-sdk v0.10.1/go.mod h1:wKz/So3848xIFSw45swE6N0JNgqLloqE1gVkadK6aOI=
 github.com/coreos/go-systemd/v22 v22.5.0/go.mod h1:Y58oyj3AT4RCenI/lSvhwexgC+NSVTIJ3seZv2GcEnc=
 github.com/cpuguy83/go-md2man/v2 v2.0.4/go.mod h1:tgQtvFlXSQOSOSIRvRPT7W67SCa46tRHOmNcaadrF8o=
 github.com/curioswitch/go-reassign v0.2.0 h1:G9UZyOcpk/d7Gd6mqYgd8XYWFMw/znxwGDUstnC9DIo=
@@ -642,8 +642,8 @@ golang.org/x/xerrors v0.0.0-20191204190536-9bdfabe68543/go.mod h1:I/5z698sn9Ka8T
 golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
 google.golang.org/genproto/googleapis/rpc v0.0.0-20240903143218-8af14fe29dc1 h1:pPJltXNxVzT4pK9yD8vR9X75DaWYYmLGMsEvBfFQZzQ=
 google.golang.org/genproto/googleapis/rpc v0.0.0-20240903143218-8af14fe29dc1/go.mod h1:UqMtugtsSgubUsoxbuAoiCXvqvErP7Gf0so0mK9tHxU=
-google.golang.org/grpc v1.66.0 h1:DibZuoBznOxbDQxRINckZcUvnCEvrW9pcWIE2yF9r1c=
-google.golang.org/grpc v1.66.0/go.mod h1:s3/l6xSSCURdVfAnL+TqCNMyTDAGN6+lZeVxnZR128Y=
+google.golang.org/grpc v1.66.2 h1:3QdXkuq3Bkh7w+ywLdLvM56cmGvQHUMZpiCzt6Rqaoo=
+google.golang.org/grpc v1.66.2/go.mod h1:s3/l6xSSCURdVfAnL+TqCNMyTDAGN6+lZeVxnZR128Y=
 google.golang.org/protobuf v1.34.2 h1:6xV6lTsCfpGD21XK49h7MhtcApnLqkfYgPcdHftf6hg=
 google.golang.org/protobuf v1.34.2/go.mod h1:qYOHts0dSfpeUzUFpOMr/WGzszTmLH+DiWniOlNbLDw=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
