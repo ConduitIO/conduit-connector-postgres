@@ -26,7 +26,6 @@ import (
 )
 
 const (
-	avroNS             = ""
 	avroDecimalPadding = 8
 )
 
@@ -114,7 +113,7 @@ func (a *avroExtractor) Extract(schemaName string, fields []pgconn.FieldDescript
 		return cmp.Compare(a.Name(), b.Name())
 	})
 
-	sch, err := avro.NewRecordSchema(schemaName, avroNS, avroFields)
+	sch, err := avro.NewRecordSchema(schemaName, "", avroFields)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create avro schema: %w", err)
 	}
@@ -135,7 +134,7 @@ func (a *avroExtractor) extractType(t *pgtype.Type, typeMod int32) (avro.Schema,
 			// It's not possible to have multiple schemas with different properties
 			// and the same name.
 			fmt.Sprintf("%s_%d_%d", avro.Decimal, precision, scale),
-			avroNS,
+			"",
 			precision+scale+avroDecimalPadding,
 			avro.NewDecimalLogicalSchema(precision, scale),
 		)
