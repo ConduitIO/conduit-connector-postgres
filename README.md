@@ -1,4 +1,5 @@
 # Conduit Connector PostgreSQL
+
 ![scarf pixel](https://static.scarf.sh/a.png?x-pxid=1423de19-24e7-4d64-91cf-0b893ca28cc6)
 
 The PostgreSQL connector is a [Conduit](https://github.com/ConduitIO/conduit) plugin. It provides both, a source
@@ -57,16 +58,16 @@ the connector will return an error.
 
 ## Configuration Options
 
-| name                      | description                                                                                                                                   | required | default       |
-|---------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|----------|---------------|
-| `url`                     | Connection string for the Postgres database.                                                                                                  | true     |               |
-| `tables`                  | List of table names to read from, separated by comma. Example: `"employees,offices,payments"`. Using `*` will read from all public tables.    | true     |               |
-| `snapshotMode`            | Whether or not the plugin will take a snapshot of the entire table before starting cdc mode (allowed values: `initial` or `never`).           | false    | `initial`     |
-| `cdcMode`                 | Determines the CDC mode (allowed values: `auto`, `logrepl`).                                                                                  | false    | `auto`        |
-| `logrepl.publicationName` | Name of the publication to listen for WAL events.                                                                                             | false    | `conduitpub`  |
-| `logrepl.slotName`        | Name of the slot opened for replication events.                                                                                               | false    | `conduitslot` |
-| `logrepl.autoCleanup`     | Whether or not to cleanup the replication slot and pub when connector is deleted                                                              | false    | `true` |
-| ~~`table`~~               | List of table names to read from, separated by comma. **Deprecated: use `tables` instead.**                                                   | false    |               |
+| name                      | description                                                                                                                                | required | default       |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | -------- | ------------- |
+| `url`                     | Connection string for the Postgres database.                                                                                               | true     |               |
+| `tables`                  | List of table names to read from, separated by comma. Example: `"employees,offices,payments"`. Using `*` will read from all public tables. | true     |               |
+| `snapshotMode`            | Whether or not the plugin will take a snapshot of the entire table before starting cdc mode (allowed values: `initial` or `never`).        | false    | `initial`     |
+| `cdcMode`                 | Determines the CDC mode (allowed values: `auto`, `logrepl`).                                                                               | false    | `auto`        |
+| `logrepl.publicationName` | Name of the publication to listen for WAL events.                                                                                          | false    | `conduitpub`  |
+| `logrepl.slotName`        | Name of the slot opened for replication events.                                                                                            | false    | `conduitslot` |
+| `logrepl.autoCleanup`     | Whether or not to cleanup the replication slot and pub when connector is deleted                                                           | false    | `true`        |
+| ~~`table`~~               | List of table names to read from, separated by comma. **Deprecated: use `tables` instead.**                                                | false    |               |
 
 # Destination
 
@@ -84,9 +85,10 @@ If there is no key, the record will be simply appended.
 ## Configuration Options
 
 | name    | description                                                                                                                                                                           | required | default                                      |
-|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------|----------------------------------------------|
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | -------------------------------------------- |
 | `url`   | Connection string for the Postgres database.                                                                                                                                          | true     |                                              |
 | `table` | Table name. It can contain a Go template that will be executed for each record to determine the table. By default, the table is the value of the `opencdc.collection` metadata field. | false    | `{{ index .Metadata "opencdc.collection" }}` |
+| `key`   | Key represents the column name for the key used to identify and update existing rows.                                                                                                 | false    |                                              |
 
 # Testing
 
