@@ -5,7 +5,7 @@ go 1.23.2
 require (
 	github.com/Masterminds/sprig/v3 v3.3.0
 	github.com/Masterminds/squirrel v1.5.4
-	github.com/conduitio/conduit-commons v0.4.0
+	github.com/conduitio/conduit-commons v0.3.0
 	github.com/conduitio/conduit-connector-sdk v0.10.1
 	github.com/daixiang0/gci v0.13.5
 	github.com/golangci/golangci-lint v1.61.0
@@ -14,7 +14,7 @@ require (
 	github.com/hamba/avro/v2 v2.26.0
 	github.com/jackc/pgerrcode v0.0.0-20240316143900-6e2875d9b438
 	github.com/jackc/pglogrepl v0.0.0-20240307033717-828fbfe908e9
-	github.com/jackc/pgx/v5 v5.7.1
+	github.com/jackc/pgx/v5 v5.6.0
 	github.com/matryer/is v1.4.1
 	golang.org/x/tools v0.26.0
 	gopkg.in/tomb.v2 v2.0.0-20161208151619-d5d1b5820637
