@@ -35,6 +35,7 @@ linters:
   disable-all: true
   enable:
     - bodyclose
+    - copyloopvar
     # - depguard
     - dogsled
     - durationcheck
@@ -43,7 +44,6 @@ linters:
     # - errorlint
     # - exhaustive
     # - exhaustivestruct
-    - copyloopvar
     - forbidigo
     # - forcetypeassert
     # - funlen
