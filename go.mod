@@ -1,7 +1,6 @@
 module github.com/conduitio/conduit-connector-postgres
 
-go 1.22.5
-toolchain go1.23.2
+go 1.23.2
 
 require (
 	github.com/Masterminds/sprig/v3 v3.3.0
