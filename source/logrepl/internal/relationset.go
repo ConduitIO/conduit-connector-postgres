@@ -84,12 +84,12 @@ func (rs *RelationSet) oidToCodec(id uint32) pgtype.Codec {
 	return dt.Codec
 }
 
-func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, data []byte) (interface{}, interface{}) {
+func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, data []byte) (any, error) {
 	decoder := rs.oidToCodec(col.DataType)
 	// This workaround is due to an issue in pgx v5.7.1.
 	// Namely, that version introduces an XML codec
 	// (see: https://github.com/jackc/pgx/pull/2083/files#diff-8288d41e69f73d01a874b40de086684e5894da83a627e845e484b06d5e053a44).
-	// However, the XML codec always return nil when deserializing input bytes
+	// The XML codec, however, always return nil when deserializing input bytes
 	// (see: https://github.com/jackc/pgx/pull/2083#discussion_r1755768269).
 	var val any
 	var err error
