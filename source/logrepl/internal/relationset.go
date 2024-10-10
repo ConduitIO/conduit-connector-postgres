@@ -100,7 +100,7 @@ func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, data []
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode tuple: %w", err)
+		return nil, fmt.Errorf("failed to decode value of pgtype %v: %w", col.DataType, err)
 	}
 
 	v, err := types.Format(col.DataType, val)
