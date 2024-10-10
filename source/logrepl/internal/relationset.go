@@ -83,6 +83,16 @@ func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]a
 }
 
 func (rs *RelationSet) oidToCodec(id uint32) pgtype.Codec {
+	// This workaround is due to an issue in pgx v5.7.1.
+	// Namely, that version introduces an XML codec
+	// (see: https://github.com/jackc/pgx/pull/2083/files#diff-8288d41e69f73d01a874b40de086684e5894da83a627e845e484b06d5e053a44).
+	// However, the XML codec always return nil when deserializing input bytes
+	// (see: https://github.com/jackc/pgx/pull/2083#discussion_r1755768269).
+	// Here we restore the pre-5.7.1 behavior (which results in the XML data being read as a string through a TextCodec).
+	if id == pgtype.XMLOID || id == pgtype.XMLArrayOID {
+		return rs.oidToCodec(pgtype.UnknownOID)
+	}
+
 	dt, ok := rs.connInfo.TypeForOID(id)
 	if !ok {
 		return rs.oidToCodec(pgtype.UnknownOID)
