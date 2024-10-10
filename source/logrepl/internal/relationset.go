@@ -65,15 +65,9 @@ func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]a
 	// assert same number of row and rel columns
 	for i, tuple := range row.Columns {
 		col := rel.Columns[i]
-		decoder := rs.oidToCodec(col.DataType)
-		val, err := decoder.DecodeValue(rs.connInfo, col.DataType, pgtype.TextFormatCode, tuple.Data)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode tuple %d: %w", i, err)
-		}
-
-		v, err := types.Format(col.DataType, val)
-		if err != nil {
-			return nil, fmt.Errorf("failed to format column %q type %T: %w", col.Name, val, err)
+		v, decodeErr := rs.decodeValue(col, tuple.Data)
+		if decodeErr != nil {
+			return nil, fmt.Errorf("failed to decode value for column %q: %w", col.Name, err)
 		}
 
 		values[col.Name] = v
@@ -88,4 +82,31 @@ func (rs *RelationSet) oidToCodec(id uint32) pgtype.Codec {
 		return rs.oidToCodec(pgtype.UnknownOID)
 	}
 	return dt.Codec
+}
+
+func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, data []byte) (any, error) {
+	decoder := rs.oidToCodec(col.DataType)
+	// This workaround is due to an issue in pgx v5.7.1.
+	// Namely, that version introduces an XML codec
+	// (see: https://github.com/jackc/pgx/pull/2083/files#diff-8288d41e69f73d01a874b40de086684e5894da83a627e845e484b06d5e053a44).
+	// The XML codec, however, always return nil when deserializing input bytes
+	// (see: https://github.com/jackc/pgx/pull/2083#discussion_r1755768269).
+	var val any
+	var err error
+	if col.DataType == pgtype.XMLOID || col.DataType == pgtype.XMLArrayOID {
+		val, err = decoder.DecodeDatabaseSQLValue(rs.connInfo, col.DataType, pgtype.TextFormatCode, data)
+	} else {
+		val, err = decoder.DecodeValue(rs.connInfo, col.DataType, pgtype.TextFormatCode, data)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode value of pgtype %v: %w", col.DataType, err)
+	}
+
+	v, err := types.Format(col.DataType, val)
+	if err != nil {
+		return nil, fmt.Errorf("failed to format column %q type %T: %w", col.Name, val, err)
+	}
+
+	return v, nil
 }

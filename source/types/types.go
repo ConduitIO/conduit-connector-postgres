@@ -42,6 +42,11 @@ func Format(oid uint32, v any) (any, error) {
 		return Time.Format(t)
 	case *time.Time:
 		return Time.Format(*t)
+	case []uint8:
+		if oid == pgtype.XMLOID {
+			return string(t), nil
+		}
+		return t, nil
 	default:
 		return t, nil
 	}
