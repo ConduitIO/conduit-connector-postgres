@@ -25,10 +25,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const (
-	avroDecimalPadding = 8
-)
-
 var Avro = &avroExtractor{
 	pgMap: pgtype.NewMap(),
 	avroMap: map[string]*avro.PrimitiveSchema{
@@ -130,18 +126,10 @@ func (a *avroExtractor) extractType(t *pgtype.Type, typeMod int32) (avro.Schema,
 	case pgtype.NumericOID:
 		scale := int((typeMod - 4) & 65535)
 		precision := int(((typeMod - 4) >> 16) & 65535)
-		fs, err := avro.NewFixedSchema(
-			// It's not possible to have multiple schemas with different properties
-			// and the same name.
-			fmt.Sprintf("%s_%d_%d", avro.Decimal, precision, scale),
-			"",
-			precision+scale+avroDecimalPadding,
+		return avro.NewPrimitiveSchema(
+			avro.Bytes,
 			avro.NewDecimalLogicalSchema(precision, scale),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create avro.FixedSchema: %w", err)
-		}
-		return fs, nil
+		), nil
 	default:
 		return nil, fmt.Errorf("cannot resolve field type %q ", t.Name)
 	}

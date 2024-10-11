@@ -51,9 +51,7 @@ const TestTableAvroSchemaV1 = `{
             "name": "column4",
             "type":
             {
-                "name": "decimal_16_3",
-                "type": "fixed",
-                "size": 27,
+                "type": "bytes",
                 "logicalType": "decimal",
                 "precision": 16,
                 "scale": 3
@@ -63,9 +61,7 @@ const TestTableAvroSchemaV1 = `{
             "name": "column5",
             "type":
             {
-                "name": "decimal_5_0",
-                "type": "fixed",
-                "size": 13,
+                "type": "bytes",
                 "logicalType": "decimal",
                 "precision": 5
             }
@@ -88,9 +84,7 @@ const TestTableAvroSchemaV2 = `{
             "name": "column4",
             "type":
             {
-                "name": "decimal_16_3",
-                "type": "fixed",
-                "size": 27,
+                "type": "bytes",
                 "logicalType": "decimal",
                 "precision": 16,
                 "scale": 3
@@ -100,9 +94,7 @@ const TestTableAvroSchemaV2 = `{
             "name": "column5",
             "type":
             {
-                "name": "decimal_5_0",
-                "type": "fixed",
-                "size": 13,
+                "type": "bytes",
                 "logicalType": "decimal",
                 "precision": 5
             }
