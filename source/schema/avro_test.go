@@ -188,12 +188,10 @@ func avroTestSchema(t *testing.T, table string) avro.Schema {
 		assert(avro.NewField("col_int4", avro.NewPrimitiveSchema(avro.Int, nil))),
 		assert(avro.NewField("col_int8", avro.NewPrimitiveSchema(avro.Long, nil))),
 		assert(avro.NewField("col_text", avro.NewPrimitiveSchema(avro.String, nil))),
-		assert(avro.NewField("col_numeric",
-			assert(avro.NewFixedSchema(fmt.Sprintf("%s_%d_%d", avro.Decimal, 8, 2),
-				"",
-				18,
-				avro.NewDecimalLogicalSchema(8, 2),
-			)))),
+		assert(avro.NewField("col_numeric", avro.NewPrimitiveSchema(
+			avro.Bytes,
+			avro.NewDecimalLogicalSchema(8, 2),
+		))),
 		assert(avro.NewField("col_date", avro.NewPrimitiveSchema(
 			avro.Int,
 			avro.NewPrimitiveLogicalSchema(avro.Date),
