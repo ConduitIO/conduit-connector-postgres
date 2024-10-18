@@ -15,8 +15,6 @@
 package types
 
 import (
-	"time"
-
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -25,8 +23,6 @@ var (
 	Time    = TimeFormatter{}
 	UUID    = UUIDFormatter{}
 )
-
-var WithBuiltinPlugin = true
 
 func Format(oid uint32, v any) (any, error) {
 	if oid == pgtype.UUIDOID {
@@ -38,10 +34,6 @@ func Format(oid uint32, v any) (any, error) {
 		return Numeric.Format(t)
 	case *pgtype.Numeric:
 		return Numeric.Format(*t)
-	case time.Time:
-		return Time.Format(t)
-	case *time.Time:
-		return Time.Format(*t)
 	case []uint8:
 		if oid == pgtype.XMLOID {
 			return string(t), nil
