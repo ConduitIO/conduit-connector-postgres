@@ -96,11 +96,9 @@ func TestRelationSetAllTypes(t *testing.T) {
 	t.Run("with standalone plugin", func(t *testing.T) {
 		is := is.New(t)
 
-		types.WithBuiltinPlugin = false
 		values, err := rs.Values(ins.RelationID, ins.Tuple)
 		is.NoErr(err)
 		isValuesAllTypesStandalone(is, values)
-		types.WithBuiltinPlugin = true
 	})
 }
 

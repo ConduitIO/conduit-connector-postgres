@@ -95,7 +95,7 @@ func (i *Iterator) Next(ctx context.Context) (opencdc.Record, error) {
 		}
 
 		i.acks.Add(1)
-		return i.buildRecord(d), nil
+		return i.buildRecord(d)
 	}
 }
 
@@ -112,7 +112,7 @@ func (i *Iterator) Teardown(_ context.Context) error {
 	return nil
 }
 
-func (i *Iterator) buildRecord(d FetchData) opencdc.Record {
+func (i *Iterator) buildRecord(d FetchData) (opencdc.Record, error) {
 	// merge this position with latest position
 	i.lastPosition.Type = position.TypeSnapshot
 	i.lastPosition.Snapshots[d.Table] = d.Position
@@ -121,11 +121,41 @@ func (i *Iterator) buildRecord(d FetchData) opencdc.Record {
 	metadata := make(opencdc.Metadata)
 	metadata["postgres.table"] = d.Table
 
-	rec := sdk.Util.Source.NewRecordSnapshot(pos, metadata, d.Key, d.Payload)
+	encodedPayload, err := i.encodeWithSchema(d.PayloadSchema, d.Payload)
+	if err != nil {
+		return opencdc.Record{}, fmt.Errorf("failed to encode payload with schema: %w", err)
+	}
+
+	encodedKey, err := i.encodeWithSchema(d.KeySchema, d.Key)
+	if err != nil {
+		return opencdc.Record{}, fmt.Errorf("failed to encode key with schema: %w", err)
+	}
+
+	rec := sdk.Util.Source.NewRecordSnapshot(
+		pos,
+		metadata,
+		opencdc.RawData(encodedKey),
+		opencdc.RawData(encodedPayload),
+	)
+
 	cschema.AttachKeySchemaToRecord(rec, d.KeySchema)
 	cschema.AttachPayloadSchemaToRecord(rec, d.PayloadSchema)
 
-	return rec
+	return rec, nil
+}
+
+func (i *Iterator) encodeWithSchema(sch cschema.Schema, data any) ([]byte, error) {
+	srd, err := sch.Serde()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get serde for schema: %w", err)
+	}
+
+	encoded, err := srd.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal data with schema: %w", err)
+	}
+
+	return encoded, nil
 }
 
 func (i *Iterator) initFetchers(ctx context.Context) error {
