@@ -23,7 +23,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/conduitio/conduit-connector-postgres/source/types"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pglogrepl"
@@ -96,11 +95,9 @@ func TestRelationSetAllTypes(t *testing.T) {
 	t.Run("with standalone plugin", func(t *testing.T) {
 		is := is.New(t)
 
-		types.WithBuiltinPlugin = false
 		values, err := rs.Values(ins.RelationID, ins.Tuple)
 		is.NoErr(err)
 		isValuesAllTypesStandalone(is, values)
-		types.WithBuiltinPlugin = true
 	})
 }
 
@@ -383,7 +380,7 @@ func isValuesAllTypesStandalone(is *is.I, got map[string]any) {
 			R:     13,
 			Valid: true,
 		},
-		"col_date":   time.Date(2022, 3, 14, 0, 0, 0, 0, time.UTC).UTC().String(),
+		"col_date":   time.Date(2022, 3, 14, 0, 0, 0, 0, time.UTC).UTC(),
 		"col_float4": float32(15),
 		"col_float8": float64(16.16),
 		"col_inet":   netip.MustParsePrefix("192.168.0.17/32"),
@@ -436,8 +433,8 @@ func isValuesAllTypesStandalone(is *is.I, got map[string]any) {
 			Valid:        true,
 		},
 		"col_timetz":      "04:05:06.789-08",
-		"col_timestamp":   time.Date(2022, 3, 14, 15, 16, 17, 0, time.UTC).UTC().String(),
-		"col_timestamptz": time.Date(2022, 3, 14, 15+8, 16, 17, 0, time.UTC).UTC().String(),
+		"col_timestamp":   time.Date(2022, 3, 14, 15, 16, 17, 0, time.UTC).UTC(),
+		"col_timestamptz": time.Date(2022, 3, 14, 15+8, 16, 17, 0, time.UTC).UTC(),
 		"col_tsquery":     "'fat' & ( 'rat' | 'cat' )",
 		"col_tsvector":    "'a' 'and' 'ate' 'cat' 'fat' 'mat' 'on' 'rat' 'sat'",
 		"col_uuid":        "bd94ee0b-564f-4088-bf4e-8d5e626caf66", // [16]uint8{0xbd, 0x94, 0xee, 0x0b, 0x56, 0x4f, 0x40, 0x88, 0xbf, 0x4e, 0x8d, 0x5e, 0x62, 0x6c, 0xaf, 0x66}
