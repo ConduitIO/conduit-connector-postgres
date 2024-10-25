@@ -24,7 +24,7 @@ import (
 )
 
 func TestCreatePublication(t *testing.T) {
-	ctx := test.TestContext(t)
+	ctx := test.Context(t)
 	pool := test.ConnectPool(ctx, t, test.RegularConnString)
 
 	pubNames := []string{"testpub", "123", "test-hyphen", "test=equal"}
@@ -70,7 +70,7 @@ func TestCreatePublication(t *testing.T) {
 }
 
 func TestCreatePublicationForTables(t *testing.T) {
-	ctx := test.TestContext(t)
+	ctx := test.Context(t)
 	pub := test.RandomIdentifier(t)
 	pool := test.ConnectPool(ctx, t, test.RegularConnString)
 
@@ -99,7 +99,7 @@ func TestCreatePublicationForTables(t *testing.T) {
 }
 
 func TestDropPublication(t *testing.T) {
-	ctx := test.TestContext(t)
+	ctx := test.Context(t)
 	is := is.New(t)
 	pub := test.RandomIdentifier(t)
 

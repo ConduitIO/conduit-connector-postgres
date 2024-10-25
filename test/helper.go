@@ -252,7 +252,7 @@ func IsPgError(is *is.I, err error, wantCode string) {
 	is.Equal(pgerr.Code, wantCode)
 }
 
-func TestContext(t *testing.T) context.Context {
+func Context(t *testing.T) context.Context {
 	writer := zerolog.NewTestWriter(t)
 	logger := zerolog.New(writer).Level(zerolog.InfoLevel)
 	return logger.WithContext(context.Background())

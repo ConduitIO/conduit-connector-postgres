@@ -25,7 +25,7 @@ import (
 
 func Test_ReadReplicationSlot(t *testing.T) {
 	var (
-		ctx      = test.TestContext(t)
+		ctx      = test.Context(t)
 		pool     = test.ConnectPool(ctx, t, test.RepmgrConnString)
 		slotName = test.RandomIdentifier(t)
 	)

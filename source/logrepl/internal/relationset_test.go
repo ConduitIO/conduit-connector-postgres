@@ -46,7 +46,7 @@ func TestRelationSetAllTypes(t *testing.T) {
 	// any machine (CI or local)
 	time.Local = nil
 
-	ctx := test.TestContext(t)
+	ctx := test.Context(t)
 	is := is.New(t)
 
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)

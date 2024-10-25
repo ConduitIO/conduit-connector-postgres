@@ -28,7 +28,7 @@ import (
 
 func Test_Iterator_Next(t *testing.T) {
 	var (
-		ctx   = test.TestContext(t)
+		ctx   = test.Context(t)
 		pool  = test.ConnectPool(ctx, t, test.RegularConnString)
 		table = test.SetupTestTable(ctx, t, pool)
 	)
