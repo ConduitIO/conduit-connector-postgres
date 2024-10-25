@@ -119,7 +119,7 @@ func Test_FetchConfigValidate(t *testing.T) {
 
 func Test_FetcherValidate(t *testing.T) {
 	var (
-		ctx   = context.Background()
+		ctx   = test.TestContext(t)
 		pool  = test.ConnectPool(ctx, t, test.RegularConnString)
 		table = test.SetupTestTable(ctx, t, pool)
 	)
@@ -207,7 +207,7 @@ func Test_FetcherRun_Initial(t *testing.T) {
 		table = test.SetupTestTable(context.Background(), t, pool)
 		is    = is.New(t)
 		out   = make(chan FetchData)
-		ctx   = context.Background()
+		ctx   = test.TestContext(t)
 		tt    = &tomb.Tomb{}
 	)
 
@@ -262,7 +262,7 @@ func Test_FetcherRun_Resume(t *testing.T) {
 		table = test.SetupTestTable(context.Background(), t, pool)
 		is    = is.New(t)
 		out   = make(chan FetchData)
-		ctx   = context.Background()
+		ctx   = test.TestContext(t)
 		tt    = &tomb.Tomb{}
 	)
 
@@ -320,7 +320,7 @@ func Test_FetcherRun_Resume(t *testing.T) {
 func Test_withSnapshot(t *testing.T) {
 	var (
 		is   = is.New(t)
-		ctx  = context.Background()
+		ctx  = test.TestContext(t)
 		pool = test.ConnectPool(ctx, t, test.RegularConnString)
 	)
 
@@ -388,7 +388,8 @@ func Test_withSnapshot(t *testing.T) {
 func Test_send(t *testing.T) {
 	is := is.New(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx := test.TestContext(t)
+	ctx, cancel := context.WithCancel(ctx)
 	f := FetchWorker{conf: FetchConfig{}}
 
 	cancel()
@@ -426,7 +427,7 @@ func Test_FetchWorker_buildRecordData(t *testing.T) {
 func Test_FetchWorker_updateSnapshotEnd(t *testing.T) {
 	var (
 		is    = is.New(t)
-		ctx   = context.Background()
+		ctx   = test.TestContext(t)
 		pool  = test.ConnectPool(ctx, t, test.RegularConnString)
 		table = test.SetupTestTable(ctx, t, pool)
 	)
@@ -485,7 +486,7 @@ func Test_FetchWorker_createCursor(t *testing.T) {
 		pool  = test.ConnectPool(context.Background(), t, test.RegularConnString)
 		table = test.SetupTestTable(context.Background(), t, pool)
 		is    = is.New(t)
-		ctx   = context.Background()
+		ctx   = test.TestContext(t)
 	)
 
 	f := FetchWorker{

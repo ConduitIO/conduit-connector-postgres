@@ -47,7 +47,7 @@ func TestConfig_Validate(t *testing.T) {
 }
 
 func TestCombinedIterator_New(t *testing.T) {
-	ctx := context.Background()
+	ctx := test.TestContext(t)
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
 	table := test.SetupTestTable(ctx, t, pool)
 
@@ -137,7 +137,8 @@ func TestCombinedIterator_New(t *testing.T) {
 }
 
 func TestCombinedIterator_Next(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
+	ctx := test.TestContext(t)
+	ctx, cancel := context.WithTimeout(ctx, time.Second*30)
 	defer cancel()
 
 	is := is.New(t)

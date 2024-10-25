@@ -36,7 +36,7 @@ import (
 )
 
 func TestCDCIterator_New(t *testing.T) {
-	ctx := context.Background()
+	ctx := test.TestContext(t)
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
 
 	tests := []struct {
@@ -120,7 +120,7 @@ func TestCDCIterator_New(t *testing.T) {
 }
 
 func TestCDCIterator_Next(t *testing.T) {
-	ctx := context.Background()
+	ctx := test.TestContext(t)
 	is := is.New(t)
 
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
@@ -342,7 +342,7 @@ func TestCDCIterator_Next(t *testing.T) {
 }
 
 func TestCDCIterator_Next_Fail(t *testing.T) {
-	ctx := context.Background()
+	ctx := test.TestContext(t)
 
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
 	table := test.SetupTestTable(ctx, t, pool)
@@ -376,7 +376,7 @@ func TestCDCIterator_Next_Fail(t *testing.T) {
 }
 
 func TestCDCIterator_EnsureLSN(t *testing.T) {
-	ctx := context.Background()
+	ctx := test.TestContext(t)
 	is := is.New(t)
 
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
@@ -416,7 +416,7 @@ func TestCDCIterator_EnsureLSN(t *testing.T) {
 }
 
 func TestCDCIterator_Ack(t *testing.T) {
-	ctx := context.Background()
+	ctx := test.TestContext(t)
 
 	tests := []struct {
 		name    string
@@ -501,7 +501,8 @@ func testCDCIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, tabl
 func fetchSlotStats(t *testing.T, c test.Querier, slotName string) (pglogrepl.LSN, pglogrepl.LSN, error) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+	ctx := test.TestContext(t)
+	ctx, cancel := context.WithTimeout(ctx, time.Second*15)
 	defer cancel()
 
 	var writeLSN, flushLSN pglogrepl.LSN
@@ -522,7 +523,7 @@ func fetchSlotStats(t *testing.T, c test.Querier, slotName string) (pglogrepl.LS
 }
 
 func TestCDCIterator_Schema(t *testing.T) {
-	ctx := context.Background()
+	ctx := test.TestContext(t)
 
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
 	table := test.SetupTestTable(ctx, t, pool)
