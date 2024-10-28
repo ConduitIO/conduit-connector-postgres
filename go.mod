@@ -16,6 +16,7 @@ require (
 	github.com/jackc/pglogrepl v0.0.0-20240307033717-828fbfe908e9
 	github.com/jackc/pgx/v5 v5.7.1
 	github.com/matryer/is v1.4.1
+	github.com/rs/zerolog v1.33.0
 	golang.org/x/tools v0.26.0
 	gopkg.in/tomb.v2 v2.0.0-20161208151619-d5d1b5820637
 	mvdan.cc/gofumpt v0.7.0
@@ -163,7 +164,6 @@ require (
 	github.com/quasilyte/regex/syntax v0.0.0-20210819130434-b3f0c404a727 // indirect
 	github.com/quasilyte/stdinfo v0.0.0-20220114132959-f7386bf02567 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
-	github.com/rs/zerolog v1.33.0 // indirect
 	github.com/ryancurrah/gomodguard v1.3.5 // indirect
 	github.com/ryanrolds/sqlclosecheck v0.5.1 // indirect
 	github.com/sagikazarmark/locafero v0.6.0 // indirect

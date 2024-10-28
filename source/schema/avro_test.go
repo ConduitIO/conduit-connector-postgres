@@ -32,7 +32,7 @@ import (
 )
 
 func Test_AvroExtract(t *testing.T) {
-	ctx := context.Background()
+	ctx := test.Context(t)
 	is := is.New(t)
 
 	c := test.ConnectSimple(ctx, t, test.RegularConnString)
