@@ -27,7 +27,7 @@ import (
 
 func TestDestination_Write(t *testing.T) {
 	is := is.New(t)
-	ctx := context.Background()
+	ctx := test.Context(t)
 	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
 	tableName := test.SetupTestTable(ctx, t, conn)
 
@@ -144,7 +144,7 @@ func TestDestination_Write(t *testing.T) {
 
 func TestDestination_Batch(t *testing.T) {
 	is := is.New(t)
-	ctx := context.Background()
+	ctx := test.Context(t)
 	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
 	tableName := test.SetupTestTable(ctx, t, conn)
 

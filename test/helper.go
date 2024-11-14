@@ -28,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
+	"github.com/rs/zerolog"
 )
 
 // RepmgrConnString is a replication user connection string for the test postgres.
@@ -249,4 +250,15 @@ func IsPgError(is *is.I, err error, wantCode string) {
 	ok := errors.As(err, &pgerr)
 	is.True(ok) // expected err to be a *pgconn.PgError
 	is.Equal(pgerr.Code, wantCode)
+}
+
+func Context(t *testing.T) context.Context {
+	ctx := context.Background()
+	if testing.Short() || !testing.Verbose() {
+		return ctx
+	}
+
+	writer := zerolog.NewTestWriter(t)
+	logger := zerolog.New(writer).Level(zerolog.InfoLevel)
+	return logger.WithContext(ctx)
 }

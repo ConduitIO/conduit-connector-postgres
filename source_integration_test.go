@@ -25,7 +25,7 @@ import (
 
 func TestSource_Open(t *testing.T) {
 	is := is.New(t)
-	ctx := context.Background()
+	ctx := test.Context(t)
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 	tableName := test.SetupTestTable(ctx, t, conn)
 	slotName := "conduitslot1"
