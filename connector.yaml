@@ -1,0 +1,7 @@
+version: "1.0"
+specification:
+    name: postgres
+    summary: A PostgreSQL source and destination plugin for Conduit.
+    description: ""
+    version: v0.10.1-8-g2cfa09c
+    author: Meroxa, Inc.
