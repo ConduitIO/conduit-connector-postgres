@@ -6,7 +6,7 @@ require (
 	github.com/Masterminds/sprig/v3 v3.3.0
 	github.com/Masterminds/squirrel v1.5.4
 	github.com/conduitio/conduit-commons v0.5.0
-	github.com/conduitio/conduit-connector-sdk v0.12.0
+	github.com/conduitio/conduit-connector-sdk v0.12.1-0.20241224132228-f9cb8f76d7a9
 	github.com/daixiang0/gci v0.13.5
 	github.com/golangci/golangci-lint v1.62.2
 	github.com/google/go-cmp v0.6.0
@@ -59,6 +59,9 @@ require (
 	github.com/chavacava/garif v0.1.0 // indirect
 	github.com/ckaznocha/intrange v0.2.1 // indirect
 	github.com/conduitio/conduit-connector-protocol v0.9.0 // indirect
+	github.com/conduitio/evolviconf v0.0.0-20241105144321-27c16bddeb38 // indirect
+	github.com/conduitio/evolviconf/evolviyaml v0.0.0-20241105144803-b3ba81765197 // indirect
+	github.com/conduitio/yaml/v3 v3.3.0 // indirect
 	github.com/curioswitch/go-reassign v0.2.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/denis-tingaikin/go-header v0.5.0 // indirect
@@ -80,7 +83,7 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
 	github.com/go-xmlfmt/xmlfmt v1.1.2 // indirect
 	github.com/gobwas/glob v0.2.3 // indirect
-	github.com/goccy/go-json v0.10.3 // indirect
+	github.com/goccy/go-json v0.10.4 // indirect
 	github.com/gofrs/flock v0.12.1 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/golangci/dupl v0.0.0-20180902072040-3e9179ac440a // indirect
@@ -168,6 +171,9 @@ require (
 	github.com/ryanrolds/sqlclosecheck v0.5.1 // indirect
 	github.com/sagikazarmark/locafero v0.6.0 // indirect
 	github.com/sagikazarmark/slog-shim v0.1.0 // indirect
+	github.com/samber/lo v1.47.0 // indirect
+	github.com/samber/slog-common v0.18.0 // indirect
+	github.com/samber/slog-zerolog/v2 v2.7.2 // indirect
 	github.com/sanposhiho/wastedassign/v2 v2.0.7 // indirect
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1 // indirect
 	github.com/sashamelentyev/interfacebloat v1.1.0 // indirect
@@ -223,8 +229,8 @@ require (
 	golang.org/x/sys v0.28.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
 	golang.org/x/time v0.8.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20240930140551-af27646dc61f // indirect
-	google.golang.org/grpc v1.68.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20241015192408-796eee8c2d53 // indirect
+	google.golang.org/grpc v1.69.2 // indirect
 	google.golang.org/protobuf v1.35.1 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect

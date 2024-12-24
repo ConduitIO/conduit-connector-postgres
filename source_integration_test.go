@@ -20,6 +20,7 @@ import (
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	"github.com/conduitio/conduit-connector-postgres/test"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/matryer/is"
 )
 
@@ -32,7 +33,7 @@ func TestSource_Open(t *testing.T) {
 	publicationName := "conduitpub1"
 
 	s := NewSource()
-	err := s.Configure(
+	err := sdk.Util.ParseConfig(
 		ctx,
 		map[string]string{
 			"url":                     test.RepmgrConnString,
@@ -42,6 +43,8 @@ func TestSource_Open(t *testing.T) {
 			"logrepl.slotName":        slotName,
 			"logrepl.publicationName": publicationName,
 		},
+		s.Config(),
+		Connector.NewSpecification().SourceParams,
 	)
 	is.NoErr(err)
 

@@ -21,6 +21,7 @@ import (
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/test"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
 	"github.com/matryer/is"
 )
@@ -32,14 +33,17 @@ func TestDestination_Write(t *testing.T) {
 	tableName := test.SetupTestTable(ctx, t, conn)
 
 	d := NewDestination()
-	err := d.Configure(
+	err := sdk.Util.ParseConfig(
 		ctx,
 		map[string]string{
 			"url":   test.RegularConnString,
 			"table": "{{ index .Metadata \"opencdc.collection\" }}",
 		},
+		d.Config(),
+		Connector.NewSpecification().DestinationParams,
 	)
 	is.NoErr(err)
+
 	err = d.Open(ctx)
 	is.NoErr(err)
 	defer func() {
@@ -149,8 +153,15 @@ func TestDestination_Batch(t *testing.T) {
 	tableName := test.SetupTestTable(ctx, t, conn)
 
 	d := NewDestination()
-	err := d.Configure(ctx, map[string]string{"url": test.RegularConnString, "table": tableName})
+
+	err := sdk.Util.ParseConfig(
+		ctx,
+		map[string]string{"url": test.RegularConnString, "table": tableName},
+		d.Config(),
+		Connector.NewSpecification().DestinationParams,
+	)
 	is.NoErr(err)
+
 	err = d.Open(ctx)
 	is.NoErr(err)
 	defer func() {
