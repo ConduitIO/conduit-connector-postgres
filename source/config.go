@@ -84,7 +84,7 @@ type Config struct {
 }
 
 // Validate validates the provided config values.
-func (c Config) Validate(context.Context) error {
+func (c *Config) Validate(context.Context) error {
 	// todo pass by ref
 	c.Init()
 
@@ -107,10 +107,9 @@ func (c Config) Validate(context.Context) error {
 }
 
 // Init sets the desired value on Tables while Table is being deprecated.
-func (c Config) Init() Config {
+func (c *Config) Init() {
 	if len(c.Table) > 0 && len(c.Tables) == 0 {
 		c.Tables = c.Table
 		c.Table = nil
 	}
-	return c
 }

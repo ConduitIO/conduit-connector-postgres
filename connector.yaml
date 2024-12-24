@@ -3,7 +3,7 @@ specification:
   name: postgres
   summary: A PostgreSQL source and destination plugin for Conduit.
   description: ""
-  version: v0.10.1-10-g54b3f16
+  version: v0.10.1-11-g0f306c0-dirty
   author: Meroxa, Inc.
   source:
     parameters:

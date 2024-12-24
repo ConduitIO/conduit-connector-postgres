@@ -25,8 +25,6 @@ import (
 //go:embed connector.yaml
 var specs string
 
-
-
 var Connector = sdk.Connector{
 	NewSpecification: sdk.YAMLSpecification(specs),
 	NewSource:        NewSource,
