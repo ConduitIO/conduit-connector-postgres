@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:generate paramgen Config
-
 package source
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"github.com/conduitio/conduit-commons/config"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -47,6 +47,8 @@ const (
 )
 
 type Config struct {
+	sdk.DefaultSourceMiddleware
+
 	// URL is the connection string for the Postgres database.
 	URL string `json:"url" validate:"required"`
 
@@ -82,7 +84,10 @@ type Config struct {
 }
 
 // Validate validates the provided config values.
-func (c Config) Validate() error {
+func (c Config) Validate(context.Context) error {
+	// todo pass by ref
+	c.Init()
+
 	var errs []error
 
 	// try parsing the url

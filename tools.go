@@ -17,7 +17,7 @@
 package postgres
 
 import (
-	_ "github.com/conduitio/conduit-commons/paramgen"
+	_ "github.com/conduitio/conduit-connector-sdk/specgen"
 	_ "github.com/daixiang0/gci"
 	_ "github.com/golangci/golangci-lint/cmd/golangci-lint"
 	_ "golang.org/x/tools/cmd/stringer"
