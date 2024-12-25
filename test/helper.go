@@ -189,8 +189,11 @@ func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 	})
 
 	query = `
-		INSERT INTO %s (key)
-		VALUES ('1')`
+		INSERT INTO %s (key, column1, column2, column3)
+		VALUES ('1', 'foo', 123, false),
+		('2', 'bar', 456, true),
+		('3', 'baz', 789, false),
+		('4', null, null, null)`
 	query = fmt.Sprintf(query, table)
 	_, err = conn.Exec(ctx, query)
 	is.NoErr(err)

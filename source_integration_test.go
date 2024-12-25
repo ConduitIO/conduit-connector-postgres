@@ -16,7 +16,6 @@ package postgres
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
@@ -57,8 +56,25 @@ func TestSource_Read(t *testing.T) {
 		is.NoErr(s.Teardown(ctx))
 	})
 
-	gotRecord, err := s.Read(ctx)
-	is.NoErr(err)
+	for i := 0; i < 4; i++ {
+		gotRecord, err := s.Read(ctx)
+		is.NoErr(err)
 
-	fmt.Println(gotRecord)
+		is.True(gotRecord.Key != nil)
+		is.True(gotRecord.Payload.After != nil)
+
+		payloadSchemaSubject, err := gotRecord.Metadata.GetPayloadSchemaSubject()
+		is.NoErr(err)
+		is.Equal(tableName+"_payload", payloadSchemaSubject)
+		payloadSchemaVersion, err := gotRecord.Metadata.GetPayloadSchemaVersion()
+		is.NoErr(err)
+		is.Equal(1, payloadSchemaVersion)
+
+		keySchemaSubject, err := gotRecord.Metadata.GetKeySchemaSubject()
+		is.NoErr(err)
+		is.Equal(tableName+"_key", keySchemaSubject)
+		keySchemaVersion, err := gotRecord.Metadata.GetKeySchemaVersion()
+		is.NoErr(err)
+		is.Equal(1, keySchemaVersion)
+	}
 }
