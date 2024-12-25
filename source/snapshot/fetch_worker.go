@@ -44,11 +44,12 @@ var supportedKeyTypes = []string{
 }
 
 type FetchConfig struct {
-	Table        string
-	Key          string
-	TXSnapshotID string
-	FetchSize    int
-	Position     position.Position
+	Table          string
+	Key            string
+	TXSnapshotID   string
+	FetchSize      int
+	Position       position.Position
+	WithAvroSchema bool
 }
 
 var (
@@ -469,6 +470,10 @@ func (*FetchWorker) validateTable(ctx context.Context, table string, tx pgx.Tx) 
 }
 
 func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldDescription) error {
+	if !f.conf.WithAvroSchema {
+		return nil
+	}
+
 	if f.payloadSchema == nil {
 		sdk.Logger(ctx).Debug().
 			Msgf("extracting payload schema for %v fields in %v", len(fields), f.conf.Table)
