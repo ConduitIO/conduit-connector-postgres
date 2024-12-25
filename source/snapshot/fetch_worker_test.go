@@ -134,7 +134,7 @@ func Test_FetcherValidate(t *testing.T) {
 			},
 		}
 
-		is.NoErr(f.Validate(ctx))
+		is.NoErr(f.Init(ctx))
 	})
 
 	t.Run("table missing", func(t *testing.T) {
@@ -147,7 +147,7 @@ func Test_FetcherValidate(t *testing.T) {
 			},
 		}
 
-		err := f.Validate(ctx)
+		err := f.Init(ctx)
 		is.True(err != nil)
 		is.True(strings.Contains(err.Error(), `table "missing_table" does not exist`))
 	})
@@ -162,7 +162,7 @@ func Test_FetcherValidate(t *testing.T) {
 			},
 		}
 
-		err := f.Validate(ctx)
+		err := f.Init(ctx)
 		is.True(err != nil)
 		is.True(strings.Contains(err.Error(), `failed to validate key: key "column3" of type "boolean" is unsupported`))
 	})
@@ -177,7 +177,7 @@ func Test_FetcherValidate(t *testing.T) {
 			},
 		}
 
-		err := f.Validate(ctx)
+		err := f.Init(ctx)
 		is.NoErr(err) // no error, only a warning
 	})
 
@@ -191,7 +191,7 @@ func Test_FetcherValidate(t *testing.T) {
 			},
 		}
 
-		err := f.Validate(ctx)
+		err := f.Init(ctx)
 		is.True(err != nil)
 		ok := strings.Contains(err.Error(), fmt.Sprintf(`key "missing_key" not present on table %q`, table))
 		if !ok {
@@ -220,7 +220,7 @@ func Test_FetcherRun_Initial(t *testing.T) {
 		ctx = tt.Context(ctx)
 		defer close(out)
 
-		if err := f.Validate(ctx); err != nil {
+		if err := f.Init(ctx); err != nil {
 			return err
 		}
 		return f.Run(ctx)
@@ -284,7 +284,7 @@ func Test_FetcherRun_Resume(t *testing.T) {
 		ctx = tt.Context(ctx)
 		defer close(out)
 
-		if err := f.Validate(ctx); err != nil {
+		if err := f.Init(ctx); err != nil {
 			return err
 		}
 		return f.Run(ctx)

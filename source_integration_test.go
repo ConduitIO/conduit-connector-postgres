@@ -16,6 +16,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
@@ -23,7 +24,7 @@ import (
 	"github.com/matryer/is"
 )
 
-func TestSource_Open(t *testing.T) {
+func TestSource_Read(t *testing.T) {
 	is := is.New(t)
 	ctx := test.Context(t)
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
@@ -47,13 +48,17 @@ func TestSource_Open(t *testing.T) {
 
 	err = s.Open(ctx, nil)
 	is.NoErr(err)
-
-	defer func() {
+	t.Cleanup(func() {
 		is.NoErr(logrepl.Cleanup(context.Background(), logrepl.CleanupConfig{
 			URL:             test.RepmgrConnString,
 			SlotName:        slotName,
 			PublicationName: publicationName,
 		}))
 		is.NoErr(s.Teardown(ctx))
-	}()
+	})
+
+	gotRecord, err := s.Read(ctx)
+	is.NoErr(err)
+
+	fmt.Println(gotRecord)
 }

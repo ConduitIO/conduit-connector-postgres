@@ -92,12 +92,14 @@ type FetchWorker struct {
 	db   *pgxpool.Pool
 	out  chan<- FetchData
 
-	keySchema     *cschema.Schema
-	payloadSchema *cschema.Schema
+	// notNullMap maps column names to if the column is NOT NULL.
+	notNullMap map[string]bool
+	keySchema  *cschema.Schema
 
-	snapshotEnd int64
-	lastRead    int64
-	cursorName  string
+	payloadSchema *cschema.Schema
+	snapshotEnd   int64
+	lastRead      int64
+	cursorName    string
 }
 
 func NewFetchWorker(db *pgxpool.Pool, out chan<- FetchData, c FetchConfig) *FetchWorker {
@@ -124,10 +126,81 @@ func NewFetchWorker(db *pgxpool.Pool, out chan<- FetchData, c FetchConfig) *Fetc
 	return f
 }
 
-// Validate will ensure the config is correct.
+// Init will ensure the config is correct.
 // * Table and keys exist
 // * Key is a primary key
-func (f *FetchWorker) Validate(ctx context.Context) error {
+func (f *FetchWorker) Init(ctx context.Context) error {
+	notNullMap, err := f.getNotNullMap(ctx)
+	if err != nil {
+		return fmt.Errorf("could not initialize nullability map: %w", err)
+	}
+	f.notNullMap = notNullMap
+
+	err = f.validate(ctx)
+	if err != nil {
+		return fmt.Errorf("validation failed: %w", err)
+	}
+
+	return nil
+}
+
+// getNotNullMap returns a map that contains information about nullability of columns.
+// Keys are column names, values are booleans showing if the column is NOT NULL or not.
+func (f *FetchWorker) getNotNullMap(ctx context.Context) (map[string]bool, error) {
+	tableName := f.conf.Table
+	tx, err := f.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start tx for getting column nullability info: %w", err)
+	}
+	defer func() {
+		if err := tx.Rollback(ctx); err != nil {
+			sdk.Logger(ctx).Warn().
+				Err(err).
+				Msgf("error on tx rollback for getting column nullability info, cursor name: %q", f.cursorName)
+		}
+	}()
+
+	query := `
+		SELECT a.attname AS column_name, a.attnotnull AS is_not_null
+		FROM pg_index i
+		JOIN pg_attribute a ON a.attrelid = i.indrelid
+		JOIN pg_class c ON a.attrelid = c.oid
+		WHERE c.relname = $1
+		  AND a.attnum > 0
+		  AND NOT a.attisdropped
+		ORDER BY a.attnum;
+	`
+
+	rows, err := tx.Query(context.Background(), query, tableName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	// Map to store column nullability and primary key info
+	nullabilityMap := make(map[string]bool)
+
+	for rows.Next() {
+		var columnName string
+		var isNotNull bool
+
+		err := rows.Scan(&columnName, &isNotNull)
+		if err != nil {
+			return nil, err
+		}
+
+		// Store info in nested map
+		nullabilityMap[columnName] = isNotNull
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return nullabilityMap, nil
+}
+
+func (f *FetchWorker) validate(ctx context.Context) error {
 	if err := f.conf.Validate(); err != nil {
 		return fmt.Errorf("failed to validate config: %w", err)
 	}
@@ -473,7 +546,7 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 		sdk.Logger(ctx).Debug().
 			Msgf("extracting payload schema for %v fields in %v", len(fields), f.conf.Table)
 
-		avroPayloadSch, err := schema.Avro.Extract(f.conf.Table+"_payload", fields)
+		avroPayloadSch, err := schema.Avro.Extract(f.conf.Table+"_payload", f.notNullMap, fields)
 		if err != nil {
 			return fmt.Errorf("failed to extract payload schema for table %v: %w", f.conf.Table, err)
 		}
@@ -493,7 +566,7 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 		sdk.Logger(ctx).Debug().
 			Msgf("extracting schema for key %v in %v", f.conf.Key, f.conf.Table)
 
-		avroKeySch, err := schema.Avro.Extract(f.conf.Table+"_key", fields, f.conf.Key)
+		avroKeySch, err := schema.Avro.Extract(f.conf.Table+"_key", f.notNullMap, fields, f.conf.Key)
 		if err != nil {
 			return fmt.Errorf("failed to extract key schema for table %v: %w", f.conf.Table, err)
 		}
