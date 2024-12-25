@@ -475,6 +475,7 @@ func testCDCIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, tabl
 		TableKeys:       map[string]string{table: "id"},
 		PublicationName: table, // table is random, reuse for publication name
 		SlotName:        table, // table is random, reuse for slot name
+		WithAvroSchema:  true,
 	}
 
 	i, err := NewCDCIterator(ctx, pool, config)

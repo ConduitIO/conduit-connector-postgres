@@ -340,14 +340,17 @@ func (f *FetchWorker) buildFetchData(fields []pgconn.FieldDescription, values []
 		return FetchData{}, fmt.Errorf("failed to encode record data: %w", err)
 	}
 
-	return FetchData{
-		Key:           key,
-		Payload:       payload,
-		Position:      pos,
-		Table:         f.conf.Table,
-		PayloadSchema: *f.payloadSchema,
-		KeySchema:     *f.keySchema,
-	}, nil
+	fd := FetchData{
+		Key:      key,
+		Payload:  payload,
+		Position: pos,
+		Table:    f.conf.Table,
+	}
+	if f.conf.WithAvroSchema {
+		fd.PayloadSchema = *f.payloadSchema
+		fd.KeySchema = *f.keySchema
+	}
+	return fd, nil
 }
 
 func (f *FetchWorker) buildSnapshotPosition(fields []pgconn.FieldDescription, values []any) (position.SnapshotPosition, error) {
