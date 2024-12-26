@@ -126,26 +126,28 @@ func Test_FetcherValidate(t *testing.T) {
 
 	t.Run("success", func(t *testing.T) {
 		is := is.New(t)
-		f := FetchWorker{
-			db: pool,
-			conf: FetchConfig{
+		f := NewFetchWorker(
+			pool,
+			make(chan<- FetchData),
+			FetchConfig{
 				Table: table,
 				Key:   "id",
 			},
-		}
+		)
 
 		is.NoErr(f.Init(ctx))
 	})
 
 	t.Run("table missing", func(t *testing.T) {
 		is := is.New(t)
-		f := FetchWorker{
-			db: pool,
-			conf: FetchConfig{
+		f := NewFetchWorker(
+			pool,
+			make(chan<- FetchData),
+			FetchConfig{
 				Table: "missing_table",
 				Key:   "id",
 			},
-		}
+		)
 
 		err := f.Init(ctx)
 		is.True(err != nil)
@@ -154,13 +156,14 @@ func Test_FetcherValidate(t *testing.T) {
 
 	t.Run("key is wrong type", func(t *testing.T) {
 		is := is.New(t)
-		f := FetchWorker{
-			db: pool,
-			conf: FetchConfig{
+		f := NewFetchWorker(
+			pool,
+			make(chan<- FetchData),
+			FetchConfig{
 				Table: table,
 				Key:   "column3",
 			},
-		}
+		)
 
 		err := f.Init(ctx)
 		is.True(err != nil)
@@ -169,13 +172,14 @@ func Test_FetcherValidate(t *testing.T) {
 
 	t.Run("key is not pk", func(t *testing.T) {
 		is := is.New(t)
-		f := FetchWorker{
-			db: pool,
-			conf: FetchConfig{
+		f := NewFetchWorker(
+			pool,
+			make(chan<- FetchData),
+			FetchConfig{
 				Table: table,
 				Key:   "column2",
 			},
-		}
+		)
 
 		err := f.Init(ctx)
 		is.NoErr(err) // no error, only a warning
@@ -183,13 +187,14 @@ func Test_FetcherValidate(t *testing.T) {
 
 	t.Run("missing key", func(t *testing.T) {
 		is := is.New(t)
-		f := FetchWorker{
-			db: pool,
-			conf: FetchConfig{
+		f := NewFetchWorker(
+			pool,
+			make(chan<- FetchData),
+			FetchConfig{
 				Table: table,
 				Key:   "missing_key",
 			},
-		}
+		)
 
 		err := f.Init(ctx)
 		is.True(err != nil)
