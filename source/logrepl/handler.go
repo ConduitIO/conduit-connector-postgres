@@ -20,6 +20,7 @@ import (
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	cschema "github.com/conduitio/conduit-commons/schema"
+	"github.com/conduitio/conduit-connector-postgres/source/common"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/schema"
@@ -36,15 +37,17 @@ type CDCHandler struct {
 	out         chan<- opencdc.Record
 	lastTXLSN   pglogrepl.LSN
 
+	tableInfo      *common.TableInfoFetcher
 	keySchemas     map[string]cschema.Schema
 	payloadSchemas map[string]cschema.Schema
 }
 
-func NewCDCHandler(rs *internal.RelationSet, tableKeys map[string]string, out chan<- opencdc.Record) *CDCHandler {
+func NewCDCHandler(rs *internal.RelationSet, tableInfo *common.TableInfoFetcher, tableKeys map[string]string, out chan<- opencdc.Record) *CDCHandler {
 	return &CDCHandler{
 		tableKeys:      tableKeys,
 		relationSet:    rs,
 		out:            out,
+		tableInfo:      tableInfo,
 		keySchemas:     make(map[string]cschema.Schema),
 		payloadSchemas: make(map[string]cschema.Schema),
 	}
@@ -62,6 +65,10 @@ func (h *CDCHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogr
 	case *pglogrepl.RelationMessage:
 		// We have to add the Relations to our Set so that we can decode our own output
 		h.relationSet.Add(m)
+		err := h.tableInfo.Refresh(ctx, m.RelationName)
+		if err != nil {
+			return 0, fmt.Errorf("failed to refresh table info: %w", err)
+		}
 	case *pglogrepl.InsertMessage:
 		if err := h.handleInsert(ctx, m, lsn); err != nil {
 			return 0, fmt.Errorf("logrepl handler insert: %w", err)
@@ -246,7 +253,7 @@ func (*CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 // when usage of avro schema is requested.
 func (h *CDCHandler) updateAvroSchema(ctx context.Context, rel *pglogrepl.RelationMessage) error {
 	// Payload schema
-	avroPayloadSch, err := schema.Avro.ExtractLogrepl(rel.RelationName+"_payload", rel)
+	avroPayloadSch, err := schema.Avro.ExtractLogrepl(rel.RelationName+"_payload", rel, h.tableInfo.GetTable(rel.RelationName))
 	if err != nil {
 		return fmt.Errorf("failed to extract payload schema: %w", err)
 	}
@@ -262,7 +269,7 @@ func (h *CDCHandler) updateAvroSchema(ctx context.Context, rel *pglogrepl.Relati
 	h.payloadSchemas[rel.RelationName] = ps
 
 	// Key schema
-	avroKeySch, err := schema.Avro.ExtractLogrepl(rel.RelationName+"_key", rel, h.tableKeys[rel.RelationName])
+	avroKeySch, err := schema.Avro.ExtractLogrepl(rel.RelationName+"_key", rel, h.tableInfo.GetTable(rel.RelationName), h.tableKeys[rel.RelationName])
 	if err != nil {
 		return fmt.Errorf("failed to extract key schema: %w", err)
 	}

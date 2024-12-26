@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-postgres/source/common"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -65,7 +66,12 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	}
 
 	records := make(chan opencdc.Record)
-	handler := NewCDCHandler(internal.NewRelationSet(), c.TableKeys, records)
+	handler := NewCDCHandler(
+		internal.NewRelationSet(),
+		common.NewTableInfoFetcher(pool),
+		c.TableKeys,
+		records,
+	)
 
 	sub, err := internal.CreateSubscription(
 		ctx,

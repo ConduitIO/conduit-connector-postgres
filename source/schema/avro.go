@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/conduitio/conduit-connector-postgres/source/common"
 	"github.com/hamba/avro/v2"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -63,7 +64,7 @@ type avroExtractor struct {
 
 // ExtractLogrepl extracts an Avro schema from the given pglogrepl.RelationMessage.
 // If `fieldNames` are specified, then only the given fields will be included in the schema.
-func (a *avroExtractor) ExtractLogrepl(schemaName string, rel *pglogrepl.RelationMessage, fieldNames ...string) (*avro.RecordSchema, error) {
+func (a *avroExtractor) ExtractLogrepl(schemaName string, rel *pglogrepl.RelationMessage, tableInfo *common.TableInfo, fieldNames ...string) (*avro.RecordSchema, error) {
 	var fields []pgconn.FieldDescription
 
 	for i := range rel.Columns {
@@ -74,13 +75,12 @@ func (a *avroExtractor) ExtractLogrepl(schemaName string, rel *pglogrepl.Relatio
 		})
 	}
 
-	// todo terribly bad, only a temporary thing
-	return a.Extract(schemaName, make(map[string]bool), fields, fieldNames...)
+	return a.Extract(schemaName, tableInfo, fields, fieldNames...)
 }
 
 // Extract extracts an Avro schema from the given Postgres field descriptions.
 // If `fieldNames` are specified, then only the given fields will be included in the schema.
-func (a *avroExtractor) Extract(schemaName string, notNullMap map[string]bool, fields []pgconn.FieldDescription, fieldNames ...string) (*avro.RecordSchema, error) {
+func (a *avroExtractor) Extract(schemaName string, tableInfo *common.TableInfo, fields []pgconn.FieldDescription, fieldNames ...string) (*avro.RecordSchema, error) {
 	var avroFields []*avro.Field
 
 	for _, f := range fields {
@@ -93,7 +93,7 @@ func (a *avroExtractor) Extract(schemaName string, notNullMap map[string]bool, f
 			return nil, fmt.Errorf("field %q with OID %d cannot be resolved", f.Name, f.DataTypeOID)
 		}
 
-		s, err := a.extractType(t, f.TypeModifier, notNullMap[f.Name])
+		s, err := a.extractType(t, f.TypeModifier, tableInfo.Columns[f.Name].IsNotNull)
 		if err != nil {
 			return nil, err
 		}
