@@ -173,7 +173,7 @@ func ConnectSimple(ctx context.Context, t *testing.T, connString string) *pgx.Co
 }
 
 // SetupTestTable creates a new table and returns its name.
-func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
+func SetupEmptyTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 	is := is.New(t)
 
 	table := RandomIdentifier(t)
@@ -189,14 +189,22 @@ func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 		is.NoErr(err)
 	})
 
-	query = `
+	return table
+}
+
+// SetupTestTable creates a new table and returns its name.
+func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
+	is := is.New(t)
+	table := SetupEmptyTestTable(ctx, t, conn)
+
+	query := `
 		INSERT INTO %s (key, column1, column2, column3, column4, column5)
 		VALUES ('1', 'foo', 123, false, 12.2, 4),
 		('2', 'bar', 456, true, 13.42, 8),
 		('3', 'baz', 789, false, null, 9),
 		('4', null, null, null, 91.1, null)`
 	query = fmt.Sprintf(query, table)
-	_, err = conn.Exec(ctx, query)
+	_, err := conn.Exec(ctx, query)
 	is.NoErr(err)
 
 	return table
