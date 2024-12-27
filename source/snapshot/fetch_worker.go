@@ -132,14 +132,14 @@ func NewFetchWorker(db *pgxpool.Pool, out chan<- FetchData, c FetchConfig) *Fetc
 // * Table and keys exist
 // * Key is a primary key
 func (f *FetchWorker) Init(ctx context.Context) error {
-	err := f.tableInfoFetcher.Refresh(ctx, f.conf.Table)
-	if err != nil {
-		return fmt.Errorf("failed to refresh table info: %w", err)
-	}
-
-	err = f.validate(ctx)
+	err := f.validate(ctx)
 	if err != nil {
 		return fmt.Errorf("validation failed: %w", err)
+	}
+
+	err = f.tableInfoFetcher.Refresh(ctx, f.conf.Table)
+	if err != nil {
+		return fmt.Errorf("failed to refresh table info: %w", err)
 	}
 
 	return nil
