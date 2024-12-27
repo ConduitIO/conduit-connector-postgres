@@ -32,7 +32,7 @@ import (
 )
 
 func Test_AvroExtract(t *testing.T) {
-	ctx := context.Background()
+	ctx := test.Context(t)
 	is := is.New(t)
 
 	c := test.ConnectSimple(ctx, t, test.RegularConnString)
@@ -51,6 +51,7 @@ func Test_AvroExtract(t *testing.T) {
 	fields := rows.FieldDescriptions()
 
 	sch, err := Avro.Extract(table, fields)
+	is.NoErr(err)
 
 	t.Run("schema is parsable", func(t *testing.T) {
 		is := is.New(t)

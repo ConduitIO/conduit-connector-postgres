@@ -29,7 +29,7 @@ import (
 )
 
 func TestSubscription_Create(t *testing.T) {
-	ctx := context.Background()
+	ctx := test.Context(t)
 	is := is.New(t)
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
 	pool.Close()
@@ -40,7 +40,7 @@ func TestSubscription_Create(t *testing.T) {
 
 func TestSubscription_WithRepmgr(t *testing.T) {
 	var (
-		ctx    = context.Background()
+		ctx    = test.Context(t)
 		pool   = test.ConnectPool(ctx, t, test.RepmgrConnString)
 		table1 = test.SetupTestTable(ctx, t, pool)
 		table2 = test.SetupTestTable(ctx, t, pool)
@@ -150,7 +150,8 @@ func TestSubscription_WithRepmgr(t *testing.T) {
 }
 
 func TestSubscription_ClosedContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx := test.Context(t)
+	ctx, cancel := context.WithCancel(ctx)
 
 	var (
 		is    = is.New(t)
