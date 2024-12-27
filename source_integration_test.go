@@ -64,7 +64,8 @@ func TestSource_Read(t *testing.T) {
 	is.NoErr(err)
 	assertRecordOK(is, tableName, gotRecord)
 
-	insertRow(ctx, t, tableName, 2)
+	insertRowNotNullColumnsOnly(ctx, t, tableName, 3)
+	insertRowAllColumns(ctx, t, tableName, 4)
 
 	gotRecord, err = s.Read(ctx)
 	is.NoErr(err)
@@ -137,12 +138,13 @@ func prepareSourceIntegrationTestTable(ctx context.Context, t *testing.T) string
 		is.NoErr(err)
 	})
 
-	insertRow(ctx, t, table, 1)
+	insertRowNotNullColumnsOnly(ctx, t, table, 1)
+	insertRowAllColumns(ctx, t, table, 2)
 
 	return table
 }
 
-func insertRow(ctx context.Context, t *testing.T, table string, rowNumber int) {
+func insertRowNotNullColumnsOnly(ctx context.Context, t *testing.T, table string, rowNumber int) {
 	is := is.New(t)
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 
@@ -186,6 +188,55 @@ func insertRow(ctx context.Context, t *testing.T, table string, rowNumber int) {
 		rowNumber,
 		float64(100+rowNumber)/10,
 		rowNumber,
+	)
+	_, err := conn.Exec(ctx, query)
+	is.NoErr(err)
+}
+
+func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNumber int) {
+	is := is.New(t)
+	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
+
+	query := fmt.Sprintf(
+		`INSERT INTO %s (
+         col_bytea, col_bytea_not_null,
+         col_varchar, col_varchar_not_null,
+         col_date, col_date_not_null,
+         col_float4, col_float4_not_null,
+         col_float8, col_float8_not_null,
+         col_int2, col_int2_not_null,
+         col_int4, col_int4_not_null,
+         col_int8, col_int8_not_null,
+         -- col_numeric, col_numeric_not_null,
+         col_text, col_text_not_null,
+         col_timestamp, col_timestamp_not_null,
+         col_timestamptz, col_timestamptz_not_null,
+         col_uuid, col_uuid_not_null
+      ) VALUES (
+         '%s'::bytea, '%s'::bytea,
+         'foo-%v', 'foo-%v',
+         now(), now(),
+         %f, %f,
+         %f, %f,
+         %d, %d,
+         %d, %d,
+         %d, %d,
+         -- %f, %f,
+         'bar-%v', 'bar-%v',
+         now(), now(),
+         now(), now(),
+         gen_random_uuid(), gen_random_uuid()
+      )`,
+		table,
+		fmt.Sprintf("col_bytea_-%v", rowNumber), fmt.Sprintf("col_bytea_-%v", rowNumber),
+		rowNumber, rowNumber,
+		float32(rowNumber)/10, float32(rowNumber)/10,
+		float64(rowNumber)/10, float64(rowNumber)/10,
+		rowNumber%32768, rowNumber%32768,
+		rowNumber, rowNumber,
+		rowNumber, rowNumber,
+		float64(100+rowNumber)/10, float64(100+rowNumber)/10,
+		rowNumber, rowNumber,
 	)
 	_, err := conn.Exec(ctx, query)
 	is.NoErr(err)

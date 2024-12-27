@@ -15,15 +15,44 @@
 package types
 
 import (
+	"reflect"
+
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
 var (
 	Numeric = NumericFormatter{}
-	UUID    = UUIDFormatter{}
+
+	UUID = UUIDFormatter{}
 )
 
-func Format(oid uint32, v any) (any, error) {
+func Format(oid uint32, v any, isNotNull bool) (any, error) {
+	val, err := format(oid, v)
+	if err != nil {
+		return nil, err
+	}
+
+	if val == nil {
+		return nil, nil
+	}
+	
+	if reflect.TypeOf(val).Kind() != reflect.Ptr && !isNotNull {
+		return &val, nil
+	}
+
+	return val, nil
+}
+
+func isPrimitive(v any) bool {
+	switch v.(type) {
+	case string, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, bool:
+		return true
+	default:
+		return false
+	}
+}
+
+func format(oid uint32, v any) (any, error) {
 	if oid == pgtype.UUIDOID {
 		return UUID.Format(v)
 	}

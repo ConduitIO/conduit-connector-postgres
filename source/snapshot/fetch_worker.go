@@ -390,9 +390,12 @@ func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values [
 		payload = make(opencdc.StructuredData)
 	)
 
+	tableInfo := f.getTableInfo()
 	for i, fd := range fields {
+		isNotNull := tableInfo.Columns[fd.Name].IsNotNull
+		
 		if fd.Name == f.conf.Key {
-			k, err := types.Format(fd.DataTypeOID, values[i])
+			k, err := types.Format(fd.DataTypeOID, values[i], isNotNull)
 			if err != nil {
 				return key, payload, fmt.Errorf("failed to format key %q: %w", f.conf.Key, err)
 			}
@@ -400,7 +403,7 @@ func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values [
 			key[f.conf.Key] = k
 		}
 
-		v, err := types.Format(fd.DataTypeOID, values[i])
+		v, err := types.Format(fd.DataTypeOID, values[i], isNotNull)
 		if err != nil {
 			return key, payload, fmt.Errorf("failed to format payload field %q: %w", fd.Name, err)
 		}
@@ -511,7 +514,7 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 		sdk.Logger(ctx).Debug().
 			Msgf("extracting schema for key %v in %v", f.conf.Key, f.conf.Table)
 
-		avroKeySch, err := schema.Avro.Extract(f.conf.Table+"_key", f.tableInfoFetcher.GetTable(f.conf.Table), fields, f.conf.Key)
+		avroKeySch, err := schema.Avro.Extract(f.conf.Table+"_key", f.getTableInfo(), fields, f.conf.Key)
 		if err != nil {
 			return fmt.Errorf("failed to extract key schema for table %v: %w", f.conf.Table, err)
 		}
@@ -528,4 +531,8 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 	}
 
 	return nil
+}
+
+func (f *FetchWorker) getTableInfo() *common.TableInfo {
+	return f.tableInfoFetcher.GetTable(f.conf.Table)
 }

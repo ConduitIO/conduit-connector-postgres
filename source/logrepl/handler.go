@@ -107,13 +107,13 @@ func (h *CDCHandler) handleInsert(
 		return fmt.Errorf("failed getting relation %v: %w", msg.RelationID, err)
 	}
 
-	newValues, err := h.relationSet.Values(msg.RelationID, msg.Tuple)
-	if err != nil {
-		return fmt.Errorf("failed to decode new values: %w", err)
-	}
-
 	if err := h.updateAvroSchema(ctx, rel); err != nil {
 		return fmt.Errorf("failed to update avro schema: %w", err)
+	}
+
+	newValues, err := h.relationSet.Values(msg.RelationID, msg.Tuple, h.tableInfo.GetTable(rel.RelationName))
+	if err != nil {
+		return fmt.Errorf("failed to decode new values: %w", err)
 	}
 
 	rec := sdk.Util.Source.NewRecordCreate(
@@ -139,7 +139,7 @@ func (h *CDCHandler) handleUpdate(
 		return err
 	}
 
-	newValues, err := h.relationSet.Values(msg.RelationID, msg.NewTuple)
+	newValues, err := h.relationSet.Values(msg.RelationID, msg.NewTuple, h.tableInfo.GetTable(rel.RelationName))
 	if err != nil {
 		return fmt.Errorf("failed to decode new values: %w", err)
 	}
@@ -148,7 +148,7 @@ func (h *CDCHandler) handleUpdate(
 		return fmt.Errorf("failed to update avro schema: %w", err)
 	}
 
-	oldValues, err := h.relationSet.Values(msg.RelationID, msg.OldTuple)
+	oldValues, err := h.relationSet.Values(msg.RelationID, msg.OldTuple, h.tableInfo.GetTable(rel.RelationName))
 	if err != nil {
 		// this is not a critical error, old values are optional, just log it
 		// we use level "trace" intentionally to not clog up the logs in production
@@ -179,7 +179,7 @@ func (h *CDCHandler) handleDelete(
 		return err
 	}
 
-	oldValues, err := h.relationSet.Values(msg.RelationID, msg.OldTuple)
+	oldValues, err := h.relationSet.Values(msg.RelationID, msg.OldTuple, h.tableInfo.GetTable(rel.RelationName))
 	if err != nil {
 		return fmt.Errorf("failed to decode old values: %w", err)
 	}
