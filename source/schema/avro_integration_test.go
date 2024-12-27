@@ -24,12 +24,12 @@ import (
 	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/source/common"
+	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	"github.com/conduitio/conduit-connector-postgres/source/types"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/hamba/avro/v2"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
 )
 
@@ -38,7 +38,7 @@ func Test_AvroExtract(t *testing.T) {
 	is := is.New(t)
 
 	c := test.ConnectSimple(ctx, t, test.RegularConnString)
-	connPool, err := pgxpool.New(ctx, test.RegularConnString)
+	connPool, err := cpool.New(ctx, test.RegularConnString)
 	is.NoErr(err)
 
 	table := setupAvroTestTable(ctx, t, c)

@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
@@ -28,7 +27,7 @@ import (
 
 func TestSource_Read(t *testing.T) {
 	is := is.New(t)
-	ctx, _ := context.WithTimeout(test.Context(t), 3000*time.Second)
+	ctx := test.Context(t)
 
 	tableName := prepareSourceIntegrationTestTable(ctx, t)
 	slotName := "conduitslot1"
