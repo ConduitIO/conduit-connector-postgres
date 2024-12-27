@@ -64,13 +64,11 @@ func (i TableInfoFetcher) Refresh(ctx context.Context, tableName string) error {
 	}()
 
 	query := `
-		SELECT a.attname AS column_name, a.attnotnull AS is_not_null
-		FROM pg_index i
-		JOIN pg_attribute a ON a.attrelid = i.indrelid
-		JOIN pg_class c ON a.attrelid = c.oid
-		WHERE c.relname = $1
-		  AND a.attnum > 0
-		  AND NOT a.attisdropped
+		SELECT a.attname as column_name, a.attnotnull as is_not_null
+		FROM pg_catalog.pg_attribute a
+		WHERE a.attrelid = $1::regclass
+			AND a.attnum > 0 
+			AND NOT a.attisdropped
 		ORDER BY a.attnum;
 	`
 

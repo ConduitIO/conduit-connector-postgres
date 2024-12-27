@@ -99,17 +99,35 @@ func prepareSourceIntegrationTestTable(ctx context.Context, t *testing.T) string
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 	table := test.RandomIdentifier(t)
 
-	query := fmt.Sprintf(`
-		CREATE TABLE %s (
-		id bigserial PRIMARY KEY,
-		key bytea,
-		column1 varchar(256),
-		column2 integer,
-		column3 boolean,
-		column4 varchar(256) NOT NULL,
-		column5 integer NOT NULL,
-		column6 boolean NOT NULL
-	)`, table)
+	query := fmt.Sprintf(`CREATE TABLE %s (
+    id                      bigserial PRIMARY KEY,
+    col_bytea               bytea,
+    col_bytea_not_null      bytea NOT NULL,
+    col_varchar             varchar(10),
+    col_varchar_not_null    varchar(10) NOT NULL,
+    col_date                date,
+    col_date_not_null       date NOT NULL,
+    col_float4              float4,
+    col_float4_not_null     float4 NOT NULL,
+    col_float8              float8,
+    col_float8_not_null     float8 NOT NULL,
+    col_int2                int2,
+    col_int2_not_null       int2 NOT NULL,
+    col_int4                int4,
+    col_int4_not_null       int4 NOT NULL,
+    col_int8                int8,
+    col_int8_not_null       int8 NOT NULL,
+    col_numeric             numeric(8,2),
+    -- col_numeric_not_null    numeric(8,2) NOT NULL,
+    col_text                text,
+    col_text_not_null       text NOT NULL,
+    col_timestamp           timestamp,
+    col_timestamp_not_null  timestamp NOT NULL,
+    col_timestamptz         timestamptz,
+    col_timestamptz_not_null timestamptz NOT NULL,
+    col_uuid                uuid,
+    col_uuid_not_null       uuid NOT NULL
+)`, table)
 	_, err := conn.Exec(ctx, query)
 	is.NoErr(err)
 
@@ -130,12 +148,45 @@ func insertRow(ctx context.Context, t *testing.T, table string, rowNumber int) {
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 
 	query := fmt.Sprintf(
-		`INSERT INTO %s (key, column1, column2, column3, column4, column5, column6)
-		VALUES ('%v', null, null, null, 'foo-%v', %d, false)`,
+		`INSERT INTO %s (
+			col_bytea_not_null,
+			col_varchar_not_null,
+			col_date_not_null,
+			col_float4_not_null,
+			col_float8_not_null,
+			col_int2_not_null,
+			col_int4_not_null,
+			col_int8_not_null,
+			-- col_numeric_not_null,
+			col_text_not_null,
+			col_timestamp_not_null,
+			col_timestamptz_not_null,
+			col_uuid_not_null
+		) VALUES (
+			'%s'::bytea,   			-- col_bytea_not_null
+			'foo-%v',               -- col_varchar_not_null
+			now(),                  -- col_date_not_null
+			%f,                  	-- col_float4_not_null
+			%f,                  	-- col_float8_not_null
+			%d,                  	-- col_int2_not_null
+			%d,                  	-- col_int4_not_null
+			%d,                  	-- col_int8_not_null
+			-- %f,                  	-- col_numeric_not_null
+			'bar-%v',               -- col_text_not_null
+			now(),                  -- col_timestamp_not_null
+			now(),                  -- col_timestamptz_not_null
+			gen_random_uuid()       -- col_uuid_not_null
+		)`,
 		table,
+		fmt.Sprintf("col_bytea_-%v", rowNumber),
+		rowNumber,
+		float32(rowNumber)/10,
+		float64(rowNumber)/10,
+		rowNumber%32768,
 		rowNumber,
 		rowNumber,
-		100+rowNumber,
+		float64(100+rowNumber)/10,
+		rowNumber,
 	)
 	_, err := conn.Exec(ctx, query)
 	is.NoErr(err)
