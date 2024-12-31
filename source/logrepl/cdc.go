@@ -65,7 +65,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	}
 
 	records := make(chan opencdc.Record)
-	handler := NewCDCHandler(internal.NewRelationSet(), c.TableKeys, records)
+	handler := NewCDCHandler(internal.NewRelationSet(), c.TableKeys, records, c.WithAvroSchema)
 
 	sub, err := internal.CreateSubscription(
 		ctx,
