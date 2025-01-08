@@ -57,25 +57,6 @@ func Test_Format(t *testing.T) {
 			},
 		},
 		{
-			name: "time.Time",
-			input: []any{
-				func() time.Time {
-					is := is.New(t)
-					is.Helper()
-					t, err := time.Parse(time.DateTime, "2009-11-10 23:00:00")
-					is.NoErr(err)
-					return t
-				}(),
-				nil,
-			},
-			inputOID: []uint32{
-				0, 0,
-			},
-			expect: []any{
-				"2009-11-10 23:00:00 +0000 UTC", nil,
-			},
-		},
-		{
 			name: "builtin time.Time",
 			input: []any{
 				now,
@@ -106,13 +87,6 @@ func Test_Format(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			is := is.New(t)
-
-			prevWithBuiltinPlugin := WithBuiltinPlugin
-			WithBuiltinPlugin = tc.withBuiltin
-
-			t.Cleanup(func() {
-				WithBuiltinPlugin = prevWithBuiltinPlugin
-			})
 
 			for i, in := range tc.input {
 				v, err := Format(tc.inputOID[i], in)
