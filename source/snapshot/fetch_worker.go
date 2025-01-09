@@ -258,8 +258,7 @@ func (f *FetchWorker) updateSnapshotEnd(ctx context.Context, tx pgx.Tx) error {
 	}
 
 	query := fmt.Sprintf("SELECT COALESCE(max(%s), 0) FROM %s", f.conf.Key, f.conf.Table)
-	err := tx.QueryRow(ctx, query).Scan(&f.snapshotEnd)
-	if err != nil {
+	if err := tx.QueryRow(ctx, query).Scan(&f.snapshotEnd); err != nil {
 		return fmt.Errorf("failed to get snapshot end with query %q: %w", query, err)
 	}
 
