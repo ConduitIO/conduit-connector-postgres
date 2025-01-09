@@ -156,8 +156,8 @@ func TestCombinedIterator_Next(t *testing.T) {
 	is.NoErr(err)
 
 	_, err = pool.Exec(ctx, fmt.Sprintf(
-		`INSERT INTO %s (id, column1, column2, column3, column4, column5)
-			VALUES (6, 'bizz', 1010, false, 872.2, 101)`,
+		`INSERT INTO %s (id, column1, column2, column3, column4, column5, column6, column7)
+			VALUES (6, 'bizz', 1010, false, 872.2, 101, '{"foo12": "bar12"}', '{"foo13": "bar13"}')`,
 		table,
 	))
 	is.NoErr(err)
@@ -233,8 +233,8 @@ func TestCombinedIterator_Next(t *testing.T) {
 		is.NoErr(err)
 
 		_, err = pool.Exec(ctx, fmt.Sprintf(
-			`INSERT INTO %s (id, column1, column2, column3, column4, column5)
-				VALUES (7, 'buzz', 10101, true, 121.9, 51)`,
+			`INSERT INTO %s (id, column1, column2, column3, column4, column5, column6, column7)
+				VALUES (7, 'buzz', 10101, true, 121.9, 51, '{"foo7": "bar7"}', '{"foo8": "bar8"}')`,
 			table,
 		))
 		is.NoErr(err)
@@ -277,6 +277,8 @@ func testRecords() []opencdc.StructuredData {
 			"column3": false,
 			"column4": 12.2,
 			"column5": int64(4),
+			"column6": []byte(`{"foo": "bar"}`),
+			"column7": []byte(`{"foo": "baz"}`),
 		},
 		{
 			"id":      int64(2),
@@ -286,6 +288,8 @@ func testRecords() []opencdc.StructuredData {
 			"column3": true,
 			"column4": 13.42,
 			"column5": int64(8),
+			"column6": []byte(`{"foo": "bar"}`),
+			"column7": []byte(`{"foo": "baz"}`),
 		},
 		{
 			"id":      int64(3),
@@ -295,6 +299,8 @@ func testRecords() []opencdc.StructuredData {
 			"column3": false,
 			"column4": nil,
 			"column5": int64(9),
+			"column6": []byte(`{"foo": "bar"}`),
+			"column7": []byte(`{"foo": "baz"}`),
 		},
 		{
 			"id":      int64(4),
@@ -304,6 +310,8 @@ func testRecords() []opencdc.StructuredData {
 			"column3": nil,
 			"column4": 91.1,
 			"column5": nil,
+			"column6": nil,
+			"column7": nil,
 		},
 		{
 			"id":      int64(6),
@@ -313,6 +321,8 @@ func testRecords() []opencdc.StructuredData {
 			"column3": false,
 			"column4": 872.2,
 			"column5": int64(101),
+			"column6": []byte(`{"foo12": "bar12"}`),
+			"column7": []byte(`{"foo13": "bar13"}`),
 		},
 		{
 			"id":      int64(7),
@@ -322,6 +332,8 @@ func testRecords() []opencdc.StructuredData {
 			"column3": true,
 			"column4": 121.9,
 			"column5": int64(51),
+			"column6": []byte(`{"foo7": "bar7"}`),
+			"column7": []byte(`{"foo8": "bar8"}`),
 		},
 	}
 }

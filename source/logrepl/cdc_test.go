@@ -140,8 +140,8 @@ func TestCDCIterator_Next(t *testing.T) {
 			name: "should detect insert",
 			setup: func(t *testing.T) {
 				is := is.New(t)
-				query := fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5)
-							VALUES (6, 'bizz', 456, false, 12.3, 14)`, table)
+				query := fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5, column6, column7)
+							VALUES (6, 'bizz', 456, false, 12.3, 14, '{"foo2": "bar2"}', '{"foo2": "baz2"}')`, table)
 				_, err := pool.Exec(ctx, query)
 				is.NoErr(err)
 			},
@@ -165,6 +165,8 @@ func TestCDCIterator_Next(t *testing.T) {
 						"column3": false,
 						"column4": 12.3,
 						"column5": int64(14),
+						"column6": []byte(`{"foo2": "bar2"}`),
+						"column7": []byte(`{"foo2": "baz2"}`),
 						"key":     nil,
 					},
 				},
@@ -197,6 +199,8 @@ func TestCDCIterator_Next(t *testing.T) {
 						"column3": false,
 						"column4": 12.2,
 						"column5": int64(4),
+						"column6": []byte(`{"foo": "bar"}`),
+						"column7": []byte(`{"foo": "baz"}`),
 						"key":     []uint8("1"),
 					},
 				},
@@ -231,6 +235,8 @@ func TestCDCIterator_Next(t *testing.T) {
 						"column3": false,
 						"column4": 12.2,
 						"column5": int64(4),
+						"column6": []byte(`{"foo": "bar"}`),
+						"column7": []byte(`{"foo": "baz"}`),
 						"key":     []uint8("1"),
 					},
 					After: opencdc.StructuredData{
@@ -240,6 +246,8 @@ func TestCDCIterator_Next(t *testing.T) {
 						"column3": false,
 						"column4": 12.2,
 						"column5": int64(4),
+						"column6": []byte(`{"foo": "bar"}`),
+						"column7": []byte(`{"foo": "baz"}`),
 						"key":     []uint8("1"),
 					},
 				},
@@ -274,6 +282,8 @@ func TestCDCIterator_Next(t *testing.T) {
 						"column3": nil,
 						"column4": nil,
 						"column5": nil,
+						"column6": nil,
+						"column7": nil,
 						"key":     nil,
 					},
 				},
@@ -309,6 +319,8 @@ func TestCDCIterator_Next(t *testing.T) {
 						"column3": false,
 						"column4": nil,
 						"column5": int64(9),
+						"column6": []byte(`{"foo": "bar"}`),
+						"column7": []byte(`{"foo": "baz"}`),
 					},
 				},
 			},
@@ -552,13 +564,13 @@ func TestCDCIterator_Schema(t *testing.T) {
 	t.Run("column added", func(t *testing.T) {
 		is := is.New(t)
 
-		_, err := pool.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN column6 timestamp;`, table))
+		_, err := pool.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN column101 timestamp;`, table))
 		is.NoErr(err)
 
 		_, err = pool.Exec(
 			ctx,
-			fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, column5, column6)
-				VALUES (7, decode('aabbcc', 'hex'), 'example data 1', 100, true, 12345.678, 12345, '2023-09-09 10:00:00');`, table),
+			fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, column5, column6, column7, column101)
+				VALUES (7, decode('aabbcc', 'hex'), 'example data 1', 100, true, 12345.678, 12345, '{"foo":"bar"}', '{"foo2":"baz2"}', '2023-09-09 10:00:00');`, table),
 		)
 		is.NoErr(err)
 
@@ -577,8 +589,8 @@ func TestCDCIterator_Schema(t *testing.T) {
 
 		_, err = pool.Exec(
 			ctx,
-			fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column6)
-				VALUES (8, decode('aabbcc', 'hex'), 'example data 1', 100, true, '2023-09-09 10:00:00');`, table),
+			fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column6, column7, column101)
+				VALUES (8, decode('aabbcc', 'hex'), 'example data 1', 100, true, '{"foo":"bar"}', '{"foo2":"baz2"}', '2023-09-09 10:00:00');`, table),
 		)
 		is.NoErr(err)
 
