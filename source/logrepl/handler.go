@@ -286,6 +286,9 @@ func (h *CDCHandler) updateAvroSchema(ctx context.Context, rel *pglogrepl.Relati
 }
 
 func (h *CDCHandler) attachSchemas(rec opencdc.Record, relationName string) {
+	if !h.withAvroSchema {
+		return
+	}
 	cschema.AttachPayloadSchemaToRecord(rec, h.payloadSchemas[relationName])
 	cschema.AttachKeySchemaToRecord(rec, h.keySchemas[relationName])
 }
