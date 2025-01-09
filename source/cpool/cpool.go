@@ -16,8 +16,8 @@ package cpool
 
 import (
 	"context"
-	"fmt"
 	"encoding/json"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -50,17 +50,17 @@ func New(ctx context.Context, conninfo string) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-func afterConnectHook(ctx context.Context, conn *pgx.Conn) error {
+func afterConnectHook(_ context.Context, conn *pgx.Conn) error {
 	// Override the JSON and JSONB codec to return bytes rather than the
 	// unmarshalled representation of map.
 	conn.TypeMap().RegisterType(&pgtype.Type{
-		Name: "json",
-		OID: pgtype.JSONOID,
+		Name:  "json",
+		OID:   pgtype.JSONOID,
 		Codec: &pgtype.JSONCodec{Marshal: json.Marshal, Unmarshal: jsonNoopUnmarshal},
 	})
 	conn.TypeMap().RegisterType(&pgtype.Type{
-		Name: "jsonb",
-		OID: pgtype.JSONBOID,
+		Name:  "jsonb",
+		OID:   pgtype.JSONBOID,
 		Codec: &pgtype.JSONBCodec{Marshal: json.Marshal, Unmarshal: jsonNoopUnmarshal},
 	})
 
