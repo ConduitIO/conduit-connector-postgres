@@ -16,9 +16,11 @@ package cpool
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -37,6 +39,7 @@ func New(ctx context.Context, conninfo string) (*pgxpool.Pool, error) {
 
 	config.BeforeAcquire = beforeAcquireHook
 	config.BeforeConnect = beforeConnectHook
+	config.AfterConnect = afterConnectHook
 	config.AfterRelease = afterReleaseHook
 
 	pool, err := pgxpool.NewWithConfig(ctx, config)
@@ -45,6 +48,23 @@ func New(ctx context.Context, conninfo string) (*pgxpool.Pool, error) {
 	}
 
 	return pool, nil
+}
+
+func afterConnectHook(_ context.Context, conn *pgx.Conn) error {
+	// Override the JSON and JSONB codec to return bytes rather than the
+	// unmarshalled representation of map.
+	conn.TypeMap().RegisterType(&pgtype.Type{
+		Name:  "json",
+		OID:   pgtype.JSONOID,
+		Codec: &pgtype.JSONCodec{Marshal: json.Marshal, Unmarshal: jsonNoopUnmarshal},
+	})
+	conn.TypeMap().RegisterType(&pgtype.Type{
+		Name:  "jsonb",
+		OID:   pgtype.JSONBOID,
+		Codec: &pgtype.JSONBCodec{Marshal: json.Marshal, Unmarshal: jsonNoopUnmarshal},
+	})
+
+	return nil
 }
 
 // beforeAcquireHook ensures purpose specific connections are returned:
