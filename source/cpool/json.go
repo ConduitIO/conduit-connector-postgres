@@ -22,14 +22,16 @@ import (
 // noopUnmarshal will copy source into dst.
 // this is to be used with the pgtype JSON codec
 func jsonNoopUnmarshal(src []byte, dst any) error {
-	rv := reflect.ValueOf(dst)
-	if rv.Kind() != reflect.Pointer || rv.IsNil() {
+	dstptr, ok := (dst.(*any))
+	if dst == nil || !ok {
 		return &json.InvalidUnmarshalError{Type: reflect.TypeOf(dst)}
 	}
 
 	v := make([]byte, len(src))
 	copy(v, src)
-	rv.Elem().Set(reflect.ValueOf(v))
+
+	// set the slice to the value of the ptr.
+	*dstptr = v
 
 	return nil
 }
