@@ -15,21 +15,31 @@
 package cpool
 
 import (
-	"encoding/json"
-	"reflect"
+	"testing"
+
+	"github.com/matryer/is"
 )
 
-// noopUnmarshal will copy source into dst.
-// this is to be used with the pgtype JSON codec
-func jsonNoopUnmarshal(src []byte, dst any) error {
-	rv := reflect.ValueOf(dst)
-	if rv.Kind() != reflect.Pointer || rv.IsNil() {
-		return &json.InvalidUnmarshalError{Type: reflect.TypeOf(dst)}
+func Test_jsonNoopUnmarshal(t *testing.T) {
+	is := is.New(t)
+
+	var dst any
+	data := []byte(`{"foo":"bar"}`)
+
+	is.NoErr(jsonNoopUnmarshal(data, &dst))
+	is.Equal(data, dst.([]byte))
+
+	var err error
+
+	err = jsonNoopUnmarshal(data, dst)
+	is.True(err != nil)
+	if err != nil {
+		is.Equal(err.Error(), "json: Unmarshal(non-pointer []uint8)")
 	}
 
-	v := make([]byte, len(src))
-	copy(v, src)
-	rv.Elem().Set(reflect.ValueOf(v))
-
-	return nil
+	err = jsonNoopUnmarshal(data, nil)
+	is.True(err != nil)
+	if err != nil {
+		is.Equal(err.Error(), "json: Unmarshal(nil)")
+	}
 }
