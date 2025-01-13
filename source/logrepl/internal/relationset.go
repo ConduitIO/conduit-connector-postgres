@@ -94,9 +94,11 @@ func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, colInfo
 	// (see: https://github.com/jackc/pgx/pull/2083#discussion_r1755768269).
 	var val any
 	var err error
-	if col.DataType == pgtype.XMLOID || col.DataType == pgtype.XMLArrayOID {
+
+	switch col.DataType {
+	case pgtype.XMLOID, pgtype.XMLArrayOID, pgtype.JSONBOID, pgtype.JSONOID:
 		val, err = decoder.DecodeDatabaseSQLValue(rs.connInfo, col.DataType, pgtype.TextFormatCode, data)
-	} else {
+	default:
 		val, err = decoder.DecodeValue(rs.connInfo, col.DataType, pgtype.TextFormatCode, data)
 	}
 

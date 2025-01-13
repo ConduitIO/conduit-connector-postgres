@@ -71,6 +71,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		common.NewTableInfoFetcher(pool),
 		c.TableKeys,
 		records,
+		c.WithAvroSchema,
 	)
 
 	sub, err := internal.CreateSubscription(

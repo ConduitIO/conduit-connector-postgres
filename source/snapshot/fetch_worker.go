@@ -45,11 +45,12 @@ var supportedKeyTypes = []string{
 }
 
 type FetchConfig struct {
-	Table        string
-	Key          string
-	TXSnapshotID string
-	FetchSize    int
-	Position     position.Position
+	Table          string
+	Key            string
+	TXSnapshotID   string
+	FetchSize      int
+	Position       position.Position
+	WithAvroSchema bool
 }
 
 var (
@@ -275,11 +276,9 @@ func (f *FetchWorker) updateSnapshotEnd(ctx context.Context, tx pgx.Tx) error {
 		return nil
 	}
 
-	if err := tx.QueryRow(
-		ctx,
-		fmt.Sprintf("SELECT max(%s) FROM %s", f.conf.Key, f.conf.Table),
-	).Scan(&f.snapshotEnd); err != nil {
-		return fmt.Errorf("failed to query max on %q.%q: %w", f.conf.Table, f.conf.Key, err)
+	query := fmt.Sprintf("SELECT COALESCE(max(%s), 0) FROM %s", f.conf.Key, f.conf.Table)
+	if err := tx.QueryRow(ctx, query).Scan(&f.snapshotEnd); err != nil {
+		return fmt.Errorf("failed to get snapshot end with query %q: %w", query, err)
 	}
 
 	return nil
@@ -357,14 +356,17 @@ func (f *FetchWorker) buildFetchData(fields []pgconn.FieldDescription, values []
 		return FetchData{}, fmt.Errorf("failed to encode record data: %w", err)
 	}
 
-	return FetchData{
-		Key:           key,
-		Payload:       payload,
-		Position:      pos,
-		Table:         f.conf.Table,
-		PayloadSchema: *f.payloadSchema,
-		KeySchema:     *f.keySchema,
-	}, nil
+	fd := FetchData{
+		Key:      key,
+		Payload:  payload,
+		Position: pos,
+		Table:    f.conf.Table,
+	}
+	if f.conf.WithAvroSchema {
+		fd.PayloadSchema = *f.payloadSchema
+		fd.KeySchema = *f.keySchema
+	}
+	return fd, nil
 }
 
 func (f *FetchWorker) buildSnapshotPosition(fields []pgconn.FieldDescription, values []any) (position.SnapshotPosition, error) {
@@ -490,6 +492,10 @@ func (*FetchWorker) validateTable(ctx context.Context, table string, tx pgx.Tx) 
 }
 
 func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldDescription) error {
+	if !f.conf.WithAvroSchema {
+		return nil
+	}
+
 	if f.payloadSchema == nil {
 		sdk.Logger(ctx).Debug().
 			Msgf("extracting payload schema for %v fields in %v", len(fields), f.conf.Table)

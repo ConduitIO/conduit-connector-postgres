@@ -67,6 +67,8 @@ const TestTableAvroSchemaV1 = `{
                 "precision": 5
             }
         },
+        {"name":"column6","type":"bytes"},
+        {"name":"column7","type":"bytes"},
         {"name":"id","type":"long"},
         {"name":"key","type":"bytes"}
     ]
@@ -79,6 +81,7 @@ const TestTableAvroSchemaV2 = `{
     "fields":
     [
         {"name":"column1","type":"string"},
+        {"name":"column101","type":{"type":"long","logicalType":"local-timestamp-micros"}},
         {"name":"column2","type":"int"},
         {"name":"column3","type":"boolean"},
         {
@@ -100,7 +103,8 @@ const TestTableAvroSchemaV2 = `{
                 "precision": 5
             }
         },
-        {"name":"column6","type":{"type":"long","logicalType":"local-timestamp-micros"}},
+        {"name":"column6","type":"bytes"},
+        {"name":"column7","type":"bytes"},
         {"name":"id","type":"long"},
         {"name":"key","type":"bytes"}
     ]
@@ -113,9 +117,11 @@ const TestTableAvroSchemaV3 = `{
     "fields":
     [
         {"name":"column1","type":"string"},
+        {"name":"column101","type":{"type":"long","logicalType":"local-timestamp-micros"}},
         {"name":"column2","type":"int"},
         {"name":"column3","type":"boolean"},
-		{"name":"column6","type":{"type":"long","logicalType":"local-timestamp-micros"}},
+        {"name":"column6","type":"bytes"},
+        {"name":"column7","type":"bytes"},
         {"name":"id","type":"long"},
         {"name":"key","type":"bytes"}
     ]
@@ -140,7 +146,9 @@ const testTableCreateQuery = `
 		column2 integer,
 		column3 boolean,
 		column4 numeric(16,3),
-		column5 numeric(5)
+		column5 numeric(5),
+		column6 jsonb,
+		column7 json
 	)`
 
 type Querier interface {
@@ -173,7 +181,7 @@ func ConnectSimple(ctx context.Context, t *testing.T, connString string) *pgx.Co
 }
 
 // SetupTestTable creates a new table and returns its name.
-func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
+func SetupEmptyTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 	is := is.New(t)
 
 	table := RandomIdentifier(t)
@@ -189,14 +197,22 @@ func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 		is.NoErr(err)
 	})
 
-	query = `
-		INSERT INTO %s (key, column1, column2, column3, column4, column5)
-		VALUES ('1', 'foo', 123, false, 12.2, 4),
-		('2', 'bar', 456, true, 13.42, 8),
-		('3', 'baz', 789, false, null, 9),
-		('4', null, null, null, 91.1, null)`
+	return table
+}
+
+// SetupTestTable creates a new table and returns its name.
+func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
+	is := is.New(t)
+	table := SetupEmptyTestTable(ctx, t, conn)
+
+	query := `
+		INSERT INTO %s (key, column1, column2, column3, column4, column5, column6, column7)
+		VALUES ('1', 'foo', 123, false, 12.2, 4, '{"foo": "bar"}', '{"foo": "baz"}'),
+		('2', 'bar', 456, true, 13.42, 8, '{"foo": "bar"}', '{"foo": "baz"}'),
+		('3', 'baz', 789, false, null, 9, '{"foo": "bar"}', '{"foo": "baz"}'),
+		('4', null, null, null, 91.1, null, null, null)`
 	query = fmt.Sprintf(query, table)
-	_, err = conn.Exec(ctx, query)
+	_, err := conn.Exec(ctx, query)
 	is.NoErr(err)
 
 	return table

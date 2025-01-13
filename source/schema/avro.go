@@ -38,6 +38,8 @@ var Avro = &avroExtractor{
 		"int2":    avro.NewPrimitiveSchema(avro.Int, nil),
 		"text":    avro.NewPrimitiveSchema(avro.String, nil),
 		"varchar": avro.NewPrimitiveSchema(avro.String, nil),
+		"jsonb":   avro.NewPrimitiveSchema(avro.Bytes, nil),
+		"json":    avro.NewPrimitiveSchema(avro.Bytes, nil),
 		"timestamptz": avro.NewPrimitiveSchema(
 			avro.Long,
 			avro.NewPrimitiveLogicalSchema(avro.TimestampMicros),

@@ -227,8 +227,8 @@ func insertRowAllTypes(ctx context.Context, t *testing.T, conn test.Querier, tab
 		  2147483647,                                 -- col_int4
 		  9223372036854775807,                        -- col_int8
 		  '18 seconds',                               -- col_interval
-		  '{"foo":"bar"}',                            -- col_json
-		  '{"foo":"baz"}',                            -- col_jsonb
+		  '{"foo": "bar"}',                            -- col_json
+		  '{"foo": "baz"}',                            -- col_jsonb
 		  '{19,20,21}',                               -- col_line
 		  '((22,23),(24,25))',                        -- col_lseg
 		  '08:00:2b:01:02:26',                        -- col_macaddr
@@ -297,8 +297,8 @@ func isValuesAllTypes(is *is.I, got map[string]any) {
 			Months:       0,
 			Valid:        true,
 		},
-		"col_json":  map[string]any{"foo": "bar"},
-		"col_jsonb": map[string]any{"foo": "baz"},
+		"col_json":  []byte(`{"foo": "bar"}`),
+		"col_jsonb": []byte(`{"foo": "baz"}`),
 		"col_line": pgtype.Line{
 			A:     19,
 			B:     20,
@@ -393,8 +393,8 @@ func isValuesAllTypesStandalone(is *is.I, got map[string]any) {
 			Months:       0,
 			Valid:        true,
 		},
-		"col_json":  map[string]any{"foo": "bar"},
-		"col_jsonb": map[string]any{"foo": "baz"},
+		"col_json":  []byte(`{"foo": "bar"}`),
+		"col_jsonb": []byte(`{"foo": "baz"}`),
 		"col_line": pgtype.Line{
 			A:     19,
 			B:     20,
