@@ -52,6 +52,7 @@ func Test_Iterator_Next(t *testing.T) {
 			r, err := i.Next(ctx)
 			is.NoErr(err)
 			is.Equal(r.Operation, opencdc.OperationSnapshot)
+			is.Equal(r.Metadata[opencdc.MetadataCollection], table)
 		}
 
 		for j := 1; j <= 4; j++ {
