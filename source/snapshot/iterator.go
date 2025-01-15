@@ -120,7 +120,7 @@ func (i *Iterator) buildRecord(d FetchData) opencdc.Record {
 
 	pos := i.lastPosition.ToSDKPosition()
 	metadata := make(opencdc.Metadata)
-	metadata["postgres.table"] = d.Table
+	metadata[opencdc.MetadataCollection] = d.Table
 
 	rec := sdk.Util.Source.NewRecordSnapshot(pos, metadata, d.Key, d.Payload)
 	if i.conf.WithAvroSchema {
