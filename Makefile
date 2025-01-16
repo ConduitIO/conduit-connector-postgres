@@ -2,8 +2,7 @@ VERSION=$(shell git describe --tags --dirty --always)
 
 .PHONY: build
 build:
-	sed -i '/specification:/,/version:/ s/version: .*/version: '"${VERSION}"'/' connector.yaml
-	go build -o conduit-connector-postgres cmd/connector/main.go
+	go build -ldflags "-X 'github.com/conduitio/conduit-connector-postgres.version=${VERSION}'" -o conduit-connector-postgres cmd/connector/main.go
 
 .PHONY: test
 test:
