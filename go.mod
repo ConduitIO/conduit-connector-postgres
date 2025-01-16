@@ -6,7 +6,7 @@ require (
 	github.com/Masterminds/sprig/v3 v3.3.0
 	github.com/Masterminds/squirrel v1.5.4
 	github.com/conduitio/conduit-commons v0.5.0
-	github.com/conduitio/conduit-connector-sdk v0.12.1-0.20241224132228-f9cb8f76d7a9
+	github.com/conduitio/conduit-connector-sdk v0.12.1-0.20250116111433-a919fcf9dbe1
 	github.com/daixiang0/gci v0.13.5
 	github.com/golangci/golangci-lint v1.63.4
 	github.com/google/go-cmp v0.6.0
@@ -243,5 +243,3 @@ require (
 	honnef.co/go/tools v0.5.1 // indirect
 	mvdan.cc/unparam v0.0.0-20240528143540-8a5130ca722f // indirect
 )
-
-replace github.com/conduitio/conduit-connector-sdk => ../conduit-connector-sdk
