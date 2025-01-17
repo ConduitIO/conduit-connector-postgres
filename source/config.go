@@ -85,7 +85,6 @@ type Config struct {
 
 // Validate validates the provided config values.
 func (c *Config) Validate(context.Context) error {
-	// todo pass by ref
 	c.Init()
 
 	var errs []error
