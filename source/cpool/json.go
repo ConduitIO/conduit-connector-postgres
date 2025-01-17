@@ -12,33 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package types
+package cpool
 
 import (
-	"github.com/jackc/pgx/v5/pgtype"
+	"encoding/json"
+	"reflect"
 )
 
-var (
-	Numeric = NumericFormatter{}
-	UUID    = UUIDFormatter{}
-)
-
-func Format(oid uint32, v any) (any, error) {
-	if oid == pgtype.UUIDOID {
-		return UUID.Format(v)
+// noopUnmarshal will copy source into dst.
+// this is to be used with the pgtype JSON codec
+func jsonNoopUnmarshal(src []byte, dst any) error {
+	dstptr, ok := (dst.(*any))
+	if dst == nil || !ok {
+		return &json.InvalidUnmarshalError{Type: reflect.TypeOf(dst)}
 	}
 
-	switch t := v.(type) {
-	case pgtype.Numeric:
-		return Numeric.Format(t)
-	case *pgtype.Numeric:
-		return Numeric.Format(*t)
-	case []uint8:
-		if oid == pgtype.XMLOID {
-			return string(t), nil
-		}
-		return t, nil
-	default:
-		return t, nil
-	}
+	v := make([]byte, len(src))
+	copy(v, src)
+
+	// set the slice to the value of the ptr.
+	*dstptr = v
+
+	return nil
 }

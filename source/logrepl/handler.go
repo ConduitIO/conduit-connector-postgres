@@ -36,15 +36,17 @@ type CDCHandler struct {
 	out         chan<- opencdc.Record
 	lastTXLSN   pglogrepl.LSN
 
+	withAvroSchema bool
 	keySchemas     map[string]cschema.Schema
 	payloadSchemas map[string]cschema.Schema
 }
 
-func NewCDCHandler(rs *internal.RelationSet, tableKeys map[string]string, out chan<- opencdc.Record) *CDCHandler {
+func NewCDCHandler(rs *internal.RelationSet, tableKeys map[string]string, out chan<- opencdc.Record, withAvroSchema bool) *CDCHandler {
 	return &CDCHandler{
 		tableKeys:      tableKeys,
 		relationSet:    rs,
 		out:            out,
+		withAvroSchema: withAvroSchema,
 		keySchemas:     make(map[string]cschema.Schema),
 		payloadSchemas: make(map[string]cschema.Schema),
 	}
@@ -245,6 +247,9 @@ func (*CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 // updateAvroSchema generates and stores avro schema based on the relation's row,
 // when usage of avro schema is requested.
 func (h *CDCHandler) updateAvroSchema(ctx context.Context, rel *pglogrepl.RelationMessage) error {
+	if !h.withAvroSchema {
+		return nil
+	}
 	// Payload schema
 	avroPayloadSch, err := schema.Avro.ExtractLogrepl(rel.RelationName+"_payload", rel)
 	if err != nil {
@@ -281,6 +286,9 @@ func (h *CDCHandler) updateAvroSchema(ctx context.Context, rel *pglogrepl.Relati
 }
 
 func (h *CDCHandler) attachSchemas(rec opencdc.Record, relationName string) {
+	if !h.withAvroSchema {
+		return
+	}
 	cschema.AttachPayloadSchemaToRecord(rec, h.payloadSchemas[relationName])
 	cschema.AttachKeySchemaToRecord(rec, h.keySchemas[relationName])
 }

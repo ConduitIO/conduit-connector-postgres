@@ -1,4 +1,4 @@
-// Copyright © 2022 Meroxa, Inc.
+// Copyright © 2024 Meroxa, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,20 +12,34 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package types
+package cpool
 
 import (
-	"time"
+	"testing"
+
+	"github.com/matryer/is"
 )
 
-type TimeFormatter struct{}
+func Test_jsonNoopUnmarshal(t *testing.T) {
+	is := is.New(t)
 
-// Format returns:
-// * string format of Time when connector is not builtin
-// * time type in UTC when connector is builtin
-func (n TimeFormatter) Format(t time.Time) (any, error) {
-	if WithBuiltinPlugin {
-		return t.UTC(), nil
+	var dst any
+	data := []byte(`{"foo":"bar"}`)
+
+	is.NoErr(jsonNoopUnmarshal(data, &dst))
+	is.Equal(data, dst.([]byte))
+
+	var err error
+
+	err = jsonNoopUnmarshal(data, dst)
+	is.True(err != nil)
+	if err != nil {
+		is.Equal(err.Error(), "json: Unmarshal(non-pointer []uint8)")
 	}
-	return t.UTC().String(), nil
+
+	err = jsonNoopUnmarshal(data, nil)
+	is.True(err != nil)
+	if err != nil {
+		is.Equal(err.Error(), "json: Unmarshal(nil)")
+	}
 }

@@ -201,6 +201,40 @@ func Test_FetcherValidate(t *testing.T) {
 	})
 }
 
+func Test_FetcherRun_EmptySnapshot(t *testing.T) {
+	var (
+		is       = is.New(t)
+		ctx      = test.Context(t)
+		pool     = test.ConnectPool(context.Background(), t, test.RegularConnString)
+		table    = test.SetupEmptyTestTable(context.Background(), t, pool)
+		out      = make(chan FetchData)
+		testTomb = &tomb.Tomb{}
+	)
+
+	f := NewFetchWorker(pool, out, FetchConfig{
+		Table: table,
+		Key:   "id",
+	})
+
+	testTomb.Go(func() error {
+		ctx = testTomb.Context(ctx)
+		defer close(out)
+
+		if err := f.Validate(ctx); err != nil {
+			return err
+		}
+		return f.Run(ctx)
+	})
+
+	var gotFetchData []FetchData
+	for data := range out {
+		gotFetchData = append(gotFetchData, data)
+	}
+
+	is.NoErr(testTomb.Err())
+	is.True(len(gotFetchData) == 0)
+}
+
 func Test_FetcherRun_Initial(t *testing.T) {
 	var (
 		pool  = test.ConnectPool(context.Background(), t, test.RegularConnString)
@@ -226,32 +260,37 @@ func Test_FetcherRun_Initial(t *testing.T) {
 		return f.Run(ctx)
 	})
 
-	var dd []FetchData
+	var gotFetchData []FetchData
 	for data := range out {
-		dd = append(dd, data)
+		gotFetchData = append(gotFetchData, data)
 	}
 
 	is.NoErr(tt.Err())
-	is.True(len(dd) == 4)
+	is.True(len(gotFetchData) == 4)
+
+	var (
+		value6 = []byte(`{"foo": "bar"}`)
+		value7 = []byte(`{"foo": "baz"}`)
+	)
 
 	expectedMatch := []opencdc.StructuredData{
-		{"id": int64(1), "key": []uint8{49}, "column1": "foo", "column2": int32(123), "column3": false, "column4": 12.2, "column5": int64(4)},
-		{"id": int64(2), "key": []uint8{50}, "column1": "bar", "column2": int32(456), "column3": true, "column4": 13.42, "column5": int64(8)},
-		{"id": int64(3), "key": []uint8{51}, "column1": "baz", "column2": int32(789), "column3": false, "column4": nil, "column5": int64(9)},
-		{"id": int64(4), "key": []uint8{52}, "column1": nil, "column2": nil, "column3": nil, "column4": 91.1, "column5": nil},
+		{"id": int64(1), "key": []uint8{49}, "column1": "foo", "column2": int32(123), "column3": false, "column4": 12.2, "column5": int64(4), "column6": value6, "column7": value7},
+		{"id": int64(2), "key": []uint8{50}, "column1": "bar", "column2": int32(456), "column3": true, "column4": 13.42, "column5": int64(8), "column6": value6, "column7": value7},
+		{"id": int64(3), "key": []uint8{51}, "column1": "baz", "column2": int32(789), "column3": false, "column4": nil, "column5": int64(9), "column6": value6, "column7": value7},
+		{"id": int64(4), "key": []uint8{52}, "column1": nil, "column2": nil, "column3": nil, "column4": 91.1, "column5": nil, "column6": nil, "column7": nil},
 	}
 
-	for i, d := range dd {
+	for i, got := range gotFetchData {
 		t.Run(fmt.Sprintf("payload_%d", i+1), func(t *testing.T) {
 			is := is.New(t)
-			is.Equal(d.Key, opencdc.StructuredData{"id": int64(i + 1)})
-			is.Equal("", cmp.Diff(expectedMatch[i], d.Payload))
+			is.Equal(got.Key, opencdc.StructuredData{"id": int64(i + 1)})
+			is.Equal("", cmp.Diff(expectedMatch[i], got.Payload))
 
-			is.Equal(d.Position, position.SnapshotPosition{
+			is.Equal(got.Position, position.SnapshotPosition{
 				LastRead:    int64(i + 1),
 				SnapshotEnd: 4,
 			})
-			is.Equal(d.Table, table)
+			is.Equal(got.Table, table)
 		})
 	}
 }
@@ -308,6 +347,8 @@ func Test_FetcherRun_Resume(t *testing.T) {
 		"column3": false,
 		"column4": nil,
 		"column5": int64(9),
+		"column6": []byte(`{"foo": "bar"}`),
+		"column7": []byte(`{"foo": "baz"}`),
 	}))
 
 	is.Equal(dd[0].Position, position.SnapshotPosition{

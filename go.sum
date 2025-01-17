@@ -411,12 +411,15 @@ github.com/sagikazarmark/locafero v0.6.0 h1:ON7AQg37yzcRPU69mt7gwhFEBwxI6P9T4Qu3
 github.com/sagikazarmark/locafero v0.6.0/go.mod h1:77OmuIc6VTraTXKXIs/uvUxKGUXjE1GbemJYHqdNjX0=
 github.com/sagikazarmark/slog-shim v0.1.0 h1:diDBnUNK9N/354PgrxMywXnAwEr1QZcOr6gto+ugjYE=
 github.com/sagikazarmark/slog-shim v0.1.0/go.mod h1:SrcSrq8aKtyuqEI1uvTDTK1arOWRIczQRv+GVI1AkeQ=
+<<<<<<< HEAD
 github.com/samber/lo v1.47.0 h1:z7RynLwP5nbyRscyvcD043DWYoOcYRv3mV8lBeqOCLc=
 github.com/samber/lo v1.47.0/go.mod h1:RmDH9Ct32Qy3gduHQuKJ3gW1fMHAnE/fAzQuf6He5cU=
 github.com/samber/slog-common v0.18.0 h1:zPeXHM+WhMl2zSx76Rg3EE0jwXdkut9s45K+pwhcO1c=
 github.com/samber/slog-common v0.18.0/go.mod h1:6Krf+hemckfEiRDqy3J/sTpKTJQvmOoFLj9Riz3IkRU=
 github.com/samber/slog-zerolog/v2 v2.7.2 h1:z2Flxz1igvyKDLqv4QjZSC6kEyB02emXL7u49R7Jxx0=
 github.com/samber/slog-zerolog/v2 v2.7.2/go.mod h1:TMj08Lvcs2dSNOw03UZ01Uw7001vIOjsixD3S+V5ZOE=
+=======
+>>>>>>> main
 github.com/sanposhiho/wastedassign/v2 v2.1.0 h1:crurBF7fJKIORrV85u9UUpePDYGWnwvv3+A96WvwXT0=
 github.com/sanposhiho/wastedassign/v2 v2.1.0/go.mod h1:+oSmSC+9bQ+VUAxA66nBb0Z7N8CK7mscKTDYC6aIek4=
 github.com/santhosh-tekuri/jsonschema/v6 v6.0.1 h1:PKK9DyHxif4LZo+uQSgXNqs0jj5+xZwwfKHgph2lxBw=
