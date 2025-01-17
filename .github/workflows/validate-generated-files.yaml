@@ -1,0 +1,77 @@
+name: release
+
+on:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate Tag Format
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          
+          SV_REGEX="^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(\.(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(\+([0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*))?$"
+
+          if ! [[ $TAG =~ $SV_REGEX ]]; then
+            echo "$TAG is NOT a valid tag (expected format: v<semver>)"
+            exit 1
+          fi
+
+      - name: Check Version Consistency
+        run: |
+          # Extract tag and remove 'v' prefix if exists
+          TAG=${GITHUB_REF#refs/tags/}
+          
+          # Read version from connector.yaml
+          YAML_VERSION=$(yq e '.specification.version' connector.yaml)
+          
+          # Compare versions
+          if [[ "$TAG" != "$YAML_VERSION" ]]; then
+            echo "Version mismatch detected:"
+            echo "Git Tag: $TAG"
+            echo "connector.yaml Version: $YAML_VERSION"
+            exit 1
+          fi
+
+      - name: Delete Invalid Tag
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          script: |
+            const tag = context.ref.replace('refs/tags/', '')
+            try {
+              await github.rest.git.deleteRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `tags/${tag}`
+              })
+            } catch (error) {
+              console.log('Error deleting tag:', error)
+            }
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

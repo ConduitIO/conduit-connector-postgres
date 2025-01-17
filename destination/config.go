@@ -12,29 +12,48 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:generate paramgen Config
-
 package destination
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strings"
 	"text/template"
 
 	"github.com/Masterminds/sprig/v3"
 	"github.com/conduitio/conduit-commons/opencdc"
+	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/jackc/pgx/v5"
 )
 
 type TableFn func(opencdc.Record) (string, error)
 
 type Config struct {
+	sdk.DefaultDestinationMiddleware
+
 	// URL is the connection string for the Postgres database.
 	URL string `json:"url" validate:"required"`
 	// Table is used as the target table into which records are inserted.
 	Table string `json:"table" default:"{{ index .Metadata \"opencdc.collection\" }}"`
 	// Key represents the column name for the key used to identify and update existing rows.
 	Key string `json:"key"`
+}
+
+// todo pointer receiver, others are value receivers
+func (c *Config) Validate(context.Context) error {
+	// try parsing the url
+	_, err := pgx.ParseConfig(c.URL)
+	if err != nil {
+		return fmt.Errorf("invalid url: %w", err)
+	}
+
+	_, err = c.TableFunction()
+	if err != nil {
+		return fmt.Errorf("invalid table name or table function: %w", err)
+	}
+
+	return nil
 }
 
 // TableFunction returns a function that determines the table for each record individually.
