@@ -18,6 +18,7 @@ package postgres
 
 import (
 	_ "embed"
+
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
