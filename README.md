@@ -129,7 +129,7 @@ pipelines:
           # WithAvroSchema determines whether the connector should attach an
           # avro schema on each record.
           # Type: bool
-          logrepl.withAvroSchema: "false"
+          logrepl.withAvroSchema: "true"
           # Maximum delay before an incomplete batch is read from the source.
           # Type: duration
           sdk.batch.delay: "0"
