@@ -243,5 +243,3 @@ require (
 	honnef.co/go/tools v0.5.1 // indirect
 	mvdan.cc/unparam v0.0.0-20240528143540-8a5130ca722f // indirect
 )
-
-replace github.com/conduitio/conduit-connector-sdk => ../conduit-connector-sdk
