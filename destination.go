@@ -21,7 +21,6 @@ import (
 	"strings"
 
 	sq "github.com/Masterminds/squirrel"
-	"github.com/conduitio/conduit-commons/config"
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/destination"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -38,34 +37,15 @@ type Destination struct {
 	stmtBuilder sq.StatementBuilderType
 }
 
+func (d *Destination) Config() sdk.DestinationConfig {
+	return &d.config
+}
+
 func NewDestination() sdk.Destination {
 	d := &Destination{
 		stmtBuilder: sq.StatementBuilder.PlaceholderFormat(sq.Dollar),
 	}
-	return sdk.DestinationWithMiddleware(d, sdk.DefaultDestinationMiddleware()...)
-}
-
-func (d *Destination) Parameters() config.Parameters {
-	return d.config.Parameters()
-}
-
-func (d *Destination) Configure(ctx context.Context, cfg config.Config) error {
-	err := sdk.Util.ParseConfig(ctx, cfg, &d.config, NewDestination().Parameters())
-	if err != nil {
-		return err
-	}
-	// try parsing the url
-	_, err = pgx.ParseConfig(d.config.URL)
-	if err != nil {
-		return fmt.Errorf("invalid url: %w", err)
-	}
-
-	d.getTableName, err = d.config.TableFunction()
-	if err != nil {
-		return fmt.Errorf("invalid table name or table function: %w", err)
-	}
-
-	return nil
+	return sdk.DestinationWithMiddleware(d)
 }
 
 func (d *Destination) Open(ctx context.Context) error {
@@ -74,6 +54,12 @@ func (d *Destination) Open(ctx context.Context) error {
 		return fmt.Errorf("failed to open connection: %w", err)
 	}
 	d.conn = conn
+
+	d.getTableName, err = d.config.TableFunction()
+	if err != nil {
+		return fmt.Errorf("invalid table name or table name function: %w", err)
+	}
+
 	return nil
 }
 

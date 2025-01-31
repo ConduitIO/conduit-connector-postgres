@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:generate paramgen Config
-
 package source
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"github.com/conduitio/conduit-commons/config"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -47,6 +47,8 @@ const (
 )
 
 type Config struct {
+	sdk.DefaultSourceMiddleware
+
 	// URL is the connection string for the Postgres database.
 	URL string `json:"url" validate:"required"`
 
@@ -82,12 +84,11 @@ type Config struct {
 }
 
 // Validate validates the provided config values.
-func (c Config) Validate() error {
-	var errs []error
+func (c *Config) Validate(context.Context) error {
+	c.Init()
 
-	// try parsing the url
-	_, err := pgx.ParseConfig(c.URL)
-	if err != nil {
+	var errs []error
+	if _, err := pgx.ParseConfig(c.URL); err != nil {
 		errs = append(errs, fmt.Errorf("invalid url: %w", err))
 	}
 
@@ -102,10 +103,9 @@ func (c Config) Validate() error {
 }
 
 // Init sets the desired value on Tables while Table is being deprecated.
-func (c Config) Init() Config {
+func (c *Config) Init() {
 	if len(c.Table) > 0 && len(c.Tables) == 0 {
 		c.Tables = c.Table
 		c.Table = nil
 	}
-	return c
 }

@@ -42,34 +42,25 @@ type Source struct {
 	tableKeys map[string]string
 }
 
+func (s *Source) Config() sdk.SourceConfig {
+	return &s.config
+}
+
 func NewSource() sdk.Source {
 	return sdk.SourceWithMiddleware(
 		&Source{
 			tableKeys: make(map[string]string),
-		},
-		sdk.DefaultSourceMiddleware(
-			// disable schema extraction by default, postgres will build its own schema
-			sdk.SourceWithSchemaExtractionConfig{
-				PayloadEnabled: lang.Ptr(false),
-				KeyEnabled:     lang.Ptr(false),
+			config: source.Config{
+				DefaultSourceMiddleware: sdk.DefaultSourceMiddleware{
+					// disable schema extraction by default, postgres will build its own schema
+					SourceWithSchemaExtraction: sdk.SourceWithSchemaExtraction{
+						PayloadEnabled: lang.Ptr(false),
+						KeyEnabled:     lang.Ptr(false),
+					},
+				},
 			},
-		)...,
+		},
 	)
-}
-
-func (s *Source) Parameters() config.Parameters {
-	return s.config.Parameters()
-}
-
-func (s *Source) Configure(ctx context.Context, cfg config.Config) error {
-	err := sdk.Util.ParseConfig(ctx, cfg, &s.config, NewSource().Parameters())
-	if err != nil {
-		return err
-	}
-
-	s.config = s.config.Init()
-
-	return s.config.Validate()
 }
 
 func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
@@ -157,42 +148,28 @@ func (s *Source) Teardown(ctx context.Context) error {
 }
 
 func (s *Source) LifecycleOnDeleted(ctx context.Context, cfg config.Config) error {
-	if err := s.Configure(ctx, cfg); err != nil {
-		return fmt.Errorf("fail to handle lifecycle delete event: %w", err)
+	var oldConfig source.Config
+	err := sdk.Util.ParseConfig(ctx, cfg, &oldConfig, Connector.NewSpecification().SourceParams)
+	if err != nil {
+		return fmt.Errorf("lifecycle delete event: failed to parse configuration: %w", err)
 	}
 
-	// N.B. This should not stay in here for long, enrich the default.
-	//      Events are not passed enriched config with defaults.
-	params := s.config.Parameters()
-
-	if _, ok := cfg["logrepl.autoCleanup"]; !ok { // not set
-		s.config.LogreplAutoCleanup = params["logrepl.autoCleanup"].Default == "true"
-	}
-
-	if _, ok := cfg["logrepl.slotName"]; !ok {
-		s.config.LogreplSlotName = params["logrepl.slotName"].Default
-	}
-
-	if _, ok := cfg["logrepl.publicationName"]; !ok {
-		s.config.LogreplPublicationName = params["logrepl.publicationName"].Default
-	}
-
-	switch s.config.CDCMode {
+	switch oldConfig.CDCMode {
 	case source.CDCModeAuto:
 		fallthrough // TODO: Adjust as `auto` changes.
 	case source.CDCModeLogrepl:
-		if !s.config.LogreplAutoCleanup {
+		if !oldConfig.LogreplAutoCleanup {
 			sdk.Logger(ctx).Warn().Msg("Skipping logrepl auto cleanup")
 			return nil
 		}
 
 		return logrepl.Cleanup(ctx, logrepl.CleanupConfig{
-			URL:             s.config.URL,
-			SlotName:        s.config.LogreplSlotName,
-			PublicationName: s.config.LogreplPublicationName,
+			URL:             oldConfig.URL,
+			SlotName:        oldConfig.LogreplSlotName,
+			PublicationName: oldConfig.LogreplPublicationName,
 		})
 	default:
-		sdk.Logger(ctx).Warn().Msgf("cannot handle CDC mode %q", s.config.CDCMode)
+		sdk.Logger(ctx).Warn().Msgf("cannot handle CDC mode %q", oldConfig.CDCMode)
 		return nil
 	}
 }
