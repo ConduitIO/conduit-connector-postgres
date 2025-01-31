@@ -1,8 +1,96 @@
 version: "1.0"
 specification:
   name: postgres
-  summary: A PostgreSQL source and destination plugin for Conduit.
-  description: ""
+  summary: Conduit connector for PostgreSQL
+  description: |
+    ## Source
+
+    The Postgres Source Connector connects to a database with the provided `url` and
+    starts creating records for each change detected in the provided tables.
+
+    Upon starting, the source takes a snapshot of the provided tables in the database,
+    then switches into CDC mode. In CDC mode, the plugin reads from a buffer of CDC events.
+
+    ### Snapshot
+
+    When the connector first starts, snapshot mode is enabled. The connector acquires
+    a read-only lock on the tables, and then reads all rows of the tables into Conduit.
+    Once all rows in that initial snapshot are read the connector releases its lock and
+    switches into CDC mode.
+
+    This behavior is enabled by default, but can be turned off by adding
+    `"snapshotMode": "never"` to the Source configuration.
+
+    ### Change Data Capture
+
+    This connector implements Change Data Capture (CDC) features for PostgreSQL by
+    creating a logical replication slot and a publication that listens to changes in the
+    configured tables. Every detected change is converted into a record. If there are no
+    records available, the connector blocks until a record is available or the connector
+    receives a stop signal.
+
+    #### Logical Replication Configuration
+
+    When the connector switches to CDC mode, it attempts to run the initial setup commands
+    to create its logical replication slot and publication. It will connect to an existing
+    slot if one with the configured name exists.
+
+    The Postgres user specified in the connection URL must have sufficient privileges to
+    run all of these setup commands, or it will fail.
+
+    Example pipeline configuration that's using logical replication:
+
+    ```yaml
+    version: 2.2
+    pipelines:
+      - id: pg-to-log
+        status: running
+        connectors:
+          - id: pg
+            type: source
+            plugin: builtin:postgres
+            settings:
+              url: "postgres://exampleuser:examplepass@localhost:5433/exampledb?sslmode=disable"
+              tables: "users"
+              cdcMode: "logrepl"
+              logrepl.publicationName: "examplepub"
+              logrepl.slotName": "exampleslot"
+          - id: log
+            type: destination
+            plugin: builtin:log
+            settings:
+              level: info
+    ```
+
+    :warning: When the connector or pipeline is deleted, the connector will automatically
+    attempt to delete the replication slot and publication. This is the default behaviour
+    and can be disabled by setting `logrepl.autoCleanup` to `false`.
+
+    ### Key Handling
+
+    The connector will automatically look up the primary key column for the specified tables
+    and use them as the key value. If that can't be determined, the connector will return
+    an error.
+
+    ## Destination
+
+    The Postgres Destination takes a Conduit record and stores it using a SQL statement.
+    The Destination is designed to handle different payloads and keys. Because of this,
+    each record is individually parsed and upserted.
+
+    ### Handling record operations
+
+    Based on the `Operation` field in the record, the destination will either insert,
+    update or delete the record in the target table. Snapshot records are always inserted.
+
+    If the target table already contains a record with the same key as a record being
+    inserted, the record will be updated (upserted). This can overwrite and thus potentially
+    lose data, so keys should be assigned correctly from the Source.
+
+    If the target table does not contain a record with the same key as a record being
+    deleted, the record will be ignored.
+
+    If there is no key, the record will be simply appended.
   version: v0.11.0-dev
   author: Meroxa, Inc.
   source:

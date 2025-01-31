@@ -16,9 +16,10 @@ test:
 lint:
 	golangci-lint run -v
 
-.PHONY: generate
+.PHONY:
 generate:
 	go generate ./...
+	conn-sdk-cli readmegen -w
 
 .PHONY: fmt
 fmt:
