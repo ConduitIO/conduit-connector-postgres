@@ -78,7 +78,7 @@ type Config struct {
 
 	// WithAvroSchema determines whether the connector should attach an avro schema on each
 	// record.
-	WithAvroSchema bool `json:"logrepl.withAvroSchema" default:"false"`
+	WithAvroSchema bool `json:"logrepl.withAvroSchema" default:"true"`
 }
 
 // Validate validates the provided config values.

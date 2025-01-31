@@ -49,7 +49,7 @@ func (Config) Parameters() map[string]config.Parameter {
 			Validations: []config.Validation{},
 		},
 		ConfigLogreplWithAvroSchema: {
-			Default:     "false",
+			Default:     "true",
 			Description: "WithAvroSchema determines whether the connector should attach an avro schema on each\nrecord.",
 			Type:        config.ParameterTypeBool,
 			Validations: []config.Validation{},
