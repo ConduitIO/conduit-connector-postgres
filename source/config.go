@@ -88,10 +88,7 @@ func (c *Config) Validate(context.Context) error {
 	c.Init()
 
 	var errs []error
-
-	// try parsing the url
-	_, err := pgx.ParseConfig(c.URL)
-	if err != nil {
+	if _, err := pgx.ParseConfig(c.URL); err != nil {
 		errs = append(errs, fmt.Errorf("invalid url: %w", err))
 	}
 
