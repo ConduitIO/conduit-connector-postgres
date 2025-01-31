@@ -40,7 +40,6 @@ type Config struct {
 	Key string `json:"key"`
 }
 
-// todo pointer receiver, others are value receivers
 func (c *Config) Validate(context.Context) error {
 	if _, err := pgx.ParseConfig(c.URL); err != nil {
 		return fmt.Errorf("invalid url: %w", err)
@@ -56,7 +55,7 @@ func (c *Config) Validate(context.Context) error {
 // TableFunction returns a function that determines the table for each record individually.
 // The function might be returning a static table name.
 // If the table is neither static nor a template, an error is returned.
-func (c Config) TableFunction() (f TableFn, err error) {
+func (c *Config) TableFunction() (f TableFn, err error) {
 	// Not a template, i.e. it's a static table name
 	if !strings.HasPrefix(c.Table, "{{") && !strings.HasSuffix(c.Table, "}}") {
 		return func(_ opencdc.Record) (string, error) {
