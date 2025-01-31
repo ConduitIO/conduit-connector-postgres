@@ -42,14 +42,11 @@ type Config struct {
 
 // todo pointer receiver, others are value receivers
 func (c *Config) Validate(context.Context) error {
-	// try parsing the url
-	_, err := pgx.ParseConfig(c.URL)
-	if err != nil {
+	if _, err := pgx.ParseConfig(c.URL); err != nil {
 		return fmt.Errorf("invalid url: %w", err)
 	}
 
-	_, err = c.TableFunction()
-	if err != nil {
+	if _, err := c.TableFunction(); err != nil {
 		return fmt.Errorf("invalid table name or table function: %w", err)
 	}
 
