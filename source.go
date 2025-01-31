@@ -104,6 +104,7 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 			Tables:            s.config.Tables,
 			TableKeys:         s.tableKeys,
 			WithSnapshot:      s.config.SnapshotMode == source.SnapshotModeInitial,
+			WithAvroSchema:    s.config.WithAvroSchema,
 			SnapshotFetchSize: s.config.SnapshotFetchSize,
 		})
 		if err != nil {
