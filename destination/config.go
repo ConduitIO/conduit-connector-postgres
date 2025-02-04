@@ -40,13 +40,18 @@ type Config struct {
 	Key string `json:"key"`
 }
 
-func (c *Config) Validate(context.Context) error {
+func (c *Config) Validate(ctx context.Context) error {
 	if _, err := pgx.ParseConfig(c.URL); err != nil {
 		return fmt.Errorf("invalid url: %w", err)
 	}
 
 	if _, err := c.TableFunction(); err != nil {
 		return fmt.Errorf("invalid table name or table function: %w", err)
+	}
+
+	err := c.DefaultDestinationMiddleware.Validate(ctx)
+	if err != nil {
+		return fmt.Errorf("middleware validation failed: %w", err)
 	}
 
 	return nil

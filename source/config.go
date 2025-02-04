@@ -84,7 +84,7 @@ type Config struct {
 }
 
 // Validate validates the provided config values.
-func (c *Config) Validate(context.Context) error {
+func (c *Config) Validate(ctx context.Context) error {
 	c.Init()
 
 	var errs []error
@@ -99,6 +99,12 @@ func (c *Config) Validate(context.Context) error {
 	if len(c.Tables) == 0 {
 		errs = append(errs, fmt.Errorf(`error validating "tables": %w`, config.ErrRequiredParameterMissing))
 	}
+
+	err := c.DefaultSourceMiddleware.Validate(ctx)
+	if err != nil {
+		errs = append(errs, err)
+	}
+
 	return errors.Join(errs...)
 }
 
