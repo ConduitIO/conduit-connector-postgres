@@ -96,151 +96,859 @@ If there is no key, the record will be simply appended.
 
 ## Source Configuration Parameters
 
-<!-- readmegen:source.parameters.yaml -->
-```yaml
-version: 2.2
-pipelines:
-  - id: example
-    status: running
-    connectors:
-      - id: example
-        plugin: "postgres"
-        settings:
-          # URL is the connection string for the Postgres database.
-          # Type: string
-          url: ""
-          # CDCMode determines how the connector should listen to changes.
-          # Type: string
-          cdcMode: "auto"
-          # LogreplAutoCleanup determines if the replication slot and
-          # publication should be removed when the connector is deleted.
-          # Type: bool
-          logrepl.autoCleanup: "true"
-          # LogreplPublicationName determines the publication name in case the
-          # connector uses logical replication to listen to changes (see
-          # CDCMode).
-          # Type: string
-          logrepl.publicationName: "conduitpub"
-          # LogreplSlotName determines the replication slot name in case the
-          # connector uses logical replication to listen to changes (see
-          # CDCMode).
-          # Type: string
-          logrepl.slotName: "conduitslot"
-          # WithAvroSchema determines whether the connector should attach an
-          # avro schema on each record.
-          # Type: bool
-          logrepl.withAvroSchema: "true"
-          # Maximum delay before an incomplete batch is read from the source.
-          # Type: duration
-          sdk.batch.delay: "0"
-          # Maximum size of batch before it gets read from the source.
-          # Type: int
-          sdk.batch.size: "0"
-          # Specifies whether to use a schema context name. If set to false, no
-          # schema context name will be used, and schemas will be saved with the
-          # subject name specified in the connector (not safe because of name
-          # conflicts).
-          # Type: bool
-          sdk.schema.context.enabled: "true"
-          # Schema context name to be used. Used as a prefix for all schema
-          # subject names. If empty, defaults to the connector ID.
-          # Type: string
-          sdk.schema.context.name: ""
-          # Whether to extract and encode the record key with a schema.
-          # Type: bool
-          sdk.schema.extract.key.enabled: "false"
-          # The subject of the key schema. If the record metadata contains the
-          # field "opencdc.collection" it is prepended to the subject name and
-          # separated with a dot.
-          # Type: string
-          sdk.schema.extract.key.subject: "key"
-          # Whether to extract and encode the record payload with a schema.
-          # Type: bool
-          sdk.schema.extract.payload.enabled: "false"
-          # The subject of the payload schema. If the record metadata contains
-          # the field "opencdc.collection" it is prepended to the subject name
-          # and separated with a dot.
-          # Type: string
-          sdk.schema.extract.payload.subject: "payload"
-          # The type of the payload schema.
-          # Type: string
-          sdk.schema.extract.type: "avro"
-          # Snapshot fetcher size determines the number of rows to retrieve at a
-          # time.
-          # Type: int
-          snapshot.fetchSize: "50000"
-          # SnapshotMode is whether the plugin will take a snapshot of the
-          # entire table before starting cdc mode.
-          # Type: string
-          snapshotMode: "initial"
-          # Deprecated: use `tables` instead.
-          # Type: string
-          table: ""
-          # Tables is a List of table names to read from, separated by a comma,
-          # e.g.:"table1,table2". Use "*" if you'd like to listen to all tables.
-          # Type: string
-          tables: ""
-```
-<!-- /readmegen:source.parameters.yaml -->
+<!-- readmegen:source.parameters.table -->
+<table class="no-margin-table">
+  <tr>
+    <th>Name</th>
+    <th>Type</th>
+    <th>Required</th>
+    <th>Default</th>
+    <th>Description</th>
+  </tr>
+  <tr>
+<td>
+
+`url`
+
+</td>
+<td>
+
+string
+
+</td>
+<td>
+
+✅
+
+</td>
+<td>
+
+``
+
+</td>
+<td>
+
+URL is the connection string for the Postgres database.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`cdcMode`
+
+</td>
+<td>
+
+string
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`auto`
+
+</td>
+<td>
+
+CDCMode determines how the connector should listen to changes.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`logrepl.autoCleanup`
+
+</td>
+<td>
+
+bool
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`true`
+
+</td>
+<td>
+
+LogreplAutoCleanup determines if the replication slot and publication should be
+removed when the connector is deleted.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`logrepl.publicationName`
+
+</td>
+<td>
+
+string
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`conduitpub`
+
+</td>
+<td>
+
+LogreplPublicationName determines the publication name in case the
+connector uses logical replication to listen to changes (see CDCMode).
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`logrepl.slotName`
+
+</td>
+<td>
+
+string
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`conduitslot`
+
+</td>
+<td>
+
+LogreplSlotName determines the replication slot name in case the
+connector uses logical replication to listen to changes (see CDCMode).
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`logrepl.withAvroSchema`
+
+</td>
+<td>
+
+bool
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`true`
+
+</td>
+<td>
+
+WithAvroSchema determines whether the connector should attach an avro schema on each
+record.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`sdk.batch.delay`
+
+</td>
+<td>
+
+duration
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`0`
+
+</td>
+<td>
+
+Maximum delay before an incomplete batch is read from the source.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`sdk.batch.size`
+
+</td>
+<td>
+
+int
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`0`
+
+</td>
+<td>
+
+Maximum size of batch before it gets read from the source.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`sdk.schema.context.enabled`
+
+</td>
+<td>
+
+bool
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`true`
+
+</td>
+<td>
+
+Specifies whether to use a schema context name. If set to false, no schema context name will
+be used, and schemas will be saved with the subject name specified in the connector
+(not safe because of name conflicts).
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`sdk.schema.context.name`
+
+</td>
+<td>
+
+string
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+``
+
+</td>
+<td>
+
+Schema context name to be used. Used as a prefix for all schema subject names.
+If empty, defaults to the connector ID.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`sdk.schema.extract.key.enabled`
+
+</td>
+<td>
+
+bool
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`false`
+
+</td>
+<td>
+
+Whether to extract and encode the record key with a schema.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`sdk.schema.extract.key.subject`
+
+</td>
+<td>
+
+string
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`key`
+
+</td>
+<td>
+
+The subject of the key schema. If the record metadata contains the field
+"opencdc.collection" it is prepended to the subject name and separated
+with a dot.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`sdk.schema.extract.payload.enabled`
+
+</td>
+<td>
+
+bool
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`false`
+
+</td>
+<td>
+
+Whether to extract and encode the record payload with a schema.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`sdk.schema.extract.payload.subject`
+
+</td>
+<td>
+
+string
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`payload`
+
+</td>
+<td>
+
+The subject of the payload schema. If the record metadata contains the
+field "opencdc.collection" it is prepended to the subject name and
+separated with a dot.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`sdk.schema.extract.type`
+
+</td>
+<td>
+
+string
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`avro`
+
+</td>
+<td>
+
+The type of the payload schema.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`snapshot.fetchSize`
+
+</td>
+<td>
+
+int
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`50000`
+
+</td>
+<td>
+
+Snapshot fetcher size determines the number of rows to retrieve at a time.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`snapshotMode`
+
+</td>
+<td>
+
+string
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`initial`
+
+</td>
+<td>
+
+SnapshotMode is whether the plugin will take a snapshot of the entire table before starting cdc mode.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`table`
+
+</td>
+<td>
+
+string
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+``
+
+</td>
+<td>
+
+Deprecated: use `tables` instead.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`tables`
+
+</td>
+<td>
+
+string
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+``
+
+</td>
+<td>
+
+Tables is a List of table names to read from, separated by a comma, e.g.:"table1,table2".
+Use "*" if you'd like to listen to all tables.
+
+</td>
+  </tr>
+</table>
+<!-- /readmegen:source.parameters.table -->
 
 ## Destination Configuration Parameters
 
-<!-- readmegen:destination.parameters.yaml -->
-```yaml
-version: 2.2
-pipelines:
-  - id: example
-    status: running
-    connectors:
-      - id: example
-        plugin: "postgres"
-        settings:
-          # URL is the connection string for the Postgres database.
-          # Type: string
-          url: ""
-          # Key represents the column name for the key used to identify and
-          # update existing rows.
-          # Type: string
-          key: ""
-          # Maximum delay before an incomplete batch is written to the
-          # destination.
-          # Type: duration
-          sdk.batch.delay: "0"
-          # Maximum size of batch before it gets written to the destination.
-          # Type: int
-          sdk.batch.size: "0"
-          # Allow bursts of at most X records (0 or less means that bursts are
-          # not limited). Only takes effect if a rate limit per second is set.
-          # Note that if `sdk.batch.size` is bigger than `sdk.rate.burst`, the
-          # effective batch size will be equal to `sdk.rate.burst`.
-          # Type: int
-          sdk.rate.burst: "0"
-          # Maximum number of records written per second (0 means no rate
-          # limit).
-          # Type: float
-          sdk.rate.perSecond: "0"
-          # The format of the output record. See the Conduit documentation for a
-          # full list of supported formats
-          # (https://conduit.io/docs/using/connectors/configuration-parameters/output-format).
-          # Type: string
-          sdk.record.format: "opencdc/json"
-          # Options to configure the chosen output record format. Options are
-          # normally key=value pairs separated with comma (e.g.
-          # opt1=val2,opt2=val2), except for the `template` record format, where
-          # options are a Go template.
-          # Type: string
-          sdk.record.format.options: ""
-          # Whether to extract and decode the record key with a schema.
-          # Type: bool
-          sdk.schema.extract.key.enabled: "true"
-          # Whether to extract and decode the record payload with a schema.
-          # Type: bool
-          sdk.schema.extract.payload.enabled: "true"
-          # Table is used as the target table into which records are inserted.
-          # Type: string
-          table: "{{ index .Metadata "opencdc.collection" }}"
-```
-<!-- /readmegen:destination.parameters.yaml -->
+<!-- readmegen:destination.parameters.table -->
+<table class="no-margin-table">
+  <tr>
+    <th>Name</th>
+    <th>Type</th>
+    <th>Required</th>
+    <th>Default</th>
+    <th>Description</th>
+  </tr>
+  <tr>
+<td>
+
+`url`
+
+</td>
+<td>
+
+string
+
+</td>
+<td>
+
+✅
+
+</td>
+<td>
+
+``
+
+</td>
+<td>
+
+URL is the connection string for the Postgres database.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`key`
+
+</td>
+<td>
+
+string
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+``
+
+</td>
+<td>
+
+Key represents the column name for the key used to identify and update existing rows.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`sdk.batch.delay`
+
+</td>
+<td>
+
+duration
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`0`
+
+</td>
+<td>
+
+Maximum delay before an incomplete batch is written to the destination.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`sdk.batch.size`
+
+</td>
+<td>
+
+int
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`0`
+
+</td>
+<td>
+
+Maximum size of batch before it gets written to the destination.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`sdk.rate.burst`
+
+</td>
+<td>
+
+int
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`0`
+
+</td>
+<td>
+
+Allow bursts of at most X records (0 or less means that bursts are not
+limited). Only takes effect if a rate limit per second is set. Note that
+if `sdk.batch.size` is bigger than `sdk.rate.burst`, the effective batch
+size will be equal to `sdk.rate.burst`.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`sdk.rate.perSecond`
+
+</td>
+<td>
+
+float
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`0`
+
+</td>
+<td>
+
+Maximum number of records written per second (0 means no rate limit).
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`sdk.record.format`
+
+</td>
+<td>
+
+string
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`opencdc/json`
+
+</td>
+<td>
+
+The format of the output record. See the Conduit documentation for a full
+list of supported formats (https://conduit.io/docs/using/connectors/configuration-parameters/output-format).
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`sdk.record.format.options`
+
+</td>
+<td>
+
+string
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+``
+
+</td>
+<td>
+
+Options to configure the chosen output record format. Options are normally
+key=value pairs separated with comma (e.g. opt1=val2,opt2=val2), except
+for the `template` record format, where options are a Go template.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`sdk.schema.extract.key.enabled`
+
+</td>
+<td>
+
+bool
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`true`
+
+</td>
+<td>
+
+Whether to extract and decode the record key with a schema.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`sdk.schema.extract.payload.enabled`
+
+</td>
+<td>
+
+bool
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`true`
+
+</td>
+<td>
+
+Whether to extract and decode the record payload with a schema.
+
+</td>
+  </tr>
+  <tr>
+<td>
+
+`table`
+
+</td>
+<td>
+
+string
+
+</td>
+<td>
+
+
+
+</td>
+<td>
+
+`{{ index .Metadata "opencdc.collection" }}`
+
+</td>
+<td>
+
+Table is used as the target table into which records are inserted.
+
+</td>
+  </tr>
+</table>
+<!-- /readmegen:destination.parameters.table -->
 
 ## Testing
 
