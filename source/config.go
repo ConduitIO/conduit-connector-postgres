@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/conduitio/conduit-commons/config"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
 )
@@ -54,9 +53,7 @@ type Config struct {
 
 	// Tables is a List of table names to read from, separated by a comma, e.g.:"table1,table2".
 	// Use "*" if you'd like to listen to all tables.
-	Tables []string `json:"tables"`
-	// Deprecated: use `tables` instead.
-	Table []string `json:"table"`
+	Tables []string `json:"tables" validate:"required"`
 
 	// SnapshotMode is whether the plugin will take a snapshot of the entire table before starting cdc mode.
 	SnapshotMode SnapshotMode `json:"snapshotMode" validate:"inclusion=initial|never" default:"initial"`
@@ -85,19 +82,9 @@ type Config struct {
 
 // Validate validates the provided config values.
 func (c *Config) Validate(ctx context.Context) error {
-	c.Init()
-
 	var errs []error
 	if _, err := pgx.ParseConfig(c.URL); err != nil {
 		errs = append(errs, fmt.Errorf("invalid url: %w", err))
-	}
-
-	if len(c.Tables) > 0 && len(c.Table) > 0 {
-		errs = append(errs, fmt.Errorf(`error validating "tables": cannot provide both "table" and "tables", use "tables" only`))
-	}
-
-	if len(c.Tables) == 0 {
-		errs = append(errs, fmt.Errorf(`error validating "tables": %w`, config.ErrRequiredParameterMissing))
 	}
 
 	err := c.DefaultSourceMiddleware.Validate(ctx)
@@ -106,12 +93,4 @@ func (c *Config) Validate(ctx context.Context) error {
 	}
 
 	return errors.Join(errs...)
-}
-
-// Init sets the desired value on Tables while Table is being deprecated.
-func (c *Config) Init() {
-	if len(c.Table) > 0 && len(c.Tables) == 0 {
-		c.Tables = c.Table
-		c.Table = nil
-	}
 }
