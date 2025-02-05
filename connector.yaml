@@ -137,6 +137,30 @@ specification:
         type: bool
         default: "true"
         validations: []
+      - name: snapshot.fetchSize
+        description: Snapshot fetcher size determines the number of rows to retrieve at a time.
+        type: int
+        default: "50000"
+        validations: []
+      - name: snapshotMode
+        description: SnapshotMode is whether the plugin will take a snapshot of the entire table before starting cdc mode.
+        type: string
+        default: initial
+        validations:
+          - type: inclusion
+            value: initial,never
+      - name: table
+        description: 'Deprecated: use `tables` instead.'
+        type: string
+        default: ""
+        validations: []
+      - name: tables
+        description: |-
+          Tables is a List of table names to read from, separated by a comma, e.g.:"table1,table2".
+          Use "*" if you'd like to listen to all tables.
+        type: string
+        default: ""
+        validations: []
       - name: sdk.batch.delay
         description: Maximum delay before an incomplete batch is read from the source.
         type: duration
@@ -199,30 +223,6 @@ specification:
         validations:
           - type: inclusion
             value: avro
-      - name: snapshot.fetchSize
-        description: Snapshot fetcher size determines the number of rows to retrieve at a time.
-        type: int
-        default: "50000"
-        validations: []
-      - name: snapshotMode
-        description: SnapshotMode is whether the plugin will take a snapshot of the entire table before starting cdc mode.
-        type: string
-        default: initial
-        validations:
-          - type: inclusion
-            value: initial,never
-      - name: table
-        description: 'Deprecated: use `tables` instead.'
-        type: string
-        default: ""
-        validations: []
-      - name: tables
-        description: |-
-          Tables is a List of table names to read from, separated by a comma, e.g.:"table1,table2".
-          Use "*" if you'd like to listen to all tables.
-        type: string
-        default: ""
-        validations: []
   destination:
     parameters:
       - name: url
@@ -236,6 +236,11 @@ specification:
         description: Key represents the column name for the key used to identify and update existing rows.
         type: string
         default: ""
+        validations: []
+      - name: table
+        description: Table is used as the target table into which records are inserted.
+        type: string
+        default: '{{ index .Metadata "opencdc.collection" }}'
         validations: []
       - name: sdk.batch.delay
         description: Maximum delay before an incomplete batch is written to the destination.
@@ -291,9 +296,4 @@ specification:
         description: Whether to extract and decode the record payload with a schema.
         type: bool
         default: "true"
-        validations: []
-      - name: table
-        description: Table is used as the target table into which records are inserted.
-        type: string
-        default: '{{ index .Metadata "opencdc.collection" }}'
         validations: []
