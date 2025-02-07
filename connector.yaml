@@ -95,6 +95,15 @@ specification:
   author: Meroxa, Inc.
   source:
     parameters:
+      - name: tables
+        description: |-
+          Tables is a List of table names to read from, separated by a comma, e.g.:"table1,table2".
+          Use "*" if you'd like to listen to all tables.
+        type: string
+        default: ""
+        validations:
+          - type: required
+            value: ""
       - name: url
         description: URL is the connection string for the Postgres database.
         type: string
@@ -149,18 +158,6 @@ specification:
         validations:
           - type: inclusion
             value: initial,never
-      - name: table
-        description: 'Deprecated: use `tables` instead.'
-        type: string
-        default: ""
-        validations: []
-      - name: tables
-        description: |-
-          Tables is a List of table names to read from, separated by a comma, e.g.:"table1,table2".
-          Use "*" if you'd like to listen to all tables.
-        type: string
-        default: ""
-        validations: []
       - name: sdk.batch.delay
         description: Maximum delay before an incomplete batch is read from the source.
         type: duration

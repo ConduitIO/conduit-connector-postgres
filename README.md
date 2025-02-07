@@ -106,6 +106,11 @@ pipelines:
       - id: example
         plugin: "postgres"
         settings:
+          # Tables is a List of table names to read from, separated by a comma,
+          # e.g.:"table1,table2". Use "*" if you'd like to listen to all tables.
+          # Type: string
+          # Required: yes
+          tables: ""
           # URL is the connection string for the Postgres database.
           # Type: string
           # Required: yes
@@ -146,15 +151,6 @@ pipelines:
           # Type: string
           # Required: no
           snapshotMode: "initial"
-          # Deprecated: use `tables` instead.
-          # Type: string
-          # Required: no
-          table: ""
-          # Tables is a List of table names to read from, separated by a comma,
-          # e.g.:"table1,table2". Use "*" if you'd like to listen to all tables.
-          # Type: string
-          # Required: no
-          tables: ""
           # Maximum delay before an incomplete batch is read from the source.
           # Type: duration
           # Required: no
