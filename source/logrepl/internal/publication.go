@@ -36,7 +36,12 @@ func CreatePublication(ctx context.Context, conn *pgxpool.Pool, name string, opt
 		return fmt.Errorf("publication %q requires at least one table", name)
 	}
 
-	forTableString := fmt.Sprintf("FOR TABLE %s", strings.Join(opts.Tables, ", "))
+	quotedTables := make([]string, 0, len(opts.Tables))
+	for _, t := range opts.Tables {
+		quotedTables = append(quotedTables, `"`+t+`"`)
+	}
+
+	forTableString := fmt.Sprintf("FOR TABLE %s", strings.Join(quotedTables, ", "))
 
 	var publicationParams string
 	if len(opts.PublicationParams) > 0 {
