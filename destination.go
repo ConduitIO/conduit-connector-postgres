@@ -184,8 +184,8 @@ func (d *Destination) remove(ctx context.Context, r opencdc.Record, b *pgx.Batch
 		Any("key", map[string]interface{}{keyColumnName: key[keyColumnName]}).
 		Msg("deleting record")
 	query, args, err := d.stmtBuilder.
-		Delete(tableName).
-		Where(sq.Eq{keyColumnName: key[keyColumnName]}).
+		Delete(`"` + tableName + `"`).
+		Where(sq.Eq{`"` + keyColumnName + `"`: key[keyColumnName]}).
 		ToSql()
 	if err != nil {
 		return fmt.Errorf("error formatting delete query: %w", err)
@@ -219,7 +219,7 @@ func (d *Destination) insert(ctx context.Context, r opencdc.Record, b *pgx.Batch
 		Str("table_name", tableName).
 		Msg("inserting record")
 	query, args, err := d.stmtBuilder.
-		Insert(tableName).
+		Insert(`"` + tableName + `"`).
 		Columns(colArgs...).
 		Values(valArgs...).
 		ToSql()
@@ -277,12 +277,12 @@ func (d *Destination) formatUpsertQuery(
 	keyColumnName string,
 	tableName string,
 ) (string, []interface{}, error) {
-	upsertQuery := fmt.Sprintf("ON CONFLICT (%s) DO UPDATE SET", keyColumnName)
+	upsertQuery := fmt.Sprintf("ON CONFLICT (%q) DO UPDATE SET", keyColumnName)
 	for column := range payload {
 		// tuples form a comma separated list, so they need a comma at the end.
 		// `EXCLUDED` references the new record's values. This will overwrite
 		// every column's value except for the key column.
-		tuple := fmt.Sprintf("%s=EXCLUDED.%s,", column, column)
+		tuple := fmt.Sprintf("%q=EXCLUDED.%q,", column, column)
 		// TODO: Consider removing this space.
 		upsertQuery += " "
 		// add the tuple to the query string
@@ -298,7 +298,7 @@ func (d *Destination) formatUpsertQuery(
 	colArgs, valArgs := d.formatColumnsAndValues(key, payload)
 
 	return d.stmtBuilder.
-		Insert(tableName).
+		Insert(`"` + tableName + `"`).
 		Columns(colArgs...).
 		Values(valArgs...).
 		SuffixExpr(sq.Expr(upsertQuery)).
@@ -314,13 +314,13 @@ func (d *Destination) formatColumnsAndValues(key, payload opencdc.StructuredData
 	// range over both the key and payload values in order to format the
 	// query for args and values in proper order
 	for key, val := range key {
-		colArgs = append(colArgs, key)
+		colArgs = append(colArgs, `"`+key+`"`)
 		valArgs = append(valArgs, val)
 		delete(payload, key) // NB: Delete Key from payload arguments
 	}
 
 	for field, value := range payload {
-		colArgs = append(colArgs, field)
+		colArgs = append(colArgs, `"`+field+`"`)
 		valArgs = append(valArgs, value)
 	}
 
