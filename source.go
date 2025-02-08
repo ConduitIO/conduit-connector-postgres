@@ -208,7 +208,7 @@ func (s *Source) getPrimaryKey(ctx context.Context, tableName string) (string, e
 			JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
 			WHERE  i.indrelid = $1::regclass AND i.indisprimary`
 
-	rows, err := s.pool.Query(ctx, query, tableName)
+	rows, err := s.pool.Query(ctx, query, `"`+tableName+`"`)
 	if err != nil {
 		return "", fmt.Errorf("failed to query table keys: %w", err)
 	}
