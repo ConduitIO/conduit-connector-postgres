@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -254,7 +255,8 @@ func CreatePublication(t *testing.T, conn Querier, pubName string, tables []stri
 
 	quotedTables := make([]string, 0, len(tables))
 	for _, t := range tables {
-		quotedTables = append(quotedTables, `"`+t+`"`)
+		// don't use internal.WrapSQLIdent to prevent import cycle
+		quotedTables = append(quotedTables, strconv.Quote(t))
 	}
 
 	_, err := conn.Exec(
