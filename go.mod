@@ -11,7 +11,7 @@ require (
 	github.com/golangci/golangci-lint v1.63.4
 	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0
-	github.com/hamba/avro/v2 v2.27.0
+	github.com/hamba/avro/v2 v2.28.0
 	github.com/jackc/pgerrcode v0.0.0-20240316143900-6e2875d9b438
 	github.com/jackc/pglogrepl v0.0.0-20240307033717-828fbfe908e9
 	github.com/jackc/pgx/v5 v5.7.2
