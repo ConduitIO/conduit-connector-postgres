@@ -24,6 +24,7 @@ import (
 	"github.com/conduitio/conduit-commons/csync"
 	"github.com/conduitio/conduit-commons/lang"
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/conduitio/conduit-connector-postgres/source"
 	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
@@ -208,7 +209,7 @@ func (s *Source) getPrimaryKey(ctx context.Context, tableName string) (string, e
 			JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
 			WHERE  i.indrelid = $1::regclass AND i.indisprimary`
 
-	rows, err := s.pool.Query(ctx, query, tableName)
+	rows, err := s.pool.Query(ctx, query, internal.WrapSQLIdent(tableName))
 	if err != nil {
 		return "", fmt.Errorf("failed to query table keys: %w", err)
 	}

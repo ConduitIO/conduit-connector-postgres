@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,7 @@ const TestTableAvroSchemaV1 = `{
     "name": "%s",
     "fields":
     [
+	{"name":"UppercaseColumn1","type":"int"},
         {"name":"column1","type":"string"},
         {"name":"column2","type":"int"},
         {"name":"column3","type":"boolean"},
@@ -80,6 +82,7 @@ const TestTableAvroSchemaV2 = `{
     "name": "%s",
     "fields":
     [
+	{"name":"UppercaseColumn1","type":"int"},
         {"name":"column1","type":"string"},
         {"name":"column101","type":{"type":"long","logicalType":"local-timestamp-micros"}},
         {"name":"column2","type":"int"},
@@ -116,6 +119,7 @@ const TestTableAvroSchemaV3 = `{
     "name": "%s",
     "fields":
     [
+	{"name":"UppercaseColumn1","type":"int"},
         {"name":"column1","type":"string"},
         {"name":"column101","type":{"type":"long","logicalType":"local-timestamp-micros"}},
         {"name":"column2","type":"int"},
@@ -139,7 +143,7 @@ const TestTableKeyAvroSchema = `{
 
 // When updating this table, TestTableAvroSchemaV1 needs to be updated too.
 const testTableCreateQuery = `
-		CREATE TABLE %s (
+		CREATE TABLE %q (
 		id bigserial PRIMARY KEY,
 		key bytea,
 		column1 varchar(256),
@@ -148,7 +152,8 @@ const testTableCreateQuery = `
 		column4 numeric(16,3),
 		column5 numeric(5),
 		column6 jsonb,
-		column7 json
+		column7 json,
+		"UppercaseColumn1" integer
 	)`
 
 type Querier interface {
@@ -182,39 +187,45 @@ func ConnectSimple(ctx context.Context, t *testing.T, connString string) *pgx.Co
 
 // SetupTestTable creates a new table and returns its name.
 func SetupEmptyTestTable(ctx context.Context, t *testing.T, conn Querier) string {
-	is := is.New(t)
-
 	table := RandomIdentifier(t)
+	SetupEmptyTestTableWithName(ctx, t, conn, table)
+	return table
+}
+
+func SetupEmptyTestTableWithName(ctx context.Context, t *testing.T, conn Querier, table string) {
+	is := is.New(t)
 
 	query := fmt.Sprintf(testTableCreateQuery, table)
 	_, err := conn.Exec(ctx, query)
 	is.NoErr(err)
 
 	t.Cleanup(func() {
-		query := `DROP TABLE %s`
+		query := `DROP TABLE %q`
 		query = fmt.Sprintf(query, table)
 		_, err := conn.Exec(context.Background(), query)
 		is.NoErr(err)
 	})
+}
 
-	return table
+func SetupTestTableWithName(ctx context.Context, t *testing.T, conn Querier, table string) {
+	is := is.New(t)
+	SetupEmptyTestTableWithName(ctx, t, conn, table)
+
+	query := `
+		INSERT INTO %q (key, column1, column2, column3, column4, column5, column6, column7, "UppercaseColumn1")
+		VALUES ('1', 'foo', 123, false, 12.2, 4, '{"foo": "bar"}', '{"foo": "baz"}', 1),
+		('2', 'bar', 456, true, 13.42, 8, '{"foo": "bar"}', '{"foo": "baz"}', 2),
+		('3', 'baz', 789, false, null, 9, '{"foo": "bar"}', '{"foo": "baz"}', 3),
+		('4', null, null, null, 91.1, null, null, null, null)`
+	query = fmt.Sprintf(query, table)
+	_, err := conn.Exec(ctx, query)
+	is.NoErr(err)
 }
 
 // SetupTestTable creates a new table and returns its name.
 func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
-	is := is.New(t)
-	table := SetupEmptyTestTable(ctx, t, conn)
-
-	query := `
-		INSERT INTO %s (key, column1, column2, column3, column4, column5, column6, column7)
-		VALUES ('1', 'foo', 123, false, 12.2, 4, '{"foo": "bar"}', '{"foo": "baz"}'),
-		('2', 'bar', 456, true, 13.42, 8, '{"foo": "bar"}', '{"foo": "baz"}'),
-		('3', 'baz', 789, false, null, 9, '{"foo": "bar"}', '{"foo": "baz"}'),
-		('4', null, null, null, 91.1, null, null, null)`
-	query = fmt.Sprintf(query, table)
-	_, err := conn.Exec(ctx, query)
-	is.NoErr(err)
-
+	table := RandomIdentifier(t)
+	SetupTestTableWithName(ctx, t, conn, table)
 	return table
 }
 
@@ -242,14 +253,20 @@ func CreateReplicationSlot(t *testing.T, conn Querier, slotName string) {
 func CreatePublication(t *testing.T, conn Querier, pubName string, tables []string) {
 	is := is.New(t)
 
+	quotedTables := make([]string, 0, len(tables))
+	for _, t := range tables {
+		// don't use internal.WrapSQLIdent to prevent import cycle
+		quotedTables = append(quotedTables, strconv.Quote(t))
+	}
+
 	_, err := conn.Exec(
 		context.Background(),
-		"CREATE PUBLICATION "+pubName+" FOR TABLE "+strings.Join(tables, ","),
+		fmt.Sprintf("CREATE PUBLICATION %s FOR TABLE %s", pubName, strings.Join(quotedTables, ",")),
 	)
 	is.NoErr(err)
 
 	t.Cleanup(func() {
-		_, err := conn.Exec(context.Background(), "DROP PUBLICATION IF EXISTS "+pubName)
+		_, err := conn.Exec(context.Background(), fmt.Sprintf("DROP PUBLICATION IF EXISTS %q", pubName))
 		is.NoErr(err)
 	})
 }

@@ -16,6 +16,7 @@ package postgres
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
@@ -28,7 +29,12 @@ func TestSource_Open(t *testing.T) {
 	is := is.New(t)
 	ctx := test.Context(t)
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-	tableName := test.SetupTestTable(ctx, t, conn)
+
+	// Be sure primary key discovering works correctly on
+	// table names with capital letters
+	tableName := strings.ToUpper(test.RandomIdentifier(t))
+	test.SetupTestTableWithName(ctx, t, conn, tableName)
+
 	slotName := "conduitslot1"
 	publicationName := "conduitpub1"
 
