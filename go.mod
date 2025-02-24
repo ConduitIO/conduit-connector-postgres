@@ -9,7 +9,7 @@ require (
 	github.com/conduitio/conduit-connector-sdk v0.13.1
 	github.com/daixiang0/gci v0.13.5
 	github.com/golangci/golangci-lint v1.64.5
-	github.com/google/go-cmp v0.6.0
+	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/hamba/avro/v2 v2.28.0
 	github.com/jackc/pgerrcode v0.0.0-20240316143900-6e2875d9b438
