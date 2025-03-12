@@ -82,10 +82,10 @@ github.com/ckaznocha/intrange v0.3.0 h1:VqnxtK32pxgkhJgYQEeOArVidIPg+ahLP7WBOXZd
 github.com/ckaznocha/intrange v0.3.0/go.mod h1:+I/o2d2A1FBHgGELbGxzIcyd3/9l9DuwjM8FsbSS3Lo=
 github.com/conduitio/conduit-commons v0.5.1 h1:o6Lh3LhBuorDfVVlWyj3tYoYbBUUPTMiJE2zefiBuSo=
 github.com/conduitio/conduit-commons v0.5.1/go.mod h1:FmJI9zOxX+HDiqculivPmekaUASZdubOJnI8sOOLAXk=
-github.com/conduitio/conduit-connector-protocol v0.9.0 h1:7MailxYxAsr376Nz8WStVYSXnlf86bjtzpA/d/66if0=
-github.com/conduitio/conduit-connector-protocol v0.9.0/go.mod h1:lF7RUjr9ZMj1rtNubaryHw4mPfjj4DGYDW+wvvRwBkM=
-github.com/conduitio/conduit-connector-sdk v0.13.1 h1:Fw5KHm8Y7LdtLibeLW+dYA9IAHx/1GuWx8VLZcBkvg0=
-github.com/conduitio/conduit-connector-sdk v0.13.1/go.mod h1:rduMJDB541+dolgZdCkPPaJk2CHPaTe1FUnV1YvwTl0=
+github.com/conduitio/conduit-connector-protocol v0.9.1 h1:NhazVIoJOOuX+9xAiL3WZ0r3T6UAMwLkPD8h6lWMND4=
+github.com/conduitio/conduit-connector-protocol v0.9.1/go.mod h1:S3Rar9si3GJUolwtFhO2CL3DpuWmJxzce4W+Psi/8zQ=
+github.com/conduitio/conduit-connector-sdk v0.13.2 h1:6bs98jNawrm5bM2FcyVzCJA6s6VZxsxf5O9FKJ9ivDo=
+github.com/conduitio/conduit-connector-sdk v0.13.2/go.mod h1:2DAkGawNJ2wFLkrzylwy43JJkRdGQ4loGVvZfZWnnx0=
 github.com/conduitio/evolviconf v0.1.0 h1:rcG+hs6tlrYlX9qomOQJz+K+OnDhbMbioGx3ci55yo0=
 github.com/conduitio/evolviconf v0.1.0/go.mod h1:RnbnSqDDYarKgG2p+krP71svG6qLms3+/TnKrPKWk+0=
 github.com/conduitio/evolviconf/evolviyaml v0.1.0 h1:nMW7CROIMtHhscm/QLMpMs7uCPp6O2dS4CfU9bhugd4=
@@ -214,8 +214,8 @@ github.com/hashicorp/go-hclog v1.6.3 h1:Qr2kF+eVWjTiYmU7Y31tYlP1h0q/X3Nl3tPGdaB1
 github.com/hashicorp/go-hclog v1.6.3/go.mod h1:W4Qnvbt70Wk/zYJryRzDRU/4r0kIg0PVHBcfoyhpF5M=
 github.com/hashicorp/go-immutable-radix/v2 v2.1.0 h1:CUW5RYIcysz+D3B+l1mDeXrQ7fUvGGCwJfdASSzbrfo=
 github.com/hashicorp/go-immutable-radix/v2 v2.1.0/go.mod h1:hgdqLXA4f6NIjRVisM1TJ9aOJVNRqKZj+xDGF6m7PBw=
-github.com/hashicorp/go-plugin v1.6.2 h1:zdGAEd0V1lCaU0u+MxWQhtSDQmahpkwOun8U8EiRVog=
-github.com/hashicorp/go-plugin v1.6.2/go.mod h1:CkgLQ5CZqNmdL9U9JzM532t8ZiYQ35+pj3b1FD37R0Q=
+github.com/hashicorp/go-plugin v1.6.3 h1:xgHB+ZUSYeuJi96WtxEjzi23uh7YQpznjGh0U0UUrwg=
+github.com/hashicorp/go-plugin v1.6.3/go.mod h1:MRobyh+Wc/nYy1V4KAXUiYfzxoYhs7V1mlH1Z7iY2h0=
 github.com/hashicorp/go-uuid v1.0.3 h1:2gKiV6YVmrJ1i2CKKa9obLvRieoRGviZFL26PcT/Co8=
 github.com/hashicorp/go-uuid v1.0.3/go.mod h1:6SBZvOh/SIDV7/2o3Jml5SYk/TvGqwFJ/bN7x4byOro=
 github.com/hashicorp/go-version v1.2.1/go.mod h1:fltr4n8CU8Ke44wwGCBoEymUuxUHl09ZGVZPK5anwXA=
@@ -554,8 +554,8 @@ golang.org/x/crypto v0.13.0/go.mod h1:y6Z2r+Rw4iayiXXAIxJIDAJ1zMW4yaTpebo8fPOliY
 golang.org/x/crypto v0.14.0/go.mod h1:MVFd36DqK4CsrnJYDkBA3VC4m2GkXAM0PvzMCn4JQf4=
 golang.org/x/crypto v0.36.0 h1:AnAEvhDddvBdpY+uR+MyHmuZzzNqXSe/GvuDeob5L34=
 golang.org/x/crypto v0.36.0/go.mod h1:Y4J0ReaxCR1IMaabaSMugxJES1EpwhBHhv2bDHklZvc=
-golang.org/x/exp v0.0.0-20241217172543-b2144cdd0a67 h1:1UoZQm6f0P/ZO0w1Ri+f+ifG/gXhegadRdwBIXEFWDo=
-golang.org/x/exp v0.0.0-20241217172543-b2144cdd0a67/go.mod h1:qj5a5QZpwLU2NLQudwIN5koi3beDhSAlJwa67PuM98c=
+golang.org/x/exp v0.0.0-20250106191152-7588d65b2ba8 h1:yqrTHse8TCMW1M1ZCP+VAR/l0kKxwaAIqN/il7x4voA=
+golang.org/x/exp v0.0.0-20250106191152-7588d65b2ba8/go.mod h1:tujkw807nyEEAamNbDrEGzRav+ilXA7PCRAd6xsmwiU=
 golang.org/x/exp/typeparams v0.0.0-20220428152302-39d4317da171/go.mod h1:AbB0pIl9nAr9wVwH+Z2ZpaocVmF5I4GyWCDIsVjR0bk=
 golang.org/x/exp/typeparams v0.0.0-20230203172020-98cc5a0785f9/go.mod h1:AbB0pIl9nAr9wVwH+Z2ZpaocVmF5I4GyWCDIsVjR0bk=
 golang.org/x/exp/typeparams v0.0.0-20250210185358-939b2ce775ac h1:TSSpLIG4v+p0rPv1pNOQtl1I8knsO4S9trOxNMOLVP4=
