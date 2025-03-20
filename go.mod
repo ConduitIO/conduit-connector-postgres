@@ -5,7 +5,7 @@ go 1.23.2
 require (
 	github.com/Masterminds/sprig/v3 v3.3.0
 	github.com/Masterminds/squirrel v1.5.4
-	github.com/conduitio/conduit-commons v0.5.1
+	github.com/conduitio/conduit-commons v0.5.2
 	github.com/conduitio/conduit-connector-sdk v0.13.2
 	github.com/daixiang0/gci v0.13.5
 	github.com/golangci/golangci-lint v1.64.8
@@ -218,13 +218,14 @@ require (
 	gitlab.com/bosi/decorder v0.4.2 // indirect
 	go-simpler.org/musttag v0.13.0 // indirect
 	go-simpler.org/sloglint v0.9.0 // indirect
+	go.opentelemetry.io/otel/sdk v1.33.0 // indirect
 	go.uber.org/automaxprocs v1.6.0 // indirect
 	go.uber.org/goleak v1.3.0 // indirect
 	go.uber.org/mock v0.5.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/crypto v0.36.0 // indirect
-	golang.org/x/exp v0.0.0-20250106191152-7588d65b2ba8 // indirect
+	golang.org/x/exp v0.0.0-20250228200357-dead58393ab7 // indirect
 	golang.org/x/exp/typeparams v0.0.0-20250210185358-939b2ce775ac // indirect
 	golang.org/x/mod v0.24.0 // indirect
 	golang.org/x/net v0.37.0 // indirect
