@@ -16,7 +16,7 @@ require (
 	github.com/jackc/pglogrepl v0.0.0-20240307033717-828fbfe908e9
 	github.com/jackc/pgx/v5 v5.7.3
 	github.com/matryer/is v1.4.1
-	github.com/rs/zerolog v1.33.0
+	github.com/rs/zerolog v1.34.0
 	golang.org/x/tools v0.31.0
 	gopkg.in/tomb.v2 v2.0.0-20161208151619-d5d1b5820637
 	mvdan.cc/gofumpt v0.7.0
