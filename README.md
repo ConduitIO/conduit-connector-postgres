@@ -55,7 +55,7 @@ pipelines:
           tables: "users"
           cdcMode: "logrepl"
           logrepl.publicationName: "examplepub"
-          logrepl.slotName": "exampleslot"
+          logrepl.slotName: "exampleslot"
       - id: log
         type: destination
         plugin: builtin:log
