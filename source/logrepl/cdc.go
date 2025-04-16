@@ -64,7 +64,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 			Msgf("Publication %q already exists.", c.PublicationName)
 	}
 
-	records := make(chan opencdc.Record, 32)
+	records := make(chan opencdc.Record, 10000)
 	handler := NewCDCHandler(internal.NewRelationSet(), c.TableKeys, records, c.WithAvroSchema)
 
 	sub, err := internal.CreateSubscription(
