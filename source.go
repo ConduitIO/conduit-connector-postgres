@@ -123,6 +123,25 @@ func (s *Source) Read(ctx context.Context) (opencdc.Record, error) {
 	return s.iterator.Next(ctx)
 }
 
+func (s *Source) ReadN(ctx context.Context, n int) ([]opencdc.Record, error) {
+	if n <= 0 {
+		return []opencdc.Record{}, nil
+	}
+
+	records := make([]opencdc.Record, 0, n)
+	count := 0
+
+	for count < n {
+		record, err := s.Read(ctx)
+		if err != nil {
+			return records, err
+		}
+		records = append(records, record)
+		count++
+	}
+	return records, nil
+}
+
 func (s *Source) Ack(ctx context.Context, pos opencdc.Position) error {
 	return s.iterator.Ack(ctx, pos)
 }
