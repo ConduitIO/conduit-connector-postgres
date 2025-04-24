@@ -100,6 +100,54 @@ func (i *Iterator) Next(ctx context.Context) (opencdc.Record, error) {
 	}
 }
 
+// NextN takes and returns up to n records from the queue. NextN is allowed to
+// block until either at least one record is available or the context gets canceled.
+func (i *Iterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
+	if n <= 0 {
+		return nil, fmt.Errorf("n must be greater than 0, got %d", n)
+	}
+
+	var records []opencdc.Record
+
+	// Get first record (blocking)
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("iterator stopped: %w", ctx.Err())
+	case d, ok := <-i.data:
+		if !ok { // closed
+			if err := i.t.Err(); err != nil {
+				return nil, fmt.Errorf("fetchers exited unexpectedly: %w", err)
+			}
+			if err := i.acks.Wait(ctx); err != nil {
+				return nil, fmt.Errorf("failed to wait for acks: %w", err)
+			}
+			return nil, ErrIteratorDone
+		}
+
+		i.acks.Add(1)
+		records = append(records, i.buildRecord(d))
+	}
+
+	// Try to get remaining records non-blocking
+	for len(records) < n {
+		select {
+		case <-ctx.Done():
+			return records, ctx.Err()
+		case d, ok := <-i.data:
+			if !ok { // closed
+				return records, nil
+			}
+			i.acks.Add(1)
+			records = append(records, i.buildRecord(d))
+		default:
+			// No more records currently available
+			return records, nil
+		}
+	}
+
+	return records, nil
+}
+
 func (i *Iterator) Ack(_ context.Context, _ opencdc.Position) error {
 	i.acks.Done()
 	return nil

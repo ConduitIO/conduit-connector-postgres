@@ -26,6 +26,9 @@ type Iterator interface {
 	// Next takes and returns the next record from the queue. Next is allowed to
 	// block until either a record is available or the context gets canceled.
 	Next(context.Context) (opencdc.Record, error)
+	// NextN takes and returns up to n records from the queue. NextN is allowed to
+	// block until either at least one record is available or the context gets canceled.
+	NextN(context.Context, int) ([]opencdc.Record, error)
 	// Ack signals that a record at a specific position was successfully
 	// processed.
 	Ack(context.Context, opencdc.Position) error
