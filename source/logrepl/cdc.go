@@ -113,11 +113,27 @@ func (i *CDCIterator) StartSubscriber(ctx context.Context) error {
 	return nil
 }
 
-// ReadN returns up to n records retrieved from the subscription. This call will
-// block until either at least one record is returned from the subscription, the
-// subscription stops because of an error, or the context gets canceled.
+// Next returns the next record retrieved from the subscription. This call will
+// block until either a record is returned from the subscription, the
+// subscription stops because of an error or the context gets canceled.
 // Returns error when the subscription has not been started.
-func (i *CDCIterator) ReadN(ctx context.Context, n int) ([]opencdc.Record, error) {
+func (i *CDCIterator) Next(ctx context.Context) (opencdc.Record, error) {
+	records, err := i.NextN(ctx, 1)
+	if err != nil {
+		return opencdc.Record{}, err
+	}
+
+	if len(records) == 0 {
+		// This shouldn't happen as ReadN should either return at least one record or an error
+		return opencdc.Record{}, fmt.Errorf("no records returned but no error reported (this smells like a bug)")
+	}
+
+	return records[0], nil
+}
+
+// NextN takes and returns up to n records from the queue. NextN is allowed to
+// block until either at least one record is available or the context gets canceled.
+func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
 	if !i.subscriberReady() {
 		return nil, errors.New("logical replication has not been started")
 	}
@@ -172,30 +188,6 @@ func (i *CDCIterator) ReadN(ctx context.Context, n int) ([]opencdc.Record, error
 	}
 
 	return recs, nil
-}
-
-// Next returns the next record retrieved from the subscription. This call will
-// block until either a record is returned from the subscription, the
-// subscription stops because of an error or the context gets canceled.
-// Returns error when the subscription has not been started.
-func (i *CDCIterator) Next(ctx context.Context) (opencdc.Record, error) {
-	records, err := i.ReadN(ctx, 1)
-	if err != nil {
-		return opencdc.Record{}, err
-	}
-
-	if len(records) == 0 {
-		// This shouldn't happen as ReadN should either return at least one record or an error
-		return opencdc.Record{}, fmt.Errorf("no records returned but no error reported (this smells like a bug)")
-	}
-
-	return records[0], nil
-}
-
-// NextN takes and returns up to n records from the queue. NextN is allowed to
-// block until either at least one record is available or the context gets canceled.
-func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
-	return i.ReadN(ctx, n)
 }
 
 // Ack forwards the acknowledgment to the subscription.
