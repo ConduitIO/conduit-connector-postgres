@@ -520,9 +520,10 @@ func TestCDCIterator_NextN(t *testing.T) {
 			is.Equal(r.Operation, opencdc.OperationCreate)
 			is.Equal(r.Key.(opencdc.StructuredData)["id"], int64(j+11))
 			change := r.Payload
-			payload := change.After.(opencdc.StructuredData)
-			is.Equal(payload["column1"], fmt.Sprintf("test-%d", j+1))
-			is.Equal(payload["column2"], int32((j+1)*100))
+			data := change.After.(opencdc.StructuredData)
+			is.Equal(data["column1"], fmt.Sprintf("test-%d", j+1))
+			//nolint:gosec // no risk to overflow
+			is.Equal(data["column2"], (int32(j)+1)*100)
 		}
 	})
 
@@ -549,8 +550,10 @@ func TestCDCIterator_NextN(t *testing.T) {
 			is.Equal(r.Operation, opencdc.OperationCreate)
 			is.Equal(r.Key.(opencdc.StructuredData)["id"], int64(j+21))
 			change := r.Payload
-			payload := change.After.(opencdc.StructuredData)
-			is.Equal(payload["column1"], fmt.Sprintf("test-%d", j+1))
+			data := change.After.(opencdc.StructuredData)
+			is.Equal(data["column1"], fmt.Sprintf("test-%d", j+1))
+			//nolint:gosec // no risk to overflow
+			is.Equal(data["column2"], (int32(j)+1)*100)
 		}
 	})
 
