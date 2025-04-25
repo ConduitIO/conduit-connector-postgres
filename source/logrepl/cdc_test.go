@@ -485,6 +485,129 @@ func TestCDCIterator_Ack(t *testing.T) {
 		})
 	}
 }
+func TestCDCIterator_NextN(t *testing.T) {
+	ctx := test.Context(t)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupTestTable(ctx, t, pool)
+
+	t.Run("retrieve exact N records", func(t *testing.T) {
+		is := is.New(t)
+		i := testCDCIterator(ctx, t, pool, table, true)
+		<-i.sub.Ready()
+
+		for j := 1; j <= 3; j++ {
+			_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5)
+				VALUES (%d, 'test-%d', %d, false, 12.3, 14)`, table, j+10, j, j*100))
+			is.NoErr(err)
+		}
+
+		var allRecords []opencdc.Record
+
+		// Collect records until we have all 3
+		for len(allRecords) < 3 {
+			attemptCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			records, err := i.NextN(attemptCtx, 3-len(allRecords))
+			cancel()
+			is.NoErr(err)
+			// Only proceed if we got at least one record
+			is.True(len(records) > 0)
+			allRecords = append(allRecords, records...)
+		}
+
+		is.Equal(len(allRecords), 3)
+
+		for j, r := range allRecords {
+			is.Equal(r.Operation, opencdc.OperationCreate)
+			is.Equal(r.Key.(opencdc.StructuredData)["id"], int64(j+11))
+			change := r.Payload
+			payload := change.After.(opencdc.StructuredData)
+			is.Equal(payload["column1"], fmt.Sprintf("test-%d", j+1))
+			is.Equal(payload["column2"], int32((j+1)*100))
+		}
+	})
+
+	t.Run("retrieve fewer records than requested", func(t *testing.T) {
+		is := is.New(t)
+		i := testCDCIterator(ctx, t, pool, table, true)
+		<-i.sub.Ready()
+
+		for j := 1; j <= 2; j++ {
+			_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5)
+				VALUES (%d, 'test-%d', %d, false, 12.3, 14)`, table, j+20, j, j*100))
+			is.NoErr(err)
+		}
+
+		// This requests more than available
+		records, err := i.NextN(ctx, 5)
+		is.NoErr(err)
+
+		// Verify we got fewer records than requested
+		// and that they are in order
+		is.True(len(records) > 0 && len(records) <= 2)
+
+		for j, r := range records {
+			is.Equal(r.Operation, opencdc.OperationCreate)
+			is.Equal(r.Key.(opencdc.StructuredData)["id"], int64(j+21))
+			change := r.Payload
+			payload := change.After.(opencdc.StructuredData)
+			is.Equal(payload["column1"], fmt.Sprintf("test-%d", j+1))
+		}
+	})
+
+	t.Run("context cancellation", func(t *testing.T) {
+		is := is.New(t)
+		i := testCDCIterator(ctx, t, pool, table, true)
+		<-i.sub.Ready()
+
+		ctxTimeout, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+		defer cancel()
+
+		_, err := i.NextN(ctxTimeout, 5)
+		is.True(errors.Is(err, context.DeadlineExceeded))
+	})
+
+	t.Run("subscriber not started", func(t *testing.T) {
+		is := is.New(t)
+		i := testCDCIterator(ctx, t, pool, table, false)
+
+		_, err := i.NextN(ctx, 5)
+		is.Equal(err.Error(), "logical replication has not been started")
+	})
+
+	t.Run("invalid N values", func(t *testing.T) {
+		is := is.New(t)
+		i := testCDCIterator(ctx, t, pool, table, true)
+		<-i.sub.Ready()
+
+		_, err := i.NextN(ctx, 0)
+		is.True(strings.Contains(err.Error(), "n must be greater than 0"))
+
+		_, err = i.NextN(ctx, -1)
+		is.True(strings.Contains(err.Error(), "n must be greater than 0"))
+	})
+
+	t.Run("subscription termination", func(t *testing.T) {
+		is := is.New(t)
+		i := testCDCIterator(ctx, t, pool, table, true)
+		<-i.sub.Ready()
+
+		_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5)
+			VALUES (30, 'test-1', 100, false, 12.3, 14)`, table))
+		is.NoErr(err)
+
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			is.NoErr(i.Teardown(ctx))
+		}()
+
+		records, err := i.NextN(ctx, 5)
+		if err != nil {
+			is.True(strings.Contains(err.Error(), "logical replication error"))
+		} else {
+			is.True(len(records) > 0)
+		}
+	})
+}
 
 func testCDCIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string, start bool) *CDCIterator {
 	is := is.New(t)
