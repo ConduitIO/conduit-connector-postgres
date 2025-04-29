@@ -113,7 +113,7 @@ func NewCombinedIterator(ctx context.Context, pool *pgxpool.Pool, conf Config) (
 }
 
 // Next provides the next available record from the snapshot or CDC stream.
-// If the end of the snapshot is reached, next will switch to the CDC iterator and retrive
+// If the end of the snapshot is reached, next will switch to the CDC iterator and retrieve
 // the next available record. Failure to switch the iterator will return an error.
 func (c *CombinedIterator) Next(ctx context.Context) (opencdc.Record, error) {
 	r, err := c.activeIterator.Next(ctx)
