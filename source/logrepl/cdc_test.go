@@ -509,13 +509,19 @@ func TestCDCIterator_NextN(t *testing.T) {
 			is.NoErr(err)
 		}
 
-		// This requests more than available
-		records, err := i.NextN(ctx, 5)
-		is.NoErr(err)
+		// Will keep calling NextN until all records are received
+		var records []opencdc.Record
+		for len(records) < 2 {
+			recordsTmp, err := i.NextN(ctx, 5)
+			is.NoErr(err)
+			records = append(records, recordsTmp...)
+		}
 
-		// Verify we got fewer records than requested
-		// and that they are in order
-		is.True(len(records) > 0 && len(records) <= 2)
+		// nothing elese to fetch
+		ctxWithTimeout, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		defer cancel()
+		_, err := i.NextN(ctxWithTimeout, 5)
+		is.True(errors.Is(err, context.DeadlineExceeded))
 
 		for j, r := range records {
 			is.Equal(r.Operation, opencdc.OperationCreate)
