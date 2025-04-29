@@ -49,7 +49,7 @@ type Iterator struct {
 
 	lastPosition position.Position
 
-	data chan FetchData
+	data chan []FetchData
 }
 
 func NewIterator(ctx context.Context, db *pgxpool.Pool, c Config) (*Iterator, error) {
@@ -67,7 +67,7 @@ func NewIterator(ctx context.Context, db *pgxpool.Pool, c Config) (*Iterator, er
 		db:           db,
 		t:            t,
 		conf:         c,
-		data:         make(chan FetchData),
+		data:         make(chan []FetchData),
 		lastPosition: p,
 	}
 
@@ -78,26 +78,6 @@ func NewIterator(ctx context.Context, db *pgxpool.Pool, c Config) (*Iterator, er
 	i.startWorkers()
 
 	return i, nil
-}
-
-func (i *Iterator) Next(ctx context.Context) (opencdc.Record, error) {
-	select {
-	case <-ctx.Done():
-		return opencdc.Record{}, fmt.Errorf("iterator stopped: %w", ctx.Err())
-	case d, ok := <-i.data:
-		if !ok { // closed
-			if err := i.t.Err(); err != nil {
-				return opencdc.Record{}, fmt.Errorf("fetchers exited unexpectedly: %w", err)
-			}
-			if err := i.acks.Wait(ctx); err != nil {
-				return opencdc.Record{}, fmt.Errorf("failed to wait for acks: %w", err)
-			}
-			return opencdc.Record{}, ErrIteratorDone
-		}
-
-		i.acks.Add(1)
-		return i.buildRecord(d), nil
-	}
 }
 
 // NextN takes and returns up to n records from the queue. NextN is allowed to
@@ -113,7 +93,7 @@ func (i *Iterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
 	select {
 	case <-ctx.Done():
 		return nil, fmt.Errorf("iterator stopped: %w", ctx.Err())
-	case d, ok := <-i.data:
+	case dataSlice, ok := <-i.data:
 		if !ok { // closed
 			if err := i.t.Err(); err != nil {
 				return nil, fmt.Errorf("fetchers exited unexpectedly: %w", err)
@@ -124,8 +104,10 @@ func (i *Iterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
 			return nil, ErrIteratorDone
 		}
 
-		i.acks.Add(1)
-		records = append(records, i.buildRecord(d))
+		for _, d := range dataSlice {
+			i.acks.Add(1)
+			records = append(records, i.buildRecord(d))
+		}
 	}
 
 	// Try to get remaining records non-blocking
@@ -133,12 +115,14 @@ func (i *Iterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
 		select {
 		case <-ctx.Done():
 			return records, ctx.Err()
-		case d, ok := <-i.data:
+		case dataSlice, ok := <-i.data:
 			if !ok { // closed
 				return records, nil
 			}
-			i.acks.Add(1)
-			records = append(records, i.buildRecord(d))
+			for _, d := range dataSlice {
+				i.acks.Add(1)
+				records = append(records, i.buildRecord(d))
+			}
 		default:
 			// No more records currently available
 			return records, nil
