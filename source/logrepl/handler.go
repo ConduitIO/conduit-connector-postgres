@@ -203,7 +203,7 @@ func (h *CDCHandler) handleDelete(
 // context and return the context error.
 func (h *CDCHandler) send(ctx context.Context, rec opencdc.Record) error {
 	h.recordsBatch = append(h.recordsBatch, rec)
-	if len(h.recordsBatch) < 10_000 && h.nextFlush.Before(time.Now()) {
+	if len(h.recordsBatch) < 10_000 && h.nextFlush.After(time.Now()) {
 		return nil
 	}
 
