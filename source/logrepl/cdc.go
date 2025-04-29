@@ -129,7 +129,7 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 	// Block until at least one record is received or context is canceled
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return []opencdc.Record{}, ctx.Err()
 	case <-i.sub.Done():
 		if err := i.sub.Err(); err != nil {
 			return []opencdc.Record{}, fmt.Errorf("logical replication error: %w", err)
@@ -141,7 +141,7 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 		}
 		// subscription stopped without an error and the context is still
 		// open, this is a strange case, shouldn't actually happen
-		return nil, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
+		return []opencdc.Record{}, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
 	case rec := <-i.records:
 		recs = append(recs, rec)
 	}
