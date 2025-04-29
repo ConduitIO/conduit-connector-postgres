@@ -38,7 +38,7 @@ type CDCConfig struct {
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
-// slot and returns them to the caller through Next.
+// slot and returns them to the caller through NextN.
 type CDCIterator struct {
 	config  CDCConfig
 	records chan opencdc.Record
@@ -111,24 +111,6 @@ func (i *CDCIterator) StartSubscriber(ctx context.Context) error {
 		Msg("Logical replication started")
 
 	return nil
-}
-
-// Next returns the next record retrieved from the subscription. This call will
-// block until either a record is returned from the subscription, the
-// subscription stops because of an error or the context gets canceled.
-// Returns error when the subscription has not been started.
-func (i *CDCIterator) Next(ctx context.Context) (opencdc.Record, error) {
-	records, err := i.NextN(ctx, 1)
-	if err != nil {
-		return opencdc.Record{}, err
-	}
-
-	if len(records) == 0 {
-		// This shouldn't happen as ReadN should either return at least one record or an error
-		return opencdc.Record{}, fmt.Errorf("no records returned but no error reported (this smells like a bug)")
-	}
-
-	return records[0], nil
 }
 
 // NextN takes and returns up to n records from the queue. NextN is allowed to

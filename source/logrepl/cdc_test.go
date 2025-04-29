@@ -119,7 +119,7 @@ func TestCDCIterator_New(t *testing.T) {
 	}
 }
 
-func TestCDCIterator_Next(t *testing.T) {
+func TestCDCIterator_Operation_NextN(t *testing.T) {
 	ctx := test.Context(t)
 	is := is.New(t)
 
@@ -343,8 +343,10 @@ func TestCDCIterator_Next(t *testing.T) {
 			// fetch the change
 			nextCtx, cancel := context.WithTimeout(ctx, time.Second*10)
 			defer cancel()
-			got, err := i.Next(nextCtx)
+			records, err := i.NextN(nextCtx, 1)
 			is.NoErr(err)
+
+			got := records[0]
 
 			readAt, err := got.Metadata.GetReadAt()
 			is.NoErr(err)
@@ -357,40 +359,6 @@ func TestCDCIterator_Next(t *testing.T) {
 			is.NoErr(i.Ack(ctx, got.Position))
 		})
 	}
-}
-
-func TestCDCIterator_Next_Fail(t *testing.T) {
-	ctx := test.Context(t)
-
-	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTable(ctx, t, pool)
-
-	t.Run("fail when sub is done", func(t *testing.T) {
-		is := is.New(t)
-
-		i := testCDCIterator(ctx, t, pool, table, true)
-		<-i.sub.Ready()
-
-		is.NoErr(i.Teardown(ctx))
-
-		_, err := i.Next(ctx)
-		expectErr := "logical replication error:"
-
-		match := strings.Contains(err.Error(), expectErr)
-		if !match {
-			t.Logf("%s != %s", err.Error(), expectErr)
-		}
-		is.True(match)
-	})
-
-	t.Run("fail when subscriber is not started", func(t *testing.T) {
-		is := is.New(t)
-
-		i := testCDCIterator(ctx, t, pool, table, false)
-
-		_, nexterr := i.Next(ctx)
-		is.Equal(nexterr.Error(), "logical replication has not been started")
-	})
 }
 
 func TestCDCIterator_EnsureLSN(t *testing.T) {
@@ -407,8 +375,11 @@ func TestCDCIterator_EnsureLSN(t *testing.T) {
 				VALUES (6, 'bizz', 456, false, 12.3, 14)`, table))
 	is.NoErr(err)
 
-	r, err := i.Next(ctx)
+	rr, err := i.NextN(ctx, 1)
 	is.NoErr(err)
+	is.True(len(rr) > 0)
+
+	r := rr[0]
 
 	p, err := position.ParseSDKPosition(r.Position)
 	is.NoErr(err)
@@ -686,8 +657,11 @@ func TestCDCIterator_Schema(t *testing.T) {
 		)
 		is.NoErr(err)
 
-		r, err := i.Next(ctx)
+		rr, err := i.NextN(ctx, 1)
 		is.NoErr(err)
+		is.True(len(rr) > 0)
+
+		r := rr[0]
 
 		assertPayloadSchemaOK(ctx, is, test.TestTableAvroSchemaV1, table, r)
 		assertKeySchemaOK(ctx, is, table, r)
@@ -706,8 +680,11 @@ func TestCDCIterator_Schema(t *testing.T) {
 		)
 		is.NoErr(err)
 
-		r, err := i.Next(ctx)
+		rr, err := i.NextN(ctx, 1)
 		is.NoErr(err)
+		is.True(len(rr) > 0)
+
+		r := rr[0]
 
 		assertPayloadSchemaOK(ctx, is, test.TestTableAvroSchemaV2, table, r)
 		assertKeySchemaOK(ctx, is, table, r)
@@ -726,8 +703,11 @@ func TestCDCIterator_Schema(t *testing.T) {
 		)
 		is.NoErr(err)
 
-		r, err := i.Next(ctx)
+		rr, err := i.NextN(ctx, 1)
 		is.NoErr(err)
+		is.True(len(rr) > 0)
+
+		r := rr[0]
 
 		assertPayloadSchemaOK(ctx, is, test.TestTableAvroSchemaV3, table, r)
 		assertKeySchemaOK(ctx, is, table, r)
