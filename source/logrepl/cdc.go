@@ -132,12 +132,12 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 		return nil, ctx.Err()
 	case <-i.sub.Done():
 		if err := i.sub.Err(); err != nil {
-			return nil, fmt.Errorf("logical replication error: %w", err)
+			return []opencdc.Record{}, fmt.Errorf("logical replication error: %w", err)
 		}
 		if err := ctx.Err(); err != nil {
 			// subscription is done because the context is canceled, we went
 			// into the wrong case by chance
-			return nil, err
+			return []opencdc.Record{}, err
 		}
 		// subscription stopped without an error and the context is still
 		// open, this is a strange case, shouldn't actually happen

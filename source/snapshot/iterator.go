@@ -84,7 +84,7 @@ func NewIterator(ctx context.Context, db *pgxpool.Pool, c Config) (*Iterator, er
 // block until either at least one record is available or the context gets canceled.
 func (i *Iterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
 	if n <= 0 {
-		return nil, fmt.Errorf("n must be greater than 0, got %d", n)
+		return []opencdc.Record{}, fmt.Errorf("n must be greater than 0, got %d", n)
 	}
 
 	var records []opencdc.Record
@@ -92,16 +92,16 @@ func (i *Iterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
 	// Get first record (blocking)
 	select {
 	case <-ctx.Done():
-		return nil, fmt.Errorf("iterator stopped: %w", ctx.Err())
+		return []opencdc.Record{}, fmt.Errorf("iterator stopped: %w", ctx.Err())
 	case d, ok := <-i.data:
 		if !ok { // closed
 			if err := i.t.Err(); err != nil {
-				return nil, fmt.Errorf("fetchers exited unexpectedly: %w", err)
+				return []opencdc.Record{}, fmt.Errorf("fetchers exited unexpectedly: %w", err)
 			}
 			if err := i.acks.Wait(ctx); err != nil {
-				return nil, fmt.Errorf("failed to wait for acks: %w", err)
+				return []opencdc.Record{}, fmt.Errorf("failed to wait for acks: %w", err)
 			}
-			return nil, ErrIteratorDone
+			return []opencdc.Record{}, ErrIteratorDone
 		}
 
 		i.acks.Add(1)
