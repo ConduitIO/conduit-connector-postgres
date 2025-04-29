@@ -119,32 +119,10 @@ func (c *CombinedIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, 
 		return nil, fmt.Errorf("n must be greater than 0, got %d", n)
 	}
 
-	// Check if the active iterator already implements NextN (like the CDCIterator)
-	if nextN, ok := c.activeIterator.(interface {
-		NextN(context.Context, int) ([]opencdc.Record, error)
-	}); ok {
-		records, err := nextN.NextN(ctx, n)
-		if err != nil {
-			// Snapshot iterator is done, handover to CDC iterator
-			if errors.Is(err, snapshot.ErrIteratorDone) {
-				if err := c.useCDCIterator(ctx); err != nil {
-					return nil, err
-				}
-				sdk.Logger(ctx).Debug().Msg("Snapshot completed, switching to CDC mode")
-
-				// Retry with new iterator
-				return c.NextN(ctx, n)
-			}
-			return nil, fmt.Errorf("failed to fetch records in batch: %w", err)
-		}
-		return records, nil
-	}
-
-	// Fall back to using Next() if NextN is not implemented
 	var records []opencdc.Record
 
-	// Get the first record (blocking)
-	r, err := c.activeIterator.NextN(ctx)
+	// Get the first batch of records (blocking)
+	records, err := c.activeIterator.NextN(ctx, n)
 	if err != nil {
 		// Snapshot iterator is done, handover to CDC iterator
 		if errors.Is(err, snapshot.ErrIteratorDone) {
@@ -157,26 +135,6 @@ func (c *CombinedIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, 
 			return c.NextN(ctx, n)
 		}
 		return nil, fmt.Errorf("failed to fetch next record: %w", err)
-	}
-	records = append(records, r)
-
-	// Try to get the remaining (n-1) records without blocking
-	for len(records) < n {
-		select {
-		case <-ctx.Done():
-			return records, ctx.Err()
-		default:
-			r, err := c.activeIterator.Next(ctx)
-			if err != nil {
-				if errors.Is(err, snapshot.ErrIteratorDone) {
-					// Return what we have before switching iterators
-					return records, nil
-				}
-				// Return any records we got along with the error
-				return records, err
-			}
-			records = append(records, r)
-		}
 	}
 
 	return records, nil
