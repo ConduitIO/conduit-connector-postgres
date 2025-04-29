@@ -119,19 +119,6 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 	return nil
 }
 
-func (s *Source) Read(ctx context.Context) (opencdc.Record, error) {
-	records, err := s.ReadN(ctx, 1)
-	if err != nil {
-		return opencdc.Record{}, err
-	}
-
-	if len(records) == 0 {
-		return opencdc.Record{}, fmt.Errorf("no records returned but no error reported")
-	}
-
-	return records[0], nil
-}
-
 func (s *Source) ReadN(ctx context.Context, n int) ([]opencdc.Record, error) {
 	if n <= 0 {
 		return []opencdc.Record{}, nil

@@ -28,6 +28,7 @@ import (
 
 type iterator interface {
 	Next(context.Context) (opencdc.Record, error)
+	NextN(context.Context, int) ([]opencdc.Record, error)
 	Ack(context.Context, opencdc.Position) error
 	Teardown(context.Context) error
 }
