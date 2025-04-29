@@ -117,11 +117,11 @@ func (i *CDCIterator) StartSubscriber(ctx context.Context) error {
 // block until either at least one record is available or the context gets canceled.
 func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
 	if !i.subscriberReady() {
-		return nil, errors.New("logical replication has not been started")
+		return []opencdc.Record{}, errors.New("logical replication has not been started")
 	}
 
 	if n <= 0 {
-		return nil, fmt.Errorf("n must be greater than 0, got %d", n)
+		return []opencdc.Record{}, fmt.Errorf("n must be greater than 0, got %d", n)
 	}
 
 	var recs []opencdc.Record
