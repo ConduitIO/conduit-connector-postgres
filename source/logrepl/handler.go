@@ -17,6 +17,7 @@ package logrepl
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	cschema "github.com/conduitio/conduit-commons/schema"
@@ -33,18 +34,22 @@ import (
 type CDCHandler struct {
 	tableKeys   map[string]string
 	relationSet *internal.RelationSet
-	out         chan<- []opencdc.Record
-	lastTXLSN   pglogrepl.LSN
+
+	recordsBatch []opencdc.Record
+	out          chan<- []opencdc.Record
+	lastTXLSN    pglogrepl.LSN
 
 	withAvroSchema bool
 	keySchemas     map[string]cschema.Schema
 	payloadSchemas map[string]cschema.Schema
+	nextFlush      time.Time
 }
 
 func NewCDCHandler(rs *internal.RelationSet, tableKeys map[string]string, out chan<- []opencdc.Record, withAvroSchema bool) *CDCHandler {
 	return &CDCHandler{
 		tableKeys:      tableKeys,
 		relationSet:    rs,
+		recordsBatch:   []opencdc.Record{},
 		out:            out,
 		withAvroSchema: withAvroSchema,
 		keySchemas:     make(map[string]cschema.Schema),
@@ -197,10 +202,17 @@ func (h *CDCHandler) handleDelete(
 // send the record to the output channel or detect the cancellation of the
 // context and return the context error.
 func (h *CDCHandler) send(ctx context.Context, rec opencdc.Record) error {
+	h.recordsBatch = append(h.recordsBatch, rec)
+	if len(h.recordsBatch) < 10_000 && h.nextFlush.Before(time.Now()) {
+		return nil
+	}
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case h.out <- rec:
+	case h.out <- h.recordsBatch:
+		h.nextFlush = time.Now().Add(5 * time.Second)
+		h.recordsBatch = []opencdc.Record{}
 		return nil
 	}
 }
