@@ -41,7 +41,7 @@ type CDCConfig struct {
 // slot and returns them to the caller through Next.
 type CDCIterator struct {
 	config  CDCConfig
-	records chan opencdc.Record
+	records chan []opencdc.Record
 
 	sub *internal.Subscription
 }
@@ -64,7 +64,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 			Msgf("Publication %q already exists.", c.PublicationName)
 	}
 
-	records := make(chan opencdc.Record)
+	records := make(chan []opencdc.Record)
 	handler := NewCDCHandler(internal.NewRelationSet(), c.TableKeys, records, c.WithAvroSchema)
 
 	sub, err := internal.CreateSubscription(
@@ -113,24 +113,6 @@ func (i *CDCIterator) StartSubscriber(ctx context.Context) error {
 	return nil
 }
 
-// Next returns the next record retrieved from the subscription. This call will
-// block until either a record is returned from the subscription, the
-// subscription stops because of an error or the context gets canceled.
-// Returns error when the subscription has not been started.
-func (i *CDCIterator) Next(ctx context.Context) (opencdc.Record, error) {
-	records, err := i.NextN(ctx, 1)
-	if err != nil {
-		return opencdc.Record{}, err
-	}
-
-	if len(records) == 0 {
-		// This shouldn't happen as ReadN should either return at least one record or an error
-		return opencdc.Record{}, fmt.Errorf("no records returned but no error reported (this smells like a bug)")
-	}
-
-	return records[0], nil
-}
-
 // NextN takes and returns up to n records from the queue. NextN is allowed to
 // block until either at least one record is available or the context gets canceled.
 func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
@@ -160,14 +142,16 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 		// subscription stopped without an error and the context is still
 		// open, this is a strange case, shouldn't actually happen
 		return nil, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
-	case rec := <-i.records:
-		recs = append(recs, rec)
+	case recBatch := <-i.records:
+		// todo optimize
+		recs = append(recs, recBatch...)
 	}
 
 	for len(recs) < n {
 		select {
-		case rec := <-i.records:
-			recs = append(recs, rec)
+		case recBatch := <-i.records:
+			// todo we might be over N, fix
+			recs = append(recs, recBatch...)
 		case <-ctx.Done():
 			// Return what we have with the error
 			return recs, ctx.Err()

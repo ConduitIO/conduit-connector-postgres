@@ -33,7 +33,7 @@ import (
 type CDCHandler struct {
 	tableKeys   map[string]string
 	relationSet *internal.RelationSet
-	out         chan<- opencdc.Record
+	out         chan<- []opencdc.Record
 	lastTXLSN   pglogrepl.LSN
 
 	withAvroSchema bool
@@ -41,7 +41,7 @@ type CDCHandler struct {
 	payloadSchemas map[string]cschema.Schema
 }
 
-func NewCDCHandler(rs *internal.RelationSet, tableKeys map[string]string, out chan<- opencdc.Record, withAvroSchema bool) *CDCHandler {
+func NewCDCHandler(rs *internal.RelationSet, tableKeys map[string]string, out chan<- []opencdc.Record, withAvroSchema bool) *CDCHandler {
 	return &CDCHandler{
 		tableKeys:      tableKeys,
 		relationSet:    rs,
