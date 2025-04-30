@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-commons/cchan"
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-commons/schema"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
@@ -510,11 +511,29 @@ func TestCDCIterator_NextN(t *testing.T) {
 		}
 
 		// Will keep calling NextN until all records are received
-		var records []opencdc.Record
+		records := make([]opencdc.Record, 0, 2)
+
 		for len(records) < 2 {
-			recordsTmp, err := i.NextN(ctx, 5)
+			recordsCh := make(cchan.Chan[[]opencdc.Record], 1)
+
+			go func() {
+				recordsTmp, err := i.NextN(ctx, 5)
+				if err != nil {
+					err = recordsCh.Send(ctx, nil)
+					is.NoErr(err)
+					return
+				}
+				err = recordsCh.Send(ctx, recordsTmp)
+				is.NoErr(err)
+			}()
+
+			recordsTmp, ok, err := recordsCh.RecvTimeout(ctx, 5*time.Second)
+			is.True(ok)
 			is.NoErr(err)
-			records = append(records, recordsTmp...)
+
+			if len(recordsTmp) > 0 {
+				records = append(records, recordsTmp...)
+			}
 		}
 
 		// nothing else to fetch
