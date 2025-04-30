@@ -119,8 +119,8 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 	return nil
 }
 
-func (s *Source) Read(ctx context.Context) (opencdc.Record, error) {
-	return s.iterator.Next(ctx)
+func (s *Source) ReadN(ctx context.Context, n int) ([]opencdc.Record, error) {
+	return s.iterator.NextN(ctx, n)
 }
 
 func (s *Source) Ack(ctx context.Context, pos opencdc.Position) error {

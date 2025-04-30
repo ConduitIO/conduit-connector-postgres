@@ -38,7 +38,7 @@ type CDCConfig struct {
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
-// slot and returns them to the caller through Next.
+// slot and returns them to the caller through NextN.
 type CDCIterator struct {
 	config  CDCConfig
 	records chan opencdc.Record
@@ -113,35 +113,62 @@ func (i *CDCIterator) StartSubscriber(ctx context.Context) error {
 	return nil
 }
 
-// Next returns the next record retrieved from the subscription. This call will
-// block until either a record is returned from the subscription, the
-// subscription stops because of an error or the context gets canceled.
-// Returns error when the subscription has been started.
-func (i *CDCIterator) Next(ctx context.Context) (opencdc.Record, error) {
+// NextN takes and returns up to n records from the queue. NextN is allowed to
+// block until either at least one record is available or the context gets canceled.
+func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
 	if !i.subscriberReady() {
-		return opencdc.Record{}, errors.New("logical replication has not been started")
+		return nil, errors.New("logical replication has not been started")
 	}
 
-	for {
+	if n <= 0 {
+		return nil, fmt.Errorf("n must be greater than 0, got %d", n)
+	}
+
+	recs := make([]opencdc.Record, 0, n)
+
+	// Block until at least one record is received or context is canceled
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-i.sub.Done():
+		if err := i.sub.Err(); err != nil {
+			return nil, fmt.Errorf("logical replication error: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			// subscription is done because the context is canceled, we went
+			// into the wrong case by chance
+			return nil, err
+		}
+		// subscription stopped without an error and the context is still
+		// open, this is a strange case, shouldn't actually happen
+		return nil, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
+	case rec := <-i.records:
+		recs = append(recs, rec)
+	}
+
+	for len(recs) < n {
 		select {
+		case rec := <-i.records:
+			recs = append(recs, rec)
 		case <-ctx.Done():
-			return opencdc.Record{}, ctx.Err()
+			return nil, ctx.Err()
 		case <-i.sub.Done():
 			if err := i.sub.Err(); err != nil {
-				return opencdc.Record{}, fmt.Errorf("logical replication error: %w", err)
+				return recs, fmt.Errorf("logical replication error: %w", err)
 			}
 			if err := ctx.Err(); err != nil {
-				// subscription is done because the context is canceled, we went
-				// into the wrong case by chance
-				return opencdc.Record{}, err
+				// Return what we have with context error
+				return recs, err
 			}
-			// subscription stopped without an error and the context is still
-			// open, this is a strange case, shouldn't actually happen
-			return opencdc.Record{}, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
-		case r := <-i.records:
-			return r, nil
+			// Return what we have with subscription stopped error
+			return recs, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
+		default:
+			// No more records currently available
+			return recs, nil
 		}
 	}
+
+	return recs, nil
 }
 
 // Ack forwards the acknowledgment to the subscription.
