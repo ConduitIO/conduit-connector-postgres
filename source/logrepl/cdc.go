@@ -151,8 +151,7 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 		case rec := <-i.records:
 			recs = append(recs, rec)
 		case <-ctx.Done():
-			// Return what we have with the error
-			return recs, ctx.Err()
+			return nil, ctx.Err()
 		case <-i.sub.Done():
 			if err := i.sub.Err(); err != nil {
 				return recs, fmt.Errorf("logical replication error: %w", err)
