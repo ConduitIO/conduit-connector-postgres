@@ -120,10 +120,6 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 }
 
 func (s *Source) ReadN(ctx context.Context, n int) ([]opencdc.Record, error) {
-	if n <= 0 {
-		return []opencdc.Record{}, nil
-	}
-
 	return s.iterator.NextN(ctx, n)
 }
 
