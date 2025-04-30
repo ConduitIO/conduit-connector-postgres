@@ -124,7 +124,11 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 		return nil, fmt.Errorf("n must be greater than 0, got %d", n)
 	}
 
-	recs := make([]opencdc.Record, 0, n)
+	// 40K msg/s
+	//recs := make([]opencdc.Record, 0, n)
+
+	// 150K msg/s
+	var recs []opencdc.Record
 
 	// Block until at least one record is received or context is canceled
 	select {
