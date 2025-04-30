@@ -289,7 +289,7 @@ func TestCombinedIterator_NextN(t *testing.T) {
 		is.NoErr(err)
 
 		// Request 2 records in CDC mode
-		var records []opencdc.Record
+		records := make([]opencdc.Record, 0, 2)
 		var retries int
 		maxRetries := 10
 		for retries < maxRetries {
