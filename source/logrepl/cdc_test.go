@@ -473,12 +473,12 @@ func TestCDCIterator_NextN(t *testing.T) {
 		}
 
 		var allRecords []opencdc.Record
+		attemptCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
 
 		// Collect records until we have all 3
 		for len(allRecords) < 3 {
-			attemptCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			records, err := i.NextN(attemptCtx, 3-len(allRecords))
-			cancel()
 			is.NoErr(err)
 			// Only proceed if we got at least one record
 			is.True(len(records) > 0)
@@ -517,7 +517,7 @@ func TestCDCIterator_NextN(t *testing.T) {
 			records = append(records, recordsTmp...)
 		}
 
-		// nothing elese to fetch
+		// nothing else to fetch
 		ctxWithTimeout, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 		defer cancel()
 		_, err := i.NextN(ctxWithTimeout, 5)
