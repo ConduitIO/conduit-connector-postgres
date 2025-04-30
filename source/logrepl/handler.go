@@ -83,7 +83,10 @@ func (h *CDCHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogr
 		h.lastTXLSN = m.FinalLSN
 	case *pglogrepl.CommitMessage:
 		if h.lastTXLSN != 0 && h.lastTXLSN != m.CommitLSN {
-			return 0, fmt.Errorf("out of order commit %s, expected %s", m.CommitLSN, h.lastTXLSN)
+			sdk.Logger(ctx).Warn().
+				Str("expected_last_lsn", h.lastTXLSN.String()).
+				Str("commit_lsn", m.CommitLSN.String()).
+				Msg("potential out of order commit")
 		}
 	}
 
