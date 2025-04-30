@@ -125,7 +125,7 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 	}
 
 	// 40K msg/s
-	//recs := make([]opencdc.Record, 0, n)
+	// recs := make([]opencdc.Record, 0, n)
 
 	// 150K msg/s
 	var recs []opencdc.Record
