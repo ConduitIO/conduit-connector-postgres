@@ -116,18 +116,18 @@ func NewCombinedIterator(ctx context.Context, pool *pgxpool.Pool, conf Config) (
 // and continue retrieving records from there.
 func (c *CombinedIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
 	if n <= 0 {
-		return []opencdc.Record{}, fmt.Errorf("n must be greater than 0, got %d", n)
+		return nil, fmt.Errorf("n must be greater than 0, got %d", n)
 	}
 
 	records, err := c.activeIterator.NextN(ctx, n)
 	if err != nil {
 		if !errors.Is(err, snapshot.ErrIteratorDone) {
-			return []opencdc.Record{}, fmt.Errorf("failed to fetch records in batch: %w", err)
+			return nil, fmt.Errorf("failed to fetch records in batch: %w", err)
 		}
 
 		// Snapshot iterator is done, handover to CDC iterator
 		if err := c.useCDCIterator(ctx); err != nil {
-			return []opencdc.Record{}, err
+			return nil, err
 		}
 
 		sdk.Logger(ctx).Debug().Msg("Snapshot completed, switching to CDC mode")

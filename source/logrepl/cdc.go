@@ -117,11 +117,11 @@ func (i *CDCIterator) StartSubscriber(ctx context.Context) error {
 // block until either at least one record is available or the context gets canceled.
 func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
 	if !i.subscriberReady() {
-		return []opencdc.Record{}, errors.New("logical replication has not been started")
+		return nil, errors.New("logical replication has not been started")
 	}
 
 	if n <= 0 {
-		return []opencdc.Record{}, fmt.Errorf("n must be greater than 0, got %d", n)
+		return nil, fmt.Errorf("n must be greater than 0, got %d", n)
 	}
 
 	recs := make([]opencdc.Record, 0, n)
@@ -129,19 +129,19 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 	// Block until at least one record is received or context is canceled
 	select {
 	case <-ctx.Done():
-		return []opencdc.Record{}, ctx.Err()
+		return nil, ctx.Err()
 	case <-i.sub.Done():
 		if err := i.sub.Err(); err != nil {
-			return []opencdc.Record{}, fmt.Errorf("logical replication error: %w", err)
+			return nil, fmt.Errorf("logical replication error: %w", err)
 		}
 		if err := ctx.Err(); err != nil {
 			// subscription is done because the context is canceled, we went
 			// into the wrong case by chance
-			return []opencdc.Record{}, err
+			return nil, err
 		}
 		// subscription stopped without an error and the context is still
 		// open, this is a strange case, shouldn't actually happen
-		return []opencdc.Record{}, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
+		return nil, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
 	case rec := <-i.records:
 		recs = append(recs, rec)
 	}
