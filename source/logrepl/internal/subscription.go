@@ -41,6 +41,7 @@ type Subscription struct {
 	StartLSN      pglogrepl.LSN
 	Handler       Handler
 	StatusTimeout time.Duration
+	FlushInterval time.Duration
 	TXSnapshotID  string
 
 	conn *pgxpool.Conn
@@ -55,9 +56,13 @@ type Subscription struct {
 	walWritten   pglogrepl.LSN
 	walFlushed   pglogrepl.LSN
 	serverWALEnd pglogrepl.LSN
+	SDKBatchSize int
 }
 
-type Handler func(context.Context, pglogrepl.Message, pglogrepl.LSN) (pglogrepl.LSN, error)
+type Handler interface {
+	Handle(context.Context, pglogrepl.Message, pglogrepl.LSN) (pglogrepl.LSN, error)
+	Flush(ctx context.Context) error
+}
 
 // CreateSubscription initializes the logical replication subscriber by creating the replication slot.
 func CreateSubscription(
@@ -131,6 +136,7 @@ func CreateSubscription(
 		StartLSN:      startLSN,
 		Handler:       h,
 		StatusTimeout: 10 * time.Second,
+		FlushInterval: time.Second,
 		TXSnapshotID:  result.SnapshotName,
 
 		conn: conn,
@@ -168,6 +174,7 @@ func (s *Subscription) listen(ctx context.Context) error {
 	// signal that the subscription is ready and is receiving messages
 	close(s.ready)
 	nextStatusUpdateAt := time.Now().Add(s.StatusTimeout)
+	nextFlush := time.Now().Add(s.FlushInterval)
 
 	for {
 		if time.Now().After(nextStatusUpdateAt) {
@@ -176,6 +183,14 @@ func (s *Subscription) listen(ctx context.Context) error {
 				return err
 			}
 			nextStatusUpdateAt = time.Now().Add(s.StatusTimeout)
+		}
+
+		if time.Now().After(nextFlush) {
+			err := s.Handler.Flush(ctx)
+			if err != nil {
+				return fmt.Errorf("handler failed flushing messages: %v", err)
+			}
+			nextFlush = time.Now().Add(s.FlushInterval)
 		}
 
 		msg, err := s.receiveMessage(ctx, nextStatusUpdateAt)
@@ -252,7 +267,7 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 		return fmt.Errorf("invalid message: %w", err)
 	}
 
-	writtenLSN, err := s.Handler(ctx, logicalMsg, xld.WALStart)
+	writtenLSN, err := s.Handler.Handle(ctx, logicalMsg, xld.WALStart)
 	if err != nil {
 		return fmt.Errorf("handler error: %w", err)
 	}

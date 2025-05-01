@@ -17,7 +17,6 @@ package logrepl
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	cschema "github.com/conduitio/conduit-commons/schema"
@@ -42,11 +41,16 @@ type CDCHandler struct {
 	withAvroSchema bool
 	keySchemas     map[string]cschema.Schema
 	payloadSchemas map[string]cschema.Schema
-	nextFlush      time.Time
 	sdkBatchSize   int
 }
 
-func NewCDCHandler(rs *internal.RelationSet, tableKeys map[string]string, out chan<- []opencdc.Record, withAvroSchema bool, sdkBatchSize int) *CDCHandler {
+func NewCDCHandler(
+	rs *internal.RelationSet,
+	tableKeys map[string]string,
+	out chan<- []opencdc.Record,
+	withAvroSchema bool,
+	sdkBatchSize int,
+) *CDCHandler {
 	return &CDCHandler{
 		tableKeys:      tableKeys,
 		relationSet:    rs,
@@ -56,6 +60,17 @@ func NewCDCHandler(rs *internal.RelationSet, tableKeys map[string]string, out ch
 		keySchemas:     make(map[string]cschema.Schema),
 		payloadSchemas: make(map[string]cschema.Schema),
 		sdkBatchSize:   sdkBatchSize,
+	}
+}
+
+func (h *CDCHandler) Flush(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case h.out <- h.recordsBatch:
+		sdk.Logger(ctx).Info().Int("records", len(h.recordsBatch)).Msg("flushing records")
+		h.recordsBatch = []opencdc.Record{}
+		return nil
 	}
 }
 
@@ -126,7 +141,7 @@ func (h *CDCHandler) handleInsert(
 	)
 	h.attachSchemas(rec, rel.RelationName)
 
-	return h.send(ctx, rec)
+	return h.addToSendBatch(ctx, rec)
 }
 
 // handleUpdate formats a record with UPDATE event data from Postgres and sends
@@ -166,7 +181,7 @@ func (h *CDCHandler) handleUpdate(
 	)
 	h.attachSchemas(rec, rel.RelationName)
 
-	return h.send(ctx, rec)
+	return h.addToSendBatch(ctx, rec)
 }
 
 // handleDelete formats a record with DELETE event data from Postgres and sends
@@ -198,26 +213,18 @@ func (h *CDCHandler) handleDelete(
 	)
 	h.attachSchemas(rec, rel.RelationName)
 
-	return h.send(ctx, rec)
+	return h.addToSendBatch(ctx, rec)
 }
 
-// send the record to the output channel or detect the cancellation of the
+// addToSendBatch the record to the output channel or detect the cancellation of the
 // context and return the context error.
-func (h *CDCHandler) send(ctx context.Context, rec opencdc.Record) error {
+func (h *CDCHandler) addToSendBatch(ctx context.Context, rec opencdc.Record) error {
 	h.recordsBatch = append(h.recordsBatch, rec)
-	if len(h.recordsBatch) < h.sdkBatchSize && h.nextFlush.After(time.Now()) {
-		return nil
+	if len(h.recordsBatch) >= h.sdkBatchSize {
+		return h.Flush(ctx)
 	}
 
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case h.out <- h.recordsBatch:
-		sdk.Logger(ctx).Info().Int("records", len(h.recordsBatch)).Msg("sending records")
-		h.nextFlush = time.Now().Add(5 * time.Second)
-		h.recordsBatch = []opencdc.Record{}
-		return nil
-	}
+	return nil
 }
 
 func (h *CDCHandler) buildRecordMetadata(rel *pglogrepl.RelationMessage) map[string]string {
