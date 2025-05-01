@@ -43,9 +43,10 @@ type CDCHandler struct {
 	keySchemas     map[string]cschema.Schema
 	payloadSchemas map[string]cschema.Schema
 	nextFlush      time.Time
+	sdkBatchSize   int
 }
 
-func NewCDCHandler(rs *internal.RelationSet, tableKeys map[string]string, out chan<- []opencdc.Record, withAvroSchema bool) *CDCHandler {
+func NewCDCHandler(rs *internal.RelationSet, tableKeys map[string]string, out chan<- []opencdc.Record, withAvroSchema bool, sdkBatchSize int) *CDCHandler {
 	return &CDCHandler{
 		tableKeys:      tableKeys,
 		relationSet:    rs,
@@ -54,6 +55,7 @@ func NewCDCHandler(rs *internal.RelationSet, tableKeys map[string]string, out ch
 		withAvroSchema: withAvroSchema,
 		keySchemas:     make(map[string]cschema.Schema),
 		payloadSchemas: make(map[string]cschema.Schema),
+		sdkBatchSize:   sdkBatchSize,
 	}
 }
 
@@ -203,7 +205,7 @@ func (h *CDCHandler) handleDelete(
 // context and return the context error.
 func (h *CDCHandler) send(ctx context.Context, rec opencdc.Record) error {
 	h.recordsBatch = append(h.recordsBatch, rec)
-	if len(h.recordsBatch) < 10_000 && h.nextFlush.After(time.Now()) {
+	if len(h.recordsBatch) < h.sdkBatchSize && h.nextFlush.After(time.Now()) {
 		return nil
 	}
 

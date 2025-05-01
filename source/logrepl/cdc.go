@@ -35,6 +35,7 @@ type CDCConfig struct {
 	Tables          []string
 	TableKeys       map[string]string
 	WithAvroSchema  bool
+	SDKBatchSize    int
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -65,7 +66,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	}
 
 	records := make(chan []opencdc.Record)
-	handler := NewCDCHandler(internal.NewRelationSet(), c.TableKeys, records, c.WithAvroSchema)
+	handler := NewCDCHandler(internal.NewRelationSet(), c.TableKeys, records, c.WithAvroSchema, c.SDKBatchSize)
 
 	sub, err := internal.CreateSubscription(
 		ctx,

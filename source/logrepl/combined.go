@@ -50,6 +50,7 @@ type Config struct {
 	WithSnapshot      bool
 	WithAvroSchema    bool
 	SnapshotFetchSize int
+	SDKBatchSize      int
 }
 
 // Validate performs validation tasks on the config.
@@ -186,6 +187,7 @@ func (c *CombinedIterator) initCDCIterator(ctx context.Context, pos position.Pos
 		Tables:          c.conf.Tables,
 		TableKeys:       c.conf.TableKeys,
 		WithAvroSchema:  c.conf.WithAvroSchema,
+		SDKBatchSize:    c.conf.SDKBatchSize,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create CDC iterator: %w", err)
