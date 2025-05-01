@@ -145,8 +145,7 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 		return nil, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
 	case recBatch := <-i.records:
 		sdk.Logger(ctx).Info().Int("records", len(recBatch)).Msg("CDCIterator received batch of records (blocking)")
-		// todo optimize
-		recs = append(recs, recBatch...)
+		recs = recBatch
 	}
 
 	for len(recs) < n {
