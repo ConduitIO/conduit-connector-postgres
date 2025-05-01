@@ -174,6 +174,7 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 		}
 	}
 
+	sdk.Logger(ctx).Info().Int("records", len(recs)).Msg("CDCIterator returning records")
 	return recs, nil
 }
 
