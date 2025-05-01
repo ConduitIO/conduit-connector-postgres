@@ -213,6 +213,7 @@ func (h *CDCHandler) send(ctx context.Context, rec opencdc.Record) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case h.out <- h.recordsBatch:
+		sdk.Logger(ctx).Info().Int("records", len(h.recordsBatch)).Msg("sending records")
 		h.nextFlush = time.Now().Add(5 * time.Second)
 		h.recordsBatch = []opencdc.Record{}
 		return nil
