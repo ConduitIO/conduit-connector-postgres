@@ -132,7 +132,8 @@ pipelines:
           logrepl.publicationName: "conduitpub"
           # LogreplSlotName determines the replication slot name in case the
           # connector uses logical replication to listen to changes (see
-          # CDCMode).
+          # CDCMode). Can only contain lower-case letters, numbers, and the
+          # underscore character.
           # Type: string
           # Required: no
           logrepl.slotName: "conduitslot"
