@@ -27,7 +27,7 @@ func TestCreatePublication(t *testing.T) {
 	ctx := test.Context(t)
 	pool := test.ConnectPool(ctx, t, test.RegularConnString)
 
-	pubNames := []string{"testpub", "123", "test-hyphen", "test=equal"}
+	pubNames := []string{"testpub", "123", "test-hyphen", "test:semicolon", "test.dot", "test=equal"}
 	pubParams := [][]string{
 		nil,
 		{"publish = 'insert'"},
