@@ -510,7 +510,7 @@ func TestCDCIterator_NextN(t *testing.T) {
 		}
 
 		// Will keep calling NextN until all records are received
-		var records []opencdc.Record
+		records := make([]opencdc.Record, 0, 2)
 		for len(records) < 2 {
 			recordsTmp, err := i.NextN(ctx, 5)
 			is.NoErr(err)
