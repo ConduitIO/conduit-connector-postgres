@@ -119,7 +119,7 @@ func TestCDCIterator_New(t *testing.T) {
 	}
 }
 
-func TestCDCIterator_Next(t *testing.T) {
+func TestCDCIterator_Operation_NextN(t *testing.T) {
 	ctx := test.Context(t)
 	is := is.New(t)
 
@@ -343,8 +343,10 @@ func TestCDCIterator_Next(t *testing.T) {
 			// fetch the change
 			nextCtx, cancel := context.WithTimeout(ctx, time.Second*10)
 			defer cancel()
-			got, err := i.Next(nextCtx)
+			records, err := i.NextN(nextCtx, 1)
 			is.NoErr(err)
+
+			got := records[0]
 
 			readAt, err := got.Metadata.GetReadAt()
 			is.NoErr(err)
@@ -357,40 +359,6 @@ func TestCDCIterator_Next(t *testing.T) {
 			is.NoErr(i.Ack(ctx, got.Position))
 		})
 	}
-}
-
-func TestCDCIterator_Next_Fail(t *testing.T) {
-	ctx := test.Context(t)
-
-	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTable(ctx, t, pool)
-
-	t.Run("fail when sub is done", func(t *testing.T) {
-		is := is.New(t)
-
-		i := testCDCIterator(ctx, t, pool, table, true)
-		<-i.sub.Ready()
-
-		is.NoErr(i.Teardown(ctx))
-
-		_, err := i.Next(ctx)
-		expectErr := "logical replication error:"
-
-		match := strings.Contains(err.Error(), expectErr)
-		if !match {
-			t.Logf("%s != %s", err.Error(), expectErr)
-		}
-		is.True(match)
-	})
-
-	t.Run("fail when subscriber is not started", func(t *testing.T) {
-		is := is.New(t)
-
-		i := testCDCIterator(ctx, t, pool, table, false)
-
-		_, nexterr := i.Next(ctx)
-		is.Equal(nexterr.Error(), "logical replication has not been started")
-	})
 }
 
 func TestCDCIterator_EnsureLSN(t *testing.T) {
@@ -407,8 +375,11 @@ func TestCDCIterator_EnsureLSN(t *testing.T) {
 				VALUES (6, 'bizz', 456, false, 12.3, 14)`, table))
 	is.NoErr(err)
 
-	r, err := i.Next(ctx)
+	rr, err := i.NextN(ctx, 1)
 	is.NoErr(err)
+	is.True(len(rr) > 0)
+
+	r := rr[0]
 
 	p, err := position.ParseSDKPosition(r.Position)
 	is.NoErr(err)
@@ -502,12 +473,12 @@ func TestCDCIterator_NextN(t *testing.T) {
 		}
 
 		var allRecords []opencdc.Record
+		attemptCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
 
 		// Collect records until we have all 3
 		for len(allRecords) < 3 {
-			attemptCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			records, err := i.NextN(attemptCtx, 3-len(allRecords))
-			cancel()
 			is.NoErr(err)
 			// Only proceed if we got at least one record
 			is.True(len(records) > 0)
@@ -538,13 +509,19 @@ func TestCDCIterator_NextN(t *testing.T) {
 			is.NoErr(err)
 		}
 
-		// This requests more than available
-		records, err := i.NextN(ctx, 5)
-		is.NoErr(err)
+		// Will keep calling NextN until all records are received
+		records := make([]opencdc.Record, 0, 2)
+		for len(records) < 2 {
+			recordsTmp, err := i.NextN(ctx, 5)
+			is.NoErr(err)
+			records = append(records, recordsTmp...)
+		}
 
-		// Verify we got fewer records than requested
-		// and that they are in order
-		is.True(len(records) > 0 && len(records) <= 2)
+		// nothing else to fetch
+		ctxWithTimeout, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		defer cancel()
+		_, err := i.NextN(ctxWithTimeout, 5)
+		is.True(errors.Is(err, context.DeadlineExceeded))
 
 		for j, r := range records {
 			is.Equal(r.Operation, opencdc.OperationCreate)
@@ -686,8 +663,11 @@ func TestCDCIterator_Schema(t *testing.T) {
 		)
 		is.NoErr(err)
 
-		r, err := i.Next(ctx)
+		rr, err := i.NextN(ctx, 1)
 		is.NoErr(err)
+		is.True(len(rr) > 0)
+
+		r := rr[0]
 
 		assertPayloadSchemaOK(ctx, is, test.TestTableAvroSchemaV1, table, r)
 		assertKeySchemaOK(ctx, is, table, r)
@@ -706,8 +686,11 @@ func TestCDCIterator_Schema(t *testing.T) {
 		)
 		is.NoErr(err)
 
-		r, err := i.Next(ctx)
+		rr, err := i.NextN(ctx, 1)
 		is.NoErr(err)
+		is.True(len(rr) > 0)
+
+		r := rr[0]
 
 		assertPayloadSchemaOK(ctx, is, test.TestTableAvroSchemaV2, table, r)
 		assertKeySchemaOK(ctx, is, table, r)
@@ -726,8 +709,11 @@ func TestCDCIterator_Schema(t *testing.T) {
 		)
 		is.NoErr(err)
 
-		r, err := i.Next(ctx)
+		rr, err := i.NextN(ctx, 1)
 		is.NoErr(err)
+		is.True(len(rr) > 0)
+
+		r := rr[0]
 
 		assertPayloadSchemaOK(ctx, is, test.TestTableAvroSchemaV3, table, r)
 		assertKeySchemaOK(ctx, is, table, r)

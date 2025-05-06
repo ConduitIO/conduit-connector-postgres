@@ -39,7 +39,7 @@ type CDCConfig struct {
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
-// slot and returns them to the caller through Next.
+// slot and returns them to the caller through NextN.
 type CDCIterator struct {
 	config  CDCConfig
 	records chan []opencdc.Record

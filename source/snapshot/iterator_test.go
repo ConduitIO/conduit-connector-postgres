@@ -26,7 +26,7 @@ import (
 	"github.com/matryer/is"
 )
 
-func Test_Iterator_Next(t *testing.T) {
+func Test_Iterator_NextN(t *testing.T) {
 	var (
 		ctx   = test.Context(t)
 		pool  = test.ConnectPool(ctx, t, test.RegularConnString)
@@ -48,19 +48,32 @@ func Test_Iterator_Next(t *testing.T) {
 			is.NoErr(i.Teardown(ctx))
 		}()
 
-		for j := 1; j <= 4; j++ {
-			r, err := i.Next(ctx)
-			is.NoErr(err)
+		// Get first 2 records
+		records, err := i.NextN(ctx, 2)
+		is.NoErr(err)
+		is.Equal(len(records), 2)
+		for _, r := range records {
 			is.Equal(r.Operation, opencdc.OperationSnapshot)
 			is.Equal(r.Metadata[opencdc.MetadataCollection], table)
 		}
 
+		// Get remaining 2 records
+		records, err = i.NextN(ctx, 2)
+		is.NoErr(err)
+		is.Equal(len(records), 2)
+		for _, r := range records {
+			is.Equal(r.Operation, opencdc.OperationSnapshot)
+			is.Equal(r.Metadata[opencdc.MetadataCollection], table)
+		}
+
+		// Ack all records
 		for j := 1; j <= 4; j++ {
 			err = i.Ack(ctx, nil)
 			is.NoErr(err)
 		}
 
-		_, err = i.Next(ctx)
+		// Should return ErrIteratorDone
+		_, err = i.NextN(ctx, 1)
 		is.Equal(err, ErrIteratorDone)
 	})
 
@@ -79,10 +92,15 @@ func Test_Iterator_Next(t *testing.T) {
 			is.NoErr(i.Teardown(ctx))
 		}()
 
-		for j := 1; j <= 4; j++ {
-			_, err = i.Next(ctx)
+		// Get all 4 records in multiple calls since NextN is non-blocking
+		var allRecords []opencdc.Record
+		for len(allRecords) < 4 {
+			records, err := i.NextN(ctx, 4)
 			is.NoErr(err)
+			allRecords = append(allRecords, records...)
 		}
+		is.Equal(len(allRecords), 4)
+
 		// Only ack 3 records
 		for j := 1; j <= 3; j++ {
 			err = i.Ack(ctx, nil)
@@ -92,16 +110,16 @@ func Test_Iterator_Next(t *testing.T) {
 		ctxTimeout, cancel := context.WithTimeout(ctx, time.Millisecond*10)
 		defer cancel()
 
-		// No more records, but Next blocks because we haven't acked all records
-		_, err = i.Next(ctxTimeout)
+		// No more records, but NextN blocks because we haven't acked all records
+		_, err = i.NextN(ctxTimeout, 1)
 		is.True(errors.Is(err, context.DeadlineExceeded))
 
 		// Ack the last record
 		err = i.Ack(ctx, nil)
 		is.NoErr(err)
 
-		// Now Next won't block
-		_, err = i.Next(ctx)
+		// Now NextN won't block
+		_, err = i.NextN(ctx, 1)
 		is.Equal(err, ErrIteratorDone)
 	})
 
@@ -123,7 +141,7 @@ func Test_Iterator_Next(t *testing.T) {
 		cancelCtx, cancel := context.WithCancel(ctx)
 		cancel()
 
-		_, err = i.Next(cancelCtx)
+		_, err = i.NextN(cancelCtx, 1)
 		is.Equal(err.Error(), "iterator stopped: context canceled")
 	})
 
@@ -145,8 +163,32 @@ func Test_Iterator_Next(t *testing.T) {
 
 		cancel()
 
-		_, err = i.Next(ctx)
+		_, err = i.NextN(ctx, 1)
 		is.True(errors.Is(err, context.Canceled))
+	})
+
+	t.Run("invalid n", func(t *testing.T) {
+		is := is.New(t)
+
+		i, err := NewIterator(ctx, pool, Config{
+			Position: position.Position{}.ToSDKPosition(),
+			Tables:   []string{table},
+			TableKeys: map[string]string{
+				table: "id",
+			},
+		})
+		is.NoErr(err)
+		defer func() {
+			is.NoErr(i.Teardown(ctx))
+		}()
+
+		_, err = i.NextN(ctx, 0)
+		is.True(err != nil)
+		is.Equal(err.Error(), "n must be greater than 0, got 0")
+
+		_, err = i.NextN(ctx, -1)
+		is.True(err != nil)
+		is.Equal(err.Error(), "n must be greater than 0, got -1")
 	})
 }
 

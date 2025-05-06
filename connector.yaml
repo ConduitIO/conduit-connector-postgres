@@ -91,7 +91,7 @@ specification:
     deleted, the record will be ignored.
 
     If there is no key, the record will be simply appended.
-  version: v0.11.2
+  version: v0.12.0
   author: Meroxa, Inc.
   source:
     parameters:
@@ -136,9 +136,12 @@ specification:
         description: |-
           LogreplSlotName determines the replication slot name in case the
           connector uses logical replication to listen to changes (see CDCMode).
+          Can only contain lower-case letters, numbers, and the underscore character.
         type: string
         default: conduitslot
-        validations: []
+        validations:
+          - type: regex
+            value: ^[a-z0-9_]+$
       - name: logrepl.withAvroSchema
         description: |-
           WithAvroSchema determines whether the connector should attach an avro schema on each
