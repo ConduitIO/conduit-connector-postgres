@@ -87,7 +87,7 @@ func (i *Iterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
 		return nil, fmt.Errorf("n must be greater than 0, got %d", n)
 	}
 
-	records := make([]opencdc.Record, 0, n)
+	var records []opencdc.Record
 
 	// Get first record (blocking)
 	select {
