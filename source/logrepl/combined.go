@@ -131,7 +131,7 @@ func (c *CombinedIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, 
 		}
 
 		sdk.Logger(ctx).Debug().Msg("Snapshot completed, switching to CDC mode")
-		return c.activeIterator.NextN(ctx, n)
+		return c.NextN(ctx, n)
 	}
 	return records, nil
 }

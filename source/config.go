@@ -69,7 +69,8 @@ type Config struct {
 	LogreplPublicationName string `json:"logrepl.publicationName" default:"conduitpub"`
 	// LogreplSlotName determines the replication slot name in case the
 	// connector uses logical replication to listen to changes (see CDCMode).
-	LogreplSlotName string `json:"logrepl.slotName" default:"conduitslot"`
+	// Can only contain lower-case letters, numbers, and the underscore character.
+	LogreplSlotName string `json:"logrepl.slotName" validate:"regex=^[a-z0-9_]+$" default:"conduitslot"`
 
 	// LogreplAutoCleanup determines if the replication slot and publication should be
 	// removed when the connector is deleted.
