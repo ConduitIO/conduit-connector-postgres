@@ -34,14 +34,17 @@ type CDCHandler struct {
 	tableKeys   map[string]string
 	relationSet *internal.RelationSet
 
+	// batchSize is the largest number of records this handler will send at once.
+	batchSize int
+	// recordsBatch holds the batch that is currently being built.
 	recordsBatch []opencdc.Record
-	out          chan<- []opencdc.Record
-	lastTXLSN    pglogrepl.LSN
+	// out is a sending channel with batches of records.
+	out chan<- []opencdc.Record
 
+	lastTXLSN      pglogrepl.LSN
 	withAvroSchema bool
 	keySchemas     map[string]cschema.Schema
 	payloadSchemas map[string]cschema.Schema
-	sdkBatchSize   int
 }
 
 func NewCDCHandler(
@@ -49,7 +52,7 @@ func NewCDCHandler(
 	tableKeys map[string]string,
 	out chan<- []opencdc.Record,
 	withAvroSchema bool,
-	sdkBatchSize int,
+	batchSize int,
 ) *CDCHandler {
 	return &CDCHandler{
 		tableKeys:      tableKeys,
@@ -59,16 +62,18 @@ func NewCDCHandler(
 		withAvroSchema: withAvroSchema,
 		keySchemas:     make(map[string]cschema.Schema),
 		payloadSchemas: make(map[string]cschema.Schema),
-		sdkBatchSize:   sdkBatchSize,
+		batchSize:      batchSize,
 	}
 }
 
-func (h *CDCHandler) Flush(ctx context.Context) error {
+func (h *CDCHandler) SendBatch(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case h.out <- h.recordsBatch:
-		sdk.Logger(ctx).Info().Int("records", len(h.recordsBatch)).Msg("flushing records")
+		sdk.Logger(ctx).Trace().
+			Int("records", len(h.recordsBatch)).
+			Msg("CDCHandler sending batch of records")
 		h.recordsBatch = []opencdc.Record{}
 		return nil
 	}
@@ -141,7 +146,7 @@ func (h *CDCHandler) handleInsert(
 	)
 	h.attachSchemas(rec, rel.RelationName)
 
-	return h.addToSendBatch(ctx, rec)
+	return h.addToBatch(ctx, rec)
 }
 
 // handleUpdate formats a record with UPDATE event data from Postgres and sends
@@ -181,7 +186,7 @@ func (h *CDCHandler) handleUpdate(
 	)
 	h.attachSchemas(rec, rel.RelationName)
 
-	return h.addToSendBatch(ctx, rec)
+	return h.addToBatch(ctx, rec)
 }
 
 // handleDelete formats a record with DELETE event data from Postgres and sends
@@ -213,15 +218,15 @@ func (h *CDCHandler) handleDelete(
 	)
 	h.attachSchemas(rec, rel.RelationName)
 
-	return h.addToSendBatch(ctx, rec)
+	return h.addToBatch(ctx, rec)
 }
 
-// addToSendBatch the record to the output channel or detect the cancellation of the
+// addToBatch the record to the output channel or detect the cancellation of the
 // context and return the context error.
-func (h *CDCHandler) addToSendBatch(ctx context.Context, rec opencdc.Record) error {
+func (h *CDCHandler) addToBatch(ctx context.Context, rec opencdc.Record) error {
 	h.recordsBatch = append(h.recordsBatch, rec)
-	if len(h.recordsBatch) >= h.sdkBatchSize {
-		return h.Flush(ctx)
+	if len(h.recordsBatch) >= h.batchSize {
+		return h.SendBatch(ctx)
 	}
 
 	return nil

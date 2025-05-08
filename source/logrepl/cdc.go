@@ -35,7 +35,7 @@ type CDCConfig struct {
 	Tables          []string
 	TableKeys       map[string]string
 	WithAvroSchema  bool
-	SDKBatchSize    int
+	BatchSize       int
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -66,7 +66,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	}
 
 	records := make(chan []opencdc.Record)
-	handler := NewCDCHandler(internal.NewRelationSet(), c.TableKeys, records, c.WithAvroSchema, c.SDKBatchSize)
+	handler := NewCDCHandler(internal.NewRelationSet(), c.TableKeys, records, c.WithAvroSchema, c.BatchSize)
 
 	sub, err := internal.CreateSubscription(
 		ctx,
@@ -144,14 +144,18 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 		// open, this is a strange case, shouldn't actually happen
 		return nil, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
 	case recBatch := <-i.records:
-		sdk.Logger(ctx).Info().Int("records", len(recBatch)).Msg("CDCIterator received batch of records (blocking)")
+		sdk.Logger(ctx).Trace().
+			Int("records", len(recBatch)).
+			Msg("CDCIterator.NextN received initial batch of records")
 		recs = recBatch
 	}
 
 	for len(recs) < n {
 		select {
 		case recBatch := <-i.records:
-			sdk.Logger(ctx).Info().Int("records", len(recBatch)).Msg("CDCIterator received batch of records (non-blocking)")
+			sdk.Logger(ctx).Trace().
+				Int("records", len(recBatch)).
+				Msg("CDCIterator.NextN received additional batch of records")
 			// todo we might be over N, fix
 			recs = append(recs, recBatch...)
 		case <-ctx.Done():
@@ -173,7 +177,9 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 		}
 	}
 
-	sdk.Logger(ctx).Info().Int("records", len(recs)).Msg("CDCIterator returning records")
+	sdk.Logger(ctx).Trace().
+		Int("records", len(recs)).
+		Msg("CDCIterator.NextN returning records")
 	return recs, nil
 }
 

@@ -42,15 +42,14 @@ type CombinedIterator struct {
 }
 
 type Config struct {
-	Position          opencdc.Position
-	SlotName          string
-	PublicationName   string
-	Tables            []string
-	TableKeys         map[string]string
-	WithSnapshot      bool
-	WithAvroSchema    bool
-	SnapshotFetchSize int
-	SDKBatchSize      int
+	Position        opencdc.Position
+	SlotName        string
+	PublicationName string
+	Tables          []string
+	TableKeys       map[string]string
+	WithSnapshot    bool
+	WithAvroSchema  bool
+	BatchSize       int
 }
 
 // Validate performs validation tasks on the config.
@@ -184,7 +183,7 @@ func (c *CombinedIterator) initCDCIterator(ctx context.Context, pos position.Pos
 		Tables:          c.conf.Tables,
 		TableKeys:       c.conf.TableKeys,
 		WithAvroSchema:  c.conf.WithAvroSchema,
-		SDKBatchSize:    c.conf.SDKBatchSize,
+		BatchSize:       c.conf.BatchSize,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create CDC iterator: %w", err)
@@ -210,7 +209,7 @@ func (c *CombinedIterator) initSnapshotIterator(ctx context.Context, pos positio
 		Tables:         c.conf.Tables,
 		TableKeys:      c.conf.TableKeys,
 		TXSnapshotID:   c.cdcIterator.TXSnapshotID(),
-		FetchSize:      c.conf.SnapshotFetchSize,
+		FetchSize:      c.conf.BatchSize,
 		WithAvroSchema: c.conf.WithAvroSchema,
 	})
 	if err != nil {

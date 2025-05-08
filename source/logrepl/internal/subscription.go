@@ -43,25 +43,25 @@ type Subscription struct {
 	StatusTimeout time.Duration
 	FlushInterval time.Duration
 	TXSnapshotID  string
+	BatchSize     int
 
 	conn *pgxpool.Conn
+
 	pool *pgxpool.Pool
 
-	stop context.CancelFunc
+	stop  context.CancelFunc
+	ready chan struct{}
+	done  chan struct{}
 
-	ready   chan struct{}
-	done    chan struct{}
-	doneErr error
-
+	doneErr      error
 	walWritten   pglogrepl.LSN
 	walFlushed   pglogrepl.LSN
 	serverWALEnd pglogrepl.LSN
-	SDKBatchSize int
 }
 
 type Handler interface {
 	Handle(context.Context, pglogrepl.Message, pglogrepl.LSN) (pglogrepl.LSN, error)
-	Flush(ctx context.Context) error
+	SendBatch(ctx context.Context) error
 }
 
 // CreateSubscription initializes the logical replication subscriber by creating the replication slot.
@@ -186,7 +186,7 @@ func (s *Subscription) listen(ctx context.Context) error {
 		}
 
 		if time.Now().After(nextFlush) {
-			err := s.Handler.Flush(ctx)
+			err := s.Handler.SendBatch(ctx)
 			if err != nil {
 				return fmt.Errorf("handler failed flushing messages: %v", err)
 			}
