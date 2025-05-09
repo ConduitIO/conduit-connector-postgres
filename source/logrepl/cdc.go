@@ -83,7 +83,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		c.PublicationName,
 		c.Tables,
 		c.LSN,
-		handler,
+		handler.Handle,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize subscription: %w", err)

@@ -59,9 +59,7 @@ type Subscription struct {
 	serverWALEnd pglogrepl.LSN
 }
 
-type Handler interface {
-	Handle(context.Context, pglogrepl.Message, pglogrepl.LSN) (pglogrepl.LSN, error)
-}
+type Handler func(context.Context, pglogrepl.Message, pglogrepl.LSN) (pglogrepl.LSN, error)
 
 // CreateSubscription initializes the logical replication subscriber by creating the replication slot.
 func CreateSubscription(
@@ -257,7 +255,7 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 		return fmt.Errorf("invalid message: %w", err)
 	}
 
-	writtenLSN, err := s.Handler.Handle(ctx, logicalMsg, xld.WALStart)
+	writtenLSN, err := s.Handler(ctx, logicalMsg, xld.WALStart)
 	if err != nil {
 		return fmt.Errorf("handler error: %w", err)
 	}
