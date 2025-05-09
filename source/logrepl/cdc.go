@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
@@ -35,13 +36,14 @@ type CDCConfig struct {
 	Tables          []string
 	TableKeys       map[string]string
 	WithAvroSchema  bool
+	BatchSize       int
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
 // slot and returns them to the caller through NextN.
 type CDCIterator struct {
-	config  CDCConfig
-	records chan opencdc.Record
+	config        CDCConfig
+	recordBatches chan []opencdc.Record
 
 	sub *internal.Subscription
 }
@@ -64,8 +66,16 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 			Msgf("Publication %q already exists.", c.PublicationName)
 	}
 
-	records := make(chan opencdc.Record)
-	handler := NewCDCHandler(internal.NewRelationSet(), c.TableKeys, records, c.WithAvroSchema)
+	records := make(chan []opencdc.Record)
+	handler := NewCDCHandler(
+		internal.NewRelationSet(),
+		c.TableKeys,
+		records,
+		c.WithAvroSchema,
+		c.BatchSize,
+		// todo make configurable
+		time.Second,
+	)
 
 	sub, err := internal.CreateSubscription(
 		ctx,
@@ -81,9 +91,9 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	}
 
 	return &CDCIterator{
-		config:  c,
-		records: records,
-		sub:     sub,
+		config:        c,
+		recordBatches: records,
+		sub:           sub,
 	}, nil
 }
 
@@ -142,16 +152,24 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 		// subscription stopped without an error and the context is still
 		// open, this is a strange case, shouldn't actually happen
 		return nil, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
-	case rec := <-i.records:
-		recs = append(recs, rec)
+	case batch := <-i.recordBatches:
+		sdk.Logger(ctx).Trace().
+			Int("records", len(batch)).
+			Msg("CDCIterator.NextN received initial batch of records")
+		recs = batch
 	}
 
 	for len(recs) < n {
 		select {
-		case rec := <-i.records:
-			recs = append(recs, rec)
+		case batch := <-i.recordBatches:
+			sdk.Logger(ctx).Trace().
+				Int("records", len(batch)).
+				Msg("CDCIterator.NextN received additional batch of records")
+			// todo we might be over N, fix
+			recs = append(recs, batch...)
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			// Return what we have with the error
+			return recs, ctx.Err()
 		case <-i.sub.Done():
 			if err := i.sub.Err(); err != nil {
 				return recs, fmt.Errorf("logical replication error: %w", err)
@@ -168,6 +186,9 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 		}
 	}
 
+	sdk.Logger(ctx).Trace().
+		Int("records", len(recs)).
+		Msg("CDCIterator.NextN returning records")
 	return recs, nil
 }
 
