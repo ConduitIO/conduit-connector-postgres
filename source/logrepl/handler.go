@@ -40,9 +40,9 @@ type CDCHandler struct {
 	batchSize     int
 	flushInterval time.Duration
 
-	// recordsBatch holds the batch that is currently being built.
-	recordsBatch     []opencdc.Record
-	recordsBatchLock sync.Mutex
+	// recordBatch holds the batch that is currently being built.
+	recordBatch     []opencdc.Record
+	recordBatchLock sync.Mutex
 
 	// out is a sending channel with batches of records.
 	out            chan<- []opencdc.Record
@@ -63,7 +63,7 @@ func NewCDCHandler(
 	h := &CDCHandler{
 		tableKeys:      tableKeys,
 		relationSet:    rs,
-		recordsBatch:   make([]opencdc.Record, 0, batchSize),
+		recordBatch:    make([]opencdc.Record, 0, batchSize),
 		out:            out,
 		withAvroSchema: withAvroSchema,
 		keySchemas:     make(map[string]cschema.Schema),
@@ -89,17 +89,17 @@ func (h *CDCHandler) scheduleFlushing() {
 }
 
 func (h *CDCHandler) flush(ctx context.Context) error {
-	h.recordsBatchLock.Lock()
-	defer h.recordsBatchLock.Unlock()
+	h.recordBatchLock.Lock()
+	defer h.recordBatchLock.Unlock()
 
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case h.out <- h.recordsBatch:
+	case h.out <- h.recordBatch:
 		sdk.Logger(ctx).Trace().
-			Int("records", len(h.recordsBatch)).
+			Int("records", len(h.recordBatch)).
 			Msg("CDCHandler sending batch of records")
-		h.recordsBatch = make([]opencdc.Record, 0, h.batchSize)
+		h.recordBatch = make([]opencdc.Record, 0, h.batchSize)
 		return nil
 	}
 }
@@ -249,12 +249,12 @@ func (h *CDCHandler) handleDelete(
 // addToBatch the record to the output channel or detect the cancellation of the
 // context and return the context error.
 func (h *CDCHandler) addToBatch(ctx context.Context, rec opencdc.Record) error {
-	h.recordsBatchLock.Lock()
+	h.recordBatchLock.Lock()
 
-	h.recordsBatch = append(h.recordsBatch, rec)
-	currentBatchSize := len(h.recordsBatch)
+	h.recordBatch = append(h.recordBatch, rec)
+	currentBatchSize := len(h.recordBatch)
 
-	h.recordsBatchLock.Unlock()
+	h.recordBatchLock.Unlock()
 
 	if currentBatchSize >= h.batchSize {
 		return h.flush(ctx)
