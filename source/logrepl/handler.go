@@ -17,6 +17,8 @@ package logrepl
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	cschema "github.com/conduitio/conduit-commons/schema"
@@ -35,12 +37,15 @@ type CDCHandler struct {
 	relationSet *internal.RelationSet
 
 	// batchSize is the largest number of records this handler will send at once.
-	batchSize int
-	// recordsBatch holds the batch that is currently being built.
-	recordsBatch []opencdc.Record
-	// out is a sending channel with batches of records.
-	out chan<- []opencdc.Record
+	batchSize     int
+	flushInterval time.Duration
 
+	// recordsBatch holds the batch that is currently being built.
+	recordsBatch     []opencdc.Record
+	recordsBatchLock sync.Mutex
+
+	// out is a sending channel with batches of records.
+	out            chan<- []opencdc.Record
 	lastTXLSN      pglogrepl.LSN
 	withAvroSchema bool
 	keySchemas     map[string]cschema.Schema
@@ -53,8 +58,9 @@ func NewCDCHandler(
 	out chan<- []opencdc.Record,
 	withAvroSchema bool,
 	batchSize int,
+	flushInterval time.Duration,
 ) *CDCHandler {
-	return &CDCHandler{
+	h := &CDCHandler{
 		tableKeys:      tableKeys,
 		relationSet:    rs,
 		recordsBatch:   []opencdc.Record{},
@@ -63,10 +69,30 @@ func NewCDCHandler(
 		keySchemas:     make(map[string]cschema.Schema),
 		payloadSchemas: make(map[string]cschema.Schema),
 		batchSize:      batchSize,
+		flushInterval:  flushInterval,
+	}
+
+	go h.scheduleFlushing()
+
+	return h
+}
+
+func (h *CDCHandler) scheduleFlushing() {
+	ctx := context.Background()
+
+	for range time.Tick(h.flushInterval) {
+		err := h.flush(ctx)
+		if err != nil {
+			fmt.Printf("Error flushing records: %v\n", err)
+			sdk.Logger(ctx).Err(err).Msg("Error flushing records")
+		}
 	}
 }
 
-func (h *CDCHandler) SendBatch(ctx context.Context) error {
+func (h *CDCHandler) flush(ctx context.Context) error {
+	h.recordsBatchLock.Lock()
+	defer h.recordsBatchLock.Unlock()
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -224,9 +250,13 @@ func (h *CDCHandler) handleDelete(
 // addToBatch the record to the output channel or detect the cancellation of the
 // context and return the context error.
 func (h *CDCHandler) addToBatch(ctx context.Context, rec opencdc.Record) error {
+	h.recordsBatchLock.Lock()
 	h.recordsBatch = append(h.recordsBatch, rec)
-	if len(h.recordsBatch) >= h.batchSize {
-		return h.SendBatch(ctx)
+	currentBatchSize := len(h.recordsBatch)
+	h.recordsBatchLock.Unlock()
+
+	if currentBatchSize >= h.batchSize {
+		return h.flush(ctx)
 	}
 
 	return nil
