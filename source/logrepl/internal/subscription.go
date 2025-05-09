@@ -41,19 +41,17 @@ type Subscription struct {
 	StartLSN      pglogrepl.LSN
 	Handler       Handler
 	StatusTimeout time.Duration
-	// FlushInterval time.Duration
-	TXSnapshotID string
-	BatchSize    int
+	TXSnapshotID  string
 
 	conn *pgxpool.Conn
-
 	pool *pgxpool.Pool
 
-	stop  context.CancelFunc
-	ready chan struct{}
-	done  chan struct{}
+	stop context.CancelFunc
 
-	doneErr      error
+	ready   chan struct{}
+	done    chan struct{}
+	doneErr error
+
 	walWritten   pglogrepl.LSN
 	walFlushed   pglogrepl.LSN
 	serverWALEnd pglogrepl.LSN
@@ -133,8 +131,7 @@ func CreateSubscription(
 		StartLSN:      startLSN,
 		Handler:       h,
 		StatusTimeout: 10 * time.Second,
-		// FlushInterval: time.Second,
-		TXSnapshotID: result.SnapshotName,
+		TXSnapshotID:  result.SnapshotName,
 
 		conn: conn,
 		pool: pool,
