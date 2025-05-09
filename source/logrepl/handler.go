@@ -83,8 +83,7 @@ func (h *CDCHandler) scheduleFlushing() {
 	for range time.Tick(h.flushInterval) {
 		err := h.flush(ctx)
 		if err != nil {
-			fmt.Printf("Error flushing records: %v\n", err)
-			sdk.Logger(ctx).Err(err).Msg("Error flushing records")
+			sdk.Logger(ctx).Err(err).Msg("failed flushing records")
 		}
 	}
 }
