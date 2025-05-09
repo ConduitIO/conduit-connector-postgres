@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
@@ -49,7 +50,13 @@ type Config struct {
 	TableKeys       map[string]string
 	WithSnapshot    bool
 	WithAvroSchema  bool
-	BatchSize       int
+
+	// BatchSize is the maximum size of a batch of records that the iterator
+	// will fetch from the database.
+	BatchSize int
+	// FlushInterval is the interval at which the iterator will return
+	// a batch of records, even if the specified BatchSize hasn't been reached.
+	FlushInterval time.Duration
 }
 
 // Validate performs validation tasks on the config.
@@ -184,6 +191,7 @@ func (c *CombinedIterator) initCDCIterator(ctx context.Context, pos position.Pos
 		TableKeys:       c.conf.TableKeys,
 		WithAvroSchema:  c.conf.WithAvroSchema,
 		BatchSize:       c.conf.BatchSize,
+		FlushInterval:   c.conf.FlushInterval,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create CDC iterator: %w", err)

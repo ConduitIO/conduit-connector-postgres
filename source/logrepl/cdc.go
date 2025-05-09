@@ -37,6 +37,7 @@ type CDCConfig struct {
 	TableKeys       map[string]string
 	WithAvroSchema  bool
 	BatchSize       int
+	FlushInterval   time.Duration
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -73,8 +74,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		records,
 		c.WithAvroSchema,
 		c.BatchSize,
-		// todo make configurable
-		time.Second,
+		c.FlushInterval,
 	)
 
 	sub, err := internal.CreateSubscription(
