@@ -63,7 +63,7 @@ func NewCDCHandler(
 	h := &CDCHandler{
 		tableKeys:      tableKeys,
 		relationSet:    rs,
-		recordsBatch:   []opencdc.Record{},
+		recordsBatch:   make([]opencdc.Record, 0, batchSize),
 		out:            out,
 		withAvroSchema: withAvroSchema,
 		keySchemas:     make(map[string]cschema.Schema),
@@ -100,7 +100,7 @@ func (h *CDCHandler) flush(ctx context.Context) error {
 		sdk.Logger(ctx).Trace().
 			Int("records", len(h.recordsBatch)).
 			Msg("CDCHandler sending batch of records")
-		h.recordsBatch = []opencdc.Record{}
+		h.recordsBatch = make([]opencdc.Record, 0, h.batchSize)
 		return nil
 	}
 }
@@ -251,8 +251,10 @@ func (h *CDCHandler) handleDelete(
 // context and return the context error.
 func (h *CDCHandler) addToBatch(ctx context.Context, rec opencdc.Record) error {
 	h.recordsBatchLock.Lock()
+
 	h.recordsBatch = append(h.recordsBatch, rec)
 	currentBatchSize := len(h.recordsBatch)
+
 	h.recordsBatchLock.Unlock()
 
 	if currentBatchSize >= h.batchSize {

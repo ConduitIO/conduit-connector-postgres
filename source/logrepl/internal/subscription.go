@@ -61,7 +61,6 @@ type Subscription struct {
 
 type Handler interface {
 	Handle(context.Context, pglogrepl.Message, pglogrepl.LSN) (pglogrepl.LSN, error)
-	// SendBatch(ctx context.Context) error
 }
 
 // CreateSubscription initializes the logical replication subscriber by creating the replication slot.
@@ -174,7 +173,6 @@ func (s *Subscription) listen(ctx context.Context) error {
 	// signal that the subscription is ready and is receiving messages
 	close(s.ready)
 	nextStatusUpdateAt := time.Now().Add(s.StatusTimeout)
-	// nextFlush := time.Now().Add(s.FlushInterval)
 
 	for {
 		if time.Now().After(nextStatusUpdateAt) {
@@ -184,14 +182,6 @@ func (s *Subscription) listen(ctx context.Context) error {
 			}
 			nextStatusUpdateAt = time.Now().Add(s.StatusTimeout)
 		}
-
-		// if time.Now().After(nextFlush) {
-		// 	err := s.Handler.SendBatch(ctx)
-		// 	if err != nil {
-		// 		return fmt.Errorf("handler failed flushing messages: %v", err)
-		// 	}
-		// 	nextFlush = time.Now().Add(s.FlushInterval)
-		// }
 
 		msg, err := s.receiveMessage(ctx, nextStatusUpdateAt)
 		if err != nil {
