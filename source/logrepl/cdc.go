@@ -68,6 +68,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 
 	batchesCh := make(chan []opencdc.Record)
 	handler := NewCDCHandler(
+		ctx,
 		internal.NewRelationSet(),
 		c.TableKeys,
 		batchesCh,

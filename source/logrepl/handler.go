@@ -52,14 +52,7 @@ type CDCHandler struct {
 	payloadSchemas map[string]cschema.Schema
 }
 
-func NewCDCHandler(
-	rs *internal.RelationSet,
-	tableKeys map[string]string,
-	out chan<- []opencdc.Record,
-	withAvroSchema bool,
-	batchSize int,
-	flushInterval time.Duration,
-) *CDCHandler {
+func NewCDCHandler(ctx context.Context, rs *internal.RelationSet, tableKeys map[string]string, out chan<- []opencdc.Record, withAvroSchema bool, batchSize int, flushInterval time.Duration) *CDCHandler {
 	h := &CDCHandler{
 		tableKeys:      tableKeys,
 		relationSet:    rs,
@@ -72,14 +65,12 @@ func NewCDCHandler(
 		flushInterval:  flushInterval,
 	}
 
-	go h.scheduleFlushing()
+	go h.scheduleFlushing(ctx)
 
 	return h
 }
 
-func (h *CDCHandler) scheduleFlushing() {
-	ctx := context.Background()
-
+func (h *CDCHandler) scheduleFlushing(ctx context.Context) {
 	for range time.Tick(h.flushInterval) {
 		err := h.flush(ctx)
 		if err != nil {
