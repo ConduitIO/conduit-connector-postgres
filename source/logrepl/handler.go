@@ -17,7 +17,6 @@ package logrepl
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
@@ -40,23 +39,26 @@ type CDCHandler struct {
 	batchSize     int
 	flushInterval time.Duration
 
-	// recordBatch holds the batch that is currently being built.
-	recordBatch     []opencdc.Record
-	recordBatchLock sync.Mutex
-
 	// out is a sending channel with batches of records.
-	out            chan<- []opencdc.Record
+	out            *internal.SharedQueue
 	lastTXLSN      pglogrepl.LSN
 	withAvroSchema bool
 	keySchemas     map[string]cschema.Schema
 	payloadSchemas map[string]cschema.Schema
 }
 
-func NewCDCHandler(ctx context.Context, rs *internal.RelationSet, tableKeys map[string]string, out chan<- []opencdc.Record, withAvroSchema bool, batchSize int, flushInterval time.Duration) *CDCHandler {
+func NewCDCHandler(
+	ctx context.Context,
+	rs *internal.RelationSet,
+	tableKeys map[string]string,
+	out *internal.SharedQueue,
+	withAvroSchema bool,
+	batchSize int,
+	flushInterval time.Duration,
+) *CDCHandler {
 	h := &CDCHandler{
 		tableKeys:      tableKeys,
 		relationSet:    rs,
-		recordBatch:    make([]opencdc.Record, 0, batchSize),
 		out:            out,
 		withAvroSchema: withAvroSchema,
 		keySchemas:     make(map[string]cschema.Schema),
@@ -65,34 +67,7 @@ func NewCDCHandler(ctx context.Context, rs *internal.RelationSet, tableKeys map[
 		flushInterval:  flushInterval,
 	}
 
-	go h.scheduleFlushing(ctx)
-
 	return h
-}
-
-func (h *CDCHandler) scheduleFlushing(ctx context.Context) {
-	for range time.Tick(h.flushInterval) {
-		err := h.flush(ctx)
-		if err != nil {
-			sdk.Logger(ctx).Err(err).Msg("failed flushing records")
-		}
-	}
-}
-
-func (h *CDCHandler) flush(ctx context.Context) error {
-	h.recordBatchLock.Lock()
-	defer h.recordBatchLock.Unlock()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case h.out <- h.recordBatch:
-		sdk.Logger(ctx).Trace().
-			Int("records", len(h.recordBatch)).
-			Msg("CDCHandler sending batch of records")
-		h.recordBatch = make([]opencdc.Record, 0, h.batchSize)
-		return nil
-	}
 }
 
 // Handle is the handler function that receives all logical replication messages.
@@ -240,17 +215,7 @@ func (h *CDCHandler) handleDelete(
 // addToBatch the record to the output channel or detect the cancellation of the
 // context and return the context error.
 func (h *CDCHandler) addToBatch(ctx context.Context, rec opencdc.Record) error {
-	h.recordBatchLock.Lock()
-
-	h.recordBatch = append(h.recordBatch, rec)
-	currentBatchSize := len(h.recordBatch)
-
-	h.recordBatchLock.Unlock()
-
-	if currentBatchSize >= h.batchSize {
-		return h.flush(ctx)
-	}
-
+	h.out.Push(rec)
 	return nil
 }
 

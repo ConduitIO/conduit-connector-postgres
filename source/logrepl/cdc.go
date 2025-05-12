@@ -43,7 +43,7 @@ type CDCConfig struct {
 // slot and returns them to the caller through NextN.
 type CDCIterator struct {
 	config    CDCConfig
-	batchesCh chan []opencdc.Record
+	batchesCh *internal.SharedQueue
 
 	sub *internal.Subscription
 }
@@ -66,7 +66,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 			Msgf("Publication %q already exists.", c.PublicationName)
 	}
 
-	batchesCh := make(chan []opencdc.Record)
+	batchesCh := internal.NewSharedQueue(c.BatchSize)
 	handler := NewCDCHandler(
 		ctx,
 		internal.NewRelationSet(),
@@ -158,33 +158,6 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 			Int("records", len(batch)).
 			Msg("CDCIterator.NextN received initial batch of records")
 		recs = batch
-	}
-
-	for len(recs) < n {
-		select {
-		case batch := <-i.batchesCh:
-			sdk.Logger(ctx).Trace().
-				Int("records", len(batch)).
-				Msg("CDCIterator.NextN received additional batch of records")
-			// todo we might be over N, fix
-			recs = append(recs, batch...)
-		case <-ctx.Done():
-			// Return what we have with the error
-			return recs, ctx.Err()
-		case <-i.sub.Done():
-			if err := i.sub.Err(); err != nil {
-				return recs, fmt.Errorf("logical replication error: %w", err)
-			}
-			if err := ctx.Err(); err != nil {
-				// Return what we have with context error
-				return recs, err
-			}
-			// Return what we have with subscription stopped error
-			return recs, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
-		default:
-			// No more records currently available
-			return recs, nil
-		}
 	}
 
 	sdk.Logger(ctx).Trace().
