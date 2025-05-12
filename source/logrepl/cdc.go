@@ -42,8 +42,8 @@ type CDCConfig struct {
 // CDCIterator asynchronously listens for events from the logical replication
 // slot and returns them to the caller through NextN.
 type CDCIterator struct {
-	config        CDCConfig
-	recordBatches chan []opencdc.Record
+	config    CDCConfig
+	batchesCh chan []opencdc.Record
 
 	sub *internal.Subscription
 }
@@ -66,11 +66,11 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 			Msgf("Publication %q already exists.", c.PublicationName)
 	}
 
-	records := make(chan []opencdc.Record)
+	batchesCh := make(chan []opencdc.Record)
 	handler := NewCDCHandler(
 		internal.NewRelationSet(),
 		c.TableKeys,
-		records,
+		batchesCh,
 		c.WithAvroSchema,
 		c.BatchSize,
 		// todo make configurable
@@ -91,9 +91,9 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	}
 
 	return &CDCIterator{
-		config:        c,
-		recordBatches: records,
-		sub:           sub,
+		config:    c,
+		batchesCh: batchesCh,
+		sub:       sub,
 	}, nil
 }
 
@@ -152,7 +152,7 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 		// subscription stopped without an error and the context is still
 		// open, this is a strange case, shouldn't actually happen
 		return nil, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
-	case batch := <-i.recordBatches:
+	case batch := <-i.batchesCh:
 		sdk.Logger(ctx).Trace().
 			Int("records", len(batch)).
 			Msg("CDCIterator.NextN received initial batch of records")
@@ -161,7 +161,7 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 
 	for len(recs) < n {
 		select {
-		case batch := <-i.recordBatches:
+		case batch := <-i.batchesCh:
 			sdk.Logger(ctx).Trace().
 				Int("records", len(batch)).
 				Msg("CDCIterator.NextN received additional batch of records")
