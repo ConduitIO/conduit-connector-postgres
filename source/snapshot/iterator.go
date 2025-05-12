@@ -93,7 +93,7 @@ func (i *Iterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
 	select {
 	case <-ctx.Done():
 		return nil, fmt.Errorf("iterator stopped: %w", ctx.Err())
-	case dataSlice, ok := <-i.data:
+	case batch, ok := <-i.data:
 		if !ok { // closed
 			if err := i.t.Err(); err != nil {
 				return nil, fmt.Errorf("fetchers exited unexpectedly: %w", err)
@@ -104,7 +104,7 @@ func (i *Iterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
 			return nil, ErrIteratorDone
 		}
 
-		for _, d := range dataSlice {
+		for _, d := range batch {
 			i.acks.Add(1)
 			records = append(records, i.buildRecord(d))
 		}
@@ -115,11 +115,11 @@ func (i *Iterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
 		select {
 		case <-ctx.Done():
 			return records, ctx.Err()
-		case dataSlice, ok := <-i.data:
+		case batch, ok := <-i.data:
 			if !ok { // closed
 				return records, nil
 			}
-			for _, d := range dataSlice {
+			for _, d := range batch {
 				i.acks.Add(1)
 				records = append(records, i.buildRecord(d))
 			}
