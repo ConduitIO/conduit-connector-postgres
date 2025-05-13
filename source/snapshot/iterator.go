@@ -40,10 +40,11 @@ type Config struct {
 }
 
 type Iterator struct {
-	db      *pgxpool.Pool
-	t       *tomb.Tomb
-	workers []*FetchWorker
-	acks    csync.WaitGroup
+	db *pgxpool.Pool
+
+	workersTomb *tomb.Tomb
+	workers     []*FetchWorker
+	acks        csync.WaitGroup
 
 	conf Config
 
@@ -65,7 +66,7 @@ func NewIterator(ctx context.Context, db *pgxpool.Pool, c Config) (*Iterator, er
 	t, _ := tomb.WithContext(ctx)
 	i := &Iterator{
 		db:           db,
-		t:            t,
+		workersTomb:  t,
 		conf:         c,
 		data:         make(chan []FetchData),
 		lastPosition: p,
@@ -95,7 +96,7 @@ func (i *Iterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
 		return nil, fmt.Errorf("iterator stopped: %w", ctx.Err())
 	case batch, ok := <-i.data:
 		if !ok { // closed
-			if err := i.t.Err(); err != nil {
+			if err := i.workersTomb.Err(); err != nil {
 				return nil, fmt.Errorf("fetchers exited unexpectedly: %w", err)
 			}
 			if err := i.acks.Wait(ctx); err != nil {
@@ -138,8 +139,8 @@ func (i *Iterator) Ack(_ context.Context, _ opencdc.Position) error {
 }
 
 func (i *Iterator) Teardown(_ context.Context) error {
-	if i.t != nil {
-		i.t.Kill(errors.New("tearing down snapshot iterator"))
+	if i.workersTomb != nil {
+		i.workersTomb.Kill(errors.New("tearing down snapshot iterator"))
 	}
 
 	return nil
@@ -189,18 +190,17 @@ func (i *Iterator) initFetchers(ctx context.Context) error {
 }
 
 func (i *Iterator) startWorkers() {
-	for j := range i.workers {
-		f := i.workers[j]
-		i.t.Go(func() error {
-			ctx := i.t.Context(nil) //nolint:staticcheck // This is the correct usage of tomb.Context
-			if err := f.Run(ctx); err != nil {
-				return fmt.Errorf("fetcher for table %q exited: %w", f.conf.Table, err)
+	for _, worker := range i.workers {
+		i.workersTomb.Go(func() error {
+			ctx := i.workersTomb.Context(nil) //nolint:staticcheck // This is the correct usage of tomb.Context
+			if err := worker.Run(ctx); err != nil {
+				return fmt.Errorf("fetcher for table %q exited: %w", worker.conf.Table, err)
 			}
 			return nil
 		})
 	}
 	go func() {
-		<-i.t.Dead()
+		<-i.workersTomb.Dead()
 		close(i.data)
 	}()
 }
