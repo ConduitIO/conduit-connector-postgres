@@ -138,17 +138,19 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 
 	// Block until at least one record is received or context is canceled
 	// todo block until context done, or subscription done
-	recs := make([]opencdc.Record, 0, n)
-	first := i.batchesCh.GetWait()
-	recs = append(recs, first)
+	// recs := make([]opencdc.Record, 0, n)
 
-	for len(recs) < n {
-		rec, err := i.batchesCh.Get()
-		if errors.Is(err, internal.ErrNoElementsAvailable) {
-			break
-		}
-		recs = append(recs, rec)
-	}
+	recs := i.batchesCh.GetAllWait()
+
+	// recs = append(recs, first)
+	//
+	// for len(recs) < n {
+	// 	rec, err := i.batchesCh.Get()
+	// 	if errors.Is(err, internal.ErrNoElementsAvailable) {
+	// 		break
+	// 	}
+	// 	recs = append(recs, rec)
+	// }
 
 	sdk.Logger(ctx).Trace().
 		Int("records", len(recs)).

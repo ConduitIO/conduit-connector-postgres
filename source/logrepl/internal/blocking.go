@@ -129,6 +129,21 @@ func (bq *Blocking[T]) GetWait() (v T) {
 
 	return elem
 }
+func (bq *Blocking[T]) GetAllWait() (v []T) {
+	bq.lock.Lock()
+	defer bq.lock.Unlock()
+
+	for bq.isEmpty() {
+		bq.notEmptyCond.Wait()
+	}
+
+	elems := bq.elems
+	bq.elems = bq.elems[:]
+
+	bq.notFullCond.Signal()
+
+	return elems
+}
 
 // Get removes and returns the head of the elements queue.
 // If no element is available it returns an ErrNoElementsAvailable error.
