@@ -162,6 +162,7 @@ func (bq *Blocking[T]) GetWait() (v T) {
 
 	return elem
 }
+
 func (bq *Blocking[T]) GetAllWait() (v []T) {
 	bq.lock.Lock()
 	defer bq.lock.Unlock()
@@ -274,6 +275,14 @@ func (bq *Blocking[T]) IsEmpty() bool {
 	defer bq.lock.RUnlock()
 
 	return bq.isEmpty()
+}
+
+// IsEmpty returns true if the queue is empty.
+func (bq *Blocking[T]) IsFull() bool {
+	bq.lock.RLock()
+	defer bq.lock.RUnlock()
+
+	return bq.isFull()
 }
 
 // ===================================Helpers==================================
