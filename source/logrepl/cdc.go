@@ -43,7 +43,7 @@ type CDCConfig struct {
 // slot and returns them to the caller through NextN.
 type CDCIterator struct {
 	config    CDCConfig
-	batchesCh *internal.SharedQueue
+	batchesCh *internal.Blocking[opencdc.Record]
 
 	sub *internal.Subscription
 }
@@ -66,7 +66,8 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 			Msgf("Publication %q already exists.", c.PublicationName)
 	}
 
-	batchesCh := internal.NewSharedQueue(c.BatchSize)
+	var elems []opencdc.Record
+	batchesCh := internal.NewBlocking(elems, internal.WithCapacity(c.BatchSize))
 	handler := NewCDCHandler(
 		ctx,
 		internal.NewRelationSet(),
@@ -137,7 +138,17 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 
 	// Block until at least one record is received or context is canceled
 	// todo block until context done, or subscription done
-	recs := i.batchesCh.PopAll()
+	recs := make([]opencdc.Record, 0, n)
+	first := i.batchesCh.GetWait()
+	recs = append(recs, first)
+
+	for len(recs) < n {
+		rec, err := i.batchesCh.Get()
+		if errors.Is(err, internal.ErrNoElementsAvailable) {
+			break
+		}
+		recs = append(recs, rec)
+	}
 
 	sdk.Logger(ctx).Trace().
 		Int("records", len(recs)).
