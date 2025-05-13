@@ -40,7 +40,7 @@ type CDCHandler struct {
 	flushInterval time.Duration
 
 	// out is a sending channel with batches of records.
-	out            *internal.SharedQueue
+	out            *internal.Blocking[opencdc.Record]
 	lastTXLSN      pglogrepl.LSN
 	withAvroSchema bool
 	keySchemas     map[string]cschema.Schema
@@ -51,7 +51,7 @@ func NewCDCHandler(
 	ctx context.Context,
 	rs *internal.RelationSet,
 	tableKeys map[string]string,
-	out *internal.SharedQueue,
+	out *internal.Blocking[opencdc.Record],
 	withAvroSchema bool,
 	batchSize int,
 	flushInterval time.Duration,
@@ -215,7 +215,7 @@ func (h *CDCHandler) handleDelete(
 // addToBatch the record to the output channel or detect the cancellation of the
 // context and return the context error.
 func (h *CDCHandler) addToBatch(ctx context.Context, rec opencdc.Record) error {
-	h.out.Push(rec)
+	h.out.OfferWait(rec)
 	return nil
 }
 
