@@ -136,21 +136,27 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 		return nil, fmt.Errorf("n must be greater than 0, got %d", n)
 	}
 
-	// Block until at least one record is received or context is canceled
-	// todo block until context done, or subscription done
-	// recs := make([]opencdc.Record, 0, n)
+	_, ok := <-ctx.Done()
+	if !ok {
+		return nil, ctx.Err()
+	}
+
+	_, ok = <-i.sub.Done()
+	if !ok {
+		if err := i.sub.Err(); err != nil {
+			return nil, fmt.Errorf("logical replication error: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			// subscription is done because the context is canceled, we went
+			// into the wrong case by chance
+			return nil, err
+		}
+		// subscription stopped without an error and the context is still
+		// open, this is a strange case, shouldn't actually happen
+		return nil, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
+	}
 
 	recs := i.batchesCh.GetAllWait()
-
-	// recs = append(recs, first)
-	//
-	// for len(recs) < n {
-	// 	rec, err := i.batchesCh.Get()
-	// 	if errors.Is(err, internal.ErrNoElementsAvailable) {
-	// 		break
-	// 	}
-	// 	recs = append(recs, rec)
-	// }
 
 	sdk.Logger(ctx).Trace().
 		Int("records", len(recs)).
