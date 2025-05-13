@@ -45,7 +45,8 @@ type CDCIterator struct {
 	config    CDCConfig
 	batchesCh chan []opencdc.Record
 
-	sub *internal.Subscription
+	sub              *internal.Subscription
+	recordsPrevBatch []opencdc.Record
 }
 
 // NewCDCIterator initializes logical replication by creating the publication and subscription manager.
@@ -135,7 +136,8 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 		return nil, fmt.Errorf("n must be greater than 0, got %d", n)
 	}
 
-	var recs []opencdc.Record
+	recs := make([]opencdc.Record, 0, n)
+	copy(recs, i.recordsPrevBatch)
 
 	// Block until at least one record is received or context is canceled
 	select {
@@ -166,8 +168,8 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 			sdk.Logger(ctx).Trace().
 				Int("records", len(batch)).
 				Msg("CDCIterator.NextN received additional batch of records")
-			// todo we might be over N, fix
-			recs = append(recs, batch...)
+
+			i.fillFromBatch(recs, batch, n)
 		case <-ctx.Done():
 			// Return what we have with the error
 			return recs, ctx.Err()
@@ -243,4 +245,14 @@ func (i *CDCIterator) subscriberReady() bool {
 // iterator is resuming.
 func (i *CDCIterator) TXSnapshotID() string {
 	return i.sub.TXSnapshotID
+}
+
+func (i *CDCIterator) fillFromBatch(recs []opencdc.Record, batch []opencdc.Record, max int) {
+	if len(batch) == 0 || len(recs) > max {
+		return
+	}
+
+	needed := max - len(recs)
+	recs = append(recs, batch[:needed]...)
+	i.recordsPrevBatch = batch[needed:]
 }
