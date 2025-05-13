@@ -133,6 +133,7 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 		return nil, fmt.Errorf("n must be greater than 0, got %d", n)
 	}
 
+	i.sub.FlushASAP()
 	var recs []opencdc.Record
 
 	// Block until at least one record is received or context is canceled
@@ -156,33 +157,6 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 			Int("records", len(recBatch)).
 			Msg("CDCIterator.NextN received initial batch of records")
 		recs = recBatch
-	}
-
-	for len(recs) < n {
-		select {
-		case recBatch := <-i.records:
-			sdk.Logger(ctx).Trace().
-				Int("records", len(recBatch)).
-				Msg("CDCIterator.NextN received additional batch of records")
-			// todo we might be over N, fix
-			recs = append(recs, recBatch...)
-		case <-ctx.Done():
-			// Return what we have with the error
-			return recs, ctx.Err()
-		case <-i.sub.Done():
-			if err := i.sub.Err(); err != nil {
-				return recs, fmt.Errorf("logical replication error: %w", err)
-			}
-			if err := ctx.Err(); err != nil {
-				// Return what we have with context error
-				return recs, err
-			}
-			// Return what we have with subscription stopped error
-			return recs, fmt.Errorf("subscription stopped, no more data to fetch (this smells like a bug)")
-		default:
-			// No more records currently available
-			return recs, nil
-		}
 	}
 
 	sdk.Logger(ctx).Trace().

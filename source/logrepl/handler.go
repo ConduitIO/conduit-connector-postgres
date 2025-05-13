@@ -17,7 +17,7 @@ package logrepl
 import (
 	"context"
 	"fmt"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
@@ -37,12 +37,12 @@ type CDCHandler struct {
 	relationSet *internal.RelationSet
 
 	// batchSize is the largest number of records this handler will send at once.
-	batchSize     int
-	flushInterval time.Duration
+	batchSize int
+	// flushInterval time.Duration
 
 	// recordsBatch holds the batch that is currently being built.
 	recordsBatch     *internal.Blocking[opencdc.Record]
-	recordsBatchLock sync.Mutex
+	flushImmediately atomic.Bool
 
 	// out is a sending channel with batches of records.
 	out            chan<- []opencdc.Record
@@ -69,24 +69,14 @@ func NewCDCHandler(
 		keySchemas:     make(map[string]cschema.Schema),
 		payloadSchemas: make(map[string]cschema.Schema),
 		batchSize:      batchSize,
-		flushInterval:  flushInterval,
+		// flushInterval:  flushInterval,
 	}
-
-	go h.scheduleFlushing()
 
 	return h
 }
 
-func (h *CDCHandler) scheduleFlushing() {
-	ctx := context.Background()
-
-	for range time.Tick(h.flushInterval) {
-		err := h.flush(ctx)
-		if err != nil {
-			fmt.Printf("Error flushing records: %v\n", err)
-			sdk.Logger(ctx).Err(err).Msg("Error flushing records")
-		}
-	}
+func (h *CDCHandler) FlushASAP() {
+	h.flushImmediately.Store(true)
 }
 
 func (h *CDCHandler) flush(ctx context.Context) error {
@@ -253,7 +243,7 @@ func (h *CDCHandler) addToBatch(ctx context.Context, rec opencdc.Record) error {
 		return fmt.Errorf("failed to flush records: %w", err)
 	}
 
-	if h.recordsBatch.IsFull() {
+	if h.recordsBatch.IsFull() || h.flushImmediately.Load() {
 		return h.flush(ctx)
 	}
 

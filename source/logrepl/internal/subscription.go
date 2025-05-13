@@ -61,6 +61,7 @@ type Subscription struct {
 
 type Handler interface {
 	Handle(context.Context, pglogrepl.Message, pglogrepl.LSN) (pglogrepl.LSN, error)
+	FlushASAP()
 }
 
 // CreateSubscription initializes the logical replication subscriber by creating the replication slot.
@@ -474,4 +475,8 @@ func (s *Subscription) sentStandbyDone(ctx context.Context) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+func (s *Subscription) FlushASAP() {
+	s.Handler.FlushASAP()
 }
