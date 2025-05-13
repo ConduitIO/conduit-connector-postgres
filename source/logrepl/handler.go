@@ -89,6 +89,7 @@ func (h *CDCHandler) flush(ctx context.Context) error {
 		sdk.Logger(ctx).Trace().
 			Int("records", len(recs)).
 			Msg("CDCHandler sending batch of records")
+		h.flushImmediately.Store(false)
 		return nil
 	}
 }
