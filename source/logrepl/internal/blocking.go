@@ -2,10 +2,43 @@ package internal
 
 import (
 	"encoding/json"
+	"errors"
 	"sync"
 )
 
 // var _ Queue[any] = (*Blocking[any])(nil)
+
+var (
+	// ErrNoElementsAvailable is an error returned whenever there are no
+	// elements available to be extracted from a queue.
+	ErrNoElementsAvailable = errors.New("no elements available in the queue")
+
+	// ErrQueueIsFull is an error returned whenever the queue is full and there
+	// is an attempt to add an element to it.
+	ErrQueueIsFull = errors.New("queue is full")
+)
+
+type options struct {
+	capacity *int
+}
+
+// An Option configures a Queue using the functional options paradigm.
+type Option interface {
+	apply(o *options)
+}
+
+type capacityOption int
+
+func (c capacityOption) apply(opts *options) {
+	ic := int(c)
+
+	opts.capacity = &ic
+}
+
+// WithCapacity specifies a fixed capacity for a queue.
+func WithCapacity(capacity int) Option {
+	return capacityOption(capacity)
+}
 
 // Blocking is a Queue implementation that additionally supports operations
 // that wait for the queue to have available items, and wait for a slot to
