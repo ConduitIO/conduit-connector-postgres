@@ -307,8 +307,11 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 		nread++
 	}
 
-	if err := f.send(ctx, toBeSent); err != nil {
-		return nread, fmt.Errorf("failed to send record: %w", err)
+	if nread > 0 {
+		err := f.send(ctx, toBeSent)
+		if err != nil {
+			return nread, fmt.Errorf("failed to send record: %w", err)
+		}
 	}
 
 	if rows.Err() != nil {
