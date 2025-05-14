@@ -17,6 +17,8 @@ package logrepl
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	cschema "github.com/conduitio/conduit-commons/schema"
@@ -33,22 +35,75 @@ import (
 type CDCHandler struct {
 	tableKeys   map[string]string
 	relationSet *internal.RelationSet
-	out         chan<- opencdc.Record
-	lastTXLSN   pglogrepl.LSN
 
+	// batchSize is the largest number of records this handler will send at once.
+	batchSize     int
+	flushInterval time.Duration
+
+	// recordBatch holds the batch that is currently being built.
+	recordBatch     []opencdc.Record
+	recordBatchLock sync.Mutex
+
+	// out is a sending channel with batches of records.
+	out            chan<- []opencdc.Record
+	lastTXLSN      pglogrepl.LSN
 	withAvroSchema bool
 	keySchemas     map[string]cschema.Schema
 	payloadSchemas map[string]cschema.Schema
 }
 
-func NewCDCHandler(rs *internal.RelationSet, tableKeys map[string]string, out chan<- opencdc.Record, withAvroSchema bool) *CDCHandler {
-	return &CDCHandler{
+func NewCDCHandler(ctx context.Context, rs *internal.RelationSet, tableKeys map[string]string, out chan<- []opencdc.Record, withAvroSchema bool, batchSize int, flushInterval time.Duration) *CDCHandler {
+	h := &CDCHandler{
 		tableKeys:      tableKeys,
 		relationSet:    rs,
+		recordBatch:    make([]opencdc.Record, 0, batchSize),
 		out:            out,
 		withAvroSchema: withAvroSchema,
 		keySchemas:     make(map[string]cschema.Schema),
 		payloadSchemas: make(map[string]cschema.Schema),
+		batchSize:      batchSize,
+		flushInterval:  flushInterval,
+	}
+
+	go h.scheduleFlushing(ctx)
+
+	return h
+}
+
+func (h *CDCHandler) scheduleFlushing(ctx context.Context) {
+	ticker := time.NewTicker(h.flushInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			err := h.flush(ctx)
+			if err != nil {
+				sdk.Logger(ctx).Err(err).Msg("failed flushing records")
+			}
+		}
+	}
+}
+
+func (h *CDCHandler) flush(ctx context.Context) error {
+	h.recordBatchLock.Lock()
+	defer h.recordBatchLock.Unlock()
+
+	if len(h.recordBatch) == 0 {
+		return nil
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case h.out <- h.recordBatch:
+		sdk.Logger(ctx).Trace().
+			Int("records", len(h.recordBatch)).
+			Msg("CDCHandler sending batch of records")
+		h.recordBatch = make([]opencdc.Record, 0, h.batchSize)
+		return nil
 	}
 }
 
@@ -119,7 +174,7 @@ func (h *CDCHandler) handleInsert(
 	)
 	h.attachSchemas(rec, rel.RelationName)
 
-	return h.send(ctx, rec)
+	return h.addToBatch(ctx, rec)
 }
 
 // handleUpdate formats a record with UPDATE event data from Postgres and sends
@@ -159,7 +214,7 @@ func (h *CDCHandler) handleUpdate(
 	)
 	h.attachSchemas(rec, rel.RelationName)
 
-	return h.send(ctx, rec)
+	return h.addToBatch(ctx, rec)
 }
 
 // handleDelete formats a record with DELETE event data from Postgres and sends
@@ -191,18 +246,28 @@ func (h *CDCHandler) handleDelete(
 	)
 	h.attachSchemas(rec, rel.RelationName)
 
-	return h.send(ctx, rec)
+	return h.addToBatch(ctx, rec)
 }
 
-// send the record to the output channel or detect the cancellation of the
+// addToBatch the record to the output channel or detect the cancellation of the
 // context and return the context error.
-func (h *CDCHandler) send(ctx context.Context, rec opencdc.Record) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case h.out <- rec:
-		return nil
+func (h *CDCHandler) addToBatch(ctx context.Context, rec opencdc.Record) error {
+	h.recordBatchLock.Lock()
+
+	h.recordBatch = append(h.recordBatch, rec)
+	currentBatchSize := len(h.recordBatch)
+
+	sdk.Logger(ctx).Trace().
+		Int("current_batch_size", currentBatchSize).
+		Msg("CDCHandler added record to batch")
+
+	h.recordBatchLock.Unlock()
+
+	if currentBatchSize >= h.batchSize {
+		return h.flush(ctx)
 	}
+
+	return nil
 }
 
 func (h *CDCHandler) buildRecordMetadata(rel *pglogrepl.RelationMessage) map[string]string {
