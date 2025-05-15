@@ -82,11 +82,8 @@ func (h *CDCHandler) scheduleFlushing(ctx context.Context) {
 	ticker := time.NewTicker(h.flushInterval)
 	defer ticker.Stop()
 
-	for {
-		select {
-		case <-ticker.C:
-			h.flush(ctx)
-		}
+	for range time.Tick(h.flushInterval) {
+		h.flush(ctx)
 	}
 }
 
