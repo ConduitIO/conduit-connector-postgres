@@ -92,7 +92,7 @@ type FetchData struct {
 type FetchWorker struct {
 	conf FetchConfig
 	db   *pgxpool.Pool
-	out  chan<- FetchData
+	out  chan<- []FetchData
 
 	keySchema     *cschema.Schema
 	payloadSchema *cschema.Schema
@@ -102,7 +102,7 @@ type FetchWorker struct {
 	cursorName  string
 }
 
-func NewFetchWorker(db *pgxpool.Pool, out chan<- FetchData, c FetchConfig) *FetchWorker {
+func NewFetchWorker(db *pgxpool.Pool, out chan<- []FetchData, c FetchConfig) *FetchWorker {
 	f := &FetchWorker{
 		conf:       c,
 		db:         db,
@@ -285,6 +285,8 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 	fields := rows.FieldDescriptions()
 	var nread int
 
+	var toBeSent []FetchData
+
 	for rows.Next() {
 		values, err := rows.Values()
 		if err != nil {
@@ -301,12 +303,17 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 			return nread, fmt.Errorf("failed to build fetch data: %w", err)
 		}
 
-		if err := f.send(ctx, data); err != nil {
-			return nread, fmt.Errorf("failed to send record: %w", err)
-		}
-
+		toBeSent = append(toBeSent, data)
 		nread++
 	}
+
+	if nread > 0 {
+		err := f.send(ctx, toBeSent)
+		if err != nil {
+			return nread, fmt.Errorf("failed to send record: %w", err)
+		}
+	}
+
 	if rows.Err() != nil {
 		return 0, fmt.Errorf("failed to read rows: %w", rows.Err())
 	}
@@ -314,7 +321,7 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 	return nread, nil
 }
 
-func (f *FetchWorker) send(ctx context.Context, d FetchData) error {
+func (f *FetchWorker) send(ctx context.Context, d []FetchData) error {
 	start := time.Now().UTC()
 	defer func() {
 		sdk.Logger(ctx).Trace().
