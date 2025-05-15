@@ -43,12 +43,16 @@ func TestHandler_Batching_BatchSizeReached(t *testing.T) {
 	is.Equal(recs, want)
 }
 
-func TestHandler_Batching_WaitForTimeout(t *testing.T) {
+// TestHandler_Batching_FlushInterval tests if the handler flushes
+// a batch once the flush interval passes, even if the batch size is not reached.
+func TestHandler_Batching_FlushInterval(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
 
 	ch := make(chan []opencdc.Record, 1)
-	underTest := NewCDCHandler(ctx, nil, nil, ch, false, 5, time.Second)
+	flushInterval := time.Second
+	underTest := NewCDCHandler(ctx, nil, nil, ch, false, 5, flushInterval)
+
 	want := make([]opencdc.Record, 3)
 	for i := 0; i < cap(want); i++ {
 		rec := newTestRecord(i)
@@ -58,10 +62,11 @@ func TestHandler_Batching_WaitForTimeout(t *testing.T) {
 
 	start := time.Now()
 	recs, gotRecs, err := cchan.ChanOut[[]opencdc.Record](ch).RecvTimeout(ctx, 1200*time.Millisecond)
+
 	is.NoErr(err)
 	is.True(gotRecs)
 	is.Equal(recs, want)
-	is.True(time.Since(start) >= time.Second)
+	is.True(time.Since(start) >= flushInterval)
 }
 
 func TestHandler_Batching_ContextCancelled(t *testing.T) {
