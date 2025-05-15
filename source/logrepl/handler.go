@@ -52,7 +52,15 @@ type CDCHandler struct {
 	payloadSchemas map[string]cschema.Schema
 }
 
-func NewCDCHandler(ctx context.Context, rs *internal.RelationSet, tableKeys map[string]string, out chan<- []opencdc.Record, withAvroSchema bool, batchSize int, flushInterval time.Duration) *CDCHandler {
+func NewCDCHandler(
+	ctx context.Context,
+	rs *internal.RelationSet,
+	tableKeys map[string]string,
+	out chan<- []opencdc.Record,
+	withAvroSchema bool,
+	batchSize int,
+	flushInterval time.Duration,
+) *CDCHandler {
 	h := &CDCHandler{
 		tableKeys:      tableKeys,
 		relationSet:    rs,
@@ -76,34 +84,31 @@ func (h *CDCHandler) scheduleFlushing(ctx context.Context) {
 
 	for {
 		select {
-		case <-ctx.Done():
-			return
 		case <-ticker.C:
-			err := h.flush(ctx)
-			if err != nil {
-				sdk.Logger(ctx).Err(err).Msg("failed flushing records")
-			}
+			h.flush(ctx)
 		}
 	}
 }
 
-func (h *CDCHandler) flush(ctx context.Context) error {
+func (h *CDCHandler) flush(ctx context.Context) {
 	h.recordBatchLock.Lock()
 	defer h.recordBatchLock.Unlock()
 
 	if len(h.recordBatch) == 0 {
-		return nil
+		return
 	}
 
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		close(h.out)
+		sdk.Logger(ctx).Warn().
+			Int("records", len(h.recordBatch)).
+			Msg("CDCHandler flushing records cancelled")
 	case h.out <- h.recordBatch:
 		sdk.Logger(ctx).Trace().
 			Int("records", len(h.recordBatch)).
 			Msg("CDCHandler sending batch of records")
 		h.recordBatch = make([]opencdc.Record, 0, h.batchSize)
-		return nil
 	}
 }
 
@@ -173,8 +178,9 @@ func (h *CDCHandler) handleInsert(
 		h.buildRecordPayload(newValues),
 	)
 	h.attachSchemas(rec, rel.RelationName)
+	h.addToBatch(ctx, rec)
 
-	return h.addToBatch(ctx, rec)
+	return nil
 }
 
 // handleUpdate formats a record with UPDATE event data from Postgres and sends
@@ -213,8 +219,9 @@ func (h *CDCHandler) handleUpdate(
 		h.buildRecordPayload(newValues),
 	)
 	h.attachSchemas(rec, rel.RelationName)
+	h.addToBatch(ctx, rec)
 
-	return h.addToBatch(ctx, rec)
+	return nil
 }
 
 // handleDelete formats a record with DELETE event data from Postgres and sends
@@ -245,13 +252,14 @@ func (h *CDCHandler) handleDelete(
 		h.buildRecordPayload(oldValues),
 	)
 	h.attachSchemas(rec, rel.RelationName)
+	h.addToBatch(ctx, rec)
 
-	return h.addToBatch(ctx, rec)
+	return nil
 }
 
 // addToBatch the record to the output channel or detect the cancellation of the
 // context and return the context error.
-func (h *CDCHandler) addToBatch(ctx context.Context, rec opencdc.Record) error {
+func (h *CDCHandler) addToBatch(ctx context.Context, rec opencdc.Record) {
 	h.recordBatchLock.Lock()
 
 	h.recordBatch = append(h.recordBatch, rec)
@@ -264,10 +272,8 @@ func (h *CDCHandler) addToBatch(ctx context.Context, rec opencdc.Record) error {
 	h.recordBatchLock.Unlock()
 
 	if currentBatchSize >= h.batchSize {
-		return h.flush(ctx)
+		h.flush(ctx)
 	}
-
-	return nil
 }
 
 func (h *CDCHandler) buildRecordMetadata(rel *pglogrepl.RelationMessage) map[string]string {
@@ -309,7 +315,7 @@ func (*CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 	}.ToSDKPosition()
 }
 
-// updateAvroSchema generates and stores avro schema based on the relation's row,
+// updateAvroSchema generates and stores avro schema based on the relation's row
 // when usage of avro schema is requested.
 func (h *CDCHandler) updateAvroSchema(ctx context.Context, rel *pglogrepl.RelationMessage) error {
 	if !h.withAvroSchema {
