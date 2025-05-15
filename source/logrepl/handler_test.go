@@ -71,11 +71,11 @@ func TestHandler_Batching_ContextCancelled(t *testing.T) {
 	ch := make(chan []opencdc.Record, 1)
 	underTest := NewCDCHandler(ctx, nil, nil, ch, false, 5, time.Second)
 	cancel()
-
+	<-ctx.Done()
 	underTest.addToBatch(ctx, newTestRecord(0))
 
-	_, gotValue := <-ch
-	is.True(!gotValue)
+	_, recordReceived := <-ch
+	is.True(!recordReceived)
 }
 
 func newTestRecord(id int) opencdc.Record {

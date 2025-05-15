@@ -16,6 +16,7 @@ package logrepl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -95,18 +96,20 @@ func (h *CDCHandler) flush(ctx context.Context) {
 		return
 	}
 
-	select {
-	case <-ctx.Done():
+	if errors.Is(ctx.Err(), context.Canceled) {
 		close(h.out)
 		sdk.Logger(ctx).Warn().
+			Err(ctx.Err()).
 			Int("records", len(h.recordBatch)).
 			Msg("CDCHandler flushing records cancelled")
-	case h.out <- h.recordBatch:
-		sdk.Logger(ctx).Trace().
-			Int("records", len(h.recordBatch)).
-			Msg("CDCHandler sending batch of records")
-		h.recordBatch = make([]opencdc.Record, 0, h.batchSize)
+		return
 	}
+
+	h.out <- h.recordBatch
+	sdk.Logger(ctx).Debug().
+		Int("records", len(h.recordBatch)).
+		Msg("CDCHandler sending batch of records")
+	h.recordBatch = make([]opencdc.Record, 0, h.batchSize)
 }
 
 // Handle is the handler function that receives all logical replication messages.
