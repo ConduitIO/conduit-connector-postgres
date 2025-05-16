@@ -15,6 +15,7 @@
 package types
 
 import (
+	"math/big"
 	"testing"
 	"time"
 
@@ -53,7 +54,7 @@ func Test_Format(t *testing.T) {
 				0, 0, 0, 0,
 			},
 			expect: []any{
-				float64(12.2121), int64(101), nil, nil,
+				big.NewRat(122121, 10000), big.NewRat(1010, 10), nil, nil,
 			},
 		},
 		{
