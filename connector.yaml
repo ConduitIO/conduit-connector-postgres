@@ -91,7 +91,7 @@ specification:
     deleted, the record will be ignored.
 
     If there is no key, the record will be simply appended.
-  version: v0.12.1
+  version: v0.12.2
   author: Meroxa, Inc.
   source:
     parameters:
