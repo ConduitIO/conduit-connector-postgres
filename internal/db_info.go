@@ -23,11 +23,14 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// DbInfo provides information about tables in a database.
 type DbInfo struct {
 	conn  *pgx.Conn
 	cache map[string]*tableCache
 }
 
+// tableCache stores information about a table.
+// The information is cached and refreshed every 'cacheExpiration'.
 type tableCache struct {
 	columns     map[string]int
 	nextRefresh time.Time

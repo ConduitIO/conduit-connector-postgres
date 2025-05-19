@@ -353,7 +353,7 @@ func (d *Destination) formatColumnsAndValues(table string, key, payload opencdc.
 func (d *Destination) getKeyColumnName(key opencdc.StructuredData, defaultKeyName string) string {
 	if len(key) > 1 {
 		// Go maps aren't order preserving, so anything over len 1 will have
-		// non deterministic results until we handle composite keys.
+		// non-deterministic results until we handle composite keys.
 		panic("composite keys not yet supported")
 	}
 	for k := range key {
@@ -377,7 +377,10 @@ func (d *Destination) formatValue(table string, column string, val interface{}) 
 	}
 }
 
+// formatBigRat formats a big.Rat into a string that can be written into a NUMERIC/DECIMAL column.
 func (d *Destination) formatBigRat(table string, column string, v *big.Rat) (string, error) {
+	// we need to get the scale of the column so we that we can properly
+	// round the result of dividing the input big.Rat's numerator and denominator.
 	scale, err := d.dbInfo.GetNumericColumnScale(table, column)
 	if err != nil {
 		return "", fmt.Errorf("failed getting scale of numeric column: %w", err)
