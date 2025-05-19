@@ -15,6 +15,7 @@
 package types
 
 import (
+	"math/big"
 	"testing"
 	"time"
 
@@ -47,13 +48,13 @@ func Test_Format(t *testing.T) {
 		{
 			name: "pgtype.Numeric",
 			input: []any{
-				pgxNumeric(t, "12.2121"), pgxNumeric(t, "101"), &pgtype.Numeric{}, nil,
+				pgxNumeric(t, "12.2121"), pgxNumeric(t, "101"), pgxNumeric(t, "0"), &pgtype.Numeric{}, nil,
 			},
 			inputOID: []uint32{
-				0, 0, 0, 0,
+				0, 0, 0, 0, 0,
 			},
 			expect: []any{
-				float64(12.2121), int64(101), nil, nil,
+				big.NewRat(122121, 10000), big.NewRat(101, 1), big.NewRat(0, 1), nil, nil,
 			},
 		},
 		{
