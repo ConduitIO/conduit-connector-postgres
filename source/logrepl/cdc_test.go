@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 	"testing"
 	"time"
@@ -163,8 +164,8 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 						"column1":          "bizz",
 						"column2":          int32(456),
 						"column3":          false,
-						"column4":          12.3,
-						"column5":          int64(14),
+						"column4":          big.NewRat(123, 10),
+						"column5":          big.NewRat(14, 1),
 						"column6":          []byte(`{"foo2": "bar2"}`),
 						"column7":          []byte(`{"foo2": "baz2"}`),
 						"key":              nil,
@@ -198,8 +199,8 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 						"column1":          "test cdc updates",
 						"column2":          int32(123),
 						"column3":          false,
-						"column4":          12.2,
-						"column5":          int64(4),
+						"column4":          big.NewRat(122, 10),
+						"column5":          big.NewRat(4, 1),
 						"column6":          []byte(`{"foo": "bar"}`),
 						"column7":          []byte(`{"foo": "baz"}`),
 						"key":              []uint8("1"),
@@ -235,8 +236,8 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 						"column1":          "test cdc updates",
 						"column2":          int32(123),
 						"column3":          false,
-						"column4":          12.2,
-						"column5":          int64(4),
+						"column4":          big.NewRat(122, 10),
+						"column5":          big.NewRat(4, 1),
 						"column6":          []byte(`{"foo": "bar"}`),
 						"column7":          []byte(`{"foo": "baz"}`),
 						"key":              []uint8("1"),
@@ -247,8 +248,8 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 						"column1":          "test cdc full updates",
 						"column2":          int32(123),
 						"column3":          false,
-						"column4":          12.2,
-						"column5":          int64(4),
+						"column4":          big.NewRat(122, 10),
+						"column5":          big.NewRat(4, 1),
 						"column6":          []byte(`{"foo": "bar"}`),
 						"column7":          []byte(`{"foo": "baz"}`),
 						"key":              []uint8("1"),
@@ -323,7 +324,7 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 						"column2":          int32(789),
 						"column3":          false,
 						"column4":          nil,
-						"column5":          int64(9),
+						"column5":          big.NewRat(9, 1),
 						"column6":          []byte(`{"foo": "bar"}`),
 						"column7":          []byte(`{"foo": "baz"}`),
 						"UppercaseColumn1": int32(3),
@@ -355,7 +356,14 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 			tt.want.Metadata[opencdc.MetadataReadAt] = got.Metadata[opencdc.MetadataReadAt]
 			tt.want.Position = got.Position
 
-			is.Equal("", cmp.Diff(tt.want, got, cmpopts.IgnoreUnexported(opencdc.Record{})))
+			is.Equal("", cmp.Diff(
+				tt.want,
+				got,
+				cmpopts.IgnoreUnexported(opencdc.Record{}),
+				cmp.Comparer(func(x, y *big.Rat) bool {
+					return x.Cmp(y) == 0
+				}),
+			))
 			is.NoErr(i.Ack(ctx, got.Position))
 		})
 	}

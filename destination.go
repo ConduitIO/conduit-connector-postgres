@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"strings"
 
 	sq "github.com/Masterminds/squirrel"
@@ -26,6 +27,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
+	"github.com/shopspring/decimal"
 )
 
 type Destination struct {
@@ -35,6 +37,7 @@ type Destination struct {
 	getTableName destination.TableFn
 
 	conn        *pgx.Conn
+	dbInfo      *internal.DbInfo
 	stmtBuilder sq.StatementBuilderType
 }
 
@@ -61,6 +64,7 @@ func (d *Destination) Open(ctx context.Context) error {
 		return fmt.Errorf("invalid table name or table name function: %w", err)
 	}
 
+	d.dbInfo = internal.NewDbInfo(conn)
 	return nil
 }
 
@@ -215,7 +219,11 @@ func (d *Destination) insert(ctx context.Context, r opencdc.Record, b *pgx.Batch
 		return err
 	}
 
-	colArgs, valArgs := d.formatColumnsAndValues(key, payload)
+	colArgs, valArgs, err := d.formatColumnsAndValues(tableName, key, payload)
+	if err != nil {
+		return fmt.Errorf("error formatting columns and values: %w", err)
+	}
+
 	sdk.Logger(ctx).Trace().
 		Str("table_name", tableName).
 		Msg("inserting record")
@@ -294,10 +302,13 @@ func (d *Destination) formatUpsertQuery(
 	// remove the last comma from the list of tuples
 	upsertQuery = strings.TrimSuffix(upsertQuery, ",")
 
-	// we have to manually append a semi colon to the upsert sql;
+	// we have to manually append a semicolon to the upsert sql;
 	upsertQuery += ";"
 
-	colArgs, valArgs := d.formatColumnsAndValues(key, payload)
+	colArgs, valArgs, err := d.formatColumnsAndValues(tableName, key, payload)
+	if err != nil {
+		return "", nil, fmt.Errorf("error formatting columns and values: %w", err)
+	}
 
 	return d.stmtBuilder.
 		Insert(internal.WrapSQLIdent(tableName)).
@@ -309,7 +320,7 @@ func (d *Destination) formatUpsertQuery(
 
 // formatColumnsAndValues turns the key and payload into a slice of ordered
 // columns and values for upserting into Postgres.
-func (d *Destination) formatColumnsAndValues(key, payload opencdc.StructuredData) ([]string, []interface{}) {
+func (d *Destination) formatColumnsAndValues(table string, key, payload opencdc.StructuredData) ([]string, []interface{}, error) {
 	var colArgs []string
 	var valArgs []interface{}
 
@@ -317,16 +328,24 @@ func (d *Destination) formatColumnsAndValues(key, payload opencdc.StructuredData
 	// query for args and values in proper order
 	for key, val := range key {
 		colArgs = append(colArgs, internal.WrapSQLIdent(key))
-		valArgs = append(valArgs, val)
+		formatted, err := d.formatValue(table, key, val)
+		if err != nil {
+			return nil, nil, fmt.Errorf("error formatting value: %w", err)
+		}
+		valArgs = append(valArgs, formatted)
 		delete(payload, key) // NB: Delete Key from payload arguments
 	}
 
-	for field, value := range payload {
+	for field, val := range payload {
 		colArgs = append(colArgs, internal.WrapSQLIdent(field))
-		valArgs = append(valArgs, value)
+		formatted, err := d.formatValue(table, field, val)
+		if err != nil {
+			return nil, nil, fmt.Errorf("error formatting value: %w", err)
+		}
+		valArgs = append(valArgs, formatted)
 	}
 
-	return colArgs, valArgs
+	return colArgs, valArgs, nil
 }
 
 // getKeyColumnName will return the name of the first item in the key or the
@@ -334,7 +353,7 @@ func (d *Destination) formatColumnsAndValues(key, payload opencdc.StructuredData
 func (d *Destination) getKeyColumnName(key opencdc.StructuredData, defaultKeyName string) string {
 	if len(key) > 1 {
 		// Go maps aren't order preserving, so anything over len 1 will have
-		// non deterministic results until we handle composite keys.
+		// non-deterministic results until we handle composite keys.
 		panic("composite keys not yet supported")
 	}
 	for k := range key {
@@ -345,4 +364,32 @@ func (d *Destination) getKeyColumnName(key opencdc.StructuredData, defaultKeyNam
 
 func (d *Destination) hasKey(e opencdc.Record) bool {
 	return e.Key != nil && len(e.Key.Bytes()) > 0
+}
+
+func (d *Destination) formatValue(table string, column string, val interface{}) (interface{}, error) {
+	switch v := val.(type) {
+	case *big.Rat:
+		return d.formatBigRat(table, column, v)
+	case big.Rat:
+		return d.formatBigRat(table, column, &v)
+	default:
+		return val, nil
+	}
+}
+
+// formatBigRat formats a big.Rat into a string that can be written into a NUMERIC/DECIMAL column.
+func (d *Destination) formatBigRat(table string, column string, v *big.Rat) (string, error) {
+	// we need to get the scale of the column so we that we can properly
+	// round the result of dividing the input big.Rat's numerator and denominator.
+	scale, err := d.dbInfo.GetNumericColumnScale(table, column)
+	if err != nil {
+		return "", fmt.Errorf("failed getting scale of numeric column: %w", err)
+	}
+
+	if v == nil {
+		return "", nil
+	}
+
+	//nolint:gosec // no risk of overflow, because the scale in Pg is always <= 16383
+	return decimal.NewFromBigRat(v, int32(scale)).String(), nil
 }

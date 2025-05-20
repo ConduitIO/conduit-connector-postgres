@@ -1,6 +1,6 @@
 services:
   pg-0:
-    image: docker.io/bitnami/postgresql-repmgr:16
+    image: docker.io/bitnami/postgresql-repmgr:17.5.0
     ports:
       - "5433:5432"
     volumes:
