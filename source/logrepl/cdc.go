@@ -242,7 +242,7 @@ func (i *CDCIterator) nextRecordsBatch(ctx context.Context) ([]opencdc.Record, e
 	}
 }
 
-// appendRecordsWithLimit moves records from src to dst, until the given limit is reached,
+// appendRecordsWithLimit appends records to dst from src, until the given limit is reached,
 // or all records from src have been moved.
 // If some records from src are not moved (probably because they lack emotions),
 // they are saved to recordsForNextRead.
