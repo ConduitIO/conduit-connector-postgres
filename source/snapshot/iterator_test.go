@@ -42,6 +42,7 @@ func Test_Iterator_NextN(t *testing.T) {
 			TableKeys: map[string]string{
 				table: "id",
 			},
+			FetchSize: 2,
 		})
 		is.NoErr(err)
 		defer func() {
@@ -57,7 +58,7 @@ func Test_Iterator_NextN(t *testing.T) {
 			is.Equal(r.Metadata[opencdc.MetadataCollection], table)
 		}
 
-		// Get remaining 2 records
+		// Get the remaining 2 records
 		records, err = i.NextN(ctx, 2)
 		is.NoErr(err)
 		is.Equal(len(records), 2)

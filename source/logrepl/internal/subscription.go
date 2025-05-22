@@ -141,7 +141,8 @@ func CreateSubscription(
 	}, nil
 }
 
-// Run logical replication listener and block until error or ctx is canceled.
+// Run the logical replication listener and block until it returns an error,
+// or the context is canceled.
 func (s *Subscription) Run(ctx context.Context) error {
 	defer s.doneReplication()
 
@@ -193,7 +194,7 @@ func (s *Subscription) listen(ctx context.Context) error {
 
 		copyDataMsg, ok := msg.(*pgproto3.CopyData)
 		if !ok {
-			return fmt.Errorf("unexpected message type %T", msg)
+			return fmt.Errorf("unexpected message type %T, value: %v", msg, msg)
 		}
 
 		switch copyDataMsg.Data[0] {
