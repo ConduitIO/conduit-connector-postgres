@@ -16,7 +16,10 @@ package logrepl
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	cschema "github.com/conduitio/conduit-commons/schema"
@@ -33,23 +36,80 @@ import (
 type CDCHandler struct {
 	tableKeys   map[string]string
 	relationSet *internal.RelationSet
-	out         chan<- opencdc.Record
-	lastTXLSN   pglogrepl.LSN
 
+	// batchSize is the largest number of records this handler will send at once.
+	batchSize     int
+	flushInterval time.Duration
+
+	// recordBatch holds the batch that is currently being built.
+	recordBatch     []opencdc.Record
+	recordBatchLock sync.Mutex
+
+	// out is a sending channel with batches of records.
+	out            chan<- []opencdc.Record
+	lastTXLSN      pglogrepl.LSN
 	withAvroSchema bool
 	keySchemas     map[string]cschema.Schema
 	payloadSchemas map[string]cschema.Schema
 }
 
-func NewCDCHandler(rs *internal.RelationSet, tableKeys map[string]string, out chan<- opencdc.Record, withAvroSchema bool) *CDCHandler {
-	return &CDCHandler{
+func NewCDCHandler(
+	ctx context.Context,
+	rs *internal.RelationSet,
+	tableKeys map[string]string,
+	out chan<- []opencdc.Record,
+	withAvroSchema bool,
+	batchSize int,
+	flushInterval time.Duration,
+) *CDCHandler {
+	h := &CDCHandler{
 		tableKeys:      tableKeys,
 		relationSet:    rs,
+		recordBatch:    make([]opencdc.Record, 0, batchSize),
 		out:            out,
 		withAvroSchema: withAvroSchema,
 		keySchemas:     make(map[string]cschema.Schema),
 		payloadSchemas: make(map[string]cschema.Schema),
+		batchSize:      batchSize,
+		flushInterval:  flushInterval,
 	}
+
+	go h.scheduleFlushing(ctx)
+
+	return h
+}
+
+func (h *CDCHandler) scheduleFlushing(ctx context.Context) {
+	ticker := time.NewTicker(h.flushInterval)
+	defer ticker.Stop()
+
+	for range time.Tick(h.flushInterval) {
+		h.flush(ctx)
+	}
+}
+
+func (h *CDCHandler) flush(ctx context.Context) {
+	h.recordBatchLock.Lock()
+	defer h.recordBatchLock.Unlock()
+
+	if len(h.recordBatch) == 0 {
+		return
+	}
+
+	if errors.Is(ctx.Err(), context.Canceled) {
+		close(h.out)
+		sdk.Logger(ctx).Warn().
+			Err(ctx.Err()).
+			Int("records", len(h.recordBatch)).
+			Msg("CDCHandler flushing records cancelled")
+		return
+	}
+
+	h.out <- h.recordBatch
+	sdk.Logger(ctx).Debug().
+		Int("records", len(h.recordBatch)).
+		Msg("CDCHandler sending batch of records")
+	h.recordBatch = make([]opencdc.Record, 0, h.batchSize)
 }
 
 // Handle is the handler function that receives all logical replication messages.
@@ -118,8 +178,9 @@ func (h *CDCHandler) handleInsert(
 		h.buildRecordPayload(newValues),
 	)
 	h.attachSchemas(rec, rel.RelationName)
+	h.addToBatch(ctx, rec)
 
-	return h.send(ctx, rec)
+	return nil
 }
 
 // handleUpdate formats a record with UPDATE event data from Postgres and sends
@@ -158,8 +219,9 @@ func (h *CDCHandler) handleUpdate(
 		h.buildRecordPayload(newValues),
 	)
 	h.attachSchemas(rec, rel.RelationName)
+	h.addToBatch(ctx, rec)
 
-	return h.send(ctx, rec)
+	return nil
 }
 
 // handleDelete formats a record with DELETE event data from Postgres and sends
@@ -190,18 +252,27 @@ func (h *CDCHandler) handleDelete(
 		h.buildRecordPayload(oldValues),
 	)
 	h.attachSchemas(rec, rel.RelationName)
+	h.addToBatch(ctx, rec)
 
-	return h.send(ctx, rec)
+	return nil
 }
 
-// send the record to the output channel or detect the cancellation of the
+// addToBatch the record to the output channel or detect the cancellation of the
 // context and return the context error.
-func (h *CDCHandler) send(ctx context.Context, rec opencdc.Record) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case h.out <- rec:
-		return nil
+func (h *CDCHandler) addToBatch(ctx context.Context, rec opencdc.Record) {
+	h.recordBatchLock.Lock()
+
+	h.recordBatch = append(h.recordBatch, rec)
+	currentBatchSize := len(h.recordBatch)
+
+	sdk.Logger(ctx).Trace().
+		Int("current_batch_size", currentBatchSize).
+		Msg("CDCHandler added record to batch")
+
+	h.recordBatchLock.Unlock()
+
+	if currentBatchSize >= h.batchSize {
+		h.flush(ctx)
 	}
 }
 
@@ -244,7 +315,7 @@ func (*CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 	}.ToSDKPosition()
 }
 
-// updateAvroSchema generates and stores avro schema based on the relation's row,
+// updateAvroSchema generates and stores avro schema based on the relation's row
 // when usage of avro schema is requested.
 func (h *CDCHandler) updateAvroSchema(ctx context.Context, rel *pglogrepl.RelationMessage) error {
 	if !h.withAvroSchema {
