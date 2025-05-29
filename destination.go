@@ -219,7 +219,7 @@ func (d *Destination) insert(ctx context.Context, r opencdc.Record, b *pgx.Batch
 		return err
 	}
 
-	colArgs, valArgs, err := d.formatColumnsAndValues(tableName, key, payload)
+	colArgs, valArgs, err := d.formatColumnsAndValues(ctx, tableName, key, payload)
 	if err != nil {
 		return fmt.Errorf("error formatting columns and values: %w", err)
 	}
