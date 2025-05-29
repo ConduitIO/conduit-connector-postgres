@@ -160,7 +160,7 @@ func (d *Destination) upsert(ctx context.Context, r opencdc.Record, b *pgx.Batch
 		return fmt.Errorf("failed to get table name for write: %w", err)
 	}
 
-	query, args, err := d.formatUpsertQuery(key, payload, keyColumnName, tableName)
+	query, args, err := d.formatUpsertQuery(ctx, key, payload, keyColumnName, tableName)
 	if err != nil {
 		return fmt.Errorf("error formatting query: %w", err)
 	}
@@ -280,12 +280,7 @@ func (d *Destination) structuredDataFormatter(data opencdc.Data) (opencdc.Struct
 // * In our case, we can only rely on the record.Key's parsed key value.
 // * If other schema constraints prevent a write, this won't upsert on
 // that conflict.
-func (d *Destination) formatUpsertQuery(
-	key opencdc.StructuredData,
-	payload opencdc.StructuredData,
-	keyColumnName string,
-	tableName string,
-) (string, []interface{}, error) {
+func (d *Destination) formatUpsertQuery(ctx context.Context, key opencdc.StructuredData, payload opencdc.StructuredData, keyColumnName string, tableName string) (string, []interface{}, error) {
 	upsertQuery := fmt.Sprintf("ON CONFLICT (%s) DO UPDATE SET", internal.WrapSQLIdent(keyColumnName))
 	for column := range payload {
 		// tuples form a comma separated list, so they need a comma at the end.
@@ -305,7 +300,7 @@ func (d *Destination) formatUpsertQuery(
 	// we have to manually append a semicolon to the upsert sql;
 	upsertQuery += ";"
 
-	colArgs, valArgs, err := d.formatColumnsAndValues(tableName, key, payload)
+	colArgs, valArgs, err := d.formatColumnsAndValues(ctx, tableName, key, payload)
 	if err != nil {
 		return "", nil, fmt.Errorf("error formatting columns and values: %w", err)
 	}
@@ -320,7 +315,7 @@ func (d *Destination) formatUpsertQuery(
 
 // formatColumnsAndValues turns the key and payload into a slice of ordered
 // columns and values for upserting into Postgres.
-func (d *Destination) formatColumnsAndValues(table string, key, payload opencdc.StructuredData) ([]string, []interface{}, error) {
+func (d *Destination) formatColumnsAndValues(ctx context.Context, table string, key, payload opencdc.StructuredData) ([]string, []interface{}, error) {
 	var colArgs []string
 	var valArgs []interface{}
 
@@ -328,7 +323,7 @@ func (d *Destination) formatColumnsAndValues(table string, key, payload opencdc.
 	// query for args and values in proper order
 	for key, val := range key {
 		colArgs = append(colArgs, internal.WrapSQLIdent(key))
-		formatted, err := d.formatValue(table, key, val)
+		formatted, err := d.formatValue(ctx, table, key, val)
 		if err != nil {
 			return nil, nil, fmt.Errorf("error formatting value: %w", err)
 		}
@@ -338,7 +333,7 @@ func (d *Destination) formatColumnsAndValues(table string, key, payload opencdc.
 
 	for field, val := range payload {
 		colArgs = append(colArgs, internal.WrapSQLIdent(field))
-		formatted, err := d.formatValue(table, field, val)
+		formatted, err := d.formatValue(ctx, table, field, val)
 		if err != nil {
 			return nil, nil, fmt.Errorf("error formatting value: %w", err)
 		}
@@ -366,26 +361,26 @@ func (d *Destination) hasKey(e opencdc.Record) bool {
 	return e.Key != nil && len(e.Key.Bytes()) > 0
 }
 
-func (d *Destination) formatValue(table string, column string, val interface{}) (interface{}, error) {
+func (d *Destination) formatValue(ctx context.Context, table string, column string, val interface{}) (interface{}, error) {
 	switch v := val.(type) {
 	case *big.Rat:
-		return d.formatBigRat(table, column, v)
+		return d.formatBigRat(ctx, table, column, v)
 	case big.Rat:
-		return d.formatBigRat(table, column, &v)
+		return d.formatBigRat(ctx, table, column, &v)
 	default:
 		return val, nil
 	}
 }
 
 // formatBigRat formats a big.Rat into a string that can be written into a NUMERIC/DECIMAL column.
-func (d *Destination) formatBigRat(table string, column string, v *big.Rat) (string, error) {
+func (d *Destination) formatBigRat(ctx context.Context, table string, column string, v *big.Rat) (string, error) {
 	if v == nil {
 		return "", nil
 	}
-	
+
 	// we need to get the scale of the column so we that we can properly
 	// round the result of dividing the input big.Rat's numerator and denominator.
-	scale, err := d.dbInfo.GetNumericColumnScale(table, column)
+	scale, err := d.dbInfo.GetNumericColumnScale(ctx, table, column)
 	if err != nil {
 		return "", fmt.Errorf("failed getting scale of numeric column: %w", err)
 	}

@@ -46,7 +46,7 @@ func NewDbInfo(conn *pgx.Conn) *DbInfo {
 	}
 }
 
-func (d *DbInfo) GetNumericColumnScale(table string, column string) (int, error) {
+func (d *DbInfo) GetNumericColumnScale(ctx context.Context, table string, column string) (int, error) {
 	// Check if table exists in cache and is not expired
 	tableInfo, ok := d.cache[table]
 	if ok && time.Now().Before(tableInfo.nextRefresh) {
@@ -63,7 +63,7 @@ func (d *DbInfo) GetNumericColumnScale(table string, column string) (int, error)
 	}
 
 	// Fetch scale from database
-	scale, err := d.numericScaleFromDb(table, column)
+	scale, err := d.numericScaleFromDb(ctx, table, column)
 	if err != nil {
 		return 0, err
 	}
@@ -73,7 +73,7 @@ func (d *DbInfo) GetNumericColumnScale(table string, column string) (int, error)
 	return scale, nil
 }
 
-func (d *DbInfo) numericScaleFromDb(table string, column string) (int, error) {
+func (d *DbInfo) numericScaleFromDb(ctx context.Context, table string, column string) (int, error) {
 	// Query to get the column type and numeric scale
 	query := `
 		SELECT 
@@ -89,8 +89,7 @@ func (d *DbInfo) numericScaleFromDb(table string, column string) (int, error) {
 	var dataType string
 	var numericScale *int
 
-	// todo use proper ctx
-	err := d.conn.QueryRow(context.Background(), query, table, column).Scan(&dataType, &numericScale)
+	err := d.conn.QueryRow(ctx, query, table, column).Scan(&dataType, &numericScale)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, fmt.Errorf("column %s not found in table %s", column, table)
