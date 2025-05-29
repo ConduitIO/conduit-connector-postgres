@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/conduitio/conduit-connector-postgres/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -72,7 +73,7 @@ func (i TableInfoFetcher) Refresh(ctx context.Context, tableName string) error {
 		ORDER BY a.attnum;
 	`
 
-	rows, err := tx.Query(context.Background(), query, tableName)
+	rows, err := tx.Query(context.Background(), query, internal.WrapSQLIdent(tableName))
 	if err != nil {
 		sdk.Logger(ctx).
 			Err(err).
