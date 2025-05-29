@@ -155,7 +155,7 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 
 	// First, we check if there are any records from the previous batch
 	// that we can start with.
-	recs := make([]opencdc.Record, len(i.recordsForNextRead), n)
+	var recs []opencdc.Record
 	copy(recs, i.recordsForNextRead)
 	i.recordsForNextRead = nil
 
