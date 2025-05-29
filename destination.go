@@ -379,15 +379,15 @@ func (d *Destination) formatValue(table string, column string, val interface{}) 
 
 // formatBigRat formats a big.Rat into a string that can be written into a NUMERIC/DECIMAL column.
 func (d *Destination) formatBigRat(table string, column string, v *big.Rat) (string, error) {
+	if v == nil {
+		return "", nil
+	}
+	
 	// we need to get the scale of the column so we that we can properly
 	// round the result of dividing the input big.Rat's numerator and denominator.
 	scale, err := d.dbInfo.GetNumericColumnScale(table, column)
 	if err != nil {
 		return "", fmt.Errorf("failed getting scale of numeric column: %w", err)
-	}
-
-	if v == nil {
-		return "", nil
 	}
 
 	//nolint:gosec // no risk of overflow, because the scale in Pg is always <= 16383
