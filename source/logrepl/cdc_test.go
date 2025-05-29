@@ -464,6 +464,93 @@ func TestCDCIterator_Ack(t *testing.T) {
 		})
 	}
 }
+
+func TestCDCIterator_NextN_InternalBatching(t *testing.T) {
+	ctx := test.Context(t)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupEmptyTestTable(ctx, t, pool)
+
+	is := is.New(t)
+	underTest := testCDCIterator(ctx, t, pool, table, true)
+	<-underTest.sub.Ready()
+
+	insertTestRows(ctx, is, pool, table, 1, 1)
+	// wait until the CDCHandler flushes this one record
+	// so that we force the CDCIterator to wait for another batch
+	time.Sleep(time.Second * 2)
+	insertTestRows(ctx, is, pool, table, 2, 5)
+
+	// we request 2 records, expect records 1 and 2
+	got, err := underTest.NextN(ctx, 2)
+	is.NoErr(err)
+	verifyOpenCDCRecords(is, got, table, 1, 2)
+	time.Sleep(200 * time.Millisecond)
+
+	// we request 2 records, expect records 3 and 4
+	got, err = underTest.NextN(ctx, 2)
+	is.NoErr(err)
+	verifyOpenCDCRecords(is, got, table, 3, 4)
+	time.Sleep(200 * time.Millisecond)
+
+	// we request 2 records, expect record 5
+	got, err = underTest.NextN(ctx, 2)
+	is.NoErr(err)
+	verifyOpenCDCRecords(is, got, table, 5, 5)
+}
+
+func insertTestRows(ctx context.Context, is *is.I, pool *pgxpool.Pool, table string, from int, to int) {
+	for i := from; i <= to; i++ {
+		_, err := pool.Exec(
+			ctx,
+			fmt.Sprintf(
+				`INSERT INTO %s (id, column1, column2, column3, column4, column5)
+				VALUES (%d, 'test-%d', %d, false, 12.3, 14)`, table, i+10, i, i*100,
+			),
+		)
+		is.NoErr(err)
+	}
+}
+
+func verifyOpenCDCRecords(is *is.I, got []opencdc.Record, tableName string, fromID, toID int) {
+	// Build the expected records slice
+	var want []opencdc.Record
+
+	for i := fromID; i <= toID; i++ {
+		id := int64(i + 10)
+		record := opencdc.Record{
+			Operation: opencdc.OperationCreate,
+			Key: opencdc.StructuredData{
+				"id": id,
+			},
+			Payload: opencdc.Change{
+				After: opencdc.StructuredData{
+					"id":               id,
+					"key":              nil,
+					"column1":          fmt.Sprintf("test-%d", i),
+					"column2":          int32(i) * 100, //nolint:gosec // fine, we know the value is small enough
+					"column3":          false,
+					"column4":          12.3,
+					"column5":          int64(14),
+					"column6":          nil,
+					"column7":          nil,
+					"UppercaseColumn1": nil,
+				},
+			},
+			Metadata: opencdc.Metadata{
+				opencdc.MetadataCollection: tableName,
+			},
+		}
+
+		want = append(want, record)
+	}
+
+	cmpOpts := []cmp.Option{
+		cmpopts.IgnoreUnexported(opencdc.Record{}),
+		cmpopts.IgnoreFields(opencdc.Record{}, "Position", "Metadata"),
+	}
+	is.Equal("", cmp.Diff(want, got, cmpOpts...)) // mismatch (-want +got)
+}
+
 func TestCDCIterator_NextN(t *testing.T) {
 	ctx := test.Context(t)
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
@@ -583,17 +670,12 @@ func TestCDCIterator_NextN(t *testing.T) {
 			VALUES (30, 'test-1', 100, false, 12.3, 14)`, table))
 		is.NoErr(err)
 
-		go func() {
-			time.Sleep(100 * time.Millisecond)
-			is.NoErr(i.Teardown(ctx))
-		}()
+		time.Sleep(100 * time.Millisecond)
+		is.NoErr(i.Teardown(ctx))
 
-		records, err := i.NextN(ctx, 5)
-		if err != nil {
-			is.True(strings.Contains(err.Error(), "logical replication error"))
-		} else {
-			is.True(len(records) > 0)
-		}
+		_, err = i.NextN(ctx, 5)
+		is.True(err != nil)
+		is.True(strings.Contains(err.Error(), "logical replication error"))
 	})
 }
 
@@ -605,6 +687,7 @@ func testCDCIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, tabl
 		PublicationName: table, // table is random, reuse for publication name
 		SlotName:        table, // table is random, reuse for slot name
 		WithAvroSchema:  true,
+		BatchSize:       2,
 	}
 
 	i, err := NewCDCIterator(ctx, pool, config)
