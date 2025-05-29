@@ -12,23 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:generate paramgen Config
-
 package destination
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strings"
 	"text/template"
 
 	"github.com/Masterminds/sprig/v3"
 	"github.com/conduitio/conduit-commons/opencdc"
+	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/jackc/pgx/v5"
 )
 
 type TableFn func(opencdc.Record) (string, error)
 
 type Config struct {
+	sdk.DefaultDestinationMiddleware
+
 	// URL is the connection string for the Postgres database.
 	URL string `json:"url" validate:"required"`
 	// Table is used as the target table into which records are inserted.
@@ -37,10 +40,27 @@ type Config struct {
 	Key string `json:"key"`
 }
 
+func (c *Config) Validate(ctx context.Context) error {
+	if _, err := pgx.ParseConfig(c.URL); err != nil {
+		return fmt.Errorf("invalid url: %w", err)
+	}
+
+	if _, err := c.TableFunction(); err != nil {
+		return fmt.Errorf("invalid table name or table function: %w", err)
+	}
+
+	err := c.DefaultDestinationMiddleware.Validate(ctx)
+	if err != nil {
+		return fmt.Errorf("middleware validation failed: %w", err)
+	}
+
+	return nil
+}
+
 // TableFunction returns a function that determines the table for each record individually.
 // The function might be returning a static table name.
 // If the table is neither static nor a template, an error is returned.
-func (c Config) TableFunction() (f TableFn, err error) {
+func (c *Config) TableFunction() (f TableFn, err error) {
 	// Not a template, i.e. it's a static table name
 	if !strings.HasPrefix(c.Table, "{{") && !strings.HasSuffix(c.Table, "}}") {
 		return func(_ opencdc.Record) (string, error) {

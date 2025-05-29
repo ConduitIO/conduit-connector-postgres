@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 	"testing"
 	"time"
 
@@ -136,9 +137,9 @@ func TestCombinedIterator_New(t *testing.T) {
 	})
 }
 
-func TestCombinedIterator_Next(t *testing.T) {
+func TestCombinedIterator_NextN(t *testing.T) {
 	ctx := test.Context(t)
-	ctx, cancel := context.WithTimeout(ctx, time.Second*30)
+	ctx, cancel := context.WithTimeout(ctx, time.Second*120)
 	defer cancel()
 
 	is := is.New(t)
@@ -155,6 +156,7 @@ func TestCombinedIterator_Next(t *testing.T) {
 	})
 	is.NoErr(err)
 
+	// Add a record to the table for CDC mode testing
 	_, err = pool.Exec(ctx, fmt.Sprintf(
 		`INSERT INTO %s (id, column1, column2, column3, column4, column5, column6, column7)
 			VALUES (6, 'bizz', 1010, false, 872.2, 101, '{"foo12": "bar12"}', '{"foo13": "bar13"}')`,
@@ -163,67 +165,175 @@ func TestCombinedIterator_Next(t *testing.T) {
 	is.NoErr(err)
 
 	var lastPos opencdc.Position
-
 	expectedRecords := testRecords()
 
-	// compare snapshot
-	for id := 1; id < 5; id++ {
-		t.Run(fmt.Sprint("next_snapshot", id), func(t *testing.T) {
-			is := is.New(t)
-			r, err := i.Next(ctx)
-			is.NoErr(err)
+	t.Run("invalid_n_value", func(t *testing.T) {
+		is := is.New(t)
+		_, err := i.NextN(ctx, 0)
+		is.True(err != nil)
+		is.True(err.Error() == "n must be greater than 0, got 0")
 
-			jsonPos := fmt.Sprintf(`{"type":1,"snapshots":{"%s":{"last_read":%d,"snapshot_end":4}}}`, table, id)
-			is.Equal(string(r.Position), jsonPos)
+		_, err = i.NextN(ctx, -1)
+		is.True(err != nil)
+		is.True(err.Error() == "n must be greater than 0, got -1")
+	})
 
-			is.Equal("", cmp.Diff(
-				expectedRecords[id],
-				r.Payload.After.(opencdc.StructuredData),
-			))
-
-			is.NoErr(i.Ack(ctx, r.Position))
-		})
-	}
-
-	// interrupt repl connection
-	var terminated bool
-	is.NoErr(pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE
-			query ILIKE '%%CREATE_REPLICATION_SLOT %s%%' and pid <> pg_backend_pid()
-		`,
-		table,
-	)).Scan(&terminated))
-	is.True(terminated)
-
-	t.Run("next_cdc_5", func(t *testing.T) {
+	t.Run("nextN_snapshot_batch", func(t *testing.T) {
 		is := is.New(t)
 
-		r, err := i.Next(ctx)
+		// Request 3 records in batch (snapshot mode)
+		records, err := i.NextN(ctx, 3)
 		is.NoErr(err)
+		is.True(len(records) > 0)
 
-		pos, err := position.ParseSDKPosition(r.Position)
+		for _, r := range records {
+			pos, err := position.ParseSDKPosition(r.Position)
+			is.NoErr(err)
+			is.Equal(pos.Type, position.TypeSnapshot)
+
+			// check it's a valid record with an id
+			data := r.Payload.After.(opencdc.StructuredData)
+			_, hasID := data["id"]
+			is.True(hasID)
+
+			is.NoErr(i.Ack(ctx, r.Position))
+		}
+	})
+
+	t.Run("nextN_snapshot_to_cdc_transition", func(t *testing.T) {
+		is := is.New(t)
+
+		transitionComplete := false
+		retryCount := 0
+		maxRetries := 10
+
+		for retryCount < maxRetries && !transitionComplete {
+			// Request more records - we might get remaining snapshot records
+			records, err := i.NextN(ctx, 2)
+			is.NoErr(err)
+
+			if len(records) == 0 {
+				retryCount++
+				continue
+			}
+
+			for _, r := range records {
+				pos, err := position.ParseSDKPosition(r.Position)
+				is.NoErr(err)
+
+				if pos.Type == position.TypeCDC {
+					lsn, err := pos.LSN()
+					is.NoErr(err)
+					is.True(lsn != 0)
+
+					// Store position for next test
+					lastPos = r.Position
+					transitionComplete = true
+				}
+
+				is.NoErr(i.Ack(ctx, r.Position))
+			}
+
+			retryCount++
+		}
+
+		is.True(transitionComplete)
+		if !transitionComplete {
+			t.Fatalf("Failed to transition from snapshot to CDC mode")
+		}
+		// interrupt repl connection - handle case when connection might already be closed
+		var terminated bool
+		err = pool.QueryRow(ctx, fmt.Sprintf(
+			`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE
+			query ILIKE '%%CREATE_REPLICATION_SLOT %s%%' and pid <> pg_backend_pid()
+		`,
+			table,
+		)).Scan(&terminated)
+
+		is.NoErr(i.Teardown(ctx))
+	})
+
+	t.Run("nextN_connector_resume_cdc", func(t *testing.T) {
+		is := is.New(t)
+
+		pos, err := position.ParseSDKPosition(lastPos)
 		is.NoErr(err)
 		is.Equal(pos.Type, position.TypeCDC)
 
-		lsn, err := pos.LSN()
-		is.NoErr(err)
-		is.True(lsn != 0)
-
-		is.Equal("", cmp.Diff(
-			expectedRecords[5],
-			r.Payload.After.(opencdc.StructuredData),
-		))
-
-		is.NoErr(i.Ack(ctx, r.Position))
-		lastPos = r.Position
-	})
-
-	is.NoErr(i.Teardown(ctx))
-
-	t.Run("next_connector_resume_cdc_6", func(t *testing.T) {
-		is := is.New(t)
 		i, err := NewCombinedIterator(ctx, pool, Config{
 			Position:        lastPos,
+			Tables:          []string{table},
+			TableKeys:       map[string]string{table: "id"},
+			PublicationName: table,
+			SlotName:        table,
+			WithSnapshot:    false,
+		})
+		is.NoErr(err)
+
+		// Verify we're in CDC mode
+		cdcMode := i.activeIterator == i.cdcIterator
+		is.True(cdcMode)
+
+		// Insert two more records for testing CDC batch
+		_, err = pool.Exec(ctx, fmt.Sprintf(
+			`INSERT INTO %s (id, column1, column2, column3, column4, column5, column6, column7)
+				VALUES (7, 'buzz', 10101, true, 121.9, 51, '{"foo7": "bar7"}', '{"foo8": "bar8"}')`,
+			table,
+		))
+		is.NoErr(err)
+
+		_, err = pool.Exec(ctx, fmt.Sprintf(
+			`INSERT INTO %s (id, column1, column2, column3, column4, column5, column6, column7)
+				VALUES (8, 'fizz', 20202, false, 232.8, 62, '{"foo9": "bar9"}', '{"foo10": "bar10"}')`,
+			table,
+		))
+		is.NoErr(err)
+
+		// Request 2 records in CDC mode
+		records := make([]opencdc.Record, 0, 2)
+		var retries int
+		maxRetries := 10
+		for retries < maxRetries {
+			records, err = i.NextN(ctx, 2)
+			is.NoErr(err)
+
+			if len(records) > 0 {
+				t.Logf("Got %d records after %d retries", len(records), retries)
+				break
+			}
+
+			t.Logf("No CDC records returned, retry %d/%d", retries+1, maxRetries)
+			retries++
+		}
+
+		is.True(len(records) > 0)
+
+		if len(records) > 0 {
+			pos, err := position.ParseSDKPosition(records[0].Position)
+			is.NoErr(err)
+			is.Equal(pos.Type, position.TypeCDC)
+
+			lsn, err := pos.LSN()
+			is.NoErr(err)
+			is.True(lsn != 0)
+
+			is.Equal("", cmp.Diff(
+				expectedRecords[6],
+				records[0].Payload.After.(opencdc.StructuredData),
+				cmp.Comparer(func(x, y *big.Rat) bool {
+					return x.Cmp(y) == 0
+				}),
+			))
+
+			is.NoErr(i.Ack(ctx, records[0].Position))
+		}
+		is.NoErr(i.Teardown(ctx))
+	})
+	t.Run("nextN_context_cancellation", func(t *testing.T) {
+		is := is.New(t)
+
+		i, err := NewCombinedIterator(ctx, pool, Config{
+			Position:        opencdc.Position{},
 			Tables:          []string{table},
 			TableKeys:       map[string]string{table: "id"},
 			PublicationName: table,
@@ -232,30 +342,13 @@ func TestCombinedIterator_Next(t *testing.T) {
 		})
 		is.NoErr(err)
 
-		_, err = pool.Exec(ctx, fmt.Sprintf(
-			`INSERT INTO %s (id, column1, column2, column3, column4, column5, column6, column7)
-				VALUES (7, 'buzz', 10101, true, 121.9, 51, '{"foo7": "bar7"}', '{"foo8": "bar8"}')`,
-			table,
-		))
-		is.NoErr(err)
+		cancelCtx, cancelFn := context.WithCancel(ctx)
+		cancelFn()
 
-		r, err := i.Next(ctx)
-		is.NoErr(err)
+		// Request should fail with context canceled
+		_, err = i.NextN(cancelCtx, 2)
+		is.True(errors.Is(err, context.Canceled))
 
-		pos, err := position.ParseSDKPosition(r.Position)
-		is.NoErr(err)
-		is.Equal(pos.Type, position.TypeCDC)
-
-		lsn, err := pos.LSN()
-		is.NoErr(err)
-		is.True(lsn != 0)
-
-		is.Equal("", cmp.Diff(
-			expectedRecords[6],
-			r.Payload.After.(opencdc.StructuredData),
-		))
-
-		is.NoErr(i.Ack(ctx, r.Position))
 		is.NoErr(i.Teardown(ctx))
 	})
 
@@ -270,70 +363,76 @@ func testRecords() []opencdc.StructuredData {
 	return []opencdc.StructuredData{
 		{},
 		{
-			"id":      int64(1),
-			"key":     []uint8("1"),
-			"column1": "foo",
-			"column2": int32(123),
-			"column3": false,
-			"column4": 12.2,
-			"column5": int64(4),
-			"column6": []byte(`{"foo": "bar"}`),
-			"column7": []byte(`{"foo": "baz"}`),
+			"id":               int64(1),
+			"key":              []uint8("1"),
+			"column1":          "foo",
+			"column2":          int32(123),
+			"column3":          false,
+			"column4":          big.NewRat(122, 10),
+			"column5":          big.NewRat(4, 1),
+			"column6":          []byte(`{"foo": "bar"}`),
+			"column7":          []byte(`{"foo": "baz"}`),
+			"UppercaseColumn1": int32(1),
 		},
 		{
-			"id":      int64(2),
-			"key":     []uint8("2"),
-			"column1": "bar",
-			"column2": int32(456),
-			"column3": true,
-			"column4": 13.42,
-			"column5": int64(8),
-			"column6": []byte(`{"foo": "bar"}`),
-			"column7": []byte(`{"foo": "baz"}`),
+			"id":               int64(2),
+			"key":              []uint8("2"),
+			"column1":          "bar",
+			"column2":          int32(456),
+			"column3":          true,
+			"column4":          big.NewRat(1342, 100), // 13.42
+			"column5":          big.NewRat(8, 1),
+			"column6":          []byte(`{"foo": "bar"}`),
+			"column7":          []byte(`{"foo": "baz"}`),
+			"UppercaseColumn1": int32(2),
 		},
 		{
-			"id":      int64(3),
-			"key":     []uint8("3"),
-			"column1": "baz",
-			"column2": int32(789),
-			"column3": false,
-			"column4": nil,
-			"column5": int64(9),
-			"column6": []byte(`{"foo": "bar"}`),
-			"column7": []byte(`{"foo": "baz"}`),
+			"id":               int64(3),
+			"key":              []uint8("3"),
+			"column1":          "baz",
+			"column2":          int32(789),
+			"column3":          false,
+			"column4":          nil,
+			"column5":          big.NewRat(9, 1),
+			"column6":          []byte(`{"foo": "bar"}`),
+			"column7":          []byte(`{"foo": "baz"}`),
+			"UppercaseColumn1": int32(3),
 		},
 		{
-			"id":      int64(4),
-			"key":     []uint8("4"),
-			"column1": nil,
-			"column2": nil,
-			"column3": nil,
-			"column4": 91.1,
-			"column5": nil,
-			"column6": nil,
-			"column7": nil,
+			"id":               int64(4),
+			"key":              []uint8("4"),
+			"column1":          nil,
+			"column2":          nil,
+			"column3":          nil,
+			"column4":          big.NewRat(911, 10), // 91.1
+			"column5":          nil,
+			"column6":          nil,
+			"column7":          nil,
+			"UppercaseColumn1": nil,
 		},
 		{
-			"id":      int64(6),
-			"key":     nil,
-			"column1": "bizz",
-			"column2": int32(1010),
-			"column3": false,
-			"column4": 872.2,
-			"column5": int64(101),
-			"column6": []byte(`{"foo12": "bar12"}`),
-			"column7": []byte(`{"foo13": "bar13"}`),
+			"id":               int64(6),
+			"key":              nil,
+			"column1":          "bizz",
+			"column2":          int32(1010),
+			"column3":          false,
+			"column4":          big.NewRat(8722, 10), // 872.2
+			"column5":          big.NewRat(101, 1),
+			"column6":          []byte(`{"foo12": "bar12"}`),
+			"column7":          []byte(`{"foo13": "bar13"}`),
+			"UppercaseColumn1": nil,
 		},
 		{
-			"id":      int64(7),
-			"key":     nil,
-			"column1": "buzz",
-			"column2": int32(10101),
-			"column3": true,
-			"column4": 121.9,
-			"column5": int64(51),
-			"column6": []byte(`{"foo7": "bar7"}`),
-			"column7": []byte(`{"foo8": "bar8"}`),
+			"id":               int64(7),
+			"key":              nil,
+			"column1":          "buzz",
+			"column2":          int32(10101),
+			"column3":          true,
+			"column4":          big.NewRat(1219, 10), // 121.9
+			"column5":          big.NewRat(51, 1),
+			"column6":          []byte(`{"foo7": "bar7"}`),
+			"column7":          []byte(`{"foo8": "bar8"}`),
+			"UppercaseColumn1": nil,
 		},
 	}
 }

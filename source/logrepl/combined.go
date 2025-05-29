@@ -27,7 +27,7 @@ import (
 )
 
 type iterator interface {
-	Next(context.Context) (opencdc.Record, error)
+	NextN(context.Context, int) ([]opencdc.Record, error)
 	Ack(context.Context, opencdc.Position) error
 	Teardown(context.Context) error
 }
@@ -111,27 +111,29 @@ func NewCombinedIterator(ctx context.Context, pool *pgxpool.Pool, conf Config) (
 	return c, nil
 }
 
-// Next provides the next available record from the snapshot or CDC stream.
-// If the end of the snapshot is reached, next will switch to the CDC iterator and retrive
-// the next available record. Failure to switch the iterator will return an error.
-func (c *CombinedIterator) Next(ctx context.Context) (opencdc.Record, error) {
-	r, err := c.activeIterator.Next(ctx)
-	if err != nil {
-		// Snapshot iterator is done, handover to CDC iterator
-		if !errors.Is(err, snapshot.ErrIteratorDone) {
-			return opencdc.Record{}, fmt.Errorf("failed to fetch next record: %w", err)
-		}
-
-		if err := c.useCDCIterator(ctx); err != nil {
-			return opencdc.Record{}, err
-		}
-		sdk.Logger(ctx).Debug().Msg("Snapshot completed, switching to CDC mode")
-
-		// retry with new iterator
-		return c.activeIterator.Next(ctx)
+// NextN retrieves up to n records from the active iterator.
+// If the end of the snapshot is reached during this call, it will switch to the CDC iterator
+// and continue retrieving records from there.
+func (c *CombinedIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
+	if n <= 0 {
+		return nil, fmt.Errorf("n must be greater than 0, got %d", n)
 	}
 
-	return r, nil
+	records, err := c.activeIterator.NextN(ctx, n)
+	if err != nil {
+		if !errors.Is(err, snapshot.ErrIteratorDone) {
+			return nil, fmt.Errorf("failed to fetch records in batch: %w", err)
+		}
+
+		// Snapshot iterator is done, handover to CDC iterator
+		if err := c.useCDCIterator(ctx); err != nil {
+			return nil, err
+		}
+
+		sdk.Logger(ctx).Debug().Msg("Snapshot completed, switching to CDC mode")
+		return c.NextN(ctx, n)
+	}
+	return records, nil
 }
 
 func (c *CombinedIterator) Ack(ctx context.Context, p opencdc.Position) error {

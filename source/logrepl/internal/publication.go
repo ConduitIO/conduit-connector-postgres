@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -36,7 +37,12 @@ func CreatePublication(ctx context.Context, conn *pgxpool.Pool, name string, opt
 		return fmt.Errorf("publication %q requires at least one table", name)
 	}
 
-	forTableString := fmt.Sprintf("FOR TABLE %s", strings.Join(opts.Tables, ", "))
+	wrappedTablesNames := make([]string, 0, len(opts.Tables))
+	for _, t := range opts.Tables {
+		wrappedTablesNames = append(wrappedTablesNames, internal.WrapSQLIdent(t))
+	}
+
+	forTableString := fmt.Sprintf("FOR TABLE %s", strings.Join(wrappedTablesNames, ", "))
 
 	var publicationParams string
 	if len(opts.PublicationParams) > 0 {

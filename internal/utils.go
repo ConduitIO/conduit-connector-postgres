@@ -1,4 +1,4 @@
-// Copyright © 2022 Meroxa, Inc.
+// Copyright © 2025 Meroxa, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,22 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package postgres
+package internal
 
 import (
-	sdk "github.com/conduitio/conduit-connector-sdk"
+	"strconv"
 )
 
-// version is set during the build process (i.e. the Makefile).
-// Default version matches default from runtime/debug.
-var version = "(devel)"
-
-// Specification returns the Plugin's Specification.
-func Specification() sdk.Specification {
-	return sdk.Specification{
-		Name:    "postgres",
-		Summary: "A PostgreSQL source and destination plugin for Conduit.",
-		Version: version,
-		Author:  "Meroxa, Inc.",
-	}
-}
+// WrapSQLIdent is used to wrap PostgreSQL identifier under quotes.
+// It allows to use uppercase letters and special characters (like `-`) in the
+// names of identifiers
+var WrapSQLIdent = strconv.Quote

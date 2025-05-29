@@ -19,9 +19,12 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/conduitio/conduit-commons/config"
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-postgres/source"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	"github.com/conduitio/conduit-connector-postgres/test"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/matryer/is"
 )
 
@@ -34,7 +37,7 @@ func TestSource_Read(t *testing.T) {
 	publicationName := "conduitpub1"
 
 	s := NewSource()
-	err := s.Configure(
+	err := sdk.Util.ParseConfig(
 		ctx,
 		map[string]string{
 			"url":                     test.RepmgrConnString,
@@ -44,6 +47,8 @@ func TestSource_Read(t *testing.T) {
 			"logrepl.slotName":        slotName,
 			"logrepl.publicationName": publicationName,
 		},
+		s.Config(),
+		Connector.NewSpecification().SourceParams,
 	)
 	is.NoErr(err)
 
@@ -240,4 +245,47 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
 	)
 	_, err := conn.Exec(ctx, query)
 	is.NoErr(err)
+}
+
+func TestSource_ParseConfig(t *testing.T) {
+	testCases := []struct {
+		name    string
+		cfg     config.Config
+		wantErr bool
+	}{
+		{
+			name: "valid postgres replication slot name",
+			cfg: config.Config{
+				"url":              "postgresql://meroxauser:meroxapass@127.0.0.1:5432/meroxadb",
+				"tables":           "table1,table2",
+				"cdcMode":          "logrepl",
+				"logrepl.slotName": "valid_slot_name",
+			},
+			wantErr: false,
+		}, {
+			name: "invalid postgres replication slot name",
+			cfg: config.Config{
+				"url":              "postgresql://meroxauser:meroxapass@127.0.0.1:5432/meroxadb",
+				"tables":           "table1,table2",
+				"cdcMode":          "logrepl",
+				"logrepl.slotName": "invalid:slot.name",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+
+			var cfg source.Config
+			err := sdk.Util.ParseConfig(context.Background(), tc.cfg, cfg, Connector.NewSpecification().SourceParams)
+
+			if tc.wantErr {
+				is.True(err != nil)
+				return
+			}
+			is.NoErr(err)
+		})
+	}
 }

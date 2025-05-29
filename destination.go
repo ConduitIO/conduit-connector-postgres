@@ -18,14 +18,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"strings"
 
 	sq "github.com/Masterminds/squirrel"
-	"github.com/conduitio/conduit-commons/config"
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/destination"
+	"github.com/conduitio/conduit-connector-postgres/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
+	"github.com/shopspring/decimal"
 )
 
 type Destination struct {
@@ -35,37 +37,19 @@ type Destination struct {
 	getTableName destination.TableFn
 
 	conn        *pgx.Conn
+	dbInfo      *internal.DbInfo
 	stmtBuilder sq.StatementBuilderType
+}
+
+func (d *Destination) Config() sdk.DestinationConfig {
+	return &d.config
 }
 
 func NewDestination() sdk.Destination {
 	d := &Destination{
 		stmtBuilder: sq.StatementBuilder.PlaceholderFormat(sq.Dollar),
 	}
-	return sdk.DestinationWithMiddleware(d, sdk.DefaultDestinationMiddleware()...)
-}
-
-func (d *Destination) Parameters() config.Parameters {
-	return d.config.Parameters()
-}
-
-func (d *Destination) Configure(ctx context.Context, cfg config.Config) error {
-	err := sdk.Util.ParseConfig(ctx, cfg, &d.config, NewDestination().Parameters())
-	if err != nil {
-		return err
-	}
-	// try parsing the url
-	_, err = pgx.ParseConfig(d.config.URL)
-	if err != nil {
-		return fmt.Errorf("invalid url: %w", err)
-	}
-
-	d.getTableName, err = d.config.TableFunction()
-	if err != nil {
-		return fmt.Errorf("invalid table name or table function: %w", err)
-	}
-
-	return nil
+	return sdk.DestinationWithMiddleware(d)
 }
 
 func (d *Destination) Open(ctx context.Context) error {
@@ -74,6 +58,13 @@ func (d *Destination) Open(ctx context.Context) error {
 		return fmt.Errorf("failed to open connection: %w", err)
 	}
 	d.conn = conn
+
+	d.getTableName, err = d.config.TableFunction()
+	if err != nil {
+		return fmt.Errorf("invalid table name or table name function: %w", err)
+	}
+
+	d.dbInfo = internal.NewDbInfo(conn)
 	return nil
 }
 
@@ -198,8 +189,8 @@ func (d *Destination) remove(ctx context.Context, r opencdc.Record, b *pgx.Batch
 		Any("key", map[string]interface{}{keyColumnName: key[keyColumnName]}).
 		Msg("deleting record")
 	query, args, err := d.stmtBuilder.
-		Delete(tableName).
-		Where(sq.Eq{keyColumnName: key[keyColumnName]}).
+		Delete(internal.WrapSQLIdent(tableName)).
+		Where(sq.Eq{internal.WrapSQLIdent(keyColumnName): key[keyColumnName]}).
 		ToSql()
 	if err != nil {
 		return fmt.Errorf("error formatting delete query: %w", err)
@@ -228,12 +219,16 @@ func (d *Destination) insert(ctx context.Context, r opencdc.Record, b *pgx.Batch
 		return err
 	}
 
-	colArgs, valArgs := d.formatColumnsAndValues(key, payload)
+	colArgs, valArgs, err := d.formatColumnsAndValues(tableName, key, payload)
+	if err != nil {
+		return fmt.Errorf("error formatting columns and values: %w", err)
+	}
+
 	sdk.Logger(ctx).Trace().
 		Str("table_name", tableName).
 		Msg("inserting record")
 	query, args, err := d.stmtBuilder.
-		Insert(tableName).
+		Insert(internal.WrapSQLIdent(tableName)).
 		Columns(colArgs...).
 		Values(valArgs...).
 		ToSql()
@@ -291,12 +286,13 @@ func (d *Destination) formatUpsertQuery(
 	keyColumnName string,
 	tableName string,
 ) (string, []interface{}, error) {
-	upsertQuery := fmt.Sprintf("ON CONFLICT (%s) DO UPDATE SET", keyColumnName)
+	upsertQuery := fmt.Sprintf("ON CONFLICT (%s) DO UPDATE SET", internal.WrapSQLIdent(keyColumnName))
 	for column := range payload {
 		// tuples form a comma separated list, so they need a comma at the end.
 		// `EXCLUDED` references the new record's values. This will overwrite
 		// every column's value except for the key column.
-		tuple := fmt.Sprintf("%s=EXCLUDED.%s,", column, column)
+		wrappedCol := internal.WrapSQLIdent(column)
+		tuple := fmt.Sprintf("%s=EXCLUDED.%s,", wrappedCol, wrappedCol)
 		// TODO: Consider removing this space.
 		upsertQuery += " "
 		// add the tuple to the query string
@@ -306,13 +302,16 @@ func (d *Destination) formatUpsertQuery(
 	// remove the last comma from the list of tuples
 	upsertQuery = strings.TrimSuffix(upsertQuery, ",")
 
-	// we have to manually append a semi colon to the upsert sql;
+	// we have to manually append a semicolon to the upsert sql;
 	upsertQuery += ";"
 
-	colArgs, valArgs := d.formatColumnsAndValues(key, payload)
+	colArgs, valArgs, err := d.formatColumnsAndValues(tableName, key, payload)
+	if err != nil {
+		return "", nil, fmt.Errorf("error formatting columns and values: %w", err)
+	}
 
 	return d.stmtBuilder.
-		Insert(tableName).
+		Insert(internal.WrapSQLIdent(tableName)).
 		Columns(colArgs...).
 		Values(valArgs...).
 		SuffixExpr(sq.Expr(upsertQuery)).
@@ -321,24 +320,32 @@ func (d *Destination) formatUpsertQuery(
 
 // formatColumnsAndValues turns the key and payload into a slice of ordered
 // columns and values for upserting into Postgres.
-func (d *Destination) formatColumnsAndValues(key, payload opencdc.StructuredData) ([]string, []interface{}) {
+func (d *Destination) formatColumnsAndValues(table string, key, payload opencdc.StructuredData) ([]string, []interface{}, error) {
 	var colArgs []string
 	var valArgs []interface{}
 
 	// range over both the key and payload values in order to format the
 	// query for args and values in proper order
 	for key, val := range key {
-		colArgs = append(colArgs, key)
-		valArgs = append(valArgs, val)
+		colArgs = append(colArgs, internal.WrapSQLIdent(key))
+		formatted, err := d.formatValue(table, key, val)
+		if err != nil {
+			return nil, nil, fmt.Errorf("error formatting value: %w", err)
+		}
+		valArgs = append(valArgs, formatted)
 		delete(payload, key) // NB: Delete Key from payload arguments
 	}
 
-	for field, value := range payload {
-		colArgs = append(colArgs, field)
-		valArgs = append(valArgs, value)
+	for field, val := range payload {
+		colArgs = append(colArgs, internal.WrapSQLIdent(field))
+		formatted, err := d.formatValue(table, field, val)
+		if err != nil {
+			return nil, nil, fmt.Errorf("error formatting value: %w", err)
+		}
+		valArgs = append(valArgs, formatted)
 	}
 
-	return colArgs, valArgs
+	return colArgs, valArgs, nil
 }
 
 // getKeyColumnName will return the name of the first item in the key or the
@@ -357,4 +364,29 @@ func (d *Destination) getKeyColumnName(key opencdc.StructuredData, defaultKeyNam
 
 func (d *Destination) hasKey(e opencdc.Record) bool {
 	return e.Key != nil && len(e.Key.Bytes()) > 0
+}
+
+func (d *Destination) formatValue(table string, column string, val interface{}) (interface{}, error) {
+	switch v := val.(type) {
+	case *big.Rat:
+		return d.formatBigRat(table, column, v)
+	case big.Rat:
+		return d.formatBigRat(table, column, &v)
+	default:
+		return val, nil
+	}
+}
+
+func (d *Destination) formatBigRat(table string, column string, v *big.Rat) (string, error) {
+	scale, err := d.dbInfo.GetNumericColumnScale(table, column)
+	if err != nil {
+		return "", fmt.Errorf("failed getting scale of numeric column: %w", err)
+	}
+
+	if v == nil {
+		return "", nil
+	}
+
+	//nolint:gosec // no risk of overflow, because the scale in Pg is always <= 16383
+	return decimal.NewFromBigRat(v, int32(scale)).String(), nil
 }

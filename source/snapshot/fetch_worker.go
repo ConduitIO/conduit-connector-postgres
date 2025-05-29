@@ -24,6 +24,7 @@ import (
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	cschema "github.com/conduitio/conduit-commons/schema"
+	"github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/common"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/schema"
@@ -248,10 +249,10 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 func (f *FetchWorker) createCursor(ctx context.Context, tx pgx.Tx) (func(), error) {
 	// This query will scan the table for rows based on the conditions.
 	selectQuery := fmt.Sprintf(
-		"SELECT * FROM %s WHERE %s > %d AND %s <= %d ORDER BY %s",
-		f.conf.Table,
-		f.conf.Key, f.lastRead, // range start
-		f.conf.Key, f.snapshotEnd, // range end,
+		"SELECT * FROM %s WHERE %s > %d AND %s <= %d ORDER BY %q",
+		internal.WrapSQLIdent(f.conf.Table),
+		internal.WrapSQLIdent(f.conf.Key), f.lastRead, // range start
+		internal.WrapSQLIdent(f.conf.Key), f.snapshotEnd, // range end,
 		f.conf.Key, // order by
 	)
 
@@ -276,7 +277,9 @@ func (f *FetchWorker) updateSnapshotEnd(ctx context.Context, tx pgx.Tx) error {
 		return nil
 	}
 
-	query := fmt.Sprintf("SELECT COALESCE(max(%s), 0) FROM %s", f.conf.Key, f.conf.Table)
+	query := fmt.Sprintf("SELECT COALESCE(max(%s), 0) FROM %s",
+		internal.WrapSQLIdent(f.conf.Key), internal.WrapSQLIdent(f.conf.Table),
+	)
 	if err := tx.QueryRow(ctx, query).Scan(&f.snapshotEnd); err != nil {
 		return fmt.Errorf("failed to get snapshot end with query %q: %w", query, err)
 	}
@@ -395,7 +398,7 @@ func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values [
 	tableInfo := f.getTableInfo()
 	for i, fd := range fields {
 		isNotNull := tableInfo.Columns[fd.Name].IsNotNull
-		
+
 		if fd.Name == f.conf.Key {
 			k, err := types.Format(fd.DataTypeOID, values[i], isNotNull)
 			if err != nil {
@@ -459,7 +462,7 @@ func (*FetchWorker) validateKey(ctx context.Context, table, key string, tx pgx.T
 		`SELECT EXISTS(SELECT a.attname FROM pg_index i
 			JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
 			WHERE i.indrelid = $1::regclass AND a.attname = $2 AND i.indisprimary)`,
-		table, key,
+		internal.WrapSQLIdent(table), key,
 	).Scan(&isPK); err != nil {
 		return fmt.Errorf("unable to determine key %q constraints: %w", key, err)
 	}

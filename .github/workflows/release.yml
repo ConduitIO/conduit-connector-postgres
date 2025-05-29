@@ -3,7 +3,7 @@ name: release
 on:
   push:
     tags:
-      - v*
+      - '*'
 
 permissions:
   contents: write
@@ -17,6 +17,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Check Connector Tag
+        uses: conduitio/automation/actions/check_connector_tag@main
 
       - name: Set up Go
         uses: actions/setup-go@v5

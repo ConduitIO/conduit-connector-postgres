@@ -12,15 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:generate paramgen Config
-
 package source
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
-	"github.com/conduitio/conduit-commons/config"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -47,14 +46,14 @@ const (
 )
 
 type Config struct {
+	sdk.DefaultSourceMiddleware
+
 	// URL is the connection string for the Postgres database.
 	URL string `json:"url" validate:"required"`
 
 	// Tables is a List of table names to read from, separated by a comma, e.g.:"table1,table2".
 	// Use "*" if you'd like to listen to all tables.
-	Tables []string `json:"tables"`
-	// Deprecated: use `tables` instead.
-	Table []string `json:"table"`
+	Tables []string `json:"tables" validate:"required"`
 
 	// SnapshotMode is whether the plugin will take a snapshot of the entire table before starting cdc mode.
 	SnapshotMode SnapshotMode `json:"snapshotMode" validate:"inclusion=initial|never" default:"initial"`
@@ -70,7 +69,8 @@ type Config struct {
 	LogreplPublicationName string `json:"logrepl.publicationName" default:"conduitpub"`
 	// LogreplSlotName determines the replication slot name in case the
 	// connector uses logical replication to listen to changes (see CDCMode).
-	LogreplSlotName string `json:"logrepl.slotName" default:"conduitslot"`
+	// Can only contain lower-case letters, numbers, and the underscore character.
+	LogreplSlotName string `json:"logrepl.slotName" validate:"regex=^[a-z0-9_]+$" default:"conduitslot"`
 
 	// LogreplAutoCleanup determines if the replication slot and publication should be
 	// removed when the connector is deleted.
@@ -78,34 +78,20 @@ type Config struct {
 
 	// WithAvroSchema determines whether the connector should attach an avro schema on each
 	// record.
-	WithAvroSchema bool `json:"logrepl.withAvroSchema" default:"false"`
+	WithAvroSchema bool `json:"logrepl.withAvroSchema" default:"true"`
 }
 
 // Validate validates the provided config values.
-func (c Config) Validate() error {
+func (c *Config) Validate(ctx context.Context) error {
 	var errs []error
-
-	// try parsing the url
-	_, err := pgx.ParseConfig(c.URL)
-	if err != nil {
+	if _, err := pgx.ParseConfig(c.URL); err != nil {
 		errs = append(errs, fmt.Errorf("invalid url: %w", err))
 	}
 
-	if len(c.Tables) > 0 && len(c.Table) > 0 {
-		errs = append(errs, fmt.Errorf(`error validating "tables": cannot provide both "table" and "tables", use "tables" only`))
+	err := c.DefaultSourceMiddleware.Validate(ctx)
+	if err != nil {
+		errs = append(errs, err)
 	}
 
-	if len(c.Tables) == 0 {
-		errs = append(errs, fmt.Errorf(`error validating "tables": %w`, config.ErrRequiredParameterMissing))
-	}
 	return errors.Join(errs...)
-}
-
-// Init sets the desired value on Tables while Table is being deprecated.
-func (c Config) Init() Config {
-	if len(c.Table) > 0 && len(c.Tables) == 0 {
-		c.Tables = c.Table
-		c.Table = nil
-	}
-	return c
 }

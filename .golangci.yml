@@ -1,110 +1,83 @@
-linters-settings:
-  gofmt:
-    simplify: false
-  govet:
-    check-shadowing: false
-  nolintlint:
-    allow-unused: false # report any unused nolint directives
-    require-explanation: true # require an explanation for nolint directives
-    require-specific: true # require nolint directives to mention the specific linter being suppressed
-  gocyclo:
-    min-complexity: 20
-  goconst:
-    ignore-tests: true
-  goheader:
-    template-path: '.golangci.goheader.template'
-    values:
-      regexp:
-        copyright-year: 20[2-9]\d
-  forbidigo:
-    forbid:
-      - p: ^pgxpool\.New.*$
-        msg: "Use github.com/conduitio/conduit-connector-postgres/source/cpool.New instead."
-issues:
-  exclude-rules:
-    - path: test/helper\.go
-      linters:
-        - gosec
-    - path: source/cpool/cpool\.go
-      linters:
-      - forbidigo
-
+version: "2"
 linters:
-  # please, do not use `enable-all`: it's deprecated and will be removed soon.
-  # inverted configuration with `enable-all` and `disable` is not scalable during updates of golangci-lint
-  disable-all: true
+  default: none
   enable:
     - bodyclose
     - copyloopvar
-    # - depguard
     - dogsled
     - durationcheck
     - errcheck
     - errname
-    # - errorlint
-    # - exhaustive
-    # - exhaustivestruct
     - forbidigo
-    # - forcetypeassert
-    # - funlen
-    # - gochecknoinits
     - goconst
     - gocritic
     - gocyclo
-    # - cyclop # not interested in package complexities at the moment
-    # - godot
-    - gofmt
-    # - gofumpt
     - goheader
-    - goimports
-    - revive
-    # - gomnd
     - gomoddirectives
     - gomodguard
     - goprintffuncname
     - gosec
-    - gosimple
     - govet
-    # - ifshort
     - ineffassign
-    # - importas
-    # - lll
-    # - misspell
     - makezero
-    # - nakedret
-    # - nilerr
-    # - nilnil
-    # - nlreturn
     - noctx
     - nolintlint
-    # - paralleltest
     - predeclared
+    - revive
     - rowserrcheck
-    - staticcheck
-    - stylecheck
     - sqlclosecheck
-    # - tagliatelle
-    # - tenv
-    # - thelper
-    # - tparallel
-    - typecheck
+    - staticcheck
     - unconvert
-    # - unparam
     - unused
     - wastedassign
     - whitespace
-  # - wrapcheck
-  # - wsl
-
-  # don't enable:
-  # - asciicheck
-  # - dupl
-  # - gochecknoglobals
-  # - gocognit
-  # - godox
-  # - goerr113
-  # - maligned
-  # - nestif
-  # - prealloc
-  # - testpackage
-  # - wsl
+  settings:
+    forbidigo:
+      forbid:
+        - pattern: ^pgxpool\.New.*$
+          msg: Use github.com/conduitio/conduit-connector-postgres/source/cpool.New instead.
+    gocyclo:
+      min-complexity: 20
+    goheader:
+      values:
+        regexp:
+          copyright-year: 20[2-9]\d
+      template-path: .golangci.goheader.template
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - gosec
+        path: test/helper\.go
+      - linters:
+          - forbidigo
+        path: source/cpool/cpool\.go
+      - linters:
+          - goconst
+        path: (.+)_test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      simplify: false
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

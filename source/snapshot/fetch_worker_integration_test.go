@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 	"testing"
 	"time"
@@ -121,8 +122,11 @@ func Test_FetcherValidate(t *testing.T) {
 	var (
 		ctx   = test.Context(t)
 		pool  = test.ConnectPool(ctx, t, test.RegularConnString)
-		table = test.SetupTestTable(ctx, t, pool)
+		table = strings.ToUpper(test.RandomIdentifier(t))
 	)
+
+	// uppercase table name is required to test primary key fetching
+	test.SetupTestTableWithName(ctx, t, pool, table)
 
 	t.Run("success", func(t *testing.T) {
 		is := is.New(t)
@@ -271,7 +275,7 @@ func Test_FetcherRun_Initial(t *testing.T) {
 	}
 
 	is.NoErr(tt.Err())
-	is.True(len(gotFetchData) == 4)
+	is.Equal(len(gotFetchData), 4)
 
 	var (
 		value6 = []byte(`{"foo": "bar"}`)
@@ -279,17 +283,23 @@ func Test_FetcherRun_Initial(t *testing.T) {
 	)
 
 	expectedMatch := []opencdc.StructuredData{
-		{"id": int64(1), "key": []uint8{49}, "column1": "foo", "column2": int32(123), "column3": false, "column4": 12.2, "column5": int64(4), "column6": value6, "column7": value7},
-		{"id": int64(2), "key": []uint8{50}, "column1": "bar", "column2": int32(456), "column3": true, "column4": 13.42, "column5": int64(8), "column6": value6, "column7": value7},
-		{"id": int64(3), "key": []uint8{51}, "column1": "baz", "column2": int32(789), "column3": false, "column4": nil, "column5": int64(9), "column6": value6, "column7": value7},
-		{"id": int64(4), "key": []uint8{52}, "column1": nil, "column2": nil, "column3": nil, "column4": 91.1, "column5": nil, "column6": nil, "column7": nil},
+		{"id": int64(1), "key": []uint8{49}, "column1": "foo", "column2": int32(123), "column3": false, "column4": big.NewRat(122, 10), "column5": big.NewRat(4, 1), "column6": value6, "column7": value7, "UppercaseColumn1": int32(1)},
+		{"id": int64(2), "key": []uint8{50}, "column1": "bar", "column2": int32(456), "column3": true, "column4": big.NewRat(1342, 100), "column5": big.NewRat(8, 1), "column6": value6, "column7": value7, "UppercaseColumn1": int32(2)},
+		{"id": int64(3), "key": []uint8{51}, "column1": "baz", "column2": int32(789), "column3": false, "column4": nil, "column5": big.NewRat(9, 1), "column6": value6, "column7": value7, "UppercaseColumn1": int32(3)},
+		{"id": int64(4), "key": []uint8{52}, "column1": nil, "column2": nil, "column3": nil, "column4": big.NewRat(911, 10), "column5": nil, "column6": nil, "column7": nil, "UppercaseColumn1": nil},
 	}
 
 	for i, got := range gotFetchData {
 		t.Run(fmt.Sprintf("payload_%d", i+1), func(t *testing.T) {
 			is := is.New(t)
 			is.Equal(got.Key, opencdc.StructuredData{"id": int64(i + 1)})
-			is.Equal("", cmp.Diff(expectedMatch[i], got.Payload))
+			is.Equal("", cmp.Diff(
+				expectedMatch[i],
+				got.Payload,
+				cmp.Comparer(func(x, y *big.Rat) bool {
+					return x.Cmp(y) == 0
+				}),
+			))
 
 			is.Equal(got.Position, position.SnapshotPosition{
 				LastRead:    int64(i + 1),
@@ -344,17 +354,27 @@ func Test_FetcherRun_Resume(t *testing.T) {
 
 	// validate generated record
 	is.Equal(dd[0].Key, opencdc.StructuredData{"id": int64(3)})
-	is.Equal("", cmp.Diff(dd[0].Payload, opencdc.StructuredData{
-		"id":      int64(3),
-		"key":     []uint8{51},
-		"column1": "baz",
-		"column2": int32(789),
-		"column3": false,
-		"column4": nil,
-		"column5": int64(9),
-		"column6": []byte(`{"foo": "bar"}`),
-		"column7": []byte(`{"foo": "baz"}`),
-	}))
+	is.Equal(
+		"",
+		cmp.Diff(
+			dd[0].Payload,
+			opencdc.StructuredData{
+				"id":               int64(3),
+				"key":              []uint8{51},
+				"column1":          "baz",
+				"column2":          int32(789),
+				"column3":          false,
+				"column4":          nil,
+				"column5":          big.NewRat(9, 1),
+				"column6":          []byte(`{"foo": "bar"}`),
+				"column7":          []byte(`{"foo": "baz"}`),
+				"UppercaseColumn1": int32(3),
+			},
+			cmp.Comparer(func(x, y *big.Rat) bool {
+				return x.Cmp(y) == 0
+			}),
+		),
+	)
 
 	is.Equal(dd[0].Position, position.SnapshotPosition{
 		LastRead:    3,
@@ -475,8 +495,10 @@ func Test_FetchWorker_updateSnapshotEnd(t *testing.T) {
 		is    = is.New(t)
 		ctx   = test.Context(t)
 		pool  = test.ConnectPool(ctx, t, test.RegularConnString)
-		table = test.SetupTestTable(ctx, t, pool)
+		table = strings.ToUpper(test.RandomIdentifier(t))
 	)
+
+	test.SetupTestTableWithName(ctx, t, pool, table)
 
 	tx, err := pool.Begin(ctx)
 	is.NoErr(err)
@@ -495,6 +517,14 @@ func Test_FetchWorker_updateSnapshotEnd(t *testing.T) {
 				Key:   "id",
 			}},
 			expected: 4,
+		},
+		{
+			desc: "success with capitalized key",
+			w: &FetchWorker{conf: FetchConfig{
+				Table: table,
+				Key:   "UppercaseColumn1",
+			}},
+			expected: 3,
 		},
 		{
 			desc:     "skip update when set",
@@ -561,7 +591,7 @@ func Test_FetchWorker_createCursor(t *testing.T) {
 	)
 	is.Equal(
 		cursorDef,
-		fmt.Sprintf("DECLARE cursor123 CURSOR FOR(SELECT * FROM %s WHERE id > 10 AND id <= 15 ORDER BY id)", table),
+		fmt.Sprintf(`DECLARE cursor123 CURSOR FOR(SELECT * FROM %q WHERE "id" > 10 AND "id" <= 15 ORDER BY "id")`, table),
 	)
 
 	is.NoErr(tx.Rollback(ctx))
