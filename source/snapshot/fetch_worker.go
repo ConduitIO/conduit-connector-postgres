@@ -134,7 +134,7 @@ func NewFetchWorker(db *pgxpool.Pool, out chan<- FetchData, c FetchConfig) *Fetc
 // * Table and keys exist
 // * Key is a primary key
 func (f *FetchWorker) Init(ctx context.Context) error {
-	err := f.validate(ctx)
+	err := f.Validate(ctx)
 	if err != nil {
 		return fmt.Errorf("validation failed: %w", err)
 	}
@@ -147,7 +147,7 @@ func (f *FetchWorker) Init(ctx context.Context) error {
 	return nil
 }
 
-func (f *FetchWorker) validate(ctx context.Context) error {
+func (f *FetchWorker) Validate(ctx context.Context) error {
 	if err := f.conf.Validate(); err != nil {
 		return fmt.Errorf("failed to validate config: %w", err)
 	}

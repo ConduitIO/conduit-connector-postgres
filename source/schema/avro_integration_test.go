@@ -237,7 +237,7 @@ func avrolizeMap(fields []pgconn.FieldDescription, values []any) map[string]any 
 		switch f.DataTypeOID {
 		case pgtype.NumericOID:
 			n := new(big.Rat)
-			n.SetString(fmt.Sprint(types.Format(0, values[i])))
+			n.SetString(fmt.Sprint(types.Format(0, values[i], true)))
 			row[f.Name] = n
 		case pgtype.UUIDOID:
 			row[f.Name] = fmt.Sprint(values[i])

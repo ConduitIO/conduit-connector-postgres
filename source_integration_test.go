@@ -63,20 +63,22 @@ func TestSource_Read(t *testing.T) {
 		is.NoErr(s.Teardown(ctx))
 	})
 
-	gotRecord, err := s.Read(ctx)
+	gotRecords, err := s.ReadN(ctx, 1)
 	is.NoErr(err)
-	err = s.Ack(ctx, gotRecord.Position)
+	is.Equal(1, len(gotRecords))
+	err = s.Ack(ctx, gotRecords[0].Position)
 	is.NoErr(err)
-	assertRecordOK(is, tableName, gotRecord)
+	assertRecordOK(is, tableName, gotRecords[0])
 
 	insertRowNotNullColumnsOnly(ctx, t, tableName, 3)
 	insertRowAllColumns(ctx, t, tableName, 4)
 
-	gotRecord, err = s.Read(ctx)
+	gotRecords, err = s.ReadN(ctx, 1)
 	is.NoErr(err)
-	err = s.Ack(ctx, gotRecord.Position)
+	is.Equal(1, len(gotRecords))
+	err = s.Ack(ctx, gotRecords[0].Position)
 	is.NoErr(err)
-	assertRecordOK(is, tableName, gotRecord)
+	assertRecordOK(is, tableName, gotRecords[0])
 }
 
 func assertRecordOK(is *is.I, tableName string, gotRecord opencdc.Record) {
@@ -123,7 +125,7 @@ func prepareSourceIntegrationTestTable(ctx context.Context, t *testing.T) string
     col_int8                int8,
     col_int8_not_null       int8 NOT NULL,
     col_numeric             numeric(8,2),
-    -- col_numeric_not_null    numeric(8,2) NOT NULL,
+    col_numeric_not_null    numeric(8,2) NOT NULL,
     col_text                text,
     col_text_not_null       text NOT NULL,
     col_timestamp           timestamp,
@@ -163,7 +165,7 @@ func insertRowNotNullColumnsOnly(ctx context.Context, t *testing.T, table string
 			col_int2_not_null,
 			col_int4_not_null,
 			col_int8_not_null,
-			-- col_numeric_not_null,
+			col_numeric_not_null,
 			col_text_not_null,
 			col_timestamp_not_null,
 			col_timestamptz_not_null,
@@ -177,7 +179,7 @@ func insertRowNotNullColumnsOnly(ctx context.Context, t *testing.T, table string
 			%d,                  	-- col_int2_not_null
 			%d,                  	-- col_int4_not_null
 			%d,                  	-- col_int8_not_null
-			-- %f,                  	-- col_numeric_not_null
+			%f,                  	-- col_numeric_not_null
 			'bar-%v',               -- col_text_not_null
 			now(),                  -- col_timestamp_not_null
 			now(),                  -- col_timestamptz_not_null
@@ -212,7 +214,7 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
          col_int2, col_int2_not_null,
          col_int4, col_int4_not_null,
          col_int8, col_int8_not_null,
-         -- col_numeric, col_numeric_not_null,
+         col_numeric, col_numeric_not_null,
          col_text, col_text_not_null,
          col_timestamp, col_timestamp_not_null,
          col_timestamptz, col_timestamptz_not_null,
@@ -226,7 +228,7 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
          %d, %d,
          %d, %d,
          %d, %d,
-         -- %f, %f,
+         %f, %f,
          'bar-%v', 'bar-%v',
          now(), now(),
          now(), now(),
