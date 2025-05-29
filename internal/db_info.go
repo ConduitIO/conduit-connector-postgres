@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -32,12 +31,8 @@ type DbInfo struct {
 // tableCache stores information about a table.
 // The information is cached and refreshed every 'cacheExpiration'.
 type tableCache struct {
-	columns     map[string]int
-	nextRefresh time.Time
+	columns map[string]int
 }
-
-// cacheExpiration defines how long table information remains valid
-const cacheExpiration = 5 * time.Minute
 
 func NewDbInfo(conn *pgx.Conn) *DbInfo {
 	return &DbInfo{
@@ -49,7 +44,7 @@ func NewDbInfo(conn *pgx.Conn) *DbInfo {
 func (d *DbInfo) GetNumericColumnScale(ctx context.Context, table string, column string) (int, error) {
 	// Check if table exists in cache and is not expired
 	tableInfo, ok := d.cache[table]
-	if ok && time.Now().Before(tableInfo.nextRefresh) {
+	if ok {
 		scale, ok := tableInfo.columns[column]
 		if ok {
 			return scale, nil
@@ -57,8 +52,7 @@ func (d *DbInfo) GetNumericColumnScale(ctx context.Context, table string, column
 	} else {
 		// Table info has expired, refresh the cache
 		d.cache[table] = &tableCache{
-			columns:     map[string]int{},
-			nextRefresh: time.Now().Add(cacheExpiration),
+			columns: map[string]int{},
 		}
 	}
 
