@@ -529,8 +529,8 @@ func verifyOpenCDCRecords(is *is.I, got []opencdc.Record, tableName string, from
 					"column1":          fmt.Sprintf("test-%d", i),
 					"column2":          int32(i) * 100, //nolint:gosec // fine, we know the value is small enough
 					"column3":          false,
-					"column4":          12.3,
-					"column5":          int64(14),
+					"column4":          big.NewRat(123, 10),
+					"column5":          big.NewRat(14, 1),
 					"column6":          nil,
 					"column7":          nil,
 					"UppercaseColumn1": nil,
@@ -547,6 +547,9 @@ func verifyOpenCDCRecords(is *is.I, got []opencdc.Record, tableName string, from
 	cmpOpts := []cmp.Option{
 		cmpopts.IgnoreUnexported(opencdc.Record{}),
 		cmpopts.IgnoreFields(opencdc.Record{}, "Position", "Metadata"),
+		cmp.Comparer(func(x, y *big.Rat) bool {
+			return x.Cmp(y) == 0
+		}),
 	}
 	is.Equal("", cmp.Diff(want, got, cmpOpts...)) // mismatch (-want +got)
 }
