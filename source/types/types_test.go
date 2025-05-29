@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-commons/lang"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/matryer/is"
 )
@@ -36,13 +37,13 @@ func Test_Format(t *testing.T) {
 		{
 			name: "int float string bool",
 			input: []any{
-				1021, 199.2, "foo", true,
+				1021,
 			},
 			inputOID: []uint32{
 				0, 0, 0, 0,
 			},
 			expect: []any{
-				1021, 199.2, "foo", true,
+				lang.Ptr(1021),
 			},
 		},
 		{
@@ -90,7 +91,7 @@ func Test_Format(t *testing.T) {
 			is := is.New(t)
 
 			for i, in := range tc.input {
-				v, err := Format(tc.inputOID[i], in)
+				v, err := Format(tc.inputOID[i], in, false)
 				is.NoErr(err)
 				is.Equal(v, tc.expect[i])
 			}

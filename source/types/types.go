@@ -37,7 +37,7 @@ func Format(oid uint32, v any, isNotNull bool) (any, error) {
 	}
 
 	if reflect.TypeOf(val).Kind() != reflect.Ptr && !isNotNull {
-		return &val, nil
+		return GetPointer(val), nil
 	}
 
 	return val, nil
@@ -61,4 +61,30 @@ func format(oid uint32, v any) (any, error) {
 	default:
 		return t, nil
 	}
+}
+
+func GetPointer(v any) any {
+	rv := reflect.ValueOf(v)
+
+	// If the value is nil or invalid, return nil
+	if !rv.IsValid() {
+		return nil
+	}
+
+	// If it's already a pointer, return it as-is
+	if rv.Kind() == reflect.Ptr {
+		return rv.Interface()
+	}
+
+	// For non-pointer values, we need to get the address
+	// If the value is addressable, return its address
+	if rv.CanAddr() {
+		return rv.Addr().Interface()
+	}
+
+	// If we can't get the address directly, create an addressable copy
+	// This happens when the interface{} contains a literal value
+	ptr := reflect.New(rv.Type())
+	ptr.Elem().Set(rv)
+	return ptr.Interface()
 }
