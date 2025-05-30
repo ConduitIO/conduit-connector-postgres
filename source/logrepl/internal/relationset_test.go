@@ -107,6 +107,7 @@ func setupTableAllTypes(ctx context.Context, t *testing.T, conn test.Querier) st
 	table := test.RandomIdentifier(t)
 	query := `
 		CREATE TABLE %s (
+  		  id 				bigserial PRIMARY KEY,
 		  col_bit           bit(8),
 		  col_varbit        varbit(8),
 		  col_boolean       boolean,
@@ -260,6 +261,7 @@ func insertRowAllTypes(ctx context.Context, t *testing.T, conn test.Querier, tab
 
 func isValuesAllTypes(is *is.I, got map[string]any) {
 	want := map[string]any{
+		"id": int64(1),
 		"col_bit": pgtype.Bits{
 			Bytes: []byte{0b01},
 			Len:   8,
@@ -312,7 +314,7 @@ func isValuesAllTypes(is *is.I, got map[string]any) {
 		"col_macaddr":  net.HardwareAddr{0x08, 0x00, 0x2b, 0x01, 0x02, 0x26},
 		"col_macaddr8": net.HardwareAddr{0x08, 0x00, 0x2b, 0x01, 0x02, 0x03, 0x04, 0x27},
 		"col_money":    "$28.00",
-		"col_numeric":  float64(292929.29),
+		"col_numeric":  big.NewRat(29292929, 100),
 		"col_path": pgtype.Path{
 			P:      []pgtype.Vec2{{X: 30, Y: 31}, {X: 32, Y: 33}, {X: 34, Y: 35}},
 			Closed: false,
@@ -350,12 +352,16 @@ func isValuesAllTypes(is *is.I, got map[string]any) {
 		}),
 		cmp.Comparer(func(x, y netip.Prefix) bool {
 			return x.String() == y.String()
+		}),
+		cmp.Comparer(func(x, y *big.Rat) bool {
+			return x.Cmp(y) == 0
 		}),
 	))
 }
 
 func isValuesAllTypesStandalone(is *is.I, got map[string]any) {
 	want := map[string]any{
+		"id": int64(1),
 		"col_bit": pgtype.Bits{
 			Bytes: []byte{0b01},
 			Len:   8,
@@ -408,7 +414,7 @@ func isValuesAllTypesStandalone(is *is.I, got map[string]any) {
 		"col_macaddr":  net.HardwareAddr{0x08, 0x00, 0x2b, 0x01, 0x02, 0x26},
 		"col_macaddr8": net.HardwareAddr{0x08, 0x00, 0x2b, 0x01, 0x02, 0x03, 0x04, 0x27},
 		"col_money":    "$28.00",
-		"col_numeric":  float64(292929.29),
+		"col_numeric":  big.NewRat(29292929, 100),
 		"col_path": pgtype.Path{
 			P:      []pgtype.Vec2{{X: 30, Y: 31}, {X: 32, Y: 33}, {X: 34, Y: 35}},
 			Closed: false,
@@ -446,6 +452,9 @@ func isValuesAllTypesStandalone(is *is.I, got map[string]any) {
 		}),
 		cmp.Comparer(func(x, y netip.Prefix) bool {
 			return x.String() == y.String()
+		}),
+		cmp.Comparer(func(x, y *big.Rat) bool {
+			return x.Cmp(y) == 0
 		}),
 	))
 }
