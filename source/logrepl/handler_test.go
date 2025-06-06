@@ -79,8 +79,10 @@ func TestHandler_Batching_ContextCancelled(t *testing.T) {
 	<-ctx.Done()
 	underTest.addToBatch(ctx, newTestRecord(0))
 
-	_, recordReceived := <-ch
-	is.True(!recordReceived)
+	recs, gotRecs, err := cchan.ChanOut[[]opencdc.Record](ch).RecvTimeout(context.Background(), time.Second)
+	is.Equal(recs, nil)
+	is.True(!gotRecs)
+	is.Equal(err, context.DeadlineExceeded)
 }
 
 func newTestRecord(id int) opencdc.Record {

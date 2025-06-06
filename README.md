@@ -215,11 +215,6 @@ pipelines:
           # Type: string
           # Required: yes
           url: ""
-          # Key represents the column name for the key used to identify and
-          # update existing rows.
-          # Type: string
-          # Required: no
-          key: ""
           # Table is used as the target table into which records are inserted.
           # Type: string
           # Required: no

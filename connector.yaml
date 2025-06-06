@@ -230,11 +230,6 @@ specification:
         validations:
           - type: required
             value: ""
-      - name: key
-        description: Key represents the column name for the key used to identify and update existing rows.
-        type: string
-        default: ""
-        validations: []
       - name: table
         description: Table is used as the target table into which records are inserted.
         type: string
