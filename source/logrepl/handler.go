@@ -16,7 +16,6 @@ package logrepl
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -83,8 +82,13 @@ func (h *CDCHandler) scheduleFlushing(ctx context.Context) {
 	ticker := time.NewTicker(h.flushInterval)
 	defer ticker.Stop()
 
-	for range time.Tick(h.flushInterval) {
-		h.flush(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			h.flush(ctx)
+		}
 	}
 }
 
@@ -96,20 +100,18 @@ func (h *CDCHandler) flush(ctx context.Context) {
 		return
 	}
 
-	if errors.Is(ctx.Err(), context.Canceled) {
-		close(h.out)
+	select {
+	case <-ctx.Done():
 		sdk.Logger(ctx).Warn().
 			Err(ctx.Err()).
 			Int("records", len(h.recordBatch)).
 			Msg("CDCHandler flushing records cancelled")
-		return
+	case h.out <- h.recordBatch:
+		sdk.Logger(ctx).Debug().
+			Int("records", len(h.recordBatch)).
+			Msg("CDCHandler sending batch of records")
+		h.recordBatch = make([]opencdc.Record, 0, h.batchSize)
 	}
-
-	h.out <- h.recordBatch
-	sdk.Logger(ctx).Debug().
-		Int("records", len(h.recordBatch)).
-		Msg("CDCHandler sending batch of records")
-	h.recordBatch = make([]opencdc.Record, 0, h.batchSize)
 }
 
 // Handle is the handler function that receives all logical replication messages.
