@@ -76,7 +76,7 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 	b := &pgx.Batch{}
 	for _, rec := range recs {
 		var err error
-		rec, err = d.cleanRecord(rec)
+		rec, err = d.ensureStructuredData(rec)
 		if err != nil {
 			return 0, fmt.Errorf("failed to clean record: %w", err)
 		}
@@ -289,8 +289,8 @@ func (d *Destination) hasKey(e opencdc.Record) bool {
 	return len(structuredKey) > 0
 }
 
-// cleanRecord makes sure the record key and payload are structured data.
-func (d *Destination) cleanRecord(r opencdc.Record) (opencdc.Record, error) {
+// ensureStructuredData makes sure the record key and payload are structured data.
+func (d *Destination) ensureStructuredData(r opencdc.Record) (opencdc.Record, error) {
 	payloadAfter, err := d.structuredDataFormatter(r.Payload.After)
 	if err != nil {
 		return opencdc.Record{}, fmt.Errorf("failed to get structured data for .Payload.After: %w", err)
