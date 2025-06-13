@@ -28,11 +28,11 @@ func Test_Format(t *testing.T) {
 	now := time.Now().UTC()
 
 	tests := []struct {
-		name        string
-		input       []any
-		inputOID    []uint32
-		expect      []any
-		withBuiltin bool
+		name           string
+		input          []any
+		inputOID       []uint32
+		expect         []any
+		expectNullable []any
 	}{
 		{
 			name: "int float string bool",
@@ -43,6 +43,9 @@ func Test_Format(t *testing.T) {
 				0, 0, 0, 0,
 			},
 			expect: []any{
+				1021,
+			},
+			expectNullable: []any{
 				lang.Ptr(1021),
 			},
 		},
@@ -57,6 +60,9 @@ func Test_Format(t *testing.T) {
 			expect: []any{
 				big.NewRat(122121, 10000), big.NewRat(101, 1), big.NewRat(0, 1), nil, nil,
 			},
+			expectNullable: []any{
+				big.NewRat(122121, 10000), big.NewRat(101, 1), big.NewRat(0, 1), nil, nil,
+			},
 		},
 		{
 			name: "builtin time.Time",
@@ -69,7 +75,9 @@ func Test_Format(t *testing.T) {
 			expect: []any{
 				now,
 			},
-			withBuiltin: true,
+			expectNullable: []any{
+				lang.Ptr(now),
+			},
 		},
 		{
 			name: "uuid",
@@ -82,18 +90,24 @@ func Test_Format(t *testing.T) {
 			expect: []any{
 				"bd94ee0b-564f-4088-bf4e-8d5e626caf66", "",
 			},
+			expectNullable: []any{
+				lang.Ptr("bd94ee0b-564f-4088-bf4e-8d5e626caf66"), lang.Ptr(""),
+			},
 		},
 	}
-	_ = time.Now()
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			is := is.New(t)
 
 			for i, in := range tc.input {
-				v, err := Format(tc.inputOID[i], in, false)
+				v, err := Format(tc.inputOID[i], in, true)
 				is.NoErr(err)
 				is.Equal(v, tc.expect[i])
+
+				vNullable, err := Format(tc.inputOID[i], in, false)
+				is.NoErr(err)
+				is.Equal(vNullable, tc.expectNullable[i])
 			}
 		})
 	}
