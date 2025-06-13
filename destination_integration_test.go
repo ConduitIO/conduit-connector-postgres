@@ -36,7 +36,7 @@ func TestDestination_Write(t *testing.T) {
 
 	// tables with capital letters should be quoted
 	tableName := strings.ToUpper(test.RandomIdentifier(t))
-	test.SetupTestTableWithName(ctx, t, conn, tableName)
+	test.SetupTableWithName(ctx, t, conn, tableName)
 
 	d := NewDestination()
 	err := sdk.Util.ParseConfig(
@@ -197,7 +197,7 @@ func TestDestination_Batch(t *testing.T) {
 	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
 
 	tableName := strings.ToUpper(test.RandomIdentifier(t))
-	test.SetupTestTableWithName(ctx, t, conn, tableName)
+	test.SetupTableWithName(ctx, t, conn, tableName)
 
 	d := NewDestination()
 

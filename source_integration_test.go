@@ -28,11 +28,11 @@ import (
 	"github.com/matryer/is"
 )
 
-func TestSource_Read(t *testing.T) {
+func TestSource_ReadN_Snapshot_CDC(t *testing.T) {
 	is := is.New(t)
 	ctx := test.Context(t)
 
-	tableName := prepareSourceIntegrationTestTable(ctx, t)
+	tableName := createTableWithManyTypes(ctx, t)
 	slotName := "conduitslot1"
 	publicationName := "conduitpub1"
 
@@ -100,7 +100,7 @@ func assertRecordOK(is *is.I, tableName string, gotRecord opencdc.Record) {
 	is.Equal(1, keySchemaVersion)
 }
 
-func prepareSourceIntegrationTestTable(ctx context.Context, t *testing.T) string {
+func createTableWithManyTypes(ctx context.Context, t *testing.T) string {
 	is := is.New(t)
 
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
@@ -133,7 +133,19 @@ func prepareSourceIntegrationTestTable(ctx context.Context, t *testing.T) string
     col_timestamptz         timestamptz,
     col_timestamptz_not_null timestamptz NOT NULL,
     col_uuid                uuid,
-    col_uuid_not_null       uuid NOT NULL
+    col_uuid_not_null       uuid NOT NULL,
+    col_json                json,
+    col_json_not_null       json NOT NULL,
+    col_jsonb               jsonb,
+    col_jsonb_not_null      jsonb NOT NULL,
+    col_bool                bool,
+    col_bool_not_null       bool NOT NULL,
+    col_serial              serial,
+    col_serial_not_null     serial NOT NULL,
+    col_smallserial         smallserial,
+    col_smallserial_not_null smallserial NOT NULL,
+    col_bigserial           bigserial,
+    col_bigserial_not_null  bigserial NOT NULL
 )`, table)
 	_, err := conn.Exec(ctx, query)
 	is.NoErr(err)
@@ -157,34 +169,46 @@ func insertRowNotNullColumnsOnly(ctx context.Context, t *testing.T, table string
 
 	query := fmt.Sprintf(
 		`INSERT INTO %s (
-			col_bytea_not_null,
-			col_varchar_not_null,
-			col_date_not_null,
-			col_float4_not_null,
-			col_float8_not_null,
-			col_int2_not_null,
-			col_int4_not_null,
-			col_int8_not_null,
-			col_numeric_not_null,
-			col_text_not_null,
-			col_timestamp_not_null,
-			col_timestamptz_not_null,
-			col_uuid_not_null
-		) VALUES (
-			'%s'::bytea,   			-- col_bytea_not_null
-			'foo-%v',               -- col_varchar_not_null
-			now(),                  -- col_date_not_null
-			%f,                  	-- col_float4_not_null
-			%f,                  	-- col_float8_not_null
-			%d,                  	-- col_int2_not_null
-			%d,                  	-- col_int4_not_null
-			%d,                  	-- col_int8_not_null
-			%f,                  	-- col_numeric_not_null
-			'bar-%v',               -- col_text_not_null
-			now(),                  -- col_timestamp_not_null
-			now(),                  -- col_timestamptz_not_null
-			gen_random_uuid()       -- col_uuid_not_null
-		)`,
+          col_bytea_not_null,
+          col_varchar_not_null,
+          col_date_not_null,
+          col_float4_not_null,
+          col_float8_not_null,
+          col_int2_not_null,
+          col_int4_not_null,
+          col_int8_not_null,
+          col_numeric_not_null,
+          col_text_not_null,
+          col_timestamp_not_null,
+          col_timestamptz_not_null,
+          col_uuid_not_null,
+          col_json_not_null,
+          col_jsonb_not_null,
+          col_bool_not_null,
+          col_serial_not_null,
+          col_smallserial_not_null,
+          col_bigserial_not_null
+       ) VALUES (
+          '%s'::bytea,             -- col_bytea_not_null
+          'foo-%v',               -- col_varchar_not_null
+          now(),                  -- col_date_not_null
+          %f,                    -- col_float4_not_null
+          %f,                    -- col_float8_not_null
+          %d,                    -- col_int2_not_null
+          %d,                    -- col_int4_not_null
+          %d,                    -- col_int8_not_null
+          %f,                    -- col_numeric_not_null
+          'bar-%v',               -- col_text_not_null
+          now(),                  -- col_timestamp_not_null
+          now(),                  -- col_timestamptz_not_null
+          gen_random_uuid(),      -- col_uuid_not_null
+          '{"key": "value-%v"}'::json,  -- col_json_not_null
+          '{"key": "value-%v"}'::jsonb, -- col_jsonb_not_null
+          %t,                    -- col_bool_not_null
+          %d,                    -- col_serial_not_null
+          %d,                    -- col_smallserial_not_null
+          %d                     -- col_bigserial_not_null
+       )`,
 		table,
 		fmt.Sprintf("col_bytea_-%v", rowNumber),
 		rowNumber,
@@ -194,6 +218,12 @@ func insertRowNotNullColumnsOnly(ctx context.Context, t *testing.T, table string
 		rowNumber,
 		rowNumber,
 		float64(100+rowNumber)/10,
+		rowNumber,
+		rowNumber,
+		rowNumber,
+		rowNumber%2 == 0,
+		rowNumber,
+		rowNumber,
 		rowNumber,
 	)
 	_, err := conn.Exec(ctx, query)
@@ -218,7 +248,13 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
          col_text, col_text_not_null,
          col_timestamp, col_timestamp_not_null,
          col_timestamptz, col_timestamptz_not_null,
-         col_uuid, col_uuid_not_null
+         col_uuid, col_uuid_not_null,
+         col_json, col_json_not_null,
+         col_jsonb, col_jsonb_not_null,
+         col_bool, col_bool_not_null,
+         col_serial, col_serial_not_null,
+         col_smallserial, col_smallserial_not_null,
+         col_bigserial, col_bigserial_not_null
       ) VALUES (
          '%s'::bytea, '%s'::bytea,
          'foo-%v', 'foo-%v',
@@ -232,7 +268,13 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
          'bar-%v', 'bar-%v',
          now(), now(),
          now(), now(),
-         gen_random_uuid(), gen_random_uuid()
+         gen_random_uuid(), gen_random_uuid(),
+         '{"key": "value-%v"}'::json, '{"key": "value-%v"}'::json,
+         '{"key": "value-%v"}'::jsonb, '{"key": "value-%v"}'::jsonb,
+         %t, %t,
+         %d, %d,
+         %d, %d,
+         %d, %d
       )`,
 		table,
 		fmt.Sprintf("col_bytea_-%v", rowNumber), fmt.Sprintf("col_bytea_-%v", rowNumber),
@@ -243,6 +285,12 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
 		rowNumber, rowNumber,
 		rowNumber, rowNumber,
 		float64(100+rowNumber)/10, float64(100+rowNumber)/10,
+		rowNumber, rowNumber,
+		rowNumber, rowNumber,
+		rowNumber, rowNumber,
+		rowNumber%2 == 0, rowNumber%2 == 0,
+		rowNumber, rowNumber,
+		rowNumber, rowNumber,
 		rowNumber, rowNumber,
 	)
 	_, err := conn.Exec(ctx, query)

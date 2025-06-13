@@ -50,7 +50,7 @@ func TestConfig_Validate(t *testing.T) {
 func TestCombinedIterator_New(t *testing.T) {
 	ctx := test.Context(t)
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTable(ctx, t, pool)
+	table := test.SetupTable(ctx, t, pool)
 
 	t.Run("fails to parse initial position", func(t *testing.T) {
 		is := is.New(t)
@@ -145,7 +145,7 @@ func TestCombinedIterator_NextN(t *testing.T) {
 	is := is.New(t)
 
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTable(ctx, t, pool)
+	table := test.SetupTable(ctx, t, pool)
 	i, err := NewCombinedIterator(ctx, pool, Config{
 		Position:        opencdc.Position{},
 		Tables:          []string{table},

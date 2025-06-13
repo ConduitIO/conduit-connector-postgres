@@ -42,8 +42,8 @@ func TestSubscription_WithRepmgr(t *testing.T) {
 	var (
 		ctx    = test.Context(t)
 		pool   = test.ConnectPool(ctx, t, test.RepmgrConnString)
-		table1 = test.SetupTestTable(ctx, t, pool)
-		table2 = test.SetupTestTable(ctx, t, pool)
+		table1 = test.SetupTable(ctx, t, pool)
+		table2 = test.SetupTable(ctx, t, pool)
 	)
 
 	sub, messages := setupSubscription(ctx, t, pool, table1, table2)
@@ -156,7 +156,7 @@ func TestSubscription_ClosedContext(t *testing.T) {
 	var (
 		is    = is.New(t)
 		pool  = test.ConnectPool(ctx, t, test.RepmgrConnString)
-		table = test.SetupTestTable(ctx, t, pool)
+		table = test.SetupTable(ctx, t, pool)
 	)
 
 	sub, messages := setupSubscription(ctx, t, pool, table)

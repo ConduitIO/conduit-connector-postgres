@@ -185,14 +185,14 @@ func ConnectSimple(ctx context.Context, t *testing.T, connString string) *pgx.Co
 	return conn.Conn()
 }
 
-// SetupEmptyTestTable creates an empty test table and returns its name.
-func SetupEmptyTestTable(ctx context.Context, t *testing.T, conn Querier) string {
+// SetupEmptyTable creates an empty test table and returns its name.
+func SetupEmptyTable(ctx context.Context, t *testing.T, conn Querier) string {
 	table := RandomIdentifier(t)
-	SetupEmptyTestTableWithName(ctx, t, conn, table)
+	SetupEmptyTableWithName(ctx, t, conn, table)
 	return table
 }
 
-func SetupEmptyTestTableWithName(ctx context.Context, t *testing.T, conn Querier, table string) {
+func SetupEmptyTableWithName(ctx context.Context, t *testing.T, conn Querier, table string) {
 	is := is.New(t)
 
 	query := fmt.Sprintf(testTableCreateQuery, table)
@@ -207,10 +207,10 @@ func SetupEmptyTestTableWithName(ctx context.Context, t *testing.T, conn Querier
 	})
 }
 
-// SetupTestTableWithName creates a test table with a few row inserted into it.
-func SetupTestTableWithName(ctx context.Context, t *testing.T, conn Querier, table string) {
+// SetupTableWithName creates a test table with a few row inserted into it.
+func SetupTableWithName(ctx context.Context, t *testing.T, conn Querier, table string) {
 	is := is.New(t)
-	SetupEmptyTestTableWithName(ctx, t, conn, table)
+	SetupEmptyTableWithName(ctx, t, conn, table)
 
 	query := `
 		INSERT INTO %q (key, column1, column2, column3, column4, column5, column6, column7, "UppercaseColumn1")
@@ -223,10 +223,10 @@ func SetupTestTableWithName(ctx context.Context, t *testing.T, conn Querier, tab
 	is.NoErr(err)
 }
 
-// SetupTestTable creates a new table and returns its name.
-func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
+// SetupTable creates a new table and returns its name.
+func SetupTable(ctx context.Context, t *testing.T, conn Querier) string {
 	table := RandomIdentifier(t)
-	SetupTestTableWithName(ctx, t, conn, table)
+	SetupTableWithName(ctx, t, conn, table)
 	return table
 }
 

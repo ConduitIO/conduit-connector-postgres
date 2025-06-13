@@ -49,7 +49,7 @@ func TestCDCIterator_New(t *testing.T) {
 			name: "publication already exists",
 			setup: func(t *testing.T) CDCConfig {
 				is := is.New(t)
-				table := test.SetupTestTable(ctx, t, pool)
+				table := test.SetupTable(ctx, t, pool)
 				test.CreatePublication(t, pool, table, []string{table})
 
 				t.Cleanup(func() {
@@ -79,7 +79,7 @@ func TestCDCIterator_New(t *testing.T) {
 			name: "fails to create subscription",
 			setup: func(t *testing.T) CDCConfig {
 				is := is.New(t)
-				table := test.SetupTestTable(ctx, t, pool)
+				table := test.SetupTable(ctx, t, pool)
 
 				t.Cleanup(func() {
 					is.NoErr(Cleanup(ctx, CleanupConfig{
@@ -125,7 +125,7 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 	is := is.New(t)
 
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTable(ctx, t, pool)
+	table := test.SetupTable(ctx, t, pool)
 	i := testCDCIterator(ctx, t, pool, table, true)
 
 	// wait for subscription to be ready
@@ -374,7 +374,7 @@ func TestCDCIterator_EnsureLSN(t *testing.T) {
 	is := is.New(t)
 
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTable(ctx, t, pool)
+	table := test.SetupTable(ctx, t, pool)
 
 	i := testCDCIterator(ctx, t, pool, table, true)
 	<-i.sub.Ready()
@@ -467,7 +467,7 @@ func TestCDCIterator_Ack(t *testing.T) {
 func TestCDCIterator_NextN(t *testing.T) {
 	ctx := test.Context(t)
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTable(ctx, t, pool)
+	table := test.SetupTable(ctx, t, pool)
 
 	t.Run("retrieve exact N records", func(t *testing.T) {
 		is := is.New(t)
@@ -655,7 +655,7 @@ func TestCDCIterator_Schema(t *testing.T) {
 	ctx := test.Context(t)
 
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTable(ctx, t, pool)
+	table := test.SetupTable(ctx, t, pool)
 
 	i := testCDCIterator(ctx, t, pool, table, true)
 	<-i.sub.Ready()

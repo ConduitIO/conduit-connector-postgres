@@ -126,7 +126,7 @@ func Test_FetcherValidate(t *testing.T) {
 	)
 
 	// uppercase table name is required to test primary key fetching
-	test.SetupTestTableWithName(ctx, t, pool, table)
+	test.SetupTableWithName(ctx, t, pool, table)
 
 	t.Run("success", func(t *testing.T) {
 		is := is.New(t)
@@ -215,7 +215,7 @@ func Test_FetcherRun_EmptySnapshot(t *testing.T) {
 		is       = is.New(t)
 		ctx      = test.Context(t)
 		pool     = test.ConnectPool(context.Background(), t, test.RegularConnString)
-		table    = test.SetupEmptyTestTable(context.Background(), t, pool)
+		table    = test.SetupEmptyTable(context.Background(), t, pool)
 		out      = make(chan FetchData)
 		testTomb = &tomb.Tomb{}
 	)
@@ -247,7 +247,7 @@ func Test_FetcherRun_EmptySnapshot(t *testing.T) {
 func Test_FetcherRun_Initial(t *testing.T) {
 	var (
 		pool  = test.ConnectPool(context.Background(), t, test.RegularConnString)
-		table = test.SetupTestTable(context.Background(), t, pool)
+		table = test.SetupTable(context.Background(), t, pool)
 		is    = is.New(t)
 		out   = make(chan FetchData)
 		ctx   = test.Context(t)
@@ -313,7 +313,7 @@ func Test_FetcherRun_Initial(t *testing.T) {
 func Test_FetcherRun_Resume(t *testing.T) {
 	var (
 		pool  = test.ConnectPool(context.Background(), t, test.RegularConnString)
-		table = test.SetupTestTable(context.Background(), t, pool)
+		table = test.SetupTable(context.Background(), t, pool)
 		is    = is.New(t)
 		out   = make(chan FetchData)
 		ctx   = test.Context(t)
@@ -498,7 +498,7 @@ func Test_FetchWorker_updateSnapshotEnd(t *testing.T) {
 		table = strings.ToUpper(test.RandomIdentifier(t))
 	)
 
-	test.SetupTestTableWithName(ctx, t, pool, table)
+	test.SetupTableWithName(ctx, t, pool, table)
 
 	tx, err := pool.Begin(ctx)
 	is.NoErr(err)
@@ -560,7 +560,7 @@ func Test_FetchWorker_updateSnapshotEnd(t *testing.T) {
 func Test_FetchWorker_createCursor(t *testing.T) {
 	var (
 		pool  = test.ConnectPool(context.Background(), t, test.RegularConnString)
-		table = test.SetupTestTable(context.Background(), t, pool)
+		table = test.SetupTable(context.Background(), t, pool)
 		is    = is.New(t)
 		ctx   = test.Context(t)
 	)
