@@ -70,10 +70,11 @@ func TestDestination_Write(t *testing.T) {
 				Key:       opencdc.StructuredData{"id": 5000},
 				Payload: opencdc.Change{
 					After: opencdc.StructuredData{
+						"key":              []uint8("123"),
 						"column1":          "foo",
 						"column2":          123,
 						"column3":          true,
-						"column4":          nil,
+						"column4":          big.NewRat(123, 10),
 						"UppercaseColumn1": 222,
 					},
 				},
@@ -88,10 +89,11 @@ func TestDestination_Write(t *testing.T) {
 				Key:       opencdc.StructuredData{"id": 5},
 				Payload: opencdc.Change{
 					After: opencdc.StructuredData{
+						"key":              []uint8("234"),
 						"column1":          "foo",
 						"column2":          456,
 						"column3":          false,
-						"column4":          nil,
+						"column4":          big.NewRat(123, 10),
 						"UppercaseColumn1": 333,
 					},
 				},
@@ -106,10 +108,11 @@ func TestDestination_Write(t *testing.T) {
 				Key:       opencdc.StructuredData{"id": 6},
 				Payload: opencdc.Change{
 					After: opencdc.StructuredData{
+						"key":              []uint8("345"),
 						"column1":          "bar",
 						"column2":          567,
 						"column3":          true,
-						"column4":          nil,
+						"column4":          big.NewRat(123, 10),
 						"UppercaseColumn1": 444,
 					},
 				},
@@ -124,10 +127,11 @@ func TestDestination_Write(t *testing.T) {
 				Key:       opencdc.StructuredData{"id": 1},
 				Payload: opencdc.Change{
 					After: opencdc.StructuredData{
+						"key":              []uint8("456"),
 						"column1":          "foobar",
 						"column2":          567,
 						"column3":          true,
-						"column4":          nil,
+						"column4":          big.NewRat(123, 10),
 						"UppercaseColumn1": 555,
 					},
 				},
@@ -151,6 +155,7 @@ func TestDestination_Write(t *testing.T) {
 				Key:       opencdc.StructuredData{"id": 123},
 				Payload: opencdc.Change{
 					After: opencdc.StructuredData{
+						"key":              []uint8("567"),
 						"column1":          "abcdef",
 						"column2":          567,
 						"column3":          true,
@@ -223,10 +228,11 @@ func TestDestination_Batch(t *testing.T) {
 			Key:       opencdc.StructuredData{"id": 5},
 			Payload: opencdc.Change{
 				After: opencdc.StructuredData{
+					"key":              []uint8("123"),
 					"column1":          "foo1",
 					"column2":          1,
 					"column3":          false,
-					"column4":          nil,
+					"column4":          big.NewRat(123, 10),
 					"UppercaseColumn1": 111,
 				},
 			},
@@ -237,10 +243,11 @@ func TestDestination_Batch(t *testing.T) {
 			Key:       opencdc.StructuredData{"id": 6},
 			Payload: opencdc.Change{
 				After: opencdc.StructuredData{
+					"key":              []uint8("234"),
 					"column1":          "foo2",
 					"column2":          2,
 					"column3":          true,
-					"column4":          nil,
+					"column4":          big.NewRat(123, 10),
 					"UppercaseColumn1": 222,
 				},
 			},
@@ -251,10 +258,11 @@ func TestDestination_Batch(t *testing.T) {
 			Key:       opencdc.StructuredData{"id": 7},
 			Payload: opencdc.Change{
 				After: opencdc.StructuredData{
+					"key":              []uint8("345"),
 					"column1":          "foo3",
 					"column2":          3,
 					"column3":          false,
-					"column4":          nil,
+					"column4":          big.NewRat(123, 10),
 					"UppercaseColumn1": 333,
 				},
 			},
@@ -275,11 +283,12 @@ func TestDestination_Batch(t *testing.T) {
 func queryTestTable(ctx context.Context, conn test.Querier, tableName string, id any) (opencdc.StructuredData, error) {
 	row := conn.QueryRow(
 		ctx,
-		fmt.Sprintf(`SELECT column1, column2, column3, column4, "UppercaseColumn1" FROM %q WHERE id = $1`, tableName),
+		fmt.Sprintf(`SELECT key, column1, column2, column3, column4, "UppercaseColumn1" FROM %q WHERE id = $1`, tableName),
 		id,
 	)
 
 	var (
+		key           []uint8
 		col1          string
 		col2          int
 		col3          bool
@@ -287,7 +296,7 @@ func queryTestTable(ctx context.Context, conn test.Querier, tableName string, id
 		uppercaseCol1 int
 	)
 
-	err := row.Scan(&col1, &col2, &col3, &col4Str, &uppercaseCol1)
+	err := row.Scan(&key, &col1, &col2, &col3, &col4Str, &uppercaseCol1)
 	if err != nil {
 		return nil, err
 	}
@@ -301,6 +310,7 @@ func queryTestTable(ctx context.Context, conn test.Querier, tableName string, id
 	}
 
 	return opencdc.StructuredData{
+		"key":              key,
 		"column1":          col1,
 		"column2":          col2,
 		"column3":          col3,

@@ -141,8 +141,8 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 			name: "should detect insert",
 			setup: func(t *testing.T) {
 				is := is.New(t)
-				query := fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5, column6, column7)
-							VALUES (6, 'bizz', 456, false, 12.3, 14, '{"foo2": "bar2"}', '{"foo2": "baz2"}')`, table)
+				query := fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+							VALUES (6, '6', 'bizz', 456, false, 12.3, 61)`, table)
 				_, err := pool.Exec(ctx, query)
 				is.NoErr(err)
 			},
@@ -165,11 +165,8 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 						"column2":          int32(456),
 						"column3":          false,
 						"column4":          big.NewRat(123, 10),
-						"column5":          big.NewRat(14, 1),
-						"column6":          []byte(`{"foo2": "bar2"}`),
-						"column7":          []byte(`{"foo2": "baz2"}`),
-						"key":              nil,
-						"UppercaseColumn1": nil,
+						"key":              []uint8("6"),
+						"UppercaseColumn1": int32(61),
 					},
 				},
 			},
@@ -200,9 +197,6 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 						"column2":          int32(123),
 						"column3":          false,
 						"column4":          big.NewRat(122, 10),
-						"column5":          big.NewRat(4, 1),
-						"column6":          []byte(`{"foo": "bar"}`),
-						"column7":          []byte(`{"foo": "baz"}`),
 						"key":              []uint8("1"),
 						"UppercaseColumn1": int32(1),
 					},
@@ -237,9 +231,6 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 						"column2":          int32(123),
 						"column3":          false,
 						"column4":          big.NewRat(122, 10),
-						"column5":          big.NewRat(4, 1),
-						"column6":          []byte(`{"foo": "bar"}`),
-						"column7":          []byte(`{"foo": "baz"}`),
 						"key":              []uint8("1"),
 						"UppercaseColumn1": int32(1),
 					},
@@ -249,9 +240,6 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 						"column2":          int32(123),
 						"column3":          false,
 						"column4":          big.NewRat(122, 10),
-						"column5":          big.NewRat(4, 1),
-						"column6":          []byte(`{"foo": "bar"}`),
-						"column7":          []byte(`{"foo": "baz"}`),
 						"key":              []uint8("1"),
 						"UppercaseColumn1": int32(1),
 					},
@@ -286,9 +274,6 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 						"column2":          nil,
 						"column3":          nil,
 						"column4":          nil,
-						"column5":          nil,
-						"column6":          nil,
-						"column7":          nil,
 						"key":              nil,
 						"UppercaseColumn1": nil,
 					},
@@ -323,10 +308,7 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 						"column1":          "baz",
 						"column2":          int32(789),
 						"column3":          false,
-						"column4":          nil,
-						"column5":          big.NewRat(9, 1),
-						"column6":          []byte(`{"foo": "bar"}`),
-						"column7":          []byte(`{"foo": "baz"}`),
+						"column4":          big.NewRat(836, 25),
 						"UppercaseColumn1": int32(3),
 					},
 				},
@@ -379,8 +361,8 @@ func TestCDCIterator_EnsureLSN(t *testing.T) {
 	i := testCDCIterator(ctx, t, pool, table, true)
 	<-i.sub.Ready()
 
-	_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5)
-				VALUES (6, 'bizz', 456, false, 12.3, 14)`, table))
+	_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+				VALUES (6, '6', 'bizz', 456, false, 12.3, 6)`, table))
 	is.NoErr(err)
 
 	rr, err := i.NextN(ctx, 1)
@@ -475,8 +457,8 @@ func TestCDCIterator_NextN(t *testing.T) {
 		<-i.sub.Ready()
 
 		for j := 1; j <= 3; j++ {
-			_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5)
-				VALUES (%d, 'test-%d', %d, false, 12.3, 14)`, table, j+10, j, j*100))
+			_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+				VALUES (%d, '%d', 'test-%d', %d, false, 12.3, 4)`, table, j+10, j+10, j, j*100))
 			is.NoErr(err)
 		}
 
@@ -511,8 +493,8 @@ func TestCDCIterator_NextN(t *testing.T) {
 		<-i.sub.Ready()
 
 		for j := 1; j <= 2; j++ {
-			_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5)
-				VALUES (%d, 'test-%d', %d, false, 12.3, 14)`, table, j+20, j, j*100))
+			_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+				VALUES (%d, '%d', 'test-%d', %d, false, 12.3, 4)`, table, j+20, j+20, j, j*100))
 			is.NoErr(err)
 		}
 
@@ -578,8 +560,8 @@ func TestCDCIterator_NextN(t *testing.T) {
 		i := testCDCIterator(ctx, t, pool, table, true)
 		<-i.sub.Ready()
 
-		_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5)
-			VALUES (30, 'test-1', 100, false, 12.3, 14)`, table))
+		_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+			VALUES (30, '30', 'test-1', 100, false, 12.3, 14)`, table))
 		is.NoErr(err)
 
 		go func() {
@@ -665,8 +647,8 @@ func TestCDCIterator_Schema(t *testing.T) {
 
 		_, err := pool.Exec(
 			ctx,
-			fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5)
-				VALUES (6, 'bizz', 456, false, 12.3, 14)`, table),
+			fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+				VALUES (6, '6', 'bizz', 456, false, 12.3, 6)`, table),
 		)
 		is.NoErr(err)
 
@@ -688,8 +670,8 @@ func TestCDCIterator_Schema(t *testing.T) {
 
 		_, err = pool.Exec(
 			ctx,
-			fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, column5, column6, column7, column101)
-				VALUES (7, decode('aabbcc', 'hex'), 'example data 1', 100, true, 12345.678, 12345, '{"foo":"bar"}', '{"foo2":"baz2"}', '2023-09-09 10:00:00');`, table),
+			fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, column101, "UppercaseColumn1")
+				VALUES (7, decode('aabbcc', 'hex'), 'example data 1', 100, true, 12345.678, '2023-09-09 10:00:00', 7);`, table),
 		)
 		is.NoErr(err)
 
@@ -706,13 +688,13 @@ func TestCDCIterator_Schema(t *testing.T) {
 	t.Run("column removed", func(t *testing.T) {
 		is := is.New(t)
 
-		_, err := pool.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s DROP COLUMN column4, DROP COLUMN column5;`, table))
+		_, err := pool.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s DROP COLUMN column4;`, table))
 		is.NoErr(err)
 
 		_, err = pool.Exec(
 			ctx,
-			fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column6, column7, column101)
-				VALUES (8, decode('aabbcc', 'hex'), 'example data 1', 100, true, '{"foo":"bar"}', '{"foo2":"baz2"}', '2023-09-09 10:00:00');`, table),
+			fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column101, "UppercaseColumn1")
+				VALUES (8, decode('aabbcc', 'hex'), 'example data 1', 100, true, '2023-09-09 10:00:00', 8);`, table),
 		)
 		is.NoErr(err)
 

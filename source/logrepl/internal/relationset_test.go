@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-connector-postgres/source/common"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pglogrepl"
@@ -49,7 +50,6 @@ func TestRelationSetAllTypes(t *testing.T) {
 	is := is.New(t)
 
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-
 	table := setupTableAllTypes(ctx, t, pool)
 	_, messages := setupSubscription(ctx, t, pool, table)
 	insertRowAllTypes(ctx, t, pool, table)
@@ -77,6 +77,10 @@ func TestRelationSetAllTypes(t *testing.T) {
 		break
 	}
 
+	tableInfo := common.NewTableInfoFetcher(pool)
+	err := tableInfo.Refresh(ctx, table)
+	is.NoErr(err)
+
 	rs := NewRelationSet()
 
 	rs.Add(rel)
@@ -87,7 +91,7 @@ func TestRelationSetAllTypes(t *testing.T) {
 	t.Run("with builtin plugin", func(t *testing.T) {
 		is := is.New(t)
 
-		values, err := rs.Values(ins.RelationID, ins.Tuple)
+		values, err := rs.Values(ins.RelationID, ins.Tuple, tableInfo.GetTable(table))
 		is.NoErr(err)
 		isValuesAllTypes(is, values)
 	})
@@ -95,7 +99,7 @@ func TestRelationSetAllTypes(t *testing.T) {
 	t.Run("with standalone plugin", func(t *testing.T) {
 		is := is.New(t)
 
-		values, err := rs.Values(ins.RelationID, ins.Tuple)
+		values, err := rs.Values(ins.RelationID, ins.Tuple, tableInfo.GetTable(table))
 		is.NoErr(err)
 		isValuesAllTypesStandalone(is, values)
 	})
@@ -105,52 +109,51 @@ func TestRelationSetAllTypes(t *testing.T) {
 func setupTableAllTypes(ctx context.Context, t *testing.T, conn test.Querier) string {
 	is := is.New(t)
 	table := test.RandomIdentifier(t)
-	query := `
-		CREATE TABLE %s (
-  		  id 				bigserial PRIMARY KEY,
-		  col_bit           bit(8),
-		  col_varbit        varbit(8),
-		  col_boolean       boolean,
-		  col_box           box,
-		  col_bytea         bytea,
-		  col_char          char(3),
-		  col_varchar       varchar(10),
-		  col_cidr          cidr,
-		  col_circle        circle,
-		  col_date          date,
-		  col_float4        float4,
-		  col_float8        float8,
-		  col_inet          inet,
-		  col_int2          int2,
-		  col_int4          int4,
-		  col_int8          int8,
-		  col_interval      interval,
-		  col_json          json,
-		  col_jsonb         jsonb,
-		  col_line          line,
-		  col_lseg          lseg,
-		  col_macaddr       macaddr,
-		  col_macaddr8      macaddr8,
-		  col_money         money,
-		  col_numeric       numeric(8,2),
-		  col_path          path,
-		  col_pg_lsn        pg_lsn,
-		  col_pg_snapshot   pg_snapshot,
-		  col_point         point,
-		  col_polygon       polygon,
-		  col_serial2       serial2,
-		  col_serial4       serial4,
-		  col_serial8       serial8,
-		  col_text          text,
-		  col_time          time,
-		  col_timetz        timetz,
-		  col_timestamp     timestamp,
-		  col_timestamptz   timestamptz,
-		  col_tsquery       tsquery,
-		  col_tsvector      tsvector,
-		  col_uuid          uuid,
-		  col_xml           xml
-		)`
+	query := `CREATE TABLE %s (
+    id                  bigserial PRIMARY KEY,
+    col_bit             bit(8) NOT NULL,
+    col_varbit          varbit(8) NOT NULL,
+    col_boolean         boolean NOT NULL,
+    col_box             box NOT NULL,
+    col_bytea           bytea NOT NULL,
+    col_char            char(3) NOT NULL,
+    col_varchar         varchar(10) NOT NULL,
+    col_cidr            cidr NOT NULL,
+    col_circle          circle NOT NULL,
+    col_date            date NOT NULL,
+    col_float4          float4 NOT NULL,
+    col_float8          float8 NOT NULL,
+    col_inet            inet NOT NULL,
+    col_int2            int2 NOT NULL,
+    col_int4            int4 NOT NULL,
+    col_int8            int8 NOT NULL,
+    col_interval        interval NOT NULL,
+    col_json            json NOT NULL,
+    col_jsonb           jsonb NOT NULL,
+    col_line            line NOT NULL,
+    col_lseg            lseg NOT NULL,
+    col_macaddr         macaddr NOT NULL,
+    col_macaddr8        macaddr8 NOT NULL,
+    col_money           money NOT NULL,
+    col_numeric         numeric(8,2) NOT NULL,
+    col_path            path NOT NULL,
+    col_pg_lsn          pg_lsn NOT NULL,
+    col_pg_snapshot     pg_snapshot NOT NULL,
+    col_point           point NOT NULL,
+    col_polygon         polygon NOT NULL,
+    col_serial2         serial2 NOT NULL,
+    col_serial4         serial4 NOT NULL,
+    col_serial8         serial8 NOT NULL,
+    col_text            text NOT NULL,
+    col_time            time NOT NULL,
+    col_timetz          timetz NOT NULL,
+    col_timestamp       timestamp NOT NULL,
+    col_timestamptz     timestamptz NOT NULL,
+    col_tsquery         tsquery NOT NULL,
+    col_tsvector        tsvector NOT NULL,
+    col_uuid            uuid NOT NULL,
+    col_xml             xml NOT NULL
+)`
 	query = fmt.Sprintf(query, table)
 	_, err := conn.Exec(ctx, query)
 	is.NoErr(err)
