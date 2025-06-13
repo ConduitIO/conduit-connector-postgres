@@ -185,7 +185,7 @@ func ConnectSimple(ctx context.Context, t *testing.T, connString string) *pgx.Co
 	return conn.Conn()
 }
 
-// SetupTestTable creates a new table and returns its name.
+// SetupEmptyTestTable creates an empty test table and returns its name.
 func SetupEmptyTestTable(ctx context.Context, t *testing.T, conn Querier) string {
 	table := RandomIdentifier(t)
 	SetupEmptyTestTableWithName(ctx, t, conn, table)
@@ -207,6 +207,7 @@ func SetupEmptyTestTableWithName(ctx context.Context, t *testing.T, conn Querier
 	})
 }
 
+// SetupTestTableWithName creates a test table with a few row inserted into it.
 func SetupTestTableWithName(ctx context.Context, t *testing.T, conn Querier, table string) {
 	is := is.New(t)
 	SetupEmptyTestTableWithName(ctx, t, conn, table)

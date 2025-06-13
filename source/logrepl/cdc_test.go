@@ -498,8 +498,7 @@ func TestCDCIterator_NextN(t *testing.T) {
 		for j, r := range allRecords {
 			is.Equal(r.Operation, opencdc.OperationCreate)
 			is.Equal(r.Key.(opencdc.StructuredData)["id"], int64(j+11))
-			change := r.Payload
-			data := change.After.(opencdc.StructuredData)
+			data := r.Payload.After.(opencdc.StructuredData)
 			is.Equal(data["column1"], fmt.Sprintf("test-%d", j+1))
 			//nolint:gosec // no risk to overflow
 			is.Equal(data["column2"], (int32(j)+1)*100)
