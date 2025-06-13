@@ -65,7 +65,7 @@ func Test_AvroExtract(t *testing.T) {
 	t.Run("schema is parsable", func(t *testing.T) {
 		is := is.New(t)
 		is.NoErr(err)
-		is.Equal(sch, avroTestSchema(t, table))
+		is.Equal(sch.String(), avroTestSchema(t, table).String())
 
 		_, err = avro.Parse(sch.String())
 		is.NoErr(err)
@@ -123,22 +123,47 @@ func setupAvroTestTable(ctx context.Context, t *testing.T, conn test.Querier) st
 	table := test.RandomIdentifier(t)
 
 	query := `
-		CREATE TABLE %s (
-		  col_boolean       boolean,
-		  col_bytea         bytea,
-		  col_varchar       varchar(10),
-		  col_date          date,
-		  col_float4        float4,
-		  col_float8        float8,
-		  col_int2          int2,
-		  col_int4          int4,
-		  col_int8          int8,
-		  col_numeric       numeric(8,2),
-		  col_text          text,
-		  col_timestamp     timestamp,
-		  col_timestamptz   timestamptz,
-		  col_uuid          uuid
-		)`
+       CREATE TABLE %s (
+         id                      bigserial PRIMARY KEY,
+         col_bytea               bytea,
+         col_bytea_not_null      bytea NOT NULL,
+         col_varchar             varchar(10),
+         col_varchar_not_null    varchar(10) NOT NULL,
+         col_date                date,
+         col_date_not_null       date NOT NULL,
+         col_float4              float4,
+         col_float4_not_null     float4 NOT NULL,
+         col_float8              float8,
+         col_float8_not_null     float8 NOT NULL,
+         col_int2                int2,
+         col_int2_not_null       int2 NOT NULL,
+         col_int4                int4,
+         col_int4_not_null       int4 NOT NULL,
+         col_int8                int8,
+         col_int8_not_null       int8 NOT NULL,
+         col_numeric             numeric(8,2),
+         col_numeric_not_null    numeric(8,2) NOT NULL,
+         col_text                text,
+         col_text_not_null       text NOT NULL,
+         col_timestamp           timestamp,
+         col_timestamp_not_null  timestamp NOT NULL,
+         col_timestamptz         timestamptz,
+         col_timestamptz_not_null timestamptz NOT NULL,
+         col_uuid                uuid,
+         col_uuid_not_null       uuid NOT NULL,
+         col_json                json,
+         col_json_not_null       json NOT NULL,
+         col_jsonb               jsonb,
+         col_jsonb_not_null      jsonb NOT NULL,
+         col_bool                bool,
+         col_bool_not_null       bool NOT NULL,
+         col_serial              serial,
+         col_serial_not_null     serial NOT NULL,
+         col_smallserial         smallserial,
+         col_smallserial_not_null smallserial NOT NULL,
+         col_bigserial           bigserial,
+         col_bigserial_not_null  bigserial NOT NULL
+       )`
 	query = fmt.Sprintf(query, table)
 	_, err := conn.Exec(ctx, query)
 	is.NoErr(err)
@@ -149,37 +174,85 @@ func setupAvroTestTable(ctx context.Context, t *testing.T, conn test.Querier) st
 func insertAvroTestRow(ctx context.Context, t *testing.T, conn test.Querier, table string) {
 	is := is.New(t)
 	query := `
-		INSERT INTO %s (
-			col_boolean,
-			col_bytea,
-			col_varchar,
-			col_date,
-			col_float4,
-			col_float8,
-			col_int2,
-			col_int4,
-			col_int8,
-			col_numeric,
-			col_text,
-			col_timestamp,
-			col_timestamptz,
-			col_uuid
-		) VALUES (
-		  true,                                       -- col_boolean
-		  '\x07',                                     -- col_bytea
-		  '9',                                        -- col_varchar
-		  '2022-03-14',                               -- col_date
-		  15,                                         -- col_float4
-		  16.16,                                      -- col_float8
-		  32767,                                      -- col_int2
-		  2147483647,                                 -- col_int4
-		  9223372036854775807,                        -- col_int8
-		  '292929.29',                                -- col_numeric
-		  'foo bar baz',                              -- col_text
-		  '2022-03-14 15:16:17',                      -- col_timestamp
-		  '2022-03-14 15:16:17-08',                   -- col_timestamptz
-		  'bd94ee0b-564f-4088-bf4e-8d5e626caf66'      -- col_uuid
-		)`
+       INSERT INTO %s (
+          col_bytea,
+          col_bytea_not_null,
+          col_varchar,
+          col_varchar_not_null,
+          col_date,
+          col_date_not_null,
+          col_float4,
+          col_float4_not_null,
+          col_float8,
+          col_float8_not_null,
+          col_int2,
+          col_int2_not_null,
+          col_int4,
+          col_int4_not_null,
+          col_int8,
+          col_int8_not_null,
+          col_numeric,
+          col_numeric_not_null,
+          col_text,
+          col_text_not_null,
+          col_timestamp,
+          col_timestamp_not_null,
+          col_timestamptz,
+          col_timestamptz_not_null,
+          col_uuid,
+          col_uuid_not_null,
+          col_json,
+          col_json_not_null,
+          col_jsonb,
+          col_jsonb_not_null,
+          col_bool,
+          col_bool_not_null,
+          col_serial,
+          col_serial_not_null,
+          col_smallserial,
+          col_smallserial_not_null,
+          col_bigserial,
+          col_bigserial_not_null
+       ) VALUES (
+         '\x07',                                     -- col_bytea
+         '\x08',                                     -- col_bytea_not_null
+         '9',                                        -- col_varchar
+         '10',                                       -- col_varchar_not_null
+         '2022-03-14',                               -- col_date
+         '2022-03-15',                               -- col_date_not_null
+         15,                                         -- col_float4
+         16,                                         -- col_float4_not_null
+         16.16,                                      -- col_float8
+         17.17,                                      -- col_float8_not_null
+         32767,                                      -- col_int2
+         32766,                                      -- col_int2_not_null
+         2147483647,                                 -- col_int4
+         2147483646,                                 -- col_int4_not_null
+         9223372036854775807,                        -- col_int8
+         9223372036854775806,                        -- col_int8_not_null
+         '292929.29',                                -- col_numeric
+         '292928.28',                                -- col_numeric_not_null
+         'foo bar baz',                              -- col_text
+         'foo bar baz not null',                     -- col_text_not_null
+         '2022-03-14 15:16:17',                      -- col_timestamp
+         '2022-03-14 15:16:18',                      -- col_timestamp_not_null
+         '2022-03-14 15:16:17-08',                   -- col_timestamptz
+         '2022-03-14 15:16:18-08',                   -- col_timestamptz_not_null
+         'bd94ee0b-564f-4088-bf4e-8d5e626caf66',     -- col_uuid
+         'bd94ee0b-564f-4088-bf4e-8d5e626caf67',     -- col_uuid_not_null
+         '{"key": "value"}',                         -- col_json
+         '{"key": "value_not_null"}',                -- col_json_not_null
+         '{"key": "value"}',                         -- col_jsonb
+         '{"key": "value_not_null"}',                -- col_jsonb_not_null
+         true,                                       -- col_bool
+         false,                                      -- col_bool_not_null
+         100,                                        -- col_serial
+         101,                                        -- col_serial_not_null
+         200,                                        -- col_smallserial
+         201,                                        -- col_smallserial_not_null
+         300,                                        -- col_bigserial
+         301                                         -- col_bigserial_not_null
+       )`
 	query = fmt.Sprintf(query, table)
 	_, err := conn.Exec(ctx, query)
 	is.NoErr(err)
@@ -189,35 +262,147 @@ func avroTestSchema(t *testing.T, table string) avro.Schema {
 	is := is.New(t)
 
 	fields := []*avro.Field{
-		assert(avro.NewField("col_boolean", avro.NewPrimitiveSchema(avro.Boolean, nil))),
-		assert(avro.NewField("col_bytea", avro.NewPrimitiveSchema(avro.Bytes, nil))),
-		assert(avro.NewField("col_varchar", avro.NewPrimitiveSchema(avro.String, nil))),
-		assert(avro.NewField("col_float4", avro.NewPrimitiveSchema(avro.Float, nil))),
-		assert(avro.NewField("col_float8", avro.NewPrimitiveSchema(avro.Double, nil))),
-		assert(avro.NewField("col_int2", avro.NewPrimitiveSchema(avro.Int, nil))),
-		assert(avro.NewField("col_int4", avro.NewPrimitiveSchema(avro.Int, nil))),
-		assert(avro.NewField("col_int8", avro.NewPrimitiveSchema(avro.Long, nil))),
-		assert(avro.NewField("col_text", avro.NewPrimitiveSchema(avro.String, nil))),
-		assert(avro.NewField("col_numeric", avro.NewPrimitiveSchema(
-			avro.Bytes,
-			avro.NewDecimalLogicalSchema(8, 2),
-		))),
-		assert(avro.NewField("col_date", avro.NewPrimitiveSchema(
+		// Primary key - bigserial (not null)
+		assert(avro.NewField("id", avro.NewPrimitiveSchema(avro.Long, nil))),
+
+		// bytea fields
+		assert(avro.NewField("col_bytea", assert(avro.NewUnionSchema([]avro.Schema{
+			avro.NewPrimitiveSchema(avro.Null, nil),
+			avro.NewPrimitiveSchema(avro.Bytes, nil),
+		})))),
+		assert(avro.NewField("col_bytea_not_null", avro.NewPrimitiveSchema(avro.Bytes, nil))),
+
+		// varchar fields
+		assert(avro.NewField("col_varchar", assert(avro.NewUnionSchema([]avro.Schema{
+			avro.NewPrimitiveSchema(avro.Null, nil),
+			avro.NewPrimitiveSchema(avro.String, nil),
+		})))),
+		assert(avro.NewField("col_varchar_not_null", avro.NewPrimitiveSchema(avro.String, nil))),
+
+		// date fields
+		assert(avro.NewField("col_date", assert(avro.NewUnionSchema([]avro.Schema{
+			avro.NewPrimitiveSchema(avro.Null, nil),
+			avro.NewPrimitiveSchema(avro.Int, avro.NewPrimitiveLogicalSchema(avro.Date)),
+		})))),
+		assert(avro.NewField("col_date_not_null", avro.NewPrimitiveSchema(
 			avro.Int,
 			avro.NewPrimitiveLogicalSchema(avro.Date),
 		))),
-		assert(avro.NewField("col_timestamp", avro.NewPrimitiveSchema(
+
+		// float4 fields
+		assert(avro.NewField("col_float4", assert(avro.NewUnionSchema([]avro.Schema{
+			avro.NewPrimitiveSchema(avro.Null, nil),
+			avro.NewPrimitiveSchema(avro.Float, nil),
+		})))),
+		assert(avro.NewField("col_float4_not_null", avro.NewPrimitiveSchema(avro.Float, nil))),
+
+		// float8 fields
+		assert(avro.NewField("col_float8", assert(avro.NewUnionSchema([]avro.Schema{
+			avro.NewPrimitiveSchema(avro.Null, nil),
+			avro.NewPrimitiveSchema(avro.Double, nil),
+		})))),
+		assert(avro.NewField("col_float8_not_null", avro.NewPrimitiveSchema(avro.Double, nil))),
+
+		// int2 fields
+		assert(avro.NewField("col_int2", assert(avro.NewUnionSchema([]avro.Schema{
+			avro.NewPrimitiveSchema(avro.Null, nil),
+			avro.NewPrimitiveSchema(avro.Int, nil),
+		})))),
+		assert(avro.NewField("col_int2_not_null", avro.NewPrimitiveSchema(avro.Int, nil))),
+
+		// int4 fields
+		assert(avro.NewField("col_int4", assert(avro.NewUnionSchema([]avro.Schema{
+			avro.NewPrimitiveSchema(avro.Null, nil),
+			avro.NewPrimitiveSchema(avro.Int, nil),
+		})))),
+		assert(avro.NewField("col_int4_not_null", avro.NewPrimitiveSchema(avro.Int, nil))),
+
+		// int8 fields
+		assert(avro.NewField("col_int8", assert(avro.NewUnionSchema([]avro.Schema{
+			avro.NewPrimitiveSchema(avro.Null, nil),
+			avro.NewPrimitiveSchema(avro.Long, nil),
+		})))),
+		assert(avro.NewField("col_int8_not_null", avro.NewPrimitiveSchema(avro.Long, nil))),
+
+		// numeric fields
+		assert(avro.NewField("col_numeric", assert(avro.NewUnionSchema([]avro.Schema{
+			avro.NewPrimitiveSchema(avro.Null, nil),
+			avro.NewPrimitiveSchema(avro.Bytes, avro.NewDecimalLogicalSchema(8, 2)),
+		})))),
+		assert(avro.NewField("col_numeric_not_null", avro.NewPrimitiveSchema(
+			avro.Bytes,
+			avro.NewDecimalLogicalSchema(8, 2),
+		))),
+
+		// text fields
+		assert(avro.NewField("col_text", assert(avro.NewUnionSchema([]avro.Schema{
+			avro.NewPrimitiveSchema(avro.Null, nil),
+			avro.NewPrimitiveSchema(avro.String, nil),
+		})))),
+		assert(avro.NewField("col_text_not_null", avro.NewPrimitiveSchema(avro.String, nil))),
+
+		// timestamp fields
+		assert(avro.NewField("col_timestamp", assert(avro.NewUnionSchema([]avro.Schema{
+			avro.NewPrimitiveSchema(avro.Null, nil),
+			avro.NewPrimitiveSchema(avro.Long, avro.NewPrimitiveLogicalSchema(avro.LocalTimestampMicros)),
+		})))),
+		assert(avro.NewField("col_timestamp_not_null", avro.NewPrimitiveSchema(
 			avro.Long,
 			avro.NewPrimitiveLogicalSchema(avro.LocalTimestampMicros),
 		))),
-		assert(avro.NewField("col_timestamptz", avro.NewPrimitiveSchema(
+
+		// timestamptz fields
+		assert(avro.NewField("col_timestamptz", assert(avro.NewUnionSchema([]avro.Schema{
+			avro.NewPrimitiveSchema(avro.Null, nil),
+			avro.NewPrimitiveSchema(avro.Long, avro.NewPrimitiveLogicalSchema(avro.TimestampMicros)),
+		})))),
+		assert(avro.NewField("col_timestamptz_not_null", avro.NewPrimitiveSchema(
 			avro.Long,
 			avro.NewPrimitiveLogicalSchema(avro.TimestampMicros),
 		))),
-		assert(avro.NewField("col_uuid", avro.NewPrimitiveSchema(
+
+		// uuid fields
+		assert(avro.NewField("col_uuid", assert(avro.NewUnionSchema([]avro.Schema{
+			avro.NewPrimitiveSchema(avro.Null, nil),
+			avro.NewPrimitiveSchema(avro.String, avro.NewPrimitiveLogicalSchema(avro.UUID)),
+		})))),
+		assert(avro.NewField("col_uuid_not_null", avro.NewPrimitiveSchema(
 			avro.String,
 			avro.NewPrimitiveLogicalSchema(avro.UUID),
 		))),
+
+		// json fields (represented as strings in Avro)
+		assert(avro.NewField("col_json", assert(avro.NewUnionSchema([]avro.Schema{
+			avro.NewPrimitiveSchema(avro.Null, nil),
+			avro.NewPrimitiveSchema(avro.Bytes, nil),
+		})))),
+		assert(avro.NewField("col_json_not_null", avro.NewPrimitiveSchema(avro.Bytes, nil))),
+
+		// jsonb fields (represented as strings in Avro)
+		assert(avro.NewField("col_jsonb", assert(avro.NewUnionSchema([]avro.Schema{
+			avro.NewPrimitiveSchema(avro.Null, nil),
+			avro.NewPrimitiveSchema(avro.Bytes, nil),
+		})))),
+		assert(avro.NewField("col_jsonb_not_null", avro.NewPrimitiveSchema(avro.Bytes, nil))),
+
+		// bool fields
+		assert(avro.NewField("col_bool", assert(avro.NewUnionSchema([]avro.Schema{
+			avro.NewPrimitiveSchema(avro.Null, nil),
+			avro.NewPrimitiveSchema(avro.Boolean, nil),
+		})))),
+		assert(avro.NewField("col_bool_not_null", avro.NewPrimitiveSchema(avro.Boolean, nil))),
+
+		// serial fields (represented as int in Avro)
+		assert(avro.NewField("col_serial", avro.NewPrimitiveSchema(avro.Int, nil))),
+		assert(avro.NewField("col_serial_not_null", avro.NewPrimitiveSchema(avro.Int, nil))),
+
+		// smallserial fields (represented as int in Avro)
+		assert(avro.NewField("col_smallserial", avro.NewPrimitiveSchema(avro.Int, nil))),
+		assert(avro.NewField("col_smallserial_not_null", avro.NewPrimitiveSchema(avro.Int, nil))),
+
+		// bigserial fields (represented as long in Avro)
+		assert(avro.NewField("col_bigserial", avro.NewPrimitiveSchema(avro.Long, nil))),
+		assert(avro.NewField("col_bigserial_not_null", avro.NewPrimitiveSchema(avro.Long, nil))),
 	}
 
 	slices.SortFunc(fields, func(a, b *avro.Field) int {
