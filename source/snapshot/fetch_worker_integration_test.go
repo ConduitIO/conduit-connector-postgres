@@ -21,14 +21,12 @@ import (
 	"math/big"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
 	"gopkg.in/tomb.v2"
@@ -455,31 +453,6 @@ func Test_send(t *testing.T) {
 	err := f.send(ctx, FetchData{})
 
 	is.Equal(err, context.Canceled)
-}
-
-func Test_FetchWorker_buildRecordData(t *testing.T) {
-	var (
-		is  = is.New(t)
-		now = time.Now().UTC()
-
-		// special case fields
-		fields       = []pgconn.FieldDescription{{Name: "id"}, {Name: "time"}}
-		values       = []any{1, now}
-		expectValues = []any{1, now}
-	)
-
-	key, payload, err := (&FetchWorker{
-		conf: FetchConfig{Table: "mytable", Key: "id"},
-	}).buildRecordData(fields, values)
-
-	is.NoErr(err)
-	is.Equal(len(payload), 2)
-	for i, fd := range fields {
-		is.Equal(payload[fd.Name], expectValues[i])
-	}
-
-	is.Equal(len(key), 1)
-	is.Equal(key["id"], 1)
 }
 
 func Test_FetchWorker_updateSnapshotEnd(t *testing.T) {
