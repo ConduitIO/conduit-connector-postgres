@@ -371,14 +371,14 @@ func avroTestSchema(t *testing.T, table string) avro.Schema {
 			avro.NewPrimitiveLogicalSchema(avro.UUID),
 		))),
 
-		// json fields (represented as strings in Avro)
+		// json fields (represented as bytes in Avro)
 		assert(avro.NewField("col_json", assert(avro.NewUnionSchema([]avro.Schema{
 			avro.NewPrimitiveSchema(avro.Null, nil),
 			avro.NewPrimitiveSchema(avro.Bytes, nil),
 		})))),
 		assert(avro.NewField("col_json_not_null", avro.NewPrimitiveSchema(avro.Bytes, nil))),
 
-		// jsonb fields (represented as strings in Avro)
+		// jsonb fields (represented as bytes in Avro)
 		assert(avro.NewField("col_jsonb", assert(avro.NewUnionSchema([]avro.Schema{
 			avro.NewPrimitiveSchema(avro.Null, nil),
 			avro.NewPrimitiveSchema(avro.Bytes, nil),
