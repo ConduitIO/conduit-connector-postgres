@@ -489,7 +489,7 @@ func Test_FetchWorker_updateSnapshotEnd(t *testing.T) {
 				Table: table,
 				Key:   "UppercaseColumn1",
 			}},
-			expected: 3,
+			expected: 4,
 		},
 		{
 			desc:     "skip update when set",
