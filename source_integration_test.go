@@ -110,7 +110,7 @@ func createTableWithManyTypes(ctx context.Context, t *testing.T) string {
 	// table names with capital letters
 	table := strings.ToUpper(test.RandomIdentifier(t))
 
-	query := fmt.Sprintf(`CREATE TABLE %s (
+	query := fmt.Sprintf(`CREATE TABLE %q (
     id                      bigserial PRIMARY KEY,
     col_bytea               bytea,
     col_bytea_not_null      bytea NOT NULL,
@@ -155,7 +155,7 @@ func createTableWithManyTypes(ctx context.Context, t *testing.T) string {
 	is.NoErr(err)
 
 	t.Cleanup(func() {
-		query := `DROP TABLE %s`
+		query := `DROP TABLE %q`
 		query = fmt.Sprintf(query, table)
 		_, err := conn.Exec(context.Background(), query)
 		is.NoErr(err)
@@ -172,7 +172,7 @@ func insertRowNotNullColumnsOnly(ctx context.Context, t *testing.T, table string
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 
 	query := fmt.Sprintf(
-		`INSERT INTO %s (
+		`INSERT INTO %q (
           col_bytea_not_null,
           col_varchar_not_null,
           col_date_not_null,
@@ -239,7 +239,7 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 
 	query := fmt.Sprintf(
-		`INSERT INTO %s (
+		`INSERT INTO %q (
          col_bytea, col_bytea_not_null,
          col_varchar, col_varchar_not_null,
          col_date, col_date_not_null,
