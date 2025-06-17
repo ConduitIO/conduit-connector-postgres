@@ -65,22 +65,33 @@ func TestSource_ReadN_Snapshot_CDC(t *testing.T) {
 		is.NoErr(s.Teardown(ctx))
 	})
 
-	gotRecords, err := s.ReadN(ctx, 1)
+	snapshotRecs, err := s.ReadN(ctx, 2)
 	is.NoErr(err)
-	is.Equal(1, len(gotRecords))
-	err = s.Ack(ctx, gotRecords[0].Position)
+	is.Equal(2, len(snapshotRecs))
+	err = s.Ack(ctx, snapshotRecs[0].Position)
 	is.NoErr(err)
-	assertRecordOK(is, tableName, gotRecords[0])
+	err = s.Ack(ctx, snapshotRecs[1].Position)
+	is.NoErr(err)
+
+	assertRecordOK(is, tableName, snapshotRecs[0])
+	assertRecordOK(is, tableName, snapshotRecs[1])
 
 	insertRowNotNullColumnsOnly(ctx, t, tableName, 3)
 	insertRowAllColumns(ctx, t, tableName, 4)
 
-	gotRecords, err = s.ReadN(ctx, 1)
+	cdcRecs, err := s.ReadN(ctx, 1)
 	is.NoErr(err)
-	is.Equal(1, len(gotRecords))
-	err = s.Ack(ctx, gotRecords[0].Position)
+	is.Equal(1, len(cdcRecs))
+	err = s.Ack(ctx, cdcRecs[0].Position)
 	is.NoErr(err)
-	assertRecordOK(is, tableName, gotRecords[0])
+	assertRecordOK(is, tableName, cdcRecs[0])
+
+	cdcRecs, err = s.ReadN(ctx, 1)
+	is.NoErr(err)
+	is.Equal(1, len(cdcRecs))
+	err = s.Ack(ctx, cdcRecs[0].Position)
+	is.NoErr(err)
+	assertRecordOK(is, tableName, cdcRecs[0])
 }
 
 func assertRecordOK(is *is.I, tableName string, gotRecord opencdc.Record) {
