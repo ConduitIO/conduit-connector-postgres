@@ -88,53 +88,154 @@ func Test_AvroExtract(t *testing.T) {
 		is.NoErr(avro.Unmarshal(sch, data, &decoded))
 
 		is.Equal(len(decoded), len(row))
-		is.Equal(row["col_boolean"], decoded["col_boolean"])
-		is.Equal(row["col_bytea"], decoded["col_bytea"])
-		is.Equal(dereference(row["col_varchar"]), decoded["col_varchar"])
-		is.Equal(dereference(row["col_date"]), decoded["col_date"])
-		is.Equal(dereference(row["col_float4"]), decoded["col_float4"])
-		is.Equal(dereference(row["col_float8"]), decoded["col_float8"])
 
-		colInt2 := int(*row["col_int2"].(*int16))
-		is.Equal(colInt2, decoded["col_int2"])
+		// Compare all fields
+		compareValue(is, row, decoded, "col_bytea")
+		compareValue(is, row, decoded, "col_bytea_not_null")
+		compareValue(is, row, decoded, "col_varchar")
+		compareValue(is, row, decoded, "col_varchar_not_null")
+		compareValue(is, row, decoded, "col_date")
+		compareValue(is, row, decoded, "col_date_not_null")
+		compareValue(is, row, decoded, "col_float4")
+		compareValue(is, row, decoded, "col_float4_not_null")
+		compareValue(is, row, decoded, "col_float8")
+		compareValue(is, row, decoded, "col_float8_not_null")
 
-		colInt4 := int(*row["col_int4"].(*int32))
-		is.Equal(colInt4, decoded["col_int4"])
+		compareIntValue(is, row, decoded, "col_int2")
+		compareIntValue(is, row, decoded, "col_int2_not_null")
+		compareIntValue(is, row, decoded, "col_int4")
+		compareIntValue(is, row, decoded, "col_int4_not_null")
 
-		is.Equal(dereference(row["col_int8"]), decoded["col_int8"])
+		compareValue(is, row, decoded, "col_int8")
+		compareValue(is, row, decoded, "col_int8_not_null")
 
-		numRow := row["col_numeric"].(*big.Rat)
-		numDecoded := decoded["col_numeric"].(*big.Rat)
-		is.Equal(numRow.RatString(), numDecoded.RatString())
+		compareNumericValue(is, row, decoded, "col_numeric")
+		compareNumericValue(is, row, decoded, "col_numeric_not_null")
 
-		is.Equal(dereference(row["col_text"]), decoded["col_text"])
-		is.Equal(dereference(row["col_uuid"]), decoded["col_uuid"])
+		compareValue(is, row, decoded, "col_text")
+		compareValue(is, row, decoded, "col_text_not_null")
 
-		rowTS, colTS := row["col_timestamp"].(*time.Time), decoded["col_timestamp"].(time.Time)
-		is.Equal(rowTS.UTC().String(), colTS.UTC().String())
+		compareTimestampValue(is, row, decoded, "col_timestamp")
+		compareTimestampValue(is, row, decoded, "col_timestamp_not_null")
+		compareTimestampValue(is, row, decoded, "col_timestamptz")
+		compareTimestampValue(is, row, decoded, "col_timestamptz_not_null")
 
-		rowTSTZ, colTSTZ := row["col_timestamptz"].(time.Time), decoded["col_timestamptz"].(time.Time)
-		is.Equal(rowTSTZ.UTC().String(), colTSTZ.UTC().String())
+		compareValue(is, row, decoded, "col_uuid")
+		compareValue(is, row, decoded, "col_uuid_not_null")
+		compareValue(is, row, decoded, "col_json")
+		compareValue(is, row, decoded, "col_json_not_null")
+		compareValue(is, row, decoded, "col_jsonb")
+		compareValue(is, row, decoded, "col_jsonb_not_null")
+		compareValue(is, row, decoded, "col_bool")
+		compareValue(is, row, decoded, "col_bool_not_null")
+
+		// Serial types are integers, so use compareIntValue
+		compareIntValue(is, row, decoded, "col_serial")
+		compareIntValue(is, row, decoded, "col_serial_not_null")
+		compareIntValue(is, row, decoded, "col_smallserial")
+		compareIntValue(is, row, decoded, "col_smallserial_not_null")
+		compareValue(is, row, decoded, "col_bigserial")
+		compareValue(is, row, decoded, "col_bigserial_not_null")
 	})
 }
 
-func dereference(v any) any {
-	if v == nil {
-		return nil
+// Extracted comparison functions
+func compareValue(is *is.I, wantMap, gotMap map[string]any, key string) {
+	is.Helper()
+
+	want := wantMap[key]
+	got := gotMap[key]
+
+	if want == nil {
+		is.Equal(nil, got)
+		return
 	}
 
-	dereferenced := v
-
-	rowValueReflect := reflect.ValueOf(v)
-	if rowValueReflect.Kind() == reflect.Ptr {
-		if rowValueReflect.IsNil() {
-			dereferenced = nil
-		} else {
-			dereferenced = rowValueReflect.Elem().Interface()
+	// If row value is a pointer, dereference it
+	wantReflect := reflect.ValueOf(want)
+	if wantReflect.Kind() == reflect.Ptr {
+		if wantReflect.IsNil() {
+			is.Equal(nil, got)
+			return
 		}
+		want = wantReflect.Elem().Interface()
 	}
 
-	return dereferenced
+	is.Equal(want, got)
+}
+
+func compareIntValue(is *is.I, wantMap, gotMap map[string]any, key string) {
+	is.Helper()
+
+	want := wantMap[key]
+	got := gotMap[key]
+
+	if want == nil {
+		is.Equal(nil, got)
+		return
+	}
+
+	switch v := want.(type) {
+	case *int16:
+	case *int32:
+		is.Equal(int(*v), got)
+	case int16:
+	case int32:
+		is.Equal(int(v), got)
+	default:
+		is.Equal(want, got)
+	}
+}
+
+func compareNumericValue(is *is.I, wantMap, gotMap map[string]any, key string) {
+	is.Helper()
+
+	want := wantMap[key]
+	got := gotMap[key]
+
+	if want == nil {
+		is.Equal(nil, got)
+		return
+	}
+
+	numRow, ok := want.(*big.Rat)
+	if !ok || numRow == nil {
+		is.Equal(nil, got)
+		return
+	}
+
+	numDecoded := got.(*big.Rat)
+	is.Equal(numRow.RatString(), numDecoded.RatString())
+}
+
+func compareTimestampValue(is *is.I, wantMap, gotMap map[string]any, key string) {
+	is.Helper()
+
+	want := wantMap[key]
+	got := gotMap[key]
+
+	if want == nil {
+		is.Equal(nil, got)
+		return
+	}
+
+	var wantTS time.Time
+	switch v := want.(type) {
+	case *time.Time:
+		wantTS = *v
+	case time.Time:
+		wantTS = v
+	}
+
+	var gotTS time.Time
+	switch v := got.(type) {
+	case map[string]interface{}:
+		gotTS = got.(map[string]interface{})["long.local-timestamp-micros"].(time.Time)
+	case time.Time:
+		gotTS = v
+	}
+
+	is.Equal(wantTS.UTC().String(), gotTS.UTC().String())
 }
 
 func setupAvroTestTable(ctx context.Context, t *testing.T, conn test.Querier) string {
