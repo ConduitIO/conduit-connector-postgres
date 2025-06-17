@@ -617,8 +617,8 @@ func insertTestRows(ctx context.Context, is *is.I, pool *pgxpool.Pool, table str
 		_, err := pool.Exec(
 			ctx,
 			fmt.Sprintf(
-				`INSERT INTO %s (id, column1, column2, column3, column4, column5)
-				VALUES (%d, 'test-%d', %d, false, 12.3, 14)`, table, i+10, i, i*100,
+				`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+				VALUES (%d, '%d', 'test-%d', %d, false, 12.3, %d)`, table, i+10, i+10, i, i*100, i+10,
 			),
 		)
 		is.NoErr(err)
@@ -626,6 +626,8 @@ func insertTestRows(ctx context.Context, is *is.I, pool *pgxpool.Pool, table str
 }
 
 func verifyOpenCDCRecords(is *is.I, got []opencdc.Record, tableName string, fromID, toID int) {
+	is.Helper()
+
 	// Build the expected records slice
 	var want []opencdc.Record
 
@@ -638,15 +640,14 @@ func verifyOpenCDCRecords(is *is.I, got []opencdc.Record, tableName string, from
 			},
 			Payload: opencdc.Change{
 				After: opencdc.StructuredData{
-					"id":               id,
-					"key":              nil,
-					"column1":          fmt.Sprintf("test-%d", i),
-					"column2":          int32(i) * 100, //nolint:gosec // fine, we know the value is small enough
-					"column3":          false,
-					"column4":          big.NewRat(123, 10),
-					"column6":          nil,
-					"column7":          nil,
-					"UppercaseColumn1": nil,
+					"id":      id,
+					"key":     []uint8(fmt.Sprintf("%d", id)),
+					"column1": fmt.Sprintf("test-%d", i),
+					"column2": int32(i) * 100, //nolint:gosec // fine, we know the value is small enough
+					"column3": false,
+					"column4": big.NewRat(123, 10),
+					// UppercaseColumn1 is a Postgres interger (4 bytes)
+					"UppercaseColumn1": int32(id),
 				},
 			},
 			Metadata: opencdc.Metadata{
