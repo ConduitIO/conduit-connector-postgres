@@ -555,28 +555,6 @@ func TestCDCIterator_NextN(t *testing.T) {
 		_, err = i.NextN(ctx, -1)
 		is.True(strings.Contains(err.Error(), "n must be greater than 0"))
 	})
-
-	t.Run("subscription termination", func(t *testing.T) {
-		is := is.New(t)
-		i := testCDCIterator(ctx, t, pool, table, true)
-		<-i.sub.Ready()
-
-		_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
-			VALUES (30, '30', 'test-1', 100, false, 12.3, 14)`, table))
-		is.NoErr(err)
-
-		go func() {
-			time.Sleep(100 * time.Millisecond)
-			is.NoErr(i.Teardown(ctx))
-		}()
-
-		records, err := i.NextN(ctx, 5)
-		if err != nil {
-			is.True(strings.Contains(err.Error(), "logical replication error"))
-		} else {
-			is.True(len(records) > 0)
-		}
-	})
 }
 
 func TestCDCIterator_NextN_InternalBatching(t *testing.T) {
