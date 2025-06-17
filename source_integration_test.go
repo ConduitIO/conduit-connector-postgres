@@ -393,10 +393,11 @@ func expectedRecord(rowNumber int) opencdc.StructuredData {
 
 	rowUUID := fmt.Sprintf("a74a9875-978e-4832-b1b8-6b0f8793a%03d", rowNumber)
 
+	id := int64(rowNumber)
 	return opencdc.StructuredData{
-		"id":                       rowNumber,
-		"col_bytea":                fmt.Sprintf("col_bytea_-%v", rowNumber),
-		"col_bytea_not_null":       fmt.Sprintf("col_bytea_-%v", rowNumber),
+		"id":                       id,
+		"col_bytea":                fmt.Sprintf("col_bytea_%v", rowNumber),
+		"col_bytea_not_null":       fmt.Sprintf("col_bytea_%v", rowNumber),
 		"col_varchar":              fmt.Sprintf("foo-%v", rowNumber),
 		"col_varchar_not_null":     fmt.Sprintf("foo-%v", rowNumber),
 		"col_date":                 rowTS.Format("2006-01-02"),
@@ -409,8 +410,8 @@ func expectedRecord(rowNumber int) opencdc.StructuredData {
 		"col_int2_not_null":        rowNumber % 32768,
 		"col_int4":                 rowNumber,
 		"col_int4_not_null":        rowNumber,
-		"col_int8":                 rowNumber,
-		"col_int8_not_null":        rowNumber,
+		"col_int8":                 id,
+		"col_int8_not_null":        id,
 		"col_numeric":              float64(100+rowNumber) / 10,
 		"col_numeric_not_null":     float64(100+rowNumber) / 10,
 		"col_text":                 fmt.Sprintf("bar-%v", rowNumber),
@@ -431,8 +432,8 @@ func expectedRecord(rowNumber int) opencdc.StructuredData {
 		"col_serial_not_null":      rowNumber,
 		"col_smallserial":          rowNumber,
 		"col_smallserial_not_null": rowNumber,
-		"col_bigserial":            rowNumber,
-		"col_bigserial_not_null":   rowNumber,
+		"col_bigserial":            id,
+		"col_bigserial_not_null":   id,
 	}
 }
 
