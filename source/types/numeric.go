@@ -22,8 +22,8 @@ import (
 
 type NumericFormatter struct{}
 
-// Format converts a pgtype.Numeric to a big.Rat.
-func (NumericFormatter) Format(num pgtype.Numeric) (*big.Rat, error) {
+// BigRatFromNumeric converts a pgtype.Numeric to a big.Rat.
+func (NumericFormatter) BigRatFromNumeric(num pgtype.Numeric) (*big.Rat, error) {
 	if num.Int == nil {
 		return nil, nil
 	}

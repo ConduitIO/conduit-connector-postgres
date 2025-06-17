@@ -91,7 +91,7 @@ specification:
     deleted, the record will be ignored.
 
     If there is no key, the record will be simply appended.
-  version: v0.12.2
+  version: v0.14.0
   author: Meroxa, Inc.
   source:
     parameters:
@@ -230,11 +230,6 @@ specification:
         validations:
           - type: required
             value: ""
-      - name: key
-        description: Key represents the column name for the key used to identify and update existing rows.
-        type: string
-        default: ""
-        validations: []
       - name: table
         description: Table is used as the target table into which records are inserted.
         type: string

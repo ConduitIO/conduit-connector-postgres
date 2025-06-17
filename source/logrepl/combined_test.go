@@ -378,6 +378,9 @@ func testRecords() []opencdc.StructuredData {
 			"column2":          int32(456),
 			"column3":          true,
 			"column4":          big.NewRat(1342, 100), // 13.42
+			"column5":          big.NewRat(8, 1),
+			"column6":          []byte(`{"foo": "bar"}`),
+			"column7":          []byte(`{"foo": "baz"}`),
 			"UppercaseColumn1": int32(2),
 		},
 		{

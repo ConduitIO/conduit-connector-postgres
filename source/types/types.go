@@ -50,9 +50,9 @@ func format(oid uint32, v any) (any, error) {
 
 	switch t := v.(type) {
 	case pgtype.Numeric:
-		return Numeric.Format(t)
+		return Numeric.BigRatFromNumeric(t)
 	case *pgtype.Numeric:
-		return Numeric.Format(*t)
+		return Numeric.BigRatFromNumeric(*t)
 	case []uint8:
 		if oid == pgtype.XMLOID {
 			return string(t), nil

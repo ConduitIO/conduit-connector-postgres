@@ -17,6 +17,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/conduitio/conduit-commons/config"
@@ -33,6 +34,7 @@ func TestSource_ReadN_Snapshot_CDC(t *testing.T) {
 	ctx := test.Context(t)
 
 	tableName := createTableWithManyTypes(ctx, t)
+
 	slotName := "conduitslot1"
 	publicationName := "conduitpub1"
 
@@ -104,7 +106,9 @@ func createTableWithManyTypes(ctx context.Context, t *testing.T) string {
 	is := is.New(t)
 
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-	table := test.RandomIdentifier(t)
+	// Be sure primary key discovering works correctly on
+	// table names with capital letters
+	table := strings.ToUpper(test.RandomIdentifier(t))
 
 	query := fmt.Sprintf(`CREATE TABLE %s (
     id                      bigserial PRIMARY KEY,

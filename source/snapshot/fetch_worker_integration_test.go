@@ -35,7 +35,7 @@ import (
 func Test_NewFetcher(t *testing.T) {
 	t.Run("with initial position", func(t *testing.T) {
 		is := is.New(t)
-		f := NewFetchWorker(&pgxpool.Pool{}, make(chan<- FetchData), FetchConfig{})
+		f := NewFetchWorker(&pgxpool.Pool{}, make(chan<- []FetchData), FetchConfig{})
 
 		is.Equal(f.snapshotEnd, int64(0))
 		is.Equal(f.lastRead, int64(0))
@@ -43,7 +43,7 @@ func Test_NewFetcher(t *testing.T) {
 
 	t.Run("with missing position data", func(t *testing.T) {
 		is := is.New(t)
-		f := NewFetchWorker(&pgxpool.Pool{}, make(chan<- FetchData), FetchConfig{
+		f := NewFetchWorker(&pgxpool.Pool{}, make(chan<- []FetchData), FetchConfig{
 			Position: position.Position{
 				Type: position.TypeSnapshot,
 			},
@@ -56,7 +56,7 @@ func Test_NewFetcher(t *testing.T) {
 	t.Run("resume from position", func(t *testing.T) {
 		is := is.New(t)
 
-		f := NewFetchWorker(&pgxpool.Pool{}, make(chan<- FetchData), FetchConfig{
+		f := NewFetchWorker(&pgxpool.Pool{}, make(chan<- []FetchData), FetchConfig{
 			Position: position.Position{
 				Type: position.TypeSnapshot,
 				Snapshots: position.SnapshotPositions{
@@ -214,7 +214,7 @@ func Test_FetcherRun_EmptySnapshot(t *testing.T) {
 		ctx      = test.Context(t)
 		pool     = test.ConnectPool(context.Background(), t, test.RegularConnString)
 		table    = test.SetupEmptyTable(context.Background(), t, pool)
-		out      = make(chan FetchData)
+		out      = make(chan []FetchData)
 		testTomb = &tomb.Tomb{}
 	)
 
@@ -235,7 +235,7 @@ func Test_FetcherRun_EmptySnapshot(t *testing.T) {
 
 	var gotFetchData []FetchData
 	for data := range out {
-		gotFetchData = append(gotFetchData, data)
+		gotFetchData = append(gotFetchData, data...)
 	}
 
 	is.NoErr(testTomb.Err())
@@ -247,7 +247,7 @@ func Test_FetcherRun_Initial(t *testing.T) {
 		pool  = test.ConnectPool(context.Background(), t, test.RegularConnString)
 		table = test.SetupTable(context.Background(), t, pool)
 		is    = is.New(t)
-		out   = make(chan FetchData)
+		out   = make(chan []FetchData)
 		ctx   = test.Context(t)
 		tt    = &tomb.Tomb{}
 	)
@@ -269,7 +269,7 @@ func Test_FetcherRun_Initial(t *testing.T) {
 
 	var gotFetchData []FetchData
 	for data := range out {
-		gotFetchData = append(gotFetchData, data)
+		gotFetchData = append(gotFetchData, data...)
 	}
 
 	is.NoErr(tt.Err())
@@ -308,7 +308,7 @@ func Test_FetcherRun_Resume(t *testing.T) {
 		pool  = test.ConnectPool(context.Background(), t, test.RegularConnString)
 		table = test.SetupTable(context.Background(), t, pool)
 		is    = is.New(t)
-		out   = make(chan FetchData)
+		out   = make(chan []FetchData)
 		ctx   = test.Context(t)
 		tt    = &tomb.Tomb{}
 	)
@@ -339,7 +339,7 @@ func Test_FetcherRun_Resume(t *testing.T) {
 
 	var dd []FetchData
 	for d := range out {
-		dd = append(dd, d)
+		dd = append(dd, d...)
 	}
 
 	is.NoErr(tt.Err())
@@ -450,7 +450,7 @@ func Test_send(t *testing.T) {
 
 	cancel()
 
-	err := f.send(ctx, FetchData{})
+	err := f.send(ctx, []FetchData{{}})
 
 	is.Equal(err, context.Canceled)
 }

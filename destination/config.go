@@ -36,8 +36,6 @@ type Config struct {
 	URL string `json:"url" validate:"required"`
 	// Table is used as the target table into which records are inserted.
 	Table string `json:"table" default:"{{ index .Metadata \"opencdc.collection\" }}"`
-	// Key represents the column name for the key used to identify and update existing rows.
-	Key string `json:"key"`
 }
 
 func (c *Config) Validate(ctx context.Context) error {
