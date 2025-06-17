@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/conduitio/conduit-commons/config"
 	"github.com/conduitio/conduit-commons/opencdc"
@@ -26,6 +27,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/google/uuid"
 	"github.com/matryer/is"
 )
 
@@ -73,8 +75,8 @@ func TestSource_ReadN_Snapshot_CDC(t *testing.T) {
 	err = s.Ack(ctx, snapshotRecs[1].Position)
 	is.NoErr(err)
 
-	assertRecordOK(is, tableName, snapshotRecs[0])
-	assertRecordOK(is, tableName, snapshotRecs[1])
+	assertRecordOK(is, tableName, snapshotRecs[0], 1)
+	assertRecordOK(is, tableName, snapshotRecs[1], 2)
 
 	insertRowNotNullColumnsOnly(ctx, t, tableName, 3)
 	insertRowAllColumns(ctx, t, tableName, 4)
@@ -84,20 +86,29 @@ func TestSource_ReadN_Snapshot_CDC(t *testing.T) {
 	is.Equal(1, len(cdcRecs))
 	err = s.Ack(ctx, cdcRecs[0].Position)
 	is.NoErr(err)
-	assertRecordOK(is, tableName, cdcRecs[0])
+	assertRecordOK(is, tableName, cdcRecs[0], 3)
 
 	cdcRecs, err = s.ReadN(ctx, 1)
 	is.NoErr(err)
 	is.Equal(1, len(cdcRecs))
 	err = s.Ack(ctx, cdcRecs[0].Position)
 	is.NoErr(err)
-	assertRecordOK(is, tableName, cdcRecs[0])
+	assertRecordOK(is, tableName, cdcRecs[0], 4)
 }
 
-func assertRecordOK(is *is.I, tableName string, gotRecord opencdc.Record) {
+func assertRecordOK(is *is.I, tableName string, gotRecord opencdc.Record, rowNum int) {
 	is.True(gotRecord.Key != nil)
 	is.True(gotRecord.Payload.After != nil)
 
+	assertSchemaPresent(is, tableName, gotRecord)
+	assertPayloadOK(is, tableName, gotRecord, rowNum)
+}
+
+func assertPayloadOK(is *is.I, tableName string, record opencdc.Record, rowNum int) {
+
+}
+
+func assertSchemaPresent(is *is.I, tableName string, gotRecord opencdc.Record) {
 	payloadSchemaSubject, err := gotRecord.Metadata.GetPayloadSchemaSubject()
 	is.NoErr(err)
 	is.Equal(tableName+"_payload", payloadSchemaSubject)
@@ -117,8 +128,8 @@ func createTableWithManyTypes(ctx context.Context, t *testing.T) string {
 	is := is.New(t)
 
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-	// Be sure primary key discovering works correctly on
-	// table names with capital letters
+	// Verify we can discover the primary key even when the table name
+	// contains capital letters.
 	table := strings.ToUpper(test.RandomIdentifier(t))
 
 	query := fmt.Sprintf(`CREATE TABLE %q (
@@ -182,51 +193,60 @@ func insertRowNotNullColumnsOnly(ctx context.Context, t *testing.T, table string
 	is := is.New(t)
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 
+	tsLayout := "2006-01-02 15:04:05.000000"
+
+	rowTS, err := time.Parse("2006-01-02 15:04:05", "2022-01-21 17:04:05")
+	is.NoErr(err)
+	rowTS = rowTS.Add(time.Duration(rowNumber) * time.Hour)
+
+	rowUUID := uuid.NewString()
+
 	query := fmt.Sprintf(
 		`INSERT INTO %q (
-          col_bytea_not_null,
-          col_varchar_not_null,
-          col_date_not_null,
-          col_float4_not_null,
-          col_float8_not_null,
-          col_int2_not_null,
-          col_int4_not_null,
-          col_int8_not_null,
-          col_numeric_not_null,
-          col_text_not_null,
-          col_timestamp_not_null,
-          col_timestamptz_not_null,
-          col_uuid_not_null,
-          col_json_not_null,
-          col_jsonb_not_null,
-          col_bool_not_null,
-          col_serial_not_null,
-          col_smallserial_not_null,
-          col_bigserial_not_null
-       ) VALUES (
-          '%s'::bytea,             -- col_bytea_not_null
-          'foo-%v',               -- col_varchar_not_null
-          now(),                  -- col_date_not_null
-          %f,                    -- col_float4_not_null
-          %f,                    -- col_float8_not_null
-          %d,                    -- col_int2_not_null
-          %d,                    -- col_int4_not_null
-          %d,                    -- col_int8_not_null
-          %f,                    -- col_numeric_not_null
-          'bar-%v',               -- col_text_not_null
-          now(),                  -- col_timestamp_not_null
-          now(),                  -- col_timestamptz_not_null
-          gen_random_uuid(),      -- col_uuid_not_null
-          '{"key": "value-%v"}'::json,  -- col_json_not_null
-          '{"key": "value-%v"}'::jsonb, -- col_jsonb_not_null
-          %t,                    -- col_bool_not_null
-          %d,                    -- col_serial_not_null
-          %d,                    -- col_smallserial_not_null
-          %d                     -- col_bigserial_not_null
-       )`,
+         col_bytea_not_null,
+         col_varchar_not_null,
+         col_date_not_null,
+         col_float4_not_null,
+         col_float8_not_null,
+         col_int2_not_null,
+         col_int4_not_null,
+         col_int8_not_null,
+         col_numeric_not_null,
+         col_text_not_null,
+         col_timestamp_not_null,
+         col_timestamptz_not_null,
+         col_uuid_not_null,
+         col_json_not_null,
+         col_jsonb_not_null,
+         col_bool_not_null,
+         col_serial_not_null,
+         col_smallserial_not_null,
+         col_bigserial_not_null
+      ) VALUES (
+         '%s'::bytea,
+         'foo-%v',
+         '%s'::date,
+         %f,
+         %f,
+         %d,
+         %d,
+         %d,
+         %f,
+         'bar-%v',
+         '%s'::timestamp,
+         '%s'::timestamptz,
+         '%s'::uuid,
+         '{"key": "value-%v"}'::json,
+         '{"key": "value-%v"}'::jsonb,
+         %t,
+         %d,
+         %d,
+         %d
+      )`,
 		table,
 		fmt.Sprintf("col_bytea_-%v", rowNumber),
 		rowNumber,
+		rowTS.Format("2006-01-02"),
 		float32(rowNumber)/10,
 		float64(rowNumber)/10,
 		rowNumber%32768,
@@ -234,6 +254,9 @@ func insertRowNotNullColumnsOnly(ctx context.Context, t *testing.T, table string
 		rowNumber,
 		float64(100+rowNumber)/10,
 		rowNumber,
+		rowTS.Format(tsLayout),
+		rowTS.Format(tsLayout),
+		rowUUID,
 		rowNumber,
 		rowNumber,
 		rowNumber%2 == 0,
@@ -241,13 +264,22 @@ func insertRowNotNullColumnsOnly(ctx context.Context, t *testing.T, table string
 		rowNumber,
 		rowNumber,
 	)
-	_, err := conn.Exec(ctx, query)
+
+	_, err = conn.Exec(ctx, query)
 	is.NoErr(err)
 }
 
 func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNumber int) {
 	is := is.New(t)
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
+
+	tsLayout := "2006-01-02 15:04:05.000000"
+
+	rowTS, err := time.Parse("2006-01-02 15:04:05", "2022-01-21 17:04:05")
+	is.NoErr(err)
+	rowTS = rowTS.Add(time.Duration(rowNumber) * time.Hour)
+
+	rowUUID := uuid.NewString()
 
 	query := fmt.Sprintf(
 		`INSERT INTO %q (
@@ -273,7 +305,7 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
       ) VALUES (
          '%s'::bytea, '%s'::bytea,
          'foo-%v', 'foo-%v',
-         now(), now(),
+		 '%s'::date, '%s'::date,
          %f, %f,
          %f, %f,
          %d, %d,
@@ -281,9 +313,9 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
          %d, %d,
          %f, %f,
          'bar-%v', 'bar-%v',
-         now(), now(),
-         now(), now(),
-         gen_random_uuid(), gen_random_uuid(),
+         '%s'::timestamp, '%s'::timestamp,
+         '%s'::timestamptz, '%s'::timestamptz,
+         '%s'::uuid, '%s'::uuid,
          '{"key": "value-%v"}'::json, '{"key": "value-%v"}'::json,
          '{"key": "value-%v"}'::jsonb, '{"key": "value-%v"}'::jsonb,
          %t, %t,
@@ -294,6 +326,7 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
 		table,
 		fmt.Sprintf("col_bytea_-%v", rowNumber), fmt.Sprintf("col_bytea_-%v", rowNumber),
 		rowNumber, rowNumber,
+		rowTS.Format(tsLayout), rowTS.Format(tsLayout),
 		float32(rowNumber)/10, float32(rowNumber)/10,
 		float64(rowNumber)/10, float64(rowNumber)/10,
 		rowNumber%32768, rowNumber%32768,
@@ -301,6 +334,9 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
 		rowNumber, rowNumber,
 		float64(100+rowNumber)/10, float64(100+rowNumber)/10,
 		rowNumber, rowNumber,
+		rowTS.Format(tsLayout), rowTS.Format(tsLayout),
+		rowTS.Format(tsLayout), rowTS.Format(tsLayout),
+		rowUUID, rowUUID,
 		rowNumber, rowNumber,
 		rowNumber, rowNumber,
 		rowNumber%2 == 0, rowNumber%2 == 0,
@@ -308,7 +344,8 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
 		rowNumber, rowNumber,
 		rowNumber, rowNumber,
 	)
-	_, err := conn.Exec(ctx, query)
+
+	_, err = conn.Exec(ctx, query)
 	is.NoErr(err)
 }
 
