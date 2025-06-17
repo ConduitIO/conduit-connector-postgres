@@ -109,6 +109,10 @@ func TestRelationSetAllTypes(t *testing.T) {
 func setupTableAllTypes(ctx context.Context, t *testing.T, conn test.Querier) string {
 	is := is.New(t)
 	table := test.RandomIdentifier(t)
+	// todo still need to support:
+	// bit, varbit, box, char(n), cidr, circle, inet, interval, line, lseg,
+	// macaddr, macaddr8, money, path, pg_lsn, pg_snapshot, point, polygon,
+	// time, timetz, tsquery, tsvector, xml
 	query := `CREATE TABLE %s (
     id                  bigserial PRIMARY KEY,
     col_bit             bit(8) NOT NULL,
