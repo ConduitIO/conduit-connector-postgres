@@ -76,6 +76,10 @@ func GetPointer(v any) any {
 		return rv.Interface()
 	}
 
+	if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Map || rv.Kind() == reflect.Array {
+		return rv.Interface()
+	}
+
 	// For non-pointer values, we need to get the address
 	// If the value is addressable, return its address
 	if rv.CanAddr() {

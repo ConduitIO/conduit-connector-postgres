@@ -19,7 +19,9 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,7 +31,6 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/hamba/avro/v2"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/matryer/is"
 )
 
@@ -59,15 +60,15 @@ func Test_AvroExtract(t *testing.T) {
 
 	fields := rows.FieldDescriptions()
 
-	sch, err := Avro.Extract(table, tableInfoFetcher.GetTable(table), fields)
+	schemaExtracted, err := Avro.Extract(table, tableInfoFetcher.GetTable(table), fields)
 	is.NoErr(err)
 
 	t.Run("schema is parsable", func(t *testing.T) {
 		is := is.New(t)
 		is.NoErr(err)
-		is.Equal(sch.String(), avroTestSchema(t, table).String())
+		is.Equal(schemaExtracted.String(), avroTestSchema(t, table).String())
 
-		_, err = avro.Parse(sch.String())
+		_, err = avro.Parse(schemaExtracted.String())
 		is.NoErr(err)
 	})
 
@@ -76,7 +77,7 @@ func Test_AvroExtract(t *testing.T) {
 
 		row := avrolizeMap(fields, values)
 
-		sch, err := avro.Parse(sch.String())
+		sch, err := avro.Parse(schemaExtracted.String())
 		is.NoErr(err)
 
 		data, err := avro.Marshal(sch, row)
@@ -89,33 +90,51 @@ func Test_AvroExtract(t *testing.T) {
 		is.Equal(len(decoded), len(row))
 		is.Equal(row["col_boolean"], decoded["col_boolean"])
 		is.Equal(row["col_bytea"], decoded["col_bytea"])
-		is.Equal(row["col_varchar"], decoded["col_varchar"])
-		is.Equal(row["col_date"], decoded["col_date"])
-		is.Equal(row["col_float4"], decoded["col_float4"])
-		is.Equal(row["col_float8"], decoded["col_float8"])
+		is.Equal(dereference(row["col_varchar"]), decoded["col_varchar"])
+		is.Equal(dereference(row["col_date"]), decoded["col_date"])
+		is.Equal(dereference(row["col_float4"]), decoded["col_float4"])
+		is.Equal(dereference(row["col_float8"]), decoded["col_float8"])
 
-		colInt2 := int(row["col_int2"].(int16))
+		colInt2 := int(*row["col_int2"].(*int16))
 		is.Equal(colInt2, decoded["col_int2"])
 
-		colInt4 := int(row["col_int4"].(int32))
+		colInt4 := int(*row["col_int4"].(*int32))
 		is.Equal(colInt4, decoded["col_int4"])
 
-		is.Equal(row["col_int8"], decoded["col_int8"])
+		is.Equal(dereference(row["col_int8"]), decoded["col_int8"])
 
 		numRow := row["col_numeric"].(*big.Rat)
 		numDecoded := decoded["col_numeric"].(*big.Rat)
 		is.Equal(numRow.RatString(), numDecoded.RatString())
 
-		is.Equal(row["col_text"], decoded["col_text"])
+		is.Equal(dereference(row["col_text"]), decoded["col_text"])
+		is.Equal(dereference(row["col_uuid"]), decoded["col_uuid"])
 
-		rowTS, colTS := row["col_timestamp"].(time.Time), decoded["col_timestamp"].(time.Time)
+		rowTS, colTS := row["col_timestamp"].(*time.Time), decoded["col_timestamp"].(time.Time)
 		is.Equal(rowTS.UTC().String(), colTS.UTC().String())
 
 		rowTSTZ, colTSTZ := row["col_timestamptz"].(time.Time), decoded["col_timestamptz"].(time.Time)
 		is.Equal(rowTSTZ.UTC().String(), colTSTZ.UTC().String())
-
-		is.Equal(row["col_uuid"], decoded["col_uuid"])
 	})
+}
+
+func dereference(v any) any {
+	if v == nil {
+		return nil
+	}
+
+	dereferenced := v
+
+	rowValueReflect := reflect.ValueOf(v)
+	if rowValueReflect.Kind() == reflect.Ptr {
+		if rowValueReflect.IsNil() {
+			dereferenced = nil
+		} else {
+			dereferenced = rowValueReflect.Elem().Interface()
+		}
+	}
+
+	return dereferenced
 }
 
 func setupAvroTestTable(ctx context.Context, t *testing.T, conn test.Querier) string {
@@ -419,16 +438,23 @@ func avrolizeMap(fields []pgconn.FieldDescription, values []any) map[string]any 
 	row := make(map[string]any)
 
 	for i, f := range fields {
-		switch f.DataTypeOID {
-		case pgtype.NumericOID:
-			n := new(big.Rat)
-			n.SetString(fmt.Sprint(types.Format(0, values[i], true)))
-			row[f.Name] = n
-		case pgtype.UUIDOID:
-			row[f.Name] = fmt.Sprint(values[i])
-		default:
-			row[f.Name] = values[i]
-		}
+		isNotNull := f.Name == "id" ||
+			f.Name == "col_bigserial" ||
+			f.Name == "col_serial" ||
+			f.Name == "col_smallserial" ||
+			strings.HasSuffix(f.Name, "_not_null")
+
+		row[f.Name] = assert(types.Format(f.DataTypeOID, values[i], isNotNull))
+		// switch f.DataTypeOID {
+		// case pgtype.NumericOID:
+		// 	n := new(big.Rat)
+		// 	n.SetString(fmt.Sprint(types.Format(0, values[i], true)))
+		// 	row[f.Name] = n
+		// case pgtype.UUIDOID:
+		// 	row[f.Name] = fmt.Sprint(values[i])
+		// default:
+		// 	row[f.Name] = values[i]
+		// }
 	}
 
 	return row
