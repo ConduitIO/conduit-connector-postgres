@@ -130,7 +130,7 @@ func Test_FetcherValidate(t *testing.T) {
 		is := is.New(t)
 		f := NewFetchWorker(
 			pool,
-			make(chan<- FetchData),
+			make(chan<- []FetchData),
 			FetchConfig{
 				Table: table,
 				Key:   "id",
@@ -144,7 +144,7 @@ func Test_FetcherValidate(t *testing.T) {
 		is := is.New(t)
 		f := NewFetchWorker(
 			pool,
-			make(chan<- FetchData),
+			make(chan<- []FetchData),
 			FetchConfig{
 				Table: "missing_table",
 				Key:   "id",
@@ -160,7 +160,7 @@ func Test_FetcherValidate(t *testing.T) {
 		is := is.New(t)
 		f := NewFetchWorker(
 			pool,
-			make(chan<- FetchData),
+			make(chan<- []FetchData),
 			FetchConfig{
 				Table: table,
 				Key:   "column3",
@@ -176,7 +176,7 @@ func Test_FetcherValidate(t *testing.T) {
 		is := is.New(t)
 		f := NewFetchWorker(
 			pool,
-			make(chan<- FetchData),
+			make(chan<- []FetchData),
 			FetchConfig{
 				Table: table,
 				Key:   "column2",
@@ -191,7 +191,7 @@ func Test_FetcherValidate(t *testing.T) {
 		is := is.New(t)
 		f := NewFetchWorker(
 			pool,
-			make(chan<- FetchData),
+			make(chan<- []FetchData),
 			FetchConfig{
 				Table: table,
 				Key:   "missing_key",
