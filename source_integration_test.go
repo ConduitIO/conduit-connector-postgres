@@ -403,6 +403,9 @@ func normalizeNotNullValue(key string, value interface{}) interface{} {
 		val := new(big.Rat)
 		val.SetString(fmt.Sprintf("%v", value))
 		normalized = val
+	case strings.Contains(key, "_date"):
+		val := assert(time.Parse("2006-01-02", value.(string)))
+		normalized = val
 	}
 
 	return normalized
