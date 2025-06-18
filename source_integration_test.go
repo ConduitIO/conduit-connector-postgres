@@ -22,8 +22,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Masterminds/squirrel"
 	"github.com/conduitio/conduit-commons/config"
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/conduitio/conduit-connector-postgres/source"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	"github.com/conduitio/conduit-connector-postgres/test"
@@ -293,65 +295,51 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
 
 	rec := generatePayloadData(rowNumber, false)
 
-	query := fmt.Sprintf(
-		`INSERT INTO %q (
-         id,
-         col_bytea, col_bytea_not_null,
-         col_varchar, col_varchar_not_null,
-         col_date, col_date_not_null,
-         col_float4, col_float4_not_null,
-         col_float8, col_float8_not_null,
-         col_int2, col_int2_not_null,
-         col_int4, col_int4_not_null,
-         col_int8, col_int8_not_null,
-         col_numeric, col_numeric_not_null,
-         col_text, col_text_not_null,
-         col_timestamp, col_timestamp_not_null,
-         col_timestamptz, col_timestamptz_not_null,
-         col_uuid, col_uuid_not_null,
-         col_json, col_json_not_null,
-         col_jsonb, col_jsonb_not_null,
-         col_bool, col_bool_not_null
-      ) VALUES (
-        %d,
-         '%s'::bytea, '%s'::bytea,
-         '%s', '%s',
-         '%s'::date, '%s'::date,
-         %f, %f,
-         %f, %f,
-         %d, %d,
-         %d, %d,
-         %d, %d,
-         %s, %s,
-         '%s', '%s',
-         '%s'::timestamp, '%s'::timestamp,
-         '%s'::timestamptz, '%s'::timestamptz,
-         '%s'::uuid, '%s'::uuid,
-         '%s'::json, '%s'::json,
-         '%s'::jsonb, '%s'::jsonb,
-         %t, %t
-      )`,
-		table,
-		rowNumber,
-		rec["col_bytea"], rec["col_bytea_not_null"],
-		rec["col_varchar"], rec["col_varchar_not_null"],
-		rec["col_date"].(time.Time).Format(time.DateOnly), rec["col_date_not_null"].(time.Time).Format(time.DateOnly),
-		rec["col_float4"], rec["col_float4_not_null"],
-		rec["col_float8"], rec["col_float8_not_null"],
-		rec["col_int2"], rec["col_int2_not_null"],
-		rec["col_int4"], rec["col_int4_not_null"],
-		rec["col_int8"], rec["col_int8_not_null"],
-		decimalString(rec["col_numeric"]), decimalString(rec["col_numeric_not_null"]),
-		rec["col_text"], rec["col_text_not_null"],
-		rec["col_timestamp"].(time.Time).Format(time.RFC3339), rec["col_timestamp_not_null"].(time.Time).Format(time.RFC3339),
-		rec["col_timestamptz"].(time.Time).Format(time.RFC3339), rec["col_timestamptz_not_null"].(time.Time).Format(time.RFC3339),
-		rec["col_uuid"], rec["col_uuid_not_null"],
-		rec["col_json"], rec["col_json_not_null"],
-		rec["col_jsonb"], rec["col_jsonb_not_null"],
-		rec["col_bool"], rec["col_bool_not_null"],
-	)
+	query, args, err := squirrel.Insert(internal.WrapSQLIdent(table)).
+		Columns(
+			"id",
+			"col_bytea", "col_bytea_not_null",
+			"col_varchar", "col_varchar_not_null",
+			"col_date", "col_date_not_null",
+			"col_float4", "col_float4_not_null",
+			"col_float8", "col_float8_not_null",
+			"col_int2", "col_int2_not_null",
+			"col_int4", "col_int4_not_null",
+			"col_int8", "col_int8_not_null",
+			"col_numeric", "col_numeric_not_null",
+			"col_text", "col_text_not_null",
+			"col_timestamp", "col_timestamp_not_null",
+			"col_timestamptz", "col_timestamptz_not_null",
+			"col_uuid", "col_uuid_not_null",
+			"col_json", "col_json_not_null",
+			"col_jsonb", "col_jsonb_not_null",
+			"col_bool", "col_bool_not_null",
+		).
+		Values(
+			rowNumber,
+			rec["col_bytea"], rec["col_bytea_not_null"],
+			rec["col_varchar"], rec["col_varchar_not_null"],
+			rec["col_date"], rec["col_date_not_null"],
+			rec["col_float4"], rec["col_float4_not_null"],
+			rec["col_float8"], rec["col_float8_not_null"],
+			rec["col_int2"], rec["col_int2_not_null"],
+			rec["col_int4"], rec["col_int4_not_null"],
+			rec["col_int8"], rec["col_int8_not_null"],
+			squirrel.Expr("?", decimalString(rec["col_numeric"])), squirrel.Expr("?", decimalString(rec["col_numeric_not_null"])),
+			rec["col_text"], rec["col_text_not_null"],
+			rec["col_timestamp"], rec["col_timestamp_not_null"],
+			rec["col_timestamptz"], rec["col_timestamptz_not_null"],
+			squirrel.Expr("?::uuid", rec["col_uuid"]), squirrel.Expr("?::uuid", rec["col_uuid_not_null"]),
+			rec["col_json"], rec["col_json_not_null"],
+			rec["col_jsonb"], rec["col_jsonb_not_null"],
+			rec["col_bool"], rec["col_bool_not_null"],
+		).
+		PlaceholderFormat(squirrel.Dollar).
+		ToSql()
 
-	_, err := conn.Exec(ctx, query)
+	is.NoErr(err)
+
+	_, err = conn.Exec(ctx, query, args...)
 	is.NoErr(err)
 }
 
