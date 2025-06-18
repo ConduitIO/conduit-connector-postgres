@@ -275,8 +275,8 @@ func insertRowNotNullColumnsOnly(ctx context.Context, t *testing.T, table string
 		rec["col_int8_not_null"],
 		decimalString(rec["col_numeric_not_null"]),
 		rec["col_text_not_null"],
-		rec["col_timestamp_not_null"],
-		rec["col_timestamptz_not_null"],
+		rec["col_timestamp_not_null"].(time.Time).Format(time.RFC3339),
+		rec["col_timestamptz_not_null"].(time.Time).Format(time.RFC3339),
 		rec["col_uuid_not_null"],
 		rec["col_json_not_null"],
 		rec["col_jsonb_not_null"],
@@ -343,8 +343,8 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
 		rec["col_int8"], rec["col_int8_not_null"],
 		decimalString(rec["col_numeric"]), decimalString(rec["col_numeric_not_null"]),
 		rec["col_text"], rec["col_text_not_null"],
-		rec["col_timestamp"], rec["col_timestamp_not_null"],
-		rec["col_timestamptz"], rec["col_timestamptz_not_null"],
+		rec["col_timestamp"].(time.Time).Format(time.RFC3339), rec["col_timestamp_not_null"].(time.Time).Format(time.RFC3339),
+		rec["col_timestamptz"].(time.Time).Format(time.RFC3339), rec["col_timestamptz_not_null"].(time.Time).Format(time.RFC3339),
 		rec["col_uuid"], rec["col_uuid_not_null"],
 		rec["col_json"], rec["col_json_not_null"],
 		rec["col_jsonb"], rec["col_jsonb_not_null"],
@@ -368,37 +368,12 @@ func expectedData(id int, notNullOnly bool) opencdc.StructuredData {
 	rec := generatePayloadData(id, notNullOnly)
 
 	for key, value := range rec {
-		if value != nil {
-			rec[key] = normalizeNotNullValue(key, value)
-		} else {
-			rec[key] = normalizeNullValue(key, value)
+		if value == nil && strings.Contains(key, "_uuid") {
+			rec[key] = ""
 		}
 	}
 
 	return rec
-}
-
-func normalizeNullValue(key string, value interface{}) interface{} {
-	normalized := value
-	if strings.Contains(key, "_uuid") {
-		normalized = ""
-	}
-
-	return normalized
-}
-
-func normalizeNotNullValue(key string, value interface{}) interface{} {
-	normalized := value
-	switch {
-	// case strings.HasPrefix(key, "col_date"):
-	// 	val := assert(time.Parse("2006-01-02", value.(string)))
-	// 	normalized = val
-	case strings.HasPrefix(key, "col_timestamp"):
-		val := assert(time.Parse(time.RFC3339, value.(string)))
-		normalized = val
-	}
-
-	return normalized
 }
 
 func generatePayloadData(id int, notNullOnly bool) opencdc.StructuredData {
@@ -411,45 +386,53 @@ func generatePayloadData(id int, notNullOnly bool) opencdc.StructuredData {
 	numericVal := big.NewRat(int64(100+id), 10)
 
 	rec := opencdc.StructuredData{
-		"id":                       id,
-		"col_bytea":                []uint8(fmt.Sprintf("col_bytea_%v", id)),
-		"col_bytea_not_null":       []uint8(fmt.Sprintf("col_bytea_not_null_%v", id)),
-		"col_varchar":              fmt.Sprintf("foo-%v", id),
-		"col_varchar_not_null":     fmt.Sprintf("foo-%v", id),
-		"col_date":                 rowTS.Truncate(24 * time.Hour),
-		"col_date_not_null":        rowTS.Truncate(24 * time.Hour),
-		"col_float4":               float32(id) / 10,
-		"col_float4_not_null":      float32(id) / 10,
-		"col_float8":               float64(id) / 10,
-		"col_float8_not_null":      float64(id) / 10,
-		"col_int2":                 id % 32768,
-		"col_int2_not_null":        id % 32768,
-		"col_int4":                 id,
-		"col_int4_not_null":        id,
-		"col_int8":                 idInt64,
-		"col_int8_not_null":        idInt64,
-		"col_numeric":              numericVal,
-		"col_numeric_not_null":     numericVal,
-		"col_text":                 fmt.Sprintf("bar-%v", id),
-		"col_text_not_null":        fmt.Sprintf("bar-%v", id),
-		"col_timestamp":            rowTS.Format(time.RFC3339),
-		"col_timestamp_not_null":   rowTS.Format(time.RFC3339),
-		"col_timestamptz":          rowTS.Format(time.RFC3339),
-		"col_timestamptz_not_null": rowTS.Format(time.RFC3339),
-		"col_uuid":                 rowUUID,
-		"col_uuid_not_null":        rowUUID,
-		"col_json":                 []uint8(fmt.Sprintf(`{"key": "json-value-%v"}`, id)),
-		"col_json_not_null":        []uint8(fmt.Sprintf(`{"key": "json-not-value-%v"}`, id)),
-		"col_jsonb":                []uint8(fmt.Sprintf(`{"key": "jsonb-value-%v"}`, id)),
-		"col_jsonb_not_null":       []uint8(fmt.Sprintf(`{"key": "jsonb-not-value-%v"}`, id)),
-		"col_bool":                 id%2 == 0,
-		"col_bool_not_null":        id%2 == 0,
+		"id": id,
+
+		"col_bytea":            []uint8(fmt.Sprintf("col_bytea_%v", id)),
+		"col_bytea_not_null":   []uint8(fmt.Sprintf("col_bytea_not_null_%v", id)),
+		"col_varchar":          fmt.Sprintf("foo-%v", id),
+		"col_varchar_not_null": fmt.Sprintf("foo-%v", id),
+		"col_text":             fmt.Sprintf("bar-%v", id),
+		"col_text_not_null":    fmt.Sprintf("bar-%v", id),
+
+		"col_uuid":          rowUUID,
+		"col_uuid_not_null": rowUUID,
+
+		"col_json":           []uint8(fmt.Sprintf(`{"key": "json-value-%v"}`, id)),
+		"col_json_not_null":  []uint8(fmt.Sprintf(`{"key": "json-not-value-%v"}`, id)),
+		"col_jsonb":          []uint8(fmt.Sprintf(`{"key": "jsonb-value-%v"}`, id)),
+		"col_jsonb_not_null": []uint8(fmt.Sprintf(`{"key": "jsonb-not-value-%v"}`, id)),
+
+		"col_float4":          float32(id) / 10,
+		"col_float4_not_null": float32(id) / 10,
+		"col_float8":          float64(id) / 10,
+		"col_float8_not_null": float64(id) / 10,
+		"col_int2":            id % 32768,
+		"col_int2_not_null":   id % 32768,
+		"col_int4":            id,
+		"col_int4_not_null":   id,
+		"col_int8":            idInt64,
+		"col_int8_not_null":   idInt64,
+
+		"col_numeric":          numericVal,
+		"col_numeric_not_null": numericVal,
+
 		"col_serial":               id,
 		"col_serial_not_null":      id,
 		"col_smallserial":          id,
 		"col_smallserial_not_null": id,
 		"col_bigserial":            idInt64,
 		"col_bigserial_not_null":   idInt64,
+
+		"col_date":                 rowTS.Truncate(24 * time.Hour),
+		"col_date_not_null":        rowTS.Truncate(24 * time.Hour),
+		"col_timestamp":            rowTS,
+		"col_timestamp_not_null":   rowTS,
+		"col_timestamptz":          rowTS,
+		"col_timestamptz_not_null": rowTS,
+
+		"col_bool":          id%2 == 0,
+		"col_bool_not_null": id%2 == 0,
 	}
 
 	if notNullOnly {
