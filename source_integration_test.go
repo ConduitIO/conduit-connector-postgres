@@ -32,6 +32,7 @@ import (
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/conduitio/conduit-connector-sdk/schema"
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/uuid"
 	"github.com/matryer/is"
 	"github.com/shopspring/decimal"
 )
@@ -42,8 +43,8 @@ func TestSource_ReadN_Snapshot_CDC(t *testing.T) {
 
 	tableName := createTableWithManyTypes(ctx, t)
 	// Snapshot data
-	insertRowAllColumns(ctx, t, tableName, 1)
-	insertRowNotNullColumnsOnly(ctx, t, tableName, 2)
+	insertRow(ctx, t, tableName, 1, false)
+	insertRow(ctx, t, tableName, 2, true)
 
 	slotName := "conduitslot1"
 	publicationName := "conduitpub1"
@@ -90,8 +91,8 @@ func TestSource_ReadN_Snapshot_CDC(t *testing.T) {
 	assertRecordOK(is, tableName, snapshotRecs[1], 2, true)
 
 	// CDC data
-	insertRowNotNullColumnsOnly(ctx, t, tableName, 3)
-	insertRowAllColumns(ctx, t, tableName, 4)
+	insertRow(ctx, t, tableName, 3, true)
+	insertRow(ctx, t, tableName, 4, false)
 
 	// Read, ack and verify the first CDC record
 	cdcRecs, err := s.ReadN(ctx, 1)
@@ -108,55 +109,6 @@ func TestSource_ReadN_Snapshot_CDC(t *testing.T) {
 	err = s.Ack(ctx, cdcRecs[0].Position)
 	is.NoErr(err)
 	assertRecordOK(is, tableName, cdcRecs[0], 4, false)
-}
-
-// assertRecordOK asserts that the input record has a schema and that its payload
-// is what we expect (based on the ID and what columns are included).
-func assertRecordOK(is *is.I, tableName string, gotRecord opencdc.Record, id int, notNullOnly bool) {
-	is.Helper()
-
-	is.True(gotRecord.Key != nil)
-	is.True(gotRecord.Payload.After != nil)
-
-	assertSchemaPresent(is, tableName, gotRecord)
-	assertPayloadOK(is, gotRecord, id, notNullOnly)
-}
-
-// assertPayloadOK decodes the record's payload and asserts that the payload
-// is what we expect (based on the ID and what columns are included).
-func assertPayloadOK(is *is.I, record opencdc.Record, rowNum int, notNullOnly bool) {
-	is.Helper()
-
-	sch, err := schema.Get(
-		context.Background(),
-		assert(record.Metadata.GetPayloadSchemaSubject()),
-		assert(record.Metadata.GetPayloadSchemaVersion()),
-	)
-	is.NoErr(err)
-
-	got := opencdc.StructuredData{}
-	err = sch.Unmarshal(record.Payload.After.Bytes(), &got)
-	is.NoErr(err)
-
-	want := expectedData(rowNum, notNullOnly)
-
-	is.Equal("", cmp.Diff(want, got, test.BigRatComparer)) // -want, +got
-}
-
-func assertSchemaPresent(is *is.I, tableName string, gotRecord opencdc.Record) {
-	payloadSchemaSubject, err := gotRecord.Metadata.GetPayloadSchemaSubject()
-	is.NoErr(err)
-	is.Equal(tableName+"_payload", payloadSchemaSubject)
-	payloadSchemaVersion, err := gotRecord.Metadata.GetPayloadSchemaVersion()
-	is.NoErr(err)
-	is.Equal(1, payloadSchemaVersion)
-
-	keySchemaSubject, err := gotRecord.Metadata.GetKeySchemaSubject()
-	is.NoErr(err)
-	is.Equal(tableName+"_key", keySchemaSubject)
-	keySchemaVersion, err := gotRecord.Metadata.GetKeySchemaVersion()
-	is.NoErr(err)
-	is.Equal(1, keySchemaVersion)
 }
 
 func createTableWithManyTypes(ctx context.Context, t *testing.T) string {
@@ -221,119 +173,38 @@ func createTableWithManyTypes(ctx context.Context, t *testing.T) string {
 	return table
 }
 
-func insertRowNotNullColumnsOnly(ctx context.Context, t *testing.T, table string, rowNumber int) {
-	is := is.New(t)
-	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-
-	rec := generatePayloadData(rowNumber, true)
-
-	query := fmt.Sprintf(
-		`INSERT INTO %q (
-        id,
-         col_bytea_not_null,
-         col_varchar_not_null,
-         col_date_not_null,
-         col_float4_not_null,
-         col_float8_not_null,
-         col_int2_not_null,
-         col_int4_not_null,
-         col_int8_not_null,
-         col_numeric_not_null,
-         col_text_not_null,
-         col_timestamp_not_null,
-         col_timestamptz_not_null,
-         col_uuid_not_null,
-         col_json_not_null,
-         col_jsonb_not_null,
-         col_bool_not_null
-      ) VALUES (
-        %d,
-         '%s'::bytea,
-         '%s',
-         '%s'::date,
-         %f,
-         %f,
-         %d,
-         %d,
-         %d,
-         %s,
-         '%s',
-         '%s'::timestamp,
-         '%s'::timestamptz,
-         '%s'::uuid,
-         '%s'::json,
-         '%s'::jsonb,
-         %t
-      )`,
-		table,
-		rowNumber,
-		rec["col_bytea_not_null"],
-		rec["col_varchar_not_null"],
-		rec["col_date_not_null"].(time.Time).Format(time.DateOnly),
-		rec["col_float4_not_null"],
-		rec["col_float8_not_null"],
-		rec["col_int2_not_null"],
-		rec["col_int4_not_null"],
-		rec["col_int8_not_null"],
-		decimalString(rec["col_numeric_not_null"]),
-		rec["col_text_not_null"],
-		rec["col_timestamp_not_null"].(time.Time).Format(time.RFC3339),
-		rec["col_timestamptz_not_null"].(time.Time).Format(time.RFC3339),
-		rec["col_uuid_not_null"],
-		rec["col_json_not_null"],
-		rec["col_jsonb_not_null"],
-		rec["col_bool_not_null"],
-	)
-
-	_, err := conn.Exec(ctx, query)
-	is.NoErr(err)
-}
-
-func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNumber int) {
+// insertRow inserts a row using the values provided by generatePayloadData.
+// if notNullOnly is true, only NOT NULL columns are inserted.
+func insertRow(ctx context.Context, t *testing.T, table string, rowNumber int, notNullOnly bool) {
 	is := is.New(t)
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 
 	rec := generatePayloadData(rowNumber, false)
 
+	var columns []string
+	var values []interface{}
+	for key, value := range rec {
+		// the database generates serial values
+		if strings.Contains(key, "serial") {
+			continue
+		}
+		// check if only NOT NULL columns are needed (names ends in _not_null)
+		// id is an exception
+		if notNullOnly && !strings.HasSuffix(key, "_not_null") && key != "id" {
+			continue
+		}
+
+		columns = append(columns, key)
+		if strings.HasPrefix(key, "col_numeric") {
+			values = append(values, decimalString(value))
+		} else {
+			values = append(values, value)
+		}
+	}
+
 	query, args, err := squirrel.Insert(internal.WrapSQLIdent(table)).
-		Columns(
-			"id",
-			"col_bytea", "col_bytea_not_null",
-			"col_varchar", "col_varchar_not_null",
-			"col_date", "col_date_not_null",
-			"col_float4", "col_float4_not_null",
-			"col_float8", "col_float8_not_null",
-			"col_int2", "col_int2_not_null",
-			"col_int4", "col_int4_not_null",
-			"col_int8", "col_int8_not_null",
-			"col_numeric", "col_numeric_not_null",
-			"col_text", "col_text_not_null",
-			"col_timestamp", "col_timestamp_not_null",
-			"col_timestamptz", "col_timestamptz_not_null",
-			"col_uuid", "col_uuid_not_null",
-			"col_json", "col_json_not_null",
-			"col_jsonb", "col_jsonb_not_null",
-			"col_bool", "col_bool_not_null",
-		).
-		Values(
-			rowNumber,
-			rec["col_bytea"], rec["col_bytea_not_null"],
-			rec["col_varchar"], rec["col_varchar_not_null"],
-			rec["col_date"], rec["col_date_not_null"],
-			rec["col_float4"], rec["col_float4_not_null"],
-			rec["col_float8"], rec["col_float8_not_null"],
-			rec["col_int2"], rec["col_int2_not_null"],
-			rec["col_int4"], rec["col_int4_not_null"],
-			rec["col_int8"], rec["col_int8_not_null"],
-			squirrel.Expr("?", decimalString(rec["col_numeric"])), squirrel.Expr("?", decimalString(rec["col_numeric_not_null"])),
-			rec["col_text"], rec["col_text_not_null"],
-			rec["col_timestamp"], rec["col_timestamp_not_null"],
-			rec["col_timestamptz"], rec["col_timestamptz_not_null"],
-			squirrel.Expr("?::uuid", rec["col_uuid"]), squirrel.Expr("?::uuid", rec["col_uuid_not_null"]),
-			rec["col_json"], rec["col_json_not_null"],
-			rec["col_jsonb"], rec["col_jsonb_not_null"],
-			rec["col_bool"], rec["col_bool_not_null"],
-		).
+		Columns(columns...).
+		Values(values...).
 		PlaceholderFormat(squirrel.Dollar).
 		ToSql()
 
@@ -343,33 +214,11 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
 	is.NoErr(err)
 }
 
-func decimalString(v interface{}) string {
-	return decimal.NewFromBigRat(v.(*big.Rat), 2).String()
-}
-
-// expectedData creates an opencdc.StructuredData with expected keys and values
-// based on the ID and the columns (NOT NULL columns only or all columns).
-func expectedData(id int, notNullOnly bool) opencdc.StructuredData {
-	// We start with the data that was used to insert a test row.
-	// Then we normalize the data (e.g., JSON values are converted from strings
-	// to []uint8.
-	rec := generatePayloadData(id, notNullOnly)
-
-	for key, value := range rec {
-		if value == nil && strings.Contains(key, "_uuid") {
-			rec[key] = ""
-		}
-	}
-
-	return rec
-}
-
 func generatePayloadData(id int, notNullOnly bool) opencdc.StructuredData {
 	rowTS, _ := time.Parse("2006-01-02 15:04:05", "2022-01-21 17:04:05")
 	rowTS = rowTS.Add(time.Duration(id) * time.Hour)
 
-	rowUUID := fmt.Sprintf("a74a9875-978e-4832-b1b8-6b0f8793a%03d", id)
-
+	rowUUID := assert(uuid.Parse(fmt.Sprintf("a74a9875-978e-4832-b1b8-6b0f8793a%03d", id)))
 	idInt64 := int64(id)
 	numericVal := big.NewRat(int64(100+id), 10)
 
@@ -405,6 +254,9 @@ func generatePayloadData(id int, notNullOnly bool) opencdc.StructuredData {
 		"col_numeric":          numericVal,
 		"col_numeric_not_null": numericVal,
 
+		// NB: these values are not used in insert queries, but we assume
+		// the test rows will always be inserted in order, i.e.,
+		// test row 1, then test row 2, etc.
 		"col_serial":               id,
 		"col_serial_not_null":      id,
 		"col_smallserial":          id,
@@ -427,6 +279,80 @@ func generatePayloadData(id int, notNullOnly bool) opencdc.StructuredData {
 		for key := range rec {
 			if !strings.HasSuffix(key, "_not_null") && !strings.HasSuffix(key, "serial") && key != "id" {
 				rec[key] = nil
+			}
+		}
+	}
+
+	return rec
+}
+
+func decimalString(v interface{}) string {
+	return decimal.NewFromBigRat(v.(*big.Rat), 2).String()
+}
+
+// assertRecordOK asserts that the input record has a schema and that its payload
+// is what we expect (based on the ID and what columns are included).
+func assertRecordOK(is *is.I, tableName string, gotRecord opencdc.Record, id int, notNullOnly bool) {
+	is.Helper()
+
+	is.True(gotRecord.Key != nil)
+	is.True(gotRecord.Payload.After != nil)
+
+	assertSchemaPresent(is, tableName, gotRecord)
+	assertPayloadOK(is, gotRecord, id, notNullOnly)
+}
+
+func assertSchemaPresent(is *is.I, tableName string, gotRecord opencdc.Record) {
+	payloadSchemaSubject, err := gotRecord.Metadata.GetPayloadSchemaSubject()
+	is.NoErr(err)
+	is.Equal(tableName+"_payload", payloadSchemaSubject)
+	payloadSchemaVersion, err := gotRecord.Metadata.GetPayloadSchemaVersion()
+	is.NoErr(err)
+	is.Equal(1, payloadSchemaVersion)
+
+	keySchemaSubject, err := gotRecord.Metadata.GetKeySchemaSubject()
+	is.NoErr(err)
+	is.Equal(tableName+"_key", keySchemaSubject)
+	keySchemaVersion, err := gotRecord.Metadata.GetKeySchemaVersion()
+	is.NoErr(err)
+	is.Equal(1, keySchemaVersion)
+}
+
+// assertPayloadOK decodes the record's payload and asserts that the payload
+// is what we expect (based on the ID and what columns are included).
+func assertPayloadOK(is *is.I, record opencdc.Record, rowNum int, notNullOnly bool) {
+	is.Helper()
+
+	sch, err := schema.Get(
+		context.Background(),
+		assert(record.Metadata.GetPayloadSchemaSubject()),
+		assert(record.Metadata.GetPayloadSchemaVersion()),
+	)
+	is.NoErr(err)
+
+	got := opencdc.StructuredData{}
+	err = sch.Unmarshal(record.Payload.After.Bytes(), &got)
+	is.NoErr(err)
+
+	want := expectedData(rowNum, notNullOnly)
+
+	is.Equal("", cmp.Diff(want, got, test.BigRatComparer)) // -want, +got
+}
+
+// expectedData creates an opencdc.StructuredData with expected keys and values
+// based on the ID and the columns (NOT NULL columns only or all columns).
+// It also converts values that are written into the test table as one type
+// but read as another (e.g., we use UUID objects when inserting test data,
+// but they are read as strings).
+func expectedData(id int, notNullOnly bool) opencdc.StructuredData {
+	rec := generatePayloadData(id, notNullOnly)
+
+	for key, value := range rec {
+		if strings.HasPrefix(key, "col_uuid") {
+			if value == nil {
+				rec[key] = ""
+			} else {
+				rec[key] = value.(uuid.UUID).String()
 			}
 		}
 	}
