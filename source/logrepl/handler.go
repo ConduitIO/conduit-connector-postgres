@@ -22,7 +22,7 @@ import (
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	cschema "github.com/conduitio/conduit-commons/schema"
-	"github.com/conduitio/conduit-connector-postgres/source/common"
+	internal2 "github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/schema"
@@ -37,7 +37,7 @@ type CDCHandler struct {
 	tableKeys   map[string]string
 	relationSet *internal.RelationSet
 
-	tableInfo *common.TableInfoFetcher
+	tableInfo *internal2.TableInfoFetcher
 
 	// batchSize is the largest number of records this handler will send at once.
 	batchSize     int
@@ -58,7 +58,7 @@ type CDCHandler struct {
 func NewCDCHandler(
 	ctx context.Context,
 	rs *internal.RelationSet,
-	tableInfo *common.TableInfoFetcher,
+	tableInfo *internal2.TableInfoFetcher,
 	tableKeys map[string]string,
 	out chan<- []opencdc.Record,
 	withAvroSchema bool,

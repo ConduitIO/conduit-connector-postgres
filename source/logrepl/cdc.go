@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
-	"github.com/conduitio/conduit-connector-postgres/source/common"
+	internal2 "github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -88,7 +88,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	handler := NewCDCHandler(
 		ctx,
 		internal.NewRelationSet(),
-		common.NewTableInfoFetcher(pool),
+		internal2.NewTableInfoFetcher(pool),
 		c.TableKeys,
 		batchesCh,
 		c.WithAvroSchema,

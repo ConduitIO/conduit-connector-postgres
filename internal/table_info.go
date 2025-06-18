@@ -12,13 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package common
+package internal
 
 import (
 	"context"
 	"fmt"
 
-	"github.com/conduitio/conduit-connector-postgres/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -73,7 +72,7 @@ func (i TableInfoFetcher) Refresh(ctx context.Context, tableName string) error {
 		ORDER BY a.attnum;
 	`
 
-	rows, err := tx.Query(context.Background(), query, internal.WrapSQLIdent(tableName))
+	rows, err := tx.Query(ctx, query, WrapSQLIdent(tableName))
 	if err != nil {
 		sdk.Logger(ctx).
 			Err(err).

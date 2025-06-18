@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/conduitio/conduit-connector-postgres/source/common"
+	"github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/hamba/avro/v2"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -66,7 +66,7 @@ type avroExtractor struct {
 
 // ExtractLogrepl extracts an Avro schema from the given pglogrepl.RelationMessage.
 // If `fieldNames` are specified, then only the given fields will be included in the schema.
-func (a *avroExtractor) ExtractLogrepl(schemaName string, rel *pglogrepl.RelationMessage, tableInfo *common.TableInfo, fieldNames ...string) (*avro.RecordSchema, error) {
+func (a *avroExtractor) ExtractLogrepl(schemaName string, rel *pglogrepl.RelationMessage, tableInfo *internal.TableInfo, fieldNames ...string) (*avro.RecordSchema, error) {
 	var fields []pgconn.FieldDescription
 
 	for i := range rel.Columns {
@@ -82,7 +82,7 @@ func (a *avroExtractor) ExtractLogrepl(schemaName string, rel *pglogrepl.Relatio
 
 // Extract extracts an Avro schema from the given Postgres field descriptions.
 // If `fieldNames` are specified, then only the given fields will be included in the schema.
-func (a *avroExtractor) Extract(schemaName string, tableInfo *common.TableInfo, fields []pgconn.FieldDescription, fieldNames ...string) (*avro.RecordSchema, error) {
+func (a *avroExtractor) Extract(schemaName string, tableInfo *internal.TableInfo, fields []pgconn.FieldDescription, fieldNames ...string) (*avro.RecordSchema, error) {
 	var avroFields []*avro.Field
 
 	for _, f := range fields {

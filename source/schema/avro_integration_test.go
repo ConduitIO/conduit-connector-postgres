@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/conduitio/conduit-connector-postgres/source/common"
+	"github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	"github.com/conduitio/conduit-connector-postgres/source/types"
 	"github.com/conduitio/conduit-connector-postgres/test"
@@ -43,7 +43,7 @@ func Test_AvroExtract(t *testing.T) {
 	is.NoErr(err)
 
 	table := setupAvroTestTable(ctx, t, c)
-	tableInfoFetcher := common.NewTableInfoFetcher(connPool)
+	tableInfoFetcher := internal.NewTableInfoFetcher(connPool)
 	err = tableInfoFetcher.Refresh(ctx, table)
 	is.NoErr(err)
 

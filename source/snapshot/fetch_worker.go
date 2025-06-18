@@ -25,7 +25,6 @@ import (
 	"github.com/conduitio/conduit-commons/opencdc"
 	cschema "github.com/conduitio/conduit-commons/schema"
 	"github.com/conduitio/conduit-connector-postgres/internal"
-	"github.com/conduitio/conduit-connector-postgres/source/common"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	"github.com/conduitio/conduit-connector-postgres/source/types"
@@ -96,7 +95,7 @@ type FetchWorker struct {
 	out  chan<- []FetchData
 
 	// notNullMap maps column names to if the column is NOT NULL.
-	tableInfoFetcher *common.TableInfoFetcher
+	tableInfoFetcher *internal.TableInfoFetcher
 	keySchema        *cschema.Schema
 
 	payloadSchema *cschema.Schema
@@ -110,7 +109,7 @@ func NewFetchWorker(db *pgxpool.Pool, out chan<- []FetchData, c FetchConfig) *Fe
 		conf:             c,
 		db:               db,
 		out:              out,
-		tableInfoFetcher: common.NewTableInfoFetcher(db),
+		tableInfoFetcher: internal.NewTableInfoFetcher(db),
 		cursorName:       "fetcher_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
 	}
 
@@ -549,6 +548,6 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 	return nil
 }
 
-func (f *FetchWorker) getTableInfo() *common.TableInfo {
+func (f *FetchWorker) getTableInfo() *internal.TableInfo {
 	return f.tableInfoFetcher.GetTable(f.conf.Table)
 }

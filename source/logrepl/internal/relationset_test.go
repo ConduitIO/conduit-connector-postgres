@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/conduitio/conduit-connector-postgres/source/common"
+	"github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pglogrepl"
@@ -77,7 +77,7 @@ func TestRelationSetAllTypes(t *testing.T) {
 		break
 	}
 
-	tableInfo := common.NewTableInfoFetcher(pool)
+	tableInfo := internal.NewTableInfoFetcher(pool)
 	err := tableInfo.Refresh(ctx, table)
 	is.NoErr(err)
 

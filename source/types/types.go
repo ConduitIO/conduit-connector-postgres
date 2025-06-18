@@ -30,7 +30,8 @@ var (
 // into an appropriate Go value (that can later be serialized with Avro).
 // If the input value is nullable (i.e. isNotNull is false), then the method
 // returns a pointer.
-// todo still need to support:
+//
+// The following types are currently not supported:
 // bit, varbit, box, char(n), cidr, circle, inet, interval, line, lseg,
 // macaddr, macaddr8, money, path, pg_lsn, pg_snapshot, point, polygon,
 // time, timetz, tsquery, tsvector, xml

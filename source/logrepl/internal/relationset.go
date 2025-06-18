@@ -18,7 +18,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/conduitio/conduit-connector-postgres/source/common"
+	"github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/types"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -51,7 +51,7 @@ func (rs *RelationSet) Get(id uint32) (*pglogrepl.RelationMessage, error) {
 	return msg, nil
 }
 
-func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData, tableInfo *common.TableInfo) (map[string]any, error) {
+func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData, tableInfo *internal.TableInfo) (map[string]any, error) {
 	if row == nil {
 		return nil, errors.New("no tuple data")
 	}
@@ -85,7 +85,7 @@ func (rs *RelationSet) oidToCodec(id uint32) pgtype.Codec {
 	return dt.Codec
 }
 
-func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, colInfo *common.ColumnInfo, data []byte) (any, error) {
+func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, colInfo *internal.ColumnInfo, data []byte) (any, error) {
 	decoder := rs.oidToCodec(col.DataType)
 	// This workaround is due to an issue in pgx v5.7.1.
 	// Namely, that version introduces an XML codec
