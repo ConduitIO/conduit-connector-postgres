@@ -349,12 +349,8 @@ func expectedData(id int, notNullOnly bool) opencdc.StructuredData {
 
 	for key, value := range rec {
 		// UUID are written as byte arrays but read as strings.
-		if strings.HasPrefix(key, "col_uuid") {
-			if value == nil {
-				rec[key] = ""
-			} else {
-				rec[key] = value.(uuid.UUID).String()
-			}
+		if strings.HasPrefix(key, "col_uuid") && value != nil {
+			rec[key] = value.(uuid.UUID).String()
 		}
 	}
 

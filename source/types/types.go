@@ -36,13 +36,13 @@ var (
 // macaddr, macaddr8, money, path, pg_lsn, pg_snapshot, point, polygon,
 // time, timetz, tsquery, tsvector, xml
 func Format(oid uint32, v any, isNotNull bool) (any, error) {
+	if v == nil {
+		return nil, nil
+	}
+
 	val, err := format(oid, v)
 	if err != nil {
 		return nil, err
-	}
-
-	if val == nil {
-		return nil, nil
 	}
 
 	if reflect.TypeOf(val).Kind() != reflect.Ptr && !isNotNull {
