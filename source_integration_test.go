@@ -267,7 +267,7 @@ func insertRowNotNullColumnsOnly(ctx context.Context, t *testing.T, table string
 		rowNumber,
 		rec["col_bytea_not_null"],
 		rec["col_varchar_not_null"],
-		rec["col_date_not_null"],
+		rec["col_date_not_null"].(time.Time).Format(time.DateOnly),
 		rec["col_float4_not_null"],
 		rec["col_float8_not_null"],
 		rec["col_int2_not_null"],
@@ -335,7 +335,7 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
 		rowNumber,
 		rec["col_bytea"], rec["col_bytea_not_null"],
 		rec["col_varchar"], rec["col_varchar_not_null"],
-		rec["col_date"], rec["col_date_not_null"],
+		rec["col_date"].(time.Time).Format(time.DateOnly), rec["col_date_not_null"].(time.Time).Format(time.DateOnly),
 		rec["col_float4"], rec["col_float4_not_null"],
 		rec["col_float8"], rec["col_float8_not_null"],
 		rec["col_int2"], rec["col_int2_not_null"],
@@ -390,9 +390,9 @@ func normalizeNullValue(key string, value interface{}) interface{} {
 func normalizeNotNullValue(key string, value interface{}) interface{} {
 	normalized := value
 	switch {
-	case strings.HasPrefix(key, "col_date"):
-		val := assert(time.Parse("2006-01-02", value.(string)))
-		normalized = val
+	// case strings.HasPrefix(key, "col_date"):
+	// 	val := assert(time.Parse("2006-01-02", value.(string)))
+	// 	normalized = val
 	case strings.HasPrefix(key, "col_timestamp"):
 		val := assert(time.Parse(time.RFC3339, value.(string)))
 		normalized = val
@@ -416,8 +416,8 @@ func generatePayloadData(id int, notNullOnly bool) opencdc.StructuredData {
 		"col_bytea_not_null":       []uint8(fmt.Sprintf("col_bytea_not_null_%v", id)),
 		"col_varchar":              fmt.Sprintf("foo-%v", id),
 		"col_varchar_not_null":     fmt.Sprintf("foo-%v", id),
-		"col_date":                 rowTS.Format("2006-01-02"),
-		"col_date_not_null":        rowTS.Format("2006-01-02"),
+		"col_date":                 rowTS.Truncate(24 * time.Hour),
+		"col_date_not_null":        rowTS.Truncate(24 * time.Hour),
 		"col_float4":               float32(id) / 10,
 		"col_float4_not_null":      float32(id) / 10,
 		"col_float8":               float64(id) / 10,
