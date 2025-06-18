@@ -42,7 +42,7 @@ func TestSource_ReadN_Snapshot_CDC(t *testing.T) {
 	ctx := test.Context(t)
 
 	tableName := createTableWithManyTypes(ctx, t)
-	// Snapshot data
+	// Write the snapshot data
 	insertRow(ctx, t, tableName, 1, false)
 	insertRow(ctx, t, tableName, 2, true)
 
@@ -77,38 +77,36 @@ func TestSource_ReadN_Snapshot_CDC(t *testing.T) {
 	})
 
 	// Read and ack the 2 snapshots records
-	snapshotRecs, err := s.ReadN(ctx, 2)
+	recs, err := s.ReadN(ctx, 2)
 	is.NoErr(err)
-	is.Equal(2, len(snapshotRecs))
+	is.Equal(2, len(recs))
 
-	err = s.Ack(ctx, snapshotRecs[0].Position)
+	// Verify snapshot record no. 1
+	err = s.Ack(ctx, recs[0].Position)
 	is.NoErr(err)
-	err = s.Ack(ctx, snapshotRecs[1].Position)
+	assertRecordOK(is, tableName, recs[0], 1, false)
+	// Verify snapshot record no. 2
+	err = s.Ack(ctx, recs[1].Position)
 	is.NoErr(err)
+	assertRecordOK(is, tableName, recs[1], 2, true)
 
-	// Verify snapshot records
-	assertRecordOK(is, tableName, snapshotRecs[0], 1, false)
-	assertRecordOK(is, tableName, snapshotRecs[1], 2, true)
-
-	// CDC data
+	// Write the CDC data
 	insertRow(ctx, t, tableName, 3, true)
 	insertRow(ctx, t, tableName, 4, false)
 
-	// Read, ack and verify the first CDC record
-	cdcRecs, err := s.ReadN(ctx, 1)
+	// Read, ack, and verify CDC record no. 1
+	recs, err = s.ReadN(ctx, 1)
 	is.NoErr(err)
-	is.Equal(1, len(cdcRecs))
-	err = s.Ack(ctx, cdcRecs[0].Position)
-	is.NoErr(err)
-	assertRecordOK(is, tableName, cdcRecs[0], 3, true)
+	is.Equal(1, len(recs))
+	// record no. 3 has the NOT NULL columns only
+	assertRecordOK(is, tableName, recs[0], 3, true)
 
-	// Read, ack and verify the second CDC record
-	cdcRecs, err = s.ReadN(ctx, 1)
+	// Read, ack, and verify CDC record no. 1
+	recs, err = s.ReadN(ctx, 1)
 	is.NoErr(err)
-	is.Equal(1, len(cdcRecs))
-	err = s.Ack(ctx, cdcRecs[0].Position)
-	is.NoErr(err)
-	assertRecordOK(is, tableName, cdcRecs[0], 4, false)
+	is.Equal(1, len(recs))
+	// record no. 3 has the NOT NULL columns only
+	assertRecordOK(is, tableName, recs[0], 4, false)
 }
 
 func createTableWithManyTypes(ctx context.Context, t *testing.T) string {
@@ -123,8 +121,8 @@ func createTableWithManyTypes(ctx context.Context, t *testing.T) string {
     id                      integer PRIMARY KEY,
     col_bytea               bytea,
     col_bytea_not_null      bytea NOT NULL,
-    col_varchar             varchar(10),
-    col_varchar_not_null    varchar(10) NOT NULL,
+    col_varchar             varchar(30),
+    col_varchar_not_null    varchar(30) NOT NULL,
     col_date                date,
     col_date_not_null       date NOT NULL,
     col_float4              float4,
@@ -195,6 +193,7 @@ func insertRow(ctx context.Context, t *testing.T, table string, rowNumber int, n
 		}
 
 		columns = append(columns, key)
+		// col_numeric is a big.Rat, so we convert it to a string
 		if strings.HasPrefix(key, "col_numeric") {
 			values = append(values, decimalString(value))
 		} else {
@@ -228,10 +227,10 @@ func generatePayloadData(id int, notNullOnly bool) opencdc.StructuredData {
 
 		"col_bytea":            []uint8(fmt.Sprintf("col_bytea_%v", id)),
 		"col_bytea_not_null":   []uint8(fmt.Sprintf("col_bytea_not_null_%v", id)),
-		"col_varchar":          fmt.Sprintf("foo-%v", id),
-		"col_varchar_not_null": fmt.Sprintf("foo-%v", id),
-		"col_text":             fmt.Sprintf("bar-%v", id),
-		"col_text_not_null":    fmt.Sprintf("bar-%v", id),
+		"col_varchar":          fmt.Sprintf("col_varchar_%v", id),
+		"col_varchar_not_null": fmt.Sprintf("col_varchar_not_null_%v", id),
+		"col_text":             fmt.Sprintf("col_text_%v", id),
+		"col_text_not_null":    fmt.Sprintf("col_text_not_null_%v", id),
 
 		"col_uuid":          rowUUID,
 		"col_uuid_not_null": rowUUID,
@@ -273,7 +272,7 @@ func generatePayloadData(id int, notNullOnly bool) opencdc.StructuredData {
 		"col_timestamptz_not_null": rowTS,
 
 		"col_bool":          id%2 == 0,
-		"col_bool_not_null": id%2 == 0,
+		"col_bool_not_null": id%2 == 1,
 	}
 
 	if notNullOnly {
@@ -337,18 +336,19 @@ func assertPayloadOK(is *is.I, record opencdc.Record, rowNum int, notNullOnly bo
 
 	want := expectedData(rowNum, notNullOnly)
 
-	is.Equal("", cmp.Diff(want, got, test.BigRatComparer)) // -want, +got
+	is.Equal("", cmp.Diff(want, got, test.BigRatComparer)) // expected different payload (-want, +got)
 }
 
 // expectedData creates an opencdc.StructuredData with expected keys and values
 // based on the ID and the columns (NOT NULL columns only or all columns).
-// It also converts values that are written into the test table as one type
-// but read as another (e.g., we use UUID objects when inserting test data,
-// but they are read as strings).
+// Its output is different generatePayloadData, because certain values are written
+// into the test table as one type, but read as another (e.g., we use UUID objects
+// when inserting test data, but they are read as strings).
 func expectedData(id int, notNullOnly bool) opencdc.StructuredData {
 	rec := generatePayloadData(id, notNullOnly)
 
 	for key, value := range rec {
+		// UUID are written as byte arrays but read as strings.
 		if strings.HasPrefix(key, "col_uuid") {
 			if value == nil {
 				rec[key] = ""
