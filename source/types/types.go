@@ -26,6 +26,10 @@ var (
 	UUID = UUIDFormatter{}
 )
 
+// todo still need to support:
+// bit, varbit, box, char(n), cidr, circle, inet, interval, line, lseg,
+// macaddr, macaddr8, money, path, pg_lsn, pg_snapshot, point, polygon,
+// time, timetz, tsquery, tsvector, xml
 func Format(oid uint32, v any, isNotNull bool) (any, error) {
 	val, err := format(oid, v)
 	if err != nil {

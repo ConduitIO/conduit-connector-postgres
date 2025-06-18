@@ -289,9 +289,7 @@ func Test_FetcherRun_Initial(t *testing.T) {
 			is.Equal("", cmp.Diff(
 				expectedMatch[i],
 				got.Payload,
-				cmp.Comparer(func(x, y *big.Rat) bool {
-					return x.Cmp(y) == 0
-				}),
+				test.BigRatComparer,
 			))
 
 			is.Equal(got.Position, position.SnapshotPosition{
@@ -360,9 +358,7 @@ func Test_FetcherRun_Resume(t *testing.T) {
 				"column4":          big.NewRat(836, 25),
 				"UppercaseColumn1": int32(3),
 			},
-			cmp.Comparer(func(x, y *big.Rat) bool {
-				return x.Cmp(y) == 0
-			}),
+			test.BigRatComparer,
 		),
 	)
 

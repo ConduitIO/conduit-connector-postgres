@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 	"testing"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/conduitio/conduit-commons/csync"
 	"github.com/conduitio/conduit-connector-postgres/source/cpool"
+	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -125,6 +127,10 @@ const testTableCreateQuery = `
 		column4 numeric(16,3) not null,
 		"UppercaseColumn1" integer not null
 	)`
+
+var BigRatComparer = cmp.Comparer(func(x, y *big.Rat) bool {
+	return x.Cmp(y) == 0
+})
 
 type Querier interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)

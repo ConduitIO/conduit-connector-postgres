@@ -109,10 +109,6 @@ func TestRelationSetAllTypes(t *testing.T) {
 func setupTableAllTypes(ctx context.Context, t *testing.T, conn test.Querier) string {
 	is := is.New(t)
 	table := test.RandomIdentifier(t)
-	// todo still need to support:
-	// bit, varbit, box, char(n), cidr, circle, inet, interval, line, lseg,
-	// macaddr, macaddr8, money, path, pg_lsn, pg_snapshot, point, polygon,
-	// time, timetz, tsquery, tsvector, xml
 	query := `CREATE TABLE %s (
     id                  bigserial PRIMARY KEY,
     col_bit             bit(8) NOT NULL,
@@ -360,9 +356,7 @@ func isValuesAllTypes(is *is.I, got map[string]any) {
 		cmp.Comparer(func(x, y netip.Prefix) bool {
 			return x.String() == y.String()
 		}),
-		cmp.Comparer(func(x, y *big.Rat) bool {
-			return x.Cmp(y) == 0
-		}),
+		test.BigRatComparer,
 	))
 }
 
@@ -460,8 +454,6 @@ func isValuesAllTypesStandalone(is *is.I, got map[string]any) {
 		cmp.Comparer(func(x, y netip.Prefix) bool {
 			return x.String() == y.String()
 		}),
-		cmp.Comparer(func(x, y *big.Rat) bool {
-			return x.Cmp(y) == 0
-		}),
+		test.BigRatComparer,
 	))
 }

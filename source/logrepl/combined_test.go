@@ -320,9 +320,7 @@ func TestCombinedIterator_NextN(t *testing.T) {
 			is.Equal("", cmp.Diff(
 				expectedRecords[6],
 				records[0].Payload.After.(opencdc.StructuredData),
-				cmp.Comparer(func(x, y *big.Rat) bool {
-					return x.Cmp(y) == 0
-				}),
+				test.BigRatComparer,
 			))
 
 			is.NoErr(i.Ack(ctx, records[0].Position))

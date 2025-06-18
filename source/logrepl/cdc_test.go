@@ -342,9 +342,7 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 				tt.want,
 				got,
 				cmpopts.IgnoreUnexported(opencdc.Record{}),
-				cmp.Comparer(func(x, y *big.Rat) bool {
-					return x.Cmp(y) == 0
-				}),
+				test.BigRatComparer,
 			))
 			is.NoErr(i.Ack(ctx, got.Position))
 		})
@@ -639,9 +637,7 @@ func verifyOpenCDCRecords(is *is.I, got []opencdc.Record, tableName string, from
 	cmpOpts := []cmp.Option{
 		cmpopts.IgnoreUnexported(opencdc.Record{}),
 		cmpopts.IgnoreFields(opencdc.Record{}, "Position", "Metadata"),
-		cmp.Comparer(func(x, y *big.Rat) bool {
-			return x.Cmp(y) == 0
-		}),
+		test.BigRatComparer,
 	}
 	is.Equal("", cmp.Diff(want, got, cmpOpts...)) // mismatch (-want +got)
 }

@@ -131,26 +131,9 @@ func assertPayloadOK(is *is.I, record opencdc.Record, rowNum int, notNullOnly bo
 	err = sch.Unmarshal(record.Payload.After.Bytes(), &got)
 	is.NoErr(err)
 
-	want := expectedRecord(rowNum)
+	want := expectedRecord(rowNum, notNullOnly)
 
-	if notNullOnly {
-		for key := range want {
-			if !strings.HasSuffix(key, "_not_null") && !strings.HasSuffix(key, "serial") && key != "id" {
-				want[key] = nil
-			}
-		}
-	}
-
-	is.Equal(
-		"",
-		cmp.Diff(
-			want,
-			got,
-			cmp.Comparer(func(x, y *big.Rat) bool {
-				return x.Cmp(y) == 0
-			}),
-		),
-	) // -want, +got
+	is.Equal("", cmp.Diff(want, got, test.BigRatComparer)) // -want, +got
 }
 
 func assertSchemaPresent(is *is.I, tableName string, gotRecord opencdc.Record) {
@@ -235,7 +218,7 @@ func insertRowNotNullColumnsOnly(ctx context.Context, t *testing.T, table string
 	is := is.New(t)
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 
-	rec := expectedRecord(rowNumber)
+	rec := generateRecord(rowNumber, true)
 
 	query := fmt.Sprintf(
 		`INSERT INTO %q (
@@ -312,7 +295,7 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
 	is := is.New(t)
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 
-	rec := expectedRecord(rowNumber)
+	rec := generateRecord(rowNumber, false)
 
 	query := fmt.Sprintf(
 		`INSERT INTO %q (
@@ -385,7 +368,47 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
 	is.NoErr(err)
 }
 
-func expectedRecord(rowNumber int) opencdc.StructuredData {
+func expectedRecord(rowNumber int, notNullOnly bool) opencdc.StructuredData {
+	rec := generateRecord(rowNumber, notNullOnly)
+
+	for key, value := range rec {
+		if value != nil {
+			rec[key] = normalizeNotNullValue(key, value)
+		} else {
+			rec[key] = normalizeNullValue(key, value)
+		}
+	}
+
+	return rec
+}
+
+func normalizeNullValue(key string, value interface{}) interface{} {
+	normalized := value
+	switch {
+	case strings.Contains(key, "_uuid"):
+		normalized = ""
+	}
+
+	return normalized
+}
+
+func normalizeNotNullValue(key string, value interface{}) interface{} {
+	normalized := value
+	switch {
+	case strings.Contains(key, "_bytea"),
+		strings.Contains(key, "_json"),
+		strings.Contains(key, "_jsonb"):
+		normalized = []uint8(value.(string))
+	case strings.Contains(key, "_numeric"):
+		val := new(big.Rat)
+		val.SetString(fmt.Sprintf("%v", value))
+		normalized = val
+	}
+
+	return normalized
+}
+
+func generateRecord(rowNumber int, notNullOnly bool) opencdc.StructuredData {
 	tsLayout := "2006-01-02 15:04:05.000000"
 
 	rowTS, _ := time.Parse("2006-01-02 15:04:05", "2022-01-21 17:04:05")
@@ -394,7 +417,7 @@ func expectedRecord(rowNumber int) opencdc.StructuredData {
 	rowUUID := fmt.Sprintf("a74a9875-978e-4832-b1b8-6b0f8793a%03d", rowNumber)
 
 	id := int64(rowNumber)
-	return opencdc.StructuredData{
+	rec := opencdc.StructuredData{
 		"id":                       id,
 		"col_bytea":                fmt.Sprintf("col_bytea_%v", rowNumber),
 		"col_bytea_not_null":       fmt.Sprintf("col_bytea_%v", rowNumber),
@@ -435,6 +458,16 @@ func expectedRecord(rowNumber int) opencdc.StructuredData {
 		"col_bigserial":            id,
 		"col_bigserial_not_null":   id,
 	}
+
+	if notNullOnly {
+		for key := range rec {
+			if !strings.HasSuffix(key, "_not_null") && !strings.HasSuffix(key, "serial") && key != "id" {
+				rec[key] = nil
+			}
+		}
+	}
+
+	return rec
 }
 
 func TestSource_ParseConfig(t *testing.T) {

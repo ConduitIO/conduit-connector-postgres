@@ -184,9 +184,7 @@ func TestDestination_Write(t *testing.T) {
 					cmp.Diff(
 						tt.record.Payload.After,
 						got,
-						cmp.Comparer(func(x, y *big.Rat) bool {
-							return x.Cmp(y) == 0
-						}),
+						test.BigRatComparer,
 					),
 				) // -want, +got
 			case opencdc.OperationDelete:
