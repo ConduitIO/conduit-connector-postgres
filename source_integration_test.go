@@ -39,8 +39,8 @@ func TestSource_ReadN_Snapshot_CDC(t *testing.T) {
 
 	tableName := createTableWithManyTypes(ctx, t)
 	// Snapshot data
-	insertRowNotNullColumnsOnly(ctx, t, tableName, 1)
-	insertRowAllColumns(ctx, t, tableName, 2)
+	insertRowAllColumns(ctx, t, tableName, 1)
+	insertRowNotNullColumnsOnly(ctx, t, tableName, 2)
 
 	slotName := "conduitslot1"
 	publicationName := "conduitpub1"
@@ -83,8 +83,8 @@ func TestSource_ReadN_Snapshot_CDC(t *testing.T) {
 	is.NoErr(err)
 
 	// Verify snapshot records
-	assertRecordOK(is, tableName, snapshotRecs[0], 1, true)
-	assertRecordOK(is, tableName, snapshotRecs[1], 2, false)
+	assertRecordOK(is, tableName, snapshotRecs[0], 1, false)
+	assertRecordOK(is, tableName, snapshotRecs[1], 2, true)
 
 	// CDC data
 	insertRowNotNullColumnsOnly(ctx, t, tableName, 3)
@@ -161,7 +161,7 @@ func createTableWithManyTypes(ctx context.Context, t *testing.T) string {
 	table := strings.ToUpper(test.RandomIdentifier(t))
 
 	query := fmt.Sprintf(`CREATE TABLE %q (
-    id                      bigserial PRIMARY KEY,
+    id                      integer PRIMARY KEY,
     col_bytea               bytea,
     col_bytea_not_null      bytea NOT NULL,
     col_varchar             varchar(10),
@@ -218,7 +218,7 @@ func insertRowNotNullColumnsOnly(ctx context.Context, t *testing.T, table string
 	is := is.New(t)
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 
-	rec := generateRecord(rowNumber, true)
+	rec := generatePayloadData(rowNumber, true)
 
 	query := fmt.Sprintf(
 		`INSERT INTO %q (
@@ -238,10 +238,7 @@ func insertRowNotNullColumnsOnly(ctx context.Context, t *testing.T, table string
          col_uuid_not_null,
          col_json_not_null,
          col_jsonb_not_null,
-         col_bool_not_null,
-         col_serial_not_null,
-         col_smallserial_not_null,
-         col_bigserial_not_null
+         col_bool_not_null
       ) VALUES (
         %d,
          '%s'::bytea,
@@ -259,10 +256,7 @@ func insertRowNotNullColumnsOnly(ctx context.Context, t *testing.T, table string
          '%s'::uuid,
          '%s'::json,
          '%s'::jsonb,
-         %t,
-         %d,
-         %d,
-         %d
+         %t
       )`,
 		table,
 		rowNumber,
@@ -282,9 +276,6 @@ func insertRowNotNullColumnsOnly(ctx context.Context, t *testing.T, table string
 		rec["col_json_not_null"],
 		rec["col_jsonb_not_null"],
 		rec["col_bool_not_null"],
-		rec["col_serial_not_null"],
-		rec["col_smallserial_not_null"],
-		rec["col_bigserial_not_null"],
 	)
 
 	_, err := conn.Exec(ctx, query)
@@ -295,7 +286,7 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
 	is := is.New(t)
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 
-	rec := generateRecord(rowNumber, false)
+	rec := generatePayloadData(rowNumber, false)
 
 	query := fmt.Sprintf(
 		`INSERT INTO %q (
@@ -315,10 +306,7 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
          col_uuid, col_uuid_not_null,
          col_json, col_json_not_null,
          col_jsonb, col_jsonb_not_null,
-         col_bool, col_bool_not_null,
-         col_serial, col_serial_not_null,
-         col_smallserial, col_smallserial_not_null,
-         col_bigserial, col_bigserial_not_null
+         col_bool, col_bool_not_null
       ) VALUES (
         %d,
          '%s'::bytea, '%s'::bytea,
@@ -336,10 +324,7 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
          '%s'::uuid, '%s'::uuid,
          '%s'::json, '%s'::json,
          '%s'::jsonb, '%s'::jsonb,
-         %t, %t,
-         %d, %d,
-         %d, %d,
-         %d, %d
+         %t, %t
       )`,
 		table,
 		rowNumber,
@@ -359,9 +344,6 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
 		rec["col_json"], rec["col_json_not_null"],
 		rec["col_jsonb"], rec["col_jsonb_not_null"],
 		rec["col_bool"], rec["col_bool_not_null"],
-		rec["col_serial"], rec["col_serial_not_null"],
-		rec["col_smallserial"], rec["col_smallserial_not_null"],
-		rec["col_bigserial"], rec["col_bigserial_not_null"],
 	)
 
 	_, err := conn.Exec(ctx, query)
@@ -369,7 +351,7 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
 }
 
 func expectedRecord(rowNumber int, notNullOnly bool) opencdc.StructuredData {
-	rec := generateRecord(rowNumber, notNullOnly)
+	rec := generatePayloadData(rowNumber, notNullOnly)
 
 	for key, value := range rec {
 		if value != nil {
@@ -394,71 +376,72 @@ func normalizeNullValue(key string, value interface{}) interface{} {
 func normalizeNotNullValue(key string, value interface{}) interface{} {
 	normalized := value
 	switch {
-	case strings.Contains(key, "_bytea"),
-		strings.Contains(key, "_json"),
-		strings.Contains(key, "_jsonb"):
+	case strings.HasPrefix(key, "col_bytea"),
+		strings.HasPrefix(key, "col_json"),
+		strings.HasPrefix(key, "col_jsonb"):
 		normalized = []uint8(value.(string))
-	case strings.Contains(key, "_numeric"):
+	case strings.HasPrefix(key, "col_numeric"):
 		val := new(big.Rat)
 		val.SetString(fmt.Sprintf("%v", value))
 		normalized = val
-	case strings.Contains(key, "_date"):
+	case strings.HasPrefix(key, "col_date"):
 		val := assert(time.Parse("2006-01-02", value.(string)))
+		normalized = val
+	case strings.HasPrefix(key, "col_timestamp"):
+		val := assert(time.Parse(time.RFC3339, value.(string)))
 		normalized = val
 	}
 
 	return normalized
 }
 
-func generateRecord(rowNumber int, notNullOnly bool) opencdc.StructuredData {
-	tsLayout := "2006-01-02 15:04:05.000000"
-
+func generatePayloadData(id int, notNullOnly bool) opencdc.StructuredData {
 	rowTS, _ := time.Parse("2006-01-02 15:04:05", "2022-01-21 17:04:05")
-	rowTS = rowTS.Add(time.Duration(rowNumber) * time.Hour)
+	rowTS = rowTS.Add(time.Duration(id) * time.Hour)
 
-	rowUUID := fmt.Sprintf("a74a9875-978e-4832-b1b8-6b0f8793a%03d", rowNumber)
+	rowUUID := fmt.Sprintf("a74a9875-978e-4832-b1b8-6b0f8793a%03d", id)
 
-	id := int64(rowNumber)
+	idInt64 := int64(id)
 	rec := opencdc.StructuredData{
 		"id":                       id,
-		"col_bytea":                fmt.Sprintf("col_bytea_%v", rowNumber),
-		"col_bytea_not_null":       fmt.Sprintf("col_bytea_%v", rowNumber),
-		"col_varchar":              fmt.Sprintf("foo-%v", rowNumber),
-		"col_varchar_not_null":     fmt.Sprintf("foo-%v", rowNumber),
+		"col_bytea":                fmt.Sprintf("col_bytea_%v", id),
+		"col_bytea_not_null":       fmt.Sprintf("col_bytea_%v", id),
+		"col_varchar":              fmt.Sprintf("foo-%v", id),
+		"col_varchar_not_null":     fmt.Sprintf("foo-%v", id),
 		"col_date":                 rowTS.Format("2006-01-02"),
 		"col_date_not_null":        rowTS.Format("2006-01-02"),
-		"col_float4":               float32(rowNumber) / 10,
-		"col_float4_not_null":      float32(rowNumber) / 10,
-		"col_float8":               float64(rowNumber) / 10,
-		"col_float8_not_null":      float64(rowNumber) / 10,
-		"col_int2":                 rowNumber % 32768,
-		"col_int2_not_null":        rowNumber % 32768,
-		"col_int4":                 rowNumber,
-		"col_int4_not_null":        rowNumber,
-		"col_int8":                 id,
-		"col_int8_not_null":        id,
-		"col_numeric":              float64(100+rowNumber) / 10,
-		"col_numeric_not_null":     float64(100+rowNumber) / 10,
-		"col_text":                 fmt.Sprintf("bar-%v", rowNumber),
-		"col_text_not_null":        fmt.Sprintf("bar-%v", rowNumber),
-		"col_timestamp":            rowTS.Format(tsLayout),
-		"col_timestamp_not_null":   rowTS.Format(tsLayout),
-		"col_timestamptz":          rowTS.Format(tsLayout),
-		"col_timestamptz_not_null": rowTS.Format(tsLayout),
+		"col_float4":               float32(id) / 10,
+		"col_float4_not_null":      float32(id) / 10,
+		"col_float8":               float64(id) / 10,
+		"col_float8_not_null":      float64(id) / 10,
+		"col_int2":                 id % 32768,
+		"col_int2_not_null":        id % 32768,
+		"col_int4":                 id,
+		"col_int4_not_null":        id,
+		"col_int8":                 idInt64,
+		"col_int8_not_null":        idInt64,
+		"col_numeric":              float64(100+id) / 10,
+		"col_numeric_not_null":     float64(100+id) / 10,
+		"col_text":                 fmt.Sprintf("bar-%v", id),
+		"col_text_not_null":        fmt.Sprintf("bar-%v", id),
+		"col_timestamp":            rowTS.Format(time.RFC3339),
+		"col_timestamp_not_null":   rowTS.Format(time.RFC3339),
+		"col_timestamptz":          rowTS.Format(time.RFC3339),
+		"col_timestamptz_not_null": rowTS.Format(time.RFC3339),
 		"col_uuid":                 rowUUID,
 		"col_uuid_not_null":        rowUUID,
-		"col_json":                 fmt.Sprintf(`{"key": "value-%v"}`, rowNumber),
-		"col_json_not_null":        fmt.Sprintf(`{"key": "value-%v"}`, rowNumber),
-		"col_jsonb":                fmt.Sprintf(`{"key": "value-%v"}`, rowNumber),
-		"col_jsonb_not_null":       fmt.Sprintf(`{"key": "value-%v"}`, rowNumber),
-		"col_bool":                 rowNumber%2 == 0,
-		"col_bool_not_null":        rowNumber%2 == 0,
-		"col_serial":               rowNumber,
-		"col_serial_not_null":      rowNumber,
-		"col_smallserial":          rowNumber,
-		"col_smallserial_not_null": rowNumber,
-		"col_bigserial":            id,
-		"col_bigserial_not_null":   id,
+		"col_json":                 fmt.Sprintf(`{"key": "value-%v"}`, id),
+		"col_json_not_null":        fmt.Sprintf(`{"key": "value-%v"}`, id),
+		"col_jsonb":                fmt.Sprintf(`{"key": "value-%v"}`, id),
+		"col_jsonb_not_null":       fmt.Sprintf(`{"key": "value-%v"}`, id),
+		"col_bool":                 id%2 == 0,
+		"col_bool_not_null":        id%2 == 0,
+		"col_serial":               id,
+		"col_serial_not_null":      id,
+		"col_smallserial":          id,
+		"col_smallserial_not_null": id,
+		"col_bigserial":            idInt64,
+		"col_bigserial_not_null":   idInt64,
 	}
 
 	if notNullOnly {
