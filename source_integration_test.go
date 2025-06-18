@@ -31,6 +31,7 @@ import (
 	"github.com/conduitio/conduit-connector-sdk/schema"
 	"github.com/google/go-cmp/cmp"
 	"github.com/matryer/is"
+	"github.com/shopspring/decimal"
 )
 
 func TestSource_ReadN_Snapshot_CDC(t *testing.T) {
@@ -253,7 +254,7 @@ func insertRowNotNullColumnsOnly(ctx context.Context, t *testing.T, table string
          %d,
          %d,
          %d,
-         %f,
+         %s,
          '%s',
          '%s'::timestamp,
          '%s'::timestamptz,
@@ -272,7 +273,7 @@ func insertRowNotNullColumnsOnly(ctx context.Context, t *testing.T, table string
 		rec["col_int2_not_null"],
 		rec["col_int4_not_null"],
 		rec["col_int8_not_null"],
-		rec["col_numeric_not_null"],
+		decimalString(rec["col_numeric_not_null"]),
 		rec["col_text_not_null"],
 		rec["col_timestamp_not_null"],
 		rec["col_timestamptz_not_null"],
@@ -321,7 +322,7 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
          %d, %d,
          %d, %d,
          %d, %d,
-         %f, %f,
+         %s, %s,
          '%s', '%s',
          '%s'::timestamp, '%s'::timestamp,
          '%s'::timestamptz, '%s'::timestamptz,
@@ -340,7 +341,7 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
 		rec["col_int2"], rec["col_int2_not_null"],
 		rec["col_int4"], rec["col_int4_not_null"],
 		rec["col_int8"], rec["col_int8_not_null"],
-		rec["col_numeric"], rec["col_numeric_not_null"],
+		decimalString(rec["col_numeric"]), decimalString(rec["col_numeric_not_null"]),
 		rec["col_text"], rec["col_text_not_null"],
 		rec["col_timestamp"], rec["col_timestamp_not_null"],
 		rec["col_timestamptz"], rec["col_timestamptz_not_null"],
@@ -352,6 +353,10 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
 
 	_, err := conn.Exec(ctx, query)
 	is.NoErr(err)
+}
+
+func decimalString(v interface{}) string {
+	return decimal.NewFromBigRat(v.(*big.Rat), 2).String()
 }
 
 // expectedData creates an opencdc.StructuredData with expected keys and values
@@ -385,10 +390,6 @@ func normalizeNullValue(key string, value interface{}) interface{} {
 func normalizeNotNullValue(key string, value interface{}) interface{} {
 	normalized := value
 	switch {
-	case strings.HasPrefix(key, "col_numeric"):
-		val := new(big.Rat)
-		val.SetString(fmt.Sprintf("%v", value))
-		normalized = val
 	case strings.HasPrefix(key, "col_date"):
 		val := assert(time.Parse("2006-01-02", value.(string)))
 		normalized = val
@@ -407,6 +408,8 @@ func generatePayloadData(id int, notNullOnly bool) opencdc.StructuredData {
 	rowUUID := fmt.Sprintf("a74a9875-978e-4832-b1b8-6b0f8793a%03d", id)
 
 	idInt64 := int64(id)
+	numericVal := big.NewRat(int64(100+id), 10)
+
 	rec := opencdc.StructuredData{
 		"id":                       id,
 		"col_bytea":                []uint8(fmt.Sprintf("col_bytea_%v", id)),
@@ -425,8 +428,8 @@ func generatePayloadData(id int, notNullOnly bool) opencdc.StructuredData {
 		"col_int4_not_null":        id,
 		"col_int8":                 idInt64,
 		"col_int8_not_null":        idInt64,
-		"col_numeric":              float64(100+id) / 10,
-		"col_numeric_not_null":     float64(100+id) / 10,
+		"col_numeric":              numericVal,
+		"col_numeric_not_null":     numericVal,
 		"col_text":                 fmt.Sprintf("bar-%v", id),
 		"col_text_not_null":        fmt.Sprintf("bar-%v", id),
 		"col_timestamp":            rowTS.Format(time.RFC3339),
