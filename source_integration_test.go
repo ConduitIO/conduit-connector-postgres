@@ -384,8 +384,7 @@ func expectedRecord(rowNumber int, notNullOnly bool) opencdc.StructuredData {
 
 func normalizeNullValue(key string, value interface{}) interface{} {
 	normalized := value
-	switch {
-	case strings.Contains(key, "_uuid"):
+	if strings.Contains(key, "_uuid") {
 		normalized = ""
 	}
 

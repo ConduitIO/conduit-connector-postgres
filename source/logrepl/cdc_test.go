@@ -512,7 +512,8 @@ func verifyOpenCDCRecords(is *is.I, got []opencdc.Record, tableName string, from
 					"column2": int32(i) * 100, //nolint:gosec // fine, we know the value is small enough
 					"column3": false,
 					"column4": big.NewRat(123, 10),
-					// UppercaseColumn1 is a Postgres interger (4 bytes)
+					// UppercaseColumn1 is a Postgres integer (4 bytes)
+					//nolint:gosec //  integer overflow not possible, id is a small value always
 					"UppercaseColumn1": int32(id),
 				},
 			},
