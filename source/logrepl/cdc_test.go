@@ -445,6 +445,39 @@ func TestCDCIterator_Ack(t *testing.T) {
 	}
 }
 
+func TestCDCIterator_NextN_InternalBatching(t *testing.T) {
+	ctx := test.Context(t)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupEmptyTable(ctx, t, pool)
+
+	is := is.New(t)
+	underTest := testCDCIterator(ctx, t, pool, table, true)
+	<-underTest.sub.Ready()
+
+	insertTestRows(ctx, is, pool, table, 1, 1)
+	// wait until the CDCHandler flushes this one record
+	// so that we force the CDCIterator to wait for another batch
+	time.Sleep(time.Second * 2)
+	insertTestRows(ctx, is, pool, table, 2, 5)
+
+	// we request 2 records, expect records 1 and 2
+	got, err := underTest.NextN(ctx, 2)
+	is.NoErr(err)
+	verifyOpenCDCRecords(is, got, table, 1, 2)
+	time.Sleep(200 * time.Millisecond)
+
+	// we request 2 records, expect records 3 and 4
+	got, err = underTest.NextN(ctx, 2)
+	is.NoErr(err)
+	verifyOpenCDCRecords(is, got, table, 3, 4)
+	time.Sleep(200 * time.Millisecond)
+
+	// we request 2 records, expect record 5
+	got, err = underTest.NextN(ctx, 2)
+	is.NoErr(err)
+	verifyOpenCDCRecords(is, got, table, 5, 5)
+}
+
 func TestCDCIterator_NextN(t *testing.T) {
 	ctx := test.Context(t)
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
@@ -553,39 +586,6 @@ func TestCDCIterator_NextN(t *testing.T) {
 		_, err = i.NextN(ctx, -1)
 		is.True(strings.Contains(err.Error(), "n must be greater than 0"))
 	})
-}
-
-func TestCDCIterator_NextN_InternalBatching(t *testing.T) {
-	ctx := test.Context(t)
-	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-	table := test.SetupEmptyTable(ctx, t, pool)
-
-	is := is.New(t)
-	underTest := testCDCIterator(ctx, t, pool, table, true)
-	<-underTest.sub.Ready()
-
-	insertTestRows(ctx, is, pool, table, 1, 1)
-	// wait until the CDCHandler flushes this one record
-	// so that we force the CDCIterator to wait for another batch
-	time.Sleep(time.Second * 2)
-	insertTestRows(ctx, is, pool, table, 2, 5)
-
-	// we request 2 records, expect records 1 and 2
-	got, err := underTest.NextN(ctx, 2)
-	is.NoErr(err)
-	verifyOpenCDCRecords(is, got, table, 1, 2)
-	time.Sleep(200 * time.Millisecond)
-
-	// we request 2 records, expect records 3 and 4
-	got, err = underTest.NextN(ctx, 2)
-	is.NoErr(err)
-	verifyOpenCDCRecords(is, got, table, 3, 4)
-	time.Sleep(200 * time.Millisecond)
-
-	// we request 2 records, expect record 5
-	got, err = underTest.NextN(ctx, 2)
-	is.NoErr(err)
-	verifyOpenCDCRecords(is, got, table, 5, 5)
 }
 
 func insertTestRows(ctx context.Context, is *is.I, pool *pgxpool.Pool, table string, from int, to int) {
