@@ -409,8 +409,8 @@ func generatePayloadData(id int, notNullOnly bool) opencdc.StructuredData {
 	idInt64 := int64(id)
 	rec := opencdc.StructuredData{
 		"id":                       id,
-		"col_bytea":                fmt.Sprintf("col_bytea_%v", id),
-		"col_bytea_not_null":       fmt.Sprintf("col_bytea_%v", id),
+		"col_bytea":                []uint8(fmt.Sprintf("col_bytea_%v", id)),
+		"col_bytea_not_null":       []uint8(fmt.Sprintf("col_bytea_not_null_%v", id)),
 		"col_varchar":              fmt.Sprintf("foo-%v", id),
 		"col_varchar_not_null":     fmt.Sprintf("foo-%v", id),
 		"col_date":                 rowTS.Format("2006-01-02"),
