@@ -215,7 +215,8 @@ func insertRow(ctx context.Context, t *testing.T, table string, rowNumber int, n
 }
 
 func generatePayloadData(id int, notNullOnly bool) opencdc.StructuredData {
-	rowTS, _ := time.Parse("2006-01-02 15:04:05", "2022-01-21 17:04:05")
+	// Add a time zone offset
+	rowTS := assert(time.Parse(time.RFC3339, fmt.Sprintf("2022-01-21T17:04:05+%02d:00", id)))
 	rowTS = rowTS.Add(time.Duration(id) * time.Hour)
 
 	rowUUID := assert(uuid.Parse(fmt.Sprintf("a74a9875-978e-4832-b1b8-6b0f8793a%03d", id)))
@@ -266,8 +267,8 @@ func generatePayloadData(id int, notNullOnly bool) opencdc.StructuredData {
 
 		"col_date":                 rowTS.Truncate(24 * time.Hour),
 		"col_date_not_null":        rowTS.Truncate(24 * time.Hour),
-		"col_timestamp":            rowTS,
-		"col_timestamp_not_null":   rowTS,
+		"col_timestamp":            rowTS.UTC(),
+		"col_timestamp_not_null":   rowTS.UTC(),
 		"col_timestamptz":          rowTS,
 		"col_timestamptz_not_null": rowTS,
 
