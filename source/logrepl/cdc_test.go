@@ -478,6 +478,19 @@ func TestCDCIterator_NextN_InternalBatching(t *testing.T) {
 	verifyOpenCDCRecords(is, got, table, 5, 5)
 }
 
+func insertTestRows(ctx context.Context, is *is.I, pool *pgxpool.Pool, table string, from int, to int) {
+	for i := from; i <= to; i++ {
+		_, err := pool.Exec(
+			ctx,
+			fmt.Sprintf(
+				`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+				VALUES (%d, '%d', 'test-%d', %d, false, 12.3, %d)`, table, i+10, i+10, i, i*100, i+10,
+			),
+		)
+		is.NoErr(err)
+	}
+}
+
 func TestCDCIterator_NextN(t *testing.T) {
 	ctx := test.Context(t)
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
@@ -586,19 +599,6 @@ func TestCDCIterator_NextN(t *testing.T) {
 		_, err = i.NextN(ctx, -1)
 		is.True(strings.Contains(err.Error(), "n must be greater than 0"))
 	})
-}
-
-func insertTestRows(ctx context.Context, is *is.I, pool *pgxpool.Pool, table string, from int, to int) {
-	for i := from; i <= to; i++ {
-		_, err := pool.Exec(
-			ctx,
-			fmt.Sprintf(
-				`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
-				VALUES (%d, '%d', 'test-%d', %d, false, 12.3, %d)`, table, i+10, i+10, i, i*100, i+10,
-			),
-		)
-		is.NoErr(err)
-	}
 }
 
 func verifyOpenCDCRecords(is *is.I, got []opencdc.Record, tableName string, fromID, toID int) {
