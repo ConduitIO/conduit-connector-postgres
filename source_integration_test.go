@@ -107,21 +107,25 @@ func TestSource_ReadN_Snapshot_CDC(t *testing.T) {
 	assertRecordOK(is, tableName, cdcRecs[0], 4, false)
 }
 
-func assertRecordOK(is *is.I, tableName string, gotRecord opencdc.Record, rowNum int, notNullOnly bool) {
+// assertRecordOK asserts that the input record has a schema and that its payload
+// is what we expect (based on the ID and what columns are included).
+func assertRecordOK(is *is.I, tableName string, gotRecord opencdc.Record, id int, notNullOnly bool) {
 	is.Helper()
 
 	is.True(gotRecord.Key != nil)
 	is.True(gotRecord.Payload.After != nil)
 
 	assertSchemaPresent(is, tableName, gotRecord)
-	assertPayloadOK(is, gotRecord, rowNum, notNullOnly)
+	assertPayloadOK(is, gotRecord, id, notNullOnly)
 }
 
+// assertPayloadOK decodes the record's payload and asserts that the payload
+// is what we expect (based on the ID and what columns are included).
 func assertPayloadOK(is *is.I, record opencdc.Record, rowNum int, notNullOnly bool) {
 	is.Helper()
 
 	sch, err := schema.Get(
-		context.TODO(),
+		context.Background(),
 		assert(record.Metadata.GetPayloadSchemaSubject()),
 		assert(record.Metadata.GetPayloadSchemaVersion()),
 	)
@@ -131,7 +135,7 @@ func assertPayloadOK(is *is.I, record opencdc.Record, rowNum int, notNullOnly bo
 	err = sch.Unmarshal(record.Payload.After.Bytes(), &got)
 	is.NoErr(err)
 
-	want := expectedRecord(rowNum, notNullOnly)
+	want := expectedData(rowNum, notNullOnly)
 
 	is.Equal("", cmp.Diff(want, got, test.BigRatComparer)) // -want, +got
 }
@@ -350,8 +354,13 @@ func insertRowAllColumns(ctx context.Context, t *testing.T, table string, rowNum
 	is.NoErr(err)
 }
 
-func expectedRecord(rowNumber int, notNullOnly bool) opencdc.StructuredData {
-	rec := generatePayloadData(rowNumber, notNullOnly)
+// expectedData creates an opencdc.StructuredData with expected keys and values
+// based on the ID and the columns (NOT NULL columns only or all columns).
+func expectedData(id int, notNullOnly bool) opencdc.StructuredData {
+	// We start with the data that was used to insert a test row.
+	// Then we normalize the data (e.g., JSON values are converted from strings
+	// to []uint8.
+	rec := generatePayloadData(id, notNullOnly)
 
 	for key, value := range rec {
 		if value != nil {
@@ -376,10 +385,6 @@ func normalizeNullValue(key string, value interface{}) interface{} {
 func normalizeNotNullValue(key string, value interface{}) interface{} {
 	normalized := value
 	switch {
-	case strings.HasPrefix(key, "col_bytea"),
-		strings.HasPrefix(key, "col_json"),
-		strings.HasPrefix(key, "col_jsonb"):
-		normalized = []uint8(value.(string))
 	case strings.HasPrefix(key, "col_numeric"):
 		val := new(big.Rat)
 		val.SetString(fmt.Sprintf("%v", value))
@@ -430,10 +435,10 @@ func generatePayloadData(id int, notNullOnly bool) opencdc.StructuredData {
 		"col_timestamptz_not_null": rowTS.Format(time.RFC3339),
 		"col_uuid":                 rowUUID,
 		"col_uuid_not_null":        rowUUID,
-		"col_json":                 fmt.Sprintf(`{"key": "value-%v"}`, id),
-		"col_json_not_null":        fmt.Sprintf(`{"key": "value-%v"}`, id),
-		"col_jsonb":                fmt.Sprintf(`{"key": "value-%v"}`, id),
-		"col_jsonb_not_null":       fmt.Sprintf(`{"key": "value-%v"}`, id),
+		"col_json":                 []uint8(fmt.Sprintf(`{"key": "json-value-%v"}`, id)),
+		"col_json_not_null":        []uint8(fmt.Sprintf(`{"key": "json-not-value-%v"}`, id)),
+		"col_jsonb":                []uint8(fmt.Sprintf(`{"key": "jsonb-value-%v"}`, id)),
+		"col_jsonb_not_null":       []uint8(fmt.Sprintf(`{"key": "jsonb-not-value-%v"}`, id)),
 		"col_bool":                 id%2 == 0,
 		"col_bool_not_null":        id%2 == 0,
 		"col_serial":               id,
