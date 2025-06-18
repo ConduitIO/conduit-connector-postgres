@@ -546,16 +546,6 @@ func avrolizeMap(fields []pgconn.FieldDescription, values []any) map[string]any 
 			strings.HasSuffix(f.Name, "_not_null")
 
 		row[f.Name] = assert(types.Format(f.DataTypeOID, values[i], isNotNull))
-		// switch f.DataTypeOID {
-		// case pgtype.NumericOID:
-		// 	n := new(big.Rat)
-		// 	n.SetString(fmt.Sprint(types.Format(0, values[i], true)))
-		// 	row[f.Name] = n
-		// case pgtype.UUIDOID:
-		// 	row[f.Name] = fmt.Sprint(values[i])
-		// default:
-		// 	row[f.Name] = values[i]
-		// }
 	}
 
 	return row
