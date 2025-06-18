@@ -275,20 +275,6 @@ func (d *Destination) formatColumnsAndValues(
 	return colArgs, valArgs, nil
 }
 
-// getKeyColumnName will return the name of the first item in the key or the
-// connector-configured default name of the key column name.
-func (d *Destination) getKeyColumnName(key opencdc.StructuredData, defaultKeyName string) string {
-	if len(key) > 1 {
-		// Go maps aren't order preserving, so anything over len 1 will have
-		// non deterministic results until we handle composite keys.
-		panic("composite keys not yet supported")
-	}
-	for k := range key {
-		return k
-	}
-	return defaultKeyName
-}
-
 func (d *Destination) hasKey(e opencdc.Record) bool {
 	structuredKey, ok := e.Key.(opencdc.StructuredData)
 	if !ok {

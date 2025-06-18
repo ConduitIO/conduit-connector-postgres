@@ -64,8 +64,10 @@ func TestSubscription_WithRepmgr(t *testing.T) {
 
 	t.Run("first insert table1", func(t *testing.T) {
 		is := is.New(t)
-		query := fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
-							VALUES (6, '6', 'bizz', 456, false, 12.3, 61)`, table1)
+		query := fmt.Sprintf(
+			`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+					VALUES (6, '6', 'bizz', 456, false, 12.3, 61)`,
+			table1)
 		_, err := pool.Exec(ctx, query)
 		is.NoErr(err)
 
@@ -82,8 +84,10 @@ func TestSubscription_WithRepmgr(t *testing.T) {
 
 	t.Run("second insert table1", func(t *testing.T) {
 		is := is.New(t)
-		query := fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
-							VALUES (7, '7', 'bizz', 456, false, 12.3, 61)`, table1)
+		query := fmt.Sprintf(
+			`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+					VALUES (7, '7', 'bizz', 456, false, 12.3, 61)`,
+			table1)
 		_, err := pool.Exec(ctx, query)
 		is.NoErr(err)
 
@@ -162,8 +166,10 @@ func TestSubscription_ClosedContext(t *testing.T) {
 	sub, messages := setupSubscription(ctx, t, pool, table)
 
 	// insert to get new messages into publication
-	query := fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
-							VALUES (6, '6', 'bizz', 456, false, 12.3, 61)`, table)
+	query := fmt.Sprintf(
+		`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+				VALUES (6, '6', 'bizz', 456, false, 12.3, 61)`,
+		table)
 	_, err := pool.Exec(ctx, query)
 	is.NoErr(err)
 

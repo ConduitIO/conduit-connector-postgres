@@ -37,16 +37,16 @@ func Test_Format(t *testing.T) {
 		{
 			name: "int float string bool",
 			input: []any{
-				1021,
+				1021, 199.2, "foo", true,
 			},
 			inputOID: []uint32{
 				0, 0, 0, 0,
 			},
 			expect: []any{
-				1021,
+				1021, 199.2, "foo", true,
 			},
 			expectNullable: []any{
-				lang.Ptr(1021),
+				lang.Ptr(1021), lang.Ptr(199.2), lang.Ptr("foo"), lang.Ptr(true),
 			},
 		},
 		{
