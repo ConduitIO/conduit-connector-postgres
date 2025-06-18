@@ -187,6 +187,12 @@ func (d *Destination) remove(ctx context.Context, r opencdc.Record, b *pgx.Batch
 		return fmt.Errorf("error formatting delete query: %w", err)
 	}
 
+	sdk.Logger(ctx).Trace().
+		Str("table", tableName).
+		Str("query", query).
+		Any("key", key).
+		Msg("deleting record")
+
 	b.Queue(query, args...)
 	return nil
 }
