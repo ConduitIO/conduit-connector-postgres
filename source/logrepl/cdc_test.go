@@ -491,6 +491,47 @@ func insertTestRows(ctx context.Context, is *is.I, pool *pgxpool.Pool, table str
 	}
 }
 
+func verifyOpenCDCRecords(is *is.I, got []opencdc.Record, tableName string, fromID, toID int) {
+	is.Helper()
+
+	// Build the expected records slice
+	var want []opencdc.Record
+
+	for i := fromID; i <= toID; i++ {
+		id := int64(i + 10)
+		record := opencdc.Record{
+			Operation: opencdc.OperationCreate,
+			Key: opencdc.StructuredData{
+				"id": id,
+			},
+			Payload: opencdc.Change{
+				After: opencdc.StructuredData{
+					"id":      id,
+					"key":     []uint8(fmt.Sprintf("%d", id)),
+					"column1": fmt.Sprintf("test-%d", i),
+					"column2": int32(i) * 100, //nolint:gosec // fine, we know the value is small enough
+					"column3": false,
+					"column4": big.NewRat(123, 10),
+					// UppercaseColumn1 is a Postgres interger (4 bytes)
+					"UppercaseColumn1": int32(id),
+				},
+			},
+			Metadata: opencdc.Metadata{
+				opencdc.MetadataCollection: tableName,
+			},
+		}
+
+		want = append(want, record)
+	}
+
+	cmpOpts := []cmp.Option{
+		cmpopts.IgnoreUnexported(opencdc.Record{}),
+		cmpopts.IgnoreFields(opencdc.Record{}, "Position", "Metadata"),
+		test.BigRatComparer,
+	}
+	is.Equal("", cmp.Diff(want, got, cmpOpts...)) // mismatch (-want +got)
+}
+
 func TestCDCIterator_NextN(t *testing.T) {
 	ctx := test.Context(t)
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
@@ -599,47 +640,6 @@ func TestCDCIterator_NextN(t *testing.T) {
 		_, err = i.NextN(ctx, -1)
 		is.True(strings.Contains(err.Error(), "n must be greater than 0"))
 	})
-}
-
-func verifyOpenCDCRecords(is *is.I, got []opencdc.Record, tableName string, fromID, toID int) {
-	is.Helper()
-
-	// Build the expected records slice
-	var want []opencdc.Record
-
-	for i := fromID; i <= toID; i++ {
-		id := int64(i + 10)
-		record := opencdc.Record{
-			Operation: opencdc.OperationCreate,
-			Key: opencdc.StructuredData{
-				"id": id,
-			},
-			Payload: opencdc.Change{
-				After: opencdc.StructuredData{
-					"id":      id,
-					"key":     []uint8(fmt.Sprintf("%d", id)),
-					"column1": fmt.Sprintf("test-%d", i),
-					"column2": int32(i) * 100, //nolint:gosec // fine, we know the value is small enough
-					"column3": false,
-					"column4": big.NewRat(123, 10),
-					// UppercaseColumn1 is a Postgres interger (4 bytes)
-					"UppercaseColumn1": int32(id),
-				},
-			},
-			Metadata: opencdc.Metadata{
-				opencdc.MetadataCollection: tableName,
-			},
-		}
-
-		want = append(want, record)
-	}
-
-	cmpOpts := []cmp.Option{
-		cmpopts.IgnoreUnexported(opencdc.Record{}),
-		cmpopts.IgnoreFields(opencdc.Record{}, "Position", "Metadata"),
-		test.BigRatComparer,
-	}
-	is.Equal("", cmp.Diff(want, got, cmpOpts...)) // mismatch (-want +got)
 }
 
 func testCDCIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string, start bool) *CDCIterator {
