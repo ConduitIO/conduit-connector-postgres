@@ -38,76 +38,140 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-type readTestCase struct {
-	name        string
-	notNullOnly bool
-	snapshot    bool
-	cdc         bool
-	opDelete    bool
-}
+var (
+	slotName        = "conduitslot1"
+	publicationName = "conduitpub1"
+)
 
-func TestSource_ReadN(t *testing.T) {
-	testCases := []readTestCase{
+func TestSource_ReadN_Snapshot(t *testing.T) {
+	testCases := []struct {
+		name        string
+		notNullOnly bool
+	}{
 		{
-			name:        "snapshot not only only",
-			notNullOnly: true,
-			snapshot:    true,
-		},
-		{
-			name:        "snapshot with nullable values",
+			name:        "with null columns",
 			notNullOnly: false,
-			snapshot:    true,
 		},
 		{
-			name:        "cdc not only only",
+			name:        "not only only",
 			notNullOnly: true,
-			cdc:         true,
-		},
-		{
-			name:        "cdc with nullable values",
-			notNullOnly: false,
-			cdc:         true,
-		},
-
-		{
-			name:        "delete cdc not only only",
-			notNullOnly: true,
-			cdc:         true,
-			opDelete:    true,
-		},
-		{
-			name:        "delete cdc nullable",
-			notNullOnly: false,
-			cdc:         true,
-			opDelete:    true,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			runReadTest(t, tc)
+			is := is.New(t)
+			ctx := test.Context(t)
+			conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
+
+			tableName := createTableWithManyTypes(ctx, t)
+			insertRow(ctx, is, conn, tableName, 1, tc.notNullOnly)
+
+			s := openSource(ctx, is, tableName)
+			t.Cleanup(func() {
+				is.NoErr(logrepl.Cleanup(context.Background(), logrepl.CleanupConfig{
+					URL:             test.RepmgrConnString,
+					SlotName:        slotName,
+					PublicationName: publicationName,
+				}))
+				is.NoErr(s.Teardown(ctx))
+			})
+
+			// Read, ack, and assert the snapshot record is OK
+			rec := readAndAck(ctx, is, s)
+			assertRecordOK(is, tableName, rec, 1, tc.notNullOnly)
 		})
 	}
 }
 
-func runReadTest(t *testing.T, tc readTestCase) {
-	if tc.opDelete {
-		t.Skip("Skipping delete test, see https://github.com/ConduitIO/conduit-connector-postgres/issues/301")
+func TestSource_ReadN_CDC(t *testing.T) {
+	testCases := []struct {
+		name        string
+		notNullOnly bool
+	}{
+		{
+			name:        "with null columns",
+			notNullOnly: false,
+		},
+		{
+			name:        "not only only",
+			notNullOnly: true,
+		},
 	}
 
-	is := is.New(t)
-	ctx := test.Context(t)
-	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			ctx := test.Context(t)
+			conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 
-	tableName := createTableWithManyTypes(ctx, t)
+			tableName := createTableWithManyTypes(ctx, t)
 
-	if tc.snapshot {
-		insertRow(ctx, is, conn, tableName, 1, tc.notNullOnly)
+			s := openSource(ctx, is, tableName)
+			t.Cleanup(func() {
+				is.NoErr(logrepl.Cleanup(context.Background(), logrepl.CleanupConfig{
+					URL:             test.RepmgrConnString,
+					SlotName:        slotName,
+					PublicationName: publicationName,
+				}))
+				is.NoErr(s.Teardown(ctx))
+			})
+
+			insertRow(ctx, is, conn, tableName, 1, tc.notNullOnly)
+			// Read, ack, and assert the CDC record is OK
+			rec := readAndAck(ctx, is, s)
+			assertRecordOK(is, tableName, rec, 1, tc.notNullOnly)
+		})
+	}
+}
+
+func TestSource_ReadN_Delete(t *testing.T) {
+	t.Skip("Skipping until this issue is resolved: https://github.com/ConduitIO/conduit-connector-postgres/issues/301")
+	testCases := []struct {
+		name        string
+		notNullOnly bool
+	}{
+		{
+			name:        "with null columns",
+			notNullOnly: false,
+		},
+		{
+			name:        "not only only",
+			notNullOnly: true,
+		},
 	}
 
-	slotName := "conduitslot1"
-	publicationName := "conduitpub1"
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			ctx := test.Context(t)
+			conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 
+			tableName := createTableWithManyTypes(ctx, t)
+
+			s := openSource(ctx, is, tableName)
+			t.Cleanup(func() {
+				is.NoErr(logrepl.Cleanup(context.Background(), logrepl.CleanupConfig{
+					URL:             test.RepmgrConnString,
+					SlotName:        slotName,
+					PublicationName: publicationName,
+				}))
+				is.NoErr(s.Teardown(ctx))
+			})
+
+			insertRow(ctx, is, conn, tableName, 1, tc.notNullOnly)
+			// Read, ack, and assert the CDC record is OK
+			cdcRec := readAndAck(ctx, is, s)
+			assertRecordOK(is, tableName, cdcRec, 1, tc.notNullOnly)
+
+			deleteRow(ctx, is, conn, tableName, 1)
+			deleteRec := readAndAck(ctx, is, s)
+			is.Equal(opencdc.OperationDelete, deleteRec.Operation)
+		})
+	}
+}
+
+func openSource(ctx context.Context, is *is.I, tableName string) sdk.Source {
 	s := NewSource()
 	err := sdk.Util.ParseConfig(
 		ctx,
@@ -126,34 +190,8 @@ func runReadTest(t *testing.T, tc readTestCase) {
 
 	err = s.Open(ctx, nil)
 	is.NoErr(err)
-	t.Cleanup(func() {
-		is.NoErr(logrepl.Cleanup(context.Background(), logrepl.CleanupConfig{
-			URL:             test.RepmgrConnString,
-			SlotName:        slotName,
-			PublicationName: publicationName,
-		}))
-		is.NoErr(s.Teardown(ctx))
-	})
 
-	if tc.snapshot {
-		// Read, ack, and assert the snapshot record is OK
-		rec := readAndAck(ctx, is, s)
-		assertRecordOK(is, tableName, rec, 1, tc.notNullOnly)
-	}
-
-	if tc.cdc {
-		insertRow(ctx, is, conn, tableName, 1, tc.notNullOnly)
-
-		// Read, ack, and verify the CDC record
-		rec := readAndAck(ctx, is, s)
-		assertRecordOK(is, tableName, rec, 1, tc.notNullOnly)
-	}
-
-	if tc.opDelete {
-		deleteRow(ctx, is, conn, tableName, 1)
-		rec := readAndAck(ctx, is, s)
-		is.Equal(opencdc.OperationDelete, rec.Operation)
-	}
+	return s
 }
 
 func readAndAck(ctx context.Context, is *is.I, s sdk.Source) opencdc.Record {
