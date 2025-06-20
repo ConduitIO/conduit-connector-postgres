@@ -33,18 +33,21 @@ import (
 	"github.com/conduitio/conduit-connector-sdk/schema"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/matryer/is"
 	"github.com/shopspring/decimal"
 )
 
+// todo test updates and deletes, for not null and nullable values
 func TestSource_ReadN_Snapshot_CDC(t *testing.T) {
 	is := is.New(t)
 	ctx := test.Context(t)
+	notNullOnly := false
+	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
 
 	tableName := createTableWithManyTypes(ctx, t)
 	// Write the snapshot data
-	insertRow(ctx, t, tableName, 1, false)
-	insertRow(ctx, t, tableName, 2, true)
+	insertRow(ctx, is, conn, tableName, 1, notNullOnly)
 
 	slotName := "conduitslot1"
 	publicationName := "conduitpub1"
@@ -76,37 +79,31 @@ func TestSource_ReadN_Snapshot_CDC(t *testing.T) {
 		is.NoErr(s.Teardown(ctx))
 	})
 
-	// Read and ack the 2 snapshots records
-	recs, err := s.ReadN(ctx, 2)
-	is.NoErr(err)
-	is.Equal(2, len(recs))
-
-	// Verify snapshot record no. 1
-	err = s.Ack(ctx, recs[0].Position)
-	is.NoErr(err)
-	assertRecordOK(is, tableName, recs[0], 1, false)
-	// Verify snapshot record no. 2
-	err = s.Ack(ctx, recs[1].Position)
-	is.NoErr(err)
-	assertRecordOK(is, tableName, recs[1], 2, true)
+	// Read, ack, and assert the snapshot record is OK
+	rec := readAndAck(ctx, is, s)
+	assertRecordOK(is, tableName, rec, 1, notNullOnly)
 
 	// Write the CDC data
-	insertRow(ctx, t, tableName, 3, true)
-	insertRow(ctx, t, tableName, 4, false)
+	insertRow(ctx, is, conn, tableName, 2, notNullOnly)
 
-	// Read, ack, and verify CDC record no. 1
-	recs, err = s.ReadN(ctx, 1)
+	// Read, ack, and verify the CDC record
+	rec = readAndAck(ctx, is, s)
+	assertRecordOK(is, tableName, rec, 2, notNullOnly)
+
+	deleteRow(ctx, is, conn, tableName, 2)
+	rec = readAndAck(ctx, is, s)
+	is.Equal(opencdc.OperationDelete, rec.Operation)
+}
+
+func readAndAck(ctx context.Context, is *is.I, s sdk.Source) opencdc.Record {
+	recs, err := s.ReadN(ctx, 1)
 	is.NoErr(err)
 	is.Equal(1, len(recs))
-	// record no. 3 has the NOT NULL columns only
-	assertRecordOK(is, tableName, recs[0], 3, true)
 
-	// Read, ack, and verify CDC record no. 1
-	recs, err = s.ReadN(ctx, 1)
+	err = s.Ack(ctx, recs[0].Position)
 	is.NoErr(err)
-	is.Equal(1, len(recs))
-	// record no. 3 has the NOT NULL columns only
-	assertRecordOK(is, tableName, recs[0], 4, false)
+
+	return recs[0]
 }
 
 func createTableWithManyTypes(ctx context.Context, t *testing.T) string {
@@ -173,10 +170,7 @@ func createTableWithManyTypes(ctx context.Context, t *testing.T) string {
 
 // insertRow inserts a row using the values provided by generatePayloadData.
 // if notNullOnly is true, only NOT NULL columns are inserted.
-func insertRow(ctx context.Context, t *testing.T, table string, rowNumber int, notNullOnly bool) {
-	is := is.New(t)
-	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
-
+func insertRow(ctx context.Context, is *is.I, conn *pgx.Conn, table string, rowNumber int, notNullOnly bool) {
 	rec := generatePayloadData(rowNumber, false)
 
 	var columns []string
@@ -207,6 +201,17 @@ func insertRow(ctx context.Context, t *testing.T, table string, rowNumber int, n
 		PlaceholderFormat(squirrel.Dollar).
 		ToSql()
 
+	is.NoErr(err)
+
+	_, err = conn.Exec(ctx, query, args...)
+	is.NoErr(err)
+}
+
+func deleteRow(ctx context.Context, is *is.I, conn *pgx.Conn, table string, rowNumber int) {
+	query, args, err := squirrel.Delete(internal.WrapSQLIdent(table)).
+		Where(squirrel.Eq{"id": rowNumber}).
+		PlaceholderFormat(squirrel.Dollar).
+		ToSql()
 	is.NoErr(err)
 
 	_, err = conn.Exec(ctx, query, args...)
