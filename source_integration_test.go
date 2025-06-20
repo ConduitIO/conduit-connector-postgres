@@ -70,13 +70,13 @@ func TestSource_ReadN(t *testing.T) {
 		},
 
 		{
-			name:        "delete cdc data not only only",
+			name:        "delete cdc not only only",
 			notNullOnly: true,
 			cdc:         true,
 			opDelete:    true,
 		},
 		{
-			name:        "delete cdc data with nullable values",
+			name:        "delete cdc nullable",
 			notNullOnly: false,
 			cdc:         true,
 			opDelete:    true,
@@ -91,6 +91,10 @@ func TestSource_ReadN(t *testing.T) {
 }
 
 func runReadTest(t *testing.T, tc readTestCase) {
+	if tc.opDelete {
+		t.Skip("Skipping delete test, see https://github.com/ConduitIO/conduit-connector-postgres/issues/301")
+	}
+
 	is := is.New(t)
 	ctx := test.Context(t)
 	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
@@ -146,8 +150,6 @@ func runReadTest(t *testing.T, tc readTestCase) {
 	}
 
 	if tc.opDelete {
-		// https://github.com/ConduitIO/conduit-connector-postgres/issues/301
-		t.Skip("Skipping delete test, see GitHub issue ")
 		deleteRow(ctx, is, conn, tableName, 1)
 		rec := readAndAck(ctx, is, s)
 		is.Equal(opencdc.OperationDelete, rec.Operation)
