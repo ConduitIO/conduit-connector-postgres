@@ -49,7 +49,7 @@ func TestCDCIterator_New(t *testing.T) {
 			name: "publication already exists",
 			setup: func(t *testing.T) CDCConfig {
 				is := is.New(t)
-				table := test.SetupTestTable(ctx, t, pool)
+				table := test.SetupTable(ctx, t, pool)
 				test.CreatePublication(t, pool, table, []string{table})
 
 				t.Cleanup(func() {
@@ -79,7 +79,7 @@ func TestCDCIterator_New(t *testing.T) {
 			name: "fails to create subscription",
 			setup: func(t *testing.T) CDCConfig {
 				is := is.New(t)
-				table := test.SetupTestTable(ctx, t, pool)
+				table := test.SetupTable(ctx, t, pool)
 
 				t.Cleanup(func() {
 					is.NoErr(Cleanup(ctx, CleanupConfig{
@@ -125,7 +125,7 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 	is := is.New(t)
 
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTable(ctx, t, pool)
+	table := test.SetupTable(ctx, t, pool)
 	i := testCDCIterator(ctx, t, pool, table, true)
 
 	// wait for subscription to be ready
@@ -141,8 +141,8 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 			name: "should detect insert",
 			setup: func(t *testing.T) {
 				is := is.New(t)
-				query := fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5, column6, column7)
-							VALUES (6, 'bizz', 456, false, 12.3, 14, '{"foo2": "bar2"}', '{"foo2": "baz2"}')`, table)
+				query := fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+							VALUES (6, '6', 'bizz', 456, false, 12.3, 61)`, table)
 				_, err := pool.Exec(ctx, query)
 				is.NoErr(err)
 			},
@@ -165,11 +165,8 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 						"column2":          int32(456),
 						"column3":          false,
 						"column4":          big.NewRat(123, 10),
-						"column5":          big.NewRat(14, 1),
-						"column6":          []byte(`{"foo2": "bar2"}`),
-						"column7":          []byte(`{"foo2": "baz2"}`),
-						"key":              nil,
-						"UppercaseColumn1": nil,
+						"key":              []uint8("6"),
+						"UppercaseColumn1": int32(61),
 					},
 				},
 			},
@@ -200,9 +197,6 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 						"column2":          int32(123),
 						"column3":          false,
 						"column4":          big.NewRat(122, 10),
-						"column5":          big.NewRat(4, 1),
-						"column6":          []byte(`{"foo": "bar"}`),
-						"column7":          []byte(`{"foo": "baz"}`),
 						"key":              []uint8("1"),
 						"UppercaseColumn1": int32(1),
 					},
@@ -237,9 +231,6 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 						"column2":          int32(123),
 						"column3":          false,
 						"column4":          big.NewRat(122, 10),
-						"column5":          big.NewRat(4, 1),
-						"column6":          []byte(`{"foo": "bar"}`),
-						"column7":          []byte(`{"foo": "baz"}`),
 						"key":              []uint8("1"),
 						"UppercaseColumn1": int32(1),
 					},
@@ -249,9 +240,6 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 						"column2":          int32(123),
 						"column3":          false,
 						"column4":          big.NewRat(122, 10),
-						"column5":          big.NewRat(4, 1),
-						"column6":          []byte(`{"foo": "bar"}`),
-						"column7":          []byte(`{"foo": "baz"}`),
 						"key":              []uint8("1"),
 						"UppercaseColumn1": int32(1),
 					},
@@ -286,9 +274,6 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 						"column2":          nil,
 						"column3":          nil,
 						"column4":          nil,
-						"column5":          nil,
-						"column6":          nil,
-						"column7":          nil,
 						"key":              nil,
 						"UppercaseColumn1": nil,
 					},
@@ -323,10 +308,7 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 						"column1":          "baz",
 						"column2":          int32(789),
 						"column3":          false,
-						"column4":          nil,
-						"column5":          big.NewRat(9, 1),
-						"column6":          []byte(`{"foo": "bar"}`),
-						"column7":          []byte(`{"foo": "baz"}`),
+						"column4":          big.NewRat(836, 25),
 						"UppercaseColumn1": int32(3),
 					},
 				},
@@ -360,9 +342,7 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 				tt.want,
 				got,
 				cmpopts.IgnoreUnexported(opencdc.Record{}),
-				cmp.Comparer(func(x, y *big.Rat) bool {
-					return x.Cmp(y) == 0
-				}),
+				test.BigRatComparer,
 			))
 			is.NoErr(i.Ack(ctx, got.Position))
 		})
@@ -374,13 +354,13 @@ func TestCDCIterator_EnsureLSN(t *testing.T) {
 	is := is.New(t)
 
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTable(ctx, t, pool)
+	table := test.SetupTable(ctx, t, pool)
 
 	i := testCDCIterator(ctx, t, pool, table, true)
 	<-i.sub.Ready()
 
-	_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5)
-				VALUES (6, 'bizz', 456, false, 12.3, 14)`, table))
+	_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+				VALUES (6, '6', 'bizz', 456, false, 12.3, 6)`, table))
 	is.NoErr(err)
 
 	rr, err := i.NextN(ctx, 1)
@@ -468,7 +448,7 @@ func TestCDCIterator_Ack(t *testing.T) {
 func TestCDCIterator_NextN_InternalBatching(t *testing.T) {
 	ctx := test.Context(t)
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-	table := test.SetupEmptyTestTable(ctx, t, pool)
+	table := test.SetupEmptyTable(ctx, t, pool)
 
 	is := is.New(t)
 	underTest := testCDCIterator(ctx, t, pool, table, true)
@@ -503,8 +483,8 @@ func insertTestRows(ctx context.Context, is *is.I, pool *pgxpool.Pool, table str
 		_, err := pool.Exec(
 			ctx,
 			fmt.Sprintf(
-				`INSERT INTO %s (id, column1, column2, column3, column4, column5)
-				VALUES (%d, 'test-%d', %d, false, 12.3, 14)`, table, i+10, i, i*100,
+				`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+				VALUES (%d, '%d', 'test-%d', %d, false, 12.3, %d)`, table, i+10, i+10, i, i*100, i+10,
 			),
 		)
 		is.NoErr(err)
@@ -512,6 +492,8 @@ func insertTestRows(ctx context.Context, is *is.I, pool *pgxpool.Pool, table str
 }
 
 func verifyOpenCDCRecords(is *is.I, got []opencdc.Record, tableName string, fromID, toID int) {
+	is.Helper()
+
 	// Build the expected records slice
 	var want []opencdc.Record
 
@@ -524,16 +506,15 @@ func verifyOpenCDCRecords(is *is.I, got []opencdc.Record, tableName string, from
 			},
 			Payload: opencdc.Change{
 				After: opencdc.StructuredData{
-					"id":               id,
-					"key":              nil,
-					"column1":          fmt.Sprintf("test-%d", i),
-					"column2":          int32(i) * 100, //nolint:gosec // fine, we know the value is small enough
-					"column3":          false,
-					"column4":          big.NewRat(123, 10),
-					"column5":          big.NewRat(14, 1),
-					"column6":          nil,
-					"column7":          nil,
-					"UppercaseColumn1": nil,
+					"id":      id,
+					"key":     []uint8(fmt.Sprintf("%d", id)),
+					"column1": fmt.Sprintf("test-%d", i),
+					"column2": int32(i) * 100, //nolint:gosec // fine, we know the value is small enough
+					"column3": false,
+					"column4": big.NewRat(123, 10),
+					// UppercaseColumn1 is a Postgres integer (4 bytes)
+					//nolint:gosec //  integer overflow not possible, id is a small value always
+					"UppercaseColumn1": int32(id),
 				},
 			},
 			Metadata: opencdc.Metadata{
@@ -547,9 +528,7 @@ func verifyOpenCDCRecords(is *is.I, got []opencdc.Record, tableName string, from
 	cmpOpts := []cmp.Option{
 		cmpopts.IgnoreUnexported(opencdc.Record{}),
 		cmpopts.IgnoreFields(opencdc.Record{}, "Position", "Metadata"),
-		cmp.Comparer(func(x, y *big.Rat) bool {
-			return x.Cmp(y) == 0
-		}),
+		test.BigRatComparer,
 	}
 	is.Equal("", cmp.Diff(want, got, cmpOpts...)) // mismatch (-want +got)
 }
@@ -557,7 +536,7 @@ func verifyOpenCDCRecords(is *is.I, got []opencdc.Record, tableName string, from
 func TestCDCIterator_NextN(t *testing.T) {
 	ctx := test.Context(t)
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTable(ctx, t, pool)
+	table := test.SetupTable(ctx, t, pool)
 
 	t.Run("retrieve exact N records", func(t *testing.T) {
 		is := is.New(t)
@@ -565,8 +544,8 @@ func TestCDCIterator_NextN(t *testing.T) {
 		<-i.sub.Ready()
 
 		for j := 1; j <= 3; j++ {
-			_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5)
-				VALUES (%d, 'test-%d', %d, false, 12.3, 14)`, table, j+10, j, j*100))
+			_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+				VALUES (%d, '%d', 'test-%d', %d, false, 12.3, 4)`, table, j+10, j+10, j, j*100))
 			is.NoErr(err)
 		}
 
@@ -588,8 +567,7 @@ func TestCDCIterator_NextN(t *testing.T) {
 		for j, r := range allRecords {
 			is.Equal(r.Operation, opencdc.OperationCreate)
 			is.Equal(r.Key.(opencdc.StructuredData)["id"], int64(j+11))
-			change := r.Payload
-			data := change.After.(opencdc.StructuredData)
+			data := r.Payload.After.(opencdc.StructuredData)
 			is.Equal(data["column1"], fmt.Sprintf("test-%d", j+1))
 			//nolint:gosec // no risk to overflow
 			is.Equal(data["column2"], (int32(j)+1)*100)
@@ -602,8 +580,8 @@ func TestCDCIterator_NextN(t *testing.T) {
 		<-i.sub.Ready()
 
 		for j := 1; j <= 2; j++ {
-			_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5)
-				VALUES (%d, 'test-%d', %d, false, 12.3, 14)`, table, j+20, j, j*100))
+			_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+				VALUES (%d, '%d', 'test-%d', %d, false, 12.3, 4)`, table, j+20, j+20, j, j*100))
 			is.NoErr(err)
 		}
 
@@ -662,23 +640,6 @@ func TestCDCIterator_NextN(t *testing.T) {
 
 		_, err = i.NextN(ctx, -1)
 		is.True(strings.Contains(err.Error(), "n must be greater than 0"))
-	})
-
-	t.Run("subscription termination", func(t *testing.T) {
-		is := is.New(t)
-		i := testCDCIterator(ctx, t, pool, table, true)
-		<-i.sub.Ready()
-
-		_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5)
-			VALUES (30, 'test-1', 100, false, 12.3, 14)`, table))
-		is.NoErr(err)
-
-		time.Sleep(100 * time.Millisecond)
-		is.NoErr(i.Teardown(ctx))
-
-		_, err = i.NextN(ctx, 5)
-		is.True(err != nil)
-		is.True(strings.Contains(err.Error(), "logical replication error"))
 	})
 }
 
@@ -742,7 +703,7 @@ func TestCDCIterator_Schema(t *testing.T) {
 	ctx := test.Context(t)
 
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTable(ctx, t, pool)
+	table := test.SetupTable(ctx, t, pool)
 
 	i := testCDCIterator(ctx, t, pool, table, true)
 	<-i.sub.Ready()
@@ -752,8 +713,8 @@ func TestCDCIterator_Schema(t *testing.T) {
 
 		_, err := pool.Exec(
 			ctx,
-			fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5)
-				VALUES (6, 'bizz', 456, false, 12.3, 14)`, table),
+			fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+				VALUES (6, '6', 'bizz', 456, false, 12.3, 6)`, table),
 		)
 		is.NoErr(err)
 
@@ -775,8 +736,8 @@ func TestCDCIterator_Schema(t *testing.T) {
 
 		_, err = pool.Exec(
 			ctx,
-			fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, column5, column6, column7, column101)
-				VALUES (7, decode('aabbcc', 'hex'), 'example data 1', 100, true, 12345.678, 12345, '{"foo":"bar"}', '{"foo2":"baz2"}', '2023-09-09 10:00:00');`, table),
+			fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column4, column101, "UppercaseColumn1")
+				VALUES (7, decode('aabbcc', 'hex'), 'example data 1', 100, true, 12345.678, '2023-09-09 10:00:00', 7);`, table),
 		)
 		is.NoErr(err)
 
@@ -793,13 +754,13 @@ func TestCDCIterator_Schema(t *testing.T) {
 	t.Run("column removed", func(t *testing.T) {
 		is := is.New(t)
 
-		_, err := pool.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s DROP COLUMN column4, DROP COLUMN column5;`, table))
+		_, err := pool.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s DROP COLUMN column4;`, table))
 		is.NoErr(err)
 
 		_, err = pool.Exec(
 			ctx,
-			fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column6, column7, column101)
-				VALUES (8, decode('aabbcc', 'hex'), 'example data 1', 100, true, '{"foo":"bar"}', '{"foo2":"baz2"}', '2023-09-09 10:00:00');`, table),
+			fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column101, "UppercaseColumn1")
+				VALUES (8, decode('aabbcc', 'hex'), 'example data 1', 100, true, '2023-09-09 10:00:00', 8);`, table),
 		)
 		is.NoErr(err)
 

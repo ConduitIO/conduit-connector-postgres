@@ -94,20 +94,23 @@ type FetchWorker struct {
 	db   *pgxpool.Pool
 	out  chan<- []FetchData
 
-	keySchema     *cschema.Schema
-	payloadSchema *cschema.Schema
+	// notNullMap maps column names to if the column is NOT NULL.
+	tableInfoFetcher *internal.TableInfoFetcher
+	keySchema        *cschema.Schema
 
-	snapshotEnd int64
-	lastRead    int64
-	cursorName  string
+	payloadSchema *cschema.Schema
+	snapshotEnd   int64
+	lastRead      int64
+	cursorName    string
 }
 
 func NewFetchWorker(db *pgxpool.Pool, out chan<- []FetchData, c FetchConfig) *FetchWorker {
 	f := &FetchWorker{
-		conf:       c,
-		db:         db,
-		out:        out,
-		cursorName: "fetcher_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
+		conf:             c,
+		db:               db,
+		out:              out,
+		tableInfoFetcher: internal.NewTableInfoFetcher(db),
+		cursorName:       "fetcher_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
 	}
 
 	if f.conf.FetchSize == 0 {
@@ -126,9 +129,23 @@ func NewFetchWorker(db *pgxpool.Pool, out chan<- []FetchData, c FetchConfig) *Fe
 	return f
 }
 
-// Validate will ensure the config is correct.
+// Init will ensure the config is correct.
 // * Table and keys exist
 // * Key is a primary key
+func (f *FetchWorker) Init(ctx context.Context) error {
+	err := f.Validate(ctx)
+	if err != nil {
+		return fmt.Errorf("validation failed: %w", err)
+	}
+
+	err = f.tableInfoFetcher.Refresh(ctx, f.conf.Table)
+	if err != nil {
+		return fmt.Errorf("failed to refresh table info: %w", err)
+	}
+
+	return nil
+}
+
 func (f *FetchWorker) Validate(ctx context.Context) error {
 	if err := f.conf.Validate(); err != nil {
 		return fmt.Errorf("failed to validate config: %w", err)
@@ -384,9 +401,12 @@ func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values [
 		payload = make(opencdc.StructuredData)
 	)
 
+	tableInfo := f.getTableInfo()
 	for i, fd := range fields {
+		isNotNull := tableInfo.Columns[fd.Name].IsNotNull
+
 		if fd.Name == f.conf.Key {
-			k, err := types.Format(fd.DataTypeOID, values[i])
+			k, err := types.Format(fd.DataTypeOID, values[i], isNotNull)
 			if err != nil {
 				return key, payload, fmt.Errorf("failed to format key %q: %w", f.conf.Key, err)
 			}
@@ -394,7 +414,7 @@ func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values [
 			key[f.conf.Key] = k
 		}
 
-		v, err := types.Format(fd.DataTypeOID, values[i])
+		v, err := types.Format(fd.DataTypeOID, values[i], isNotNull)
 		if err != nil {
 			return key, payload, fmt.Errorf("failed to format payload field %q: %w", fd.Name, err)
 		}
@@ -489,7 +509,7 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 		sdk.Logger(ctx).Debug().
 			Msgf("extracting payload schema for %v fields in %v", len(fields), f.conf.Table)
 
-		avroPayloadSch, err := schema.Avro.Extract(f.conf.Table+"_payload", fields)
+		avroPayloadSch, err := schema.Avro.Extract(f.conf.Table+"_payload", f.tableInfoFetcher.GetTable(f.conf.Table), fields)
 		if err != nil {
 			return fmt.Errorf("failed to extract payload schema for table %v: %w", f.conf.Table, err)
 		}
@@ -509,7 +529,7 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 		sdk.Logger(ctx).Debug().
 			Msgf("extracting schema for key %v in %v", f.conf.Key, f.conf.Table)
 
-		avroKeySch, err := schema.Avro.Extract(f.conf.Table+"_key", fields, f.conf.Key)
+		avroKeySch, err := schema.Avro.Extract(f.conf.Table+"_key", f.getTableInfo(), fields, f.conf.Key)
 		if err != nil {
 			return fmt.Errorf("failed to extract key schema for table %v: %w", f.conf.Table, err)
 		}
@@ -526,4 +546,8 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 	}
 
 	return nil
+}
+
+func (f *FetchWorker) getTableInfo() *internal.TableInfo {
+	return f.tableInfoFetcher.GetTable(f.conf.Table)
 }

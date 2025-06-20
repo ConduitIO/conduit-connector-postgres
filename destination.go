@@ -39,7 +39,7 @@ type Destination struct {
 	getTableName destination.TableFn
 
 	conn        *pgx.Conn
-	dbInfo      *internal.DbInfo
+	dbInfo      *internal.NumericScaleInfo
 	stmtBuilder sq.StatementBuilderType
 }
 
@@ -347,7 +347,7 @@ func (d *Destination) formatBigRat(ctx context.Context, table string, column str
 
 	// we need to get the scale of the column so we that we can properly
 	// round the result of dividing the input big.Rat's numerator and denominator.
-	scale, err := d.dbInfo.GetNumericColumnScale(ctx, table, column)
+	scale, err := d.dbInfo.Get(ctx, table, column)
 	if err != nil {
 		return "", fmt.Errorf("failed getting scale of numeric column: %w", err)
 	}

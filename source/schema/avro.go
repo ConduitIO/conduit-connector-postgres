@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/hamba/avro/v2"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -65,7 +66,7 @@ type avroExtractor struct {
 
 // ExtractLogrepl extracts an Avro schema from the given pglogrepl.RelationMessage.
 // If `fieldNames` are specified, then only the given fields will be included in the schema.
-func (a avroExtractor) ExtractLogrepl(schemaName string, rel *pglogrepl.RelationMessage, fieldNames ...string) (*avro.RecordSchema, error) {
+func (a *avroExtractor) ExtractLogrepl(schemaName string, rel *pglogrepl.RelationMessage, tableInfo *internal.TableInfo, fieldNames ...string) (*avro.RecordSchema, error) {
 	var fields []pgconn.FieldDescription
 
 	for i := range rel.Columns {
@@ -76,12 +77,12 @@ func (a avroExtractor) ExtractLogrepl(schemaName string, rel *pglogrepl.Relation
 		})
 	}
 
-	return a.Extract(schemaName, fields, fieldNames...)
+	return a.Extract(schemaName, tableInfo, fields, fieldNames...)
 }
 
 // Extract extracts an Avro schema from the given Postgres field descriptions.
 // If `fieldNames` are specified, then only the given fields will be included in the schema.
-func (a *avroExtractor) Extract(schemaName string, fields []pgconn.FieldDescription, fieldNames ...string) (*avro.RecordSchema, error) {
+func (a *avroExtractor) Extract(schemaName string, tableInfo *internal.TableInfo, fields []pgconn.FieldDescription, fieldNames ...string) (*avro.RecordSchema, error) {
 	var avroFields []*avro.Field
 
 	for _, f := range fields {
@@ -94,7 +95,7 @@ func (a *avroExtractor) Extract(schemaName string, fields []pgconn.FieldDescript
 			return nil, fmt.Errorf("field %q with OID %d cannot be resolved", f.Name, f.DataTypeOID)
 		}
 
-		s, err := a.extractType(t, f.TypeModifier)
+		s, err := a.extractType(t, f.TypeModifier, tableInfo.Columns[f.Name].IsNotNull)
 		if err != nil {
 			return nil, err
 		}
@@ -119,7 +120,25 @@ func (a *avroExtractor) Extract(schemaName string, fields []pgconn.FieldDescript
 	return sch, nil
 }
 
-func (a *avroExtractor) extractType(t *pgtype.Type, typeMod int32) (avro.Schema, error) {
+func (a *avroExtractor) extractType(t *pgtype.Type, typeMod int32, notNull bool) (avro.Schema, error) {
+	baseType, err := a.extractBaseType(t, typeMod)
+	if err != nil {
+		return nil, err
+	}
+
+	if !notNull {
+		schema, err := avro.NewUnionSchema([]avro.Schema{avro.NewNullSchema(), baseType})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create avro union schema for nullable type %v: %w", baseType, err)
+		}
+
+		return schema, nil
+	}
+
+	return baseType, nil
+}
+
+func (a *avroExtractor) extractBaseType(t *pgtype.Type, typeMod int32) (avro.Schema, error) {
 	if ps, ok := a.avroMap[t.Name]; ok {
 		return ps, nil
 	}

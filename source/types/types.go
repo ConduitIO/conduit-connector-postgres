@@ -15,15 +15,44 @@
 package types
 
 import (
+	"reflect"
+
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
 var (
 	Numeric = NumericFormatter{}
-	UUID    = UUIDFormatter{}
+
+	UUID = UUIDFormatter{}
 )
 
-func Format(oid uint32, v any) (any, error) {
+// Format formats the input value v with the corresponding Postgres OID
+// into an appropriate Go value (that can later be serialized with Avro).
+// If the input value is nullable (i.e. isNotNull is false), then the method
+// returns a pointer.
+//
+// The following types are currently not supported:
+// bit, varbit, box, char(n), cidr, circle, inet, interval, line, lseg,
+// macaddr, macaddr8, money, path, pg_lsn, pg_snapshot, point, polygon,
+// time, timetz, tsquery, tsvector, xml
+func Format(oid uint32, v any, isNotNull bool) (any, error) {
+	if v == nil {
+		return nil, nil
+	}
+
+	val, err := format(oid, v)
+	if err != nil {
+		return nil, err
+	}
+
+	if reflect.TypeOf(val).Kind() != reflect.Ptr && !isNotNull {
+		return GetPointer(val), nil
+	}
+
+	return val, nil
+}
+
+func format(oid uint32, v any) (any, error) {
 	if oid == pgtype.UUIDOID {
 		return UUID.Format(v)
 	}
@@ -41,4 +70,34 @@ func Format(oid uint32, v any) (any, error) {
 	default:
 		return t, nil
 	}
+}
+
+func GetPointer(v any) any {
+	rv := reflect.ValueOf(v)
+
+	// If the value is nil or invalid, return nil
+	if !rv.IsValid() {
+		return nil
+	}
+
+	// If it's already a pointer, return it as-is
+	if rv.Kind() == reflect.Ptr {
+		return rv.Interface()
+	}
+
+	if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Map || rv.Kind() == reflect.Array {
+		return rv.Interface()
+	}
+
+	// For non-pointer values, we need to get the address
+	// If the value is addressable, return its address
+	if rv.CanAddr() {
+		return rv.Addr().Interface()
+	}
+
+	// If we can't get the address directly, create an addressable copy
+	// This happens when the interface{} contains a literal value
+	ptr := reflect.New(rv.Type())
+	ptr.Elem().Set(rv)
+	return ptr.Interface()
 }

@@ -21,14 +21,12 @@ import (
 	"math/big"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
 	"gopkg.in/tomb.v2"
@@ -126,76 +124,81 @@ func Test_FetcherValidate(t *testing.T) {
 	)
 
 	// uppercase table name is required to test primary key fetching
-	test.SetupTestTableWithName(ctx, t, pool, table)
+	test.SetupTableWithName(ctx, t, pool, table)
 
 	t.Run("success", func(t *testing.T) {
 		is := is.New(t)
-		f := FetchWorker{
-			db: pool,
-			conf: FetchConfig{
+		f := NewFetchWorker(
+			pool,
+			make(chan<- []FetchData),
+			FetchConfig{
 				Table: table,
 				Key:   "id",
 			},
-		}
+		)
 
-		is.NoErr(f.Validate(ctx))
+		is.NoErr(f.Init(ctx))
 	})
 
 	t.Run("table missing", func(t *testing.T) {
 		is := is.New(t)
-		f := FetchWorker{
-			db: pool,
-			conf: FetchConfig{
+		f := NewFetchWorker(
+			pool,
+			make(chan<- []FetchData),
+			FetchConfig{
 				Table: "missing_table",
 				Key:   "id",
 			},
-		}
+		)
 
-		err := f.Validate(ctx)
+		err := f.Init(ctx)
 		is.True(err != nil)
 		is.True(strings.Contains(err.Error(), `table "missing_table" does not exist`))
 	})
 
 	t.Run("key is wrong type", func(t *testing.T) {
 		is := is.New(t)
-		f := FetchWorker{
-			db: pool,
-			conf: FetchConfig{
+		f := NewFetchWorker(
+			pool,
+			make(chan<- []FetchData),
+			FetchConfig{
 				Table: table,
 				Key:   "column3",
 			},
-		}
+		)
 
-		err := f.Validate(ctx)
+		err := f.Init(ctx)
 		is.True(err != nil)
 		is.True(strings.Contains(err.Error(), `failed to validate key: key "column3" of type "boolean" is unsupported`))
 	})
 
 	t.Run("key is not pk", func(t *testing.T) {
 		is := is.New(t)
-		f := FetchWorker{
-			db: pool,
-			conf: FetchConfig{
+		f := NewFetchWorker(
+			pool,
+			make(chan<- []FetchData),
+			FetchConfig{
 				Table: table,
 				Key:   "column2",
 			},
-		}
+		)
 
-		err := f.Validate(ctx)
+		err := f.Init(ctx)
 		is.NoErr(err) // no error, only a warning
 	})
 
 	t.Run("missing key", func(t *testing.T) {
 		is := is.New(t)
-		f := FetchWorker{
-			db: pool,
-			conf: FetchConfig{
+		f := NewFetchWorker(
+			pool,
+			make(chan<- []FetchData),
+			FetchConfig{
 				Table: table,
 				Key:   "missing_key",
 			},
-		}
+		)
 
-		err := f.Validate(ctx)
+		err := f.Init(ctx)
 		is.True(err != nil)
 		ok := strings.Contains(err.Error(), fmt.Sprintf(`key "missing_key" not present on table %q`, table))
 		if !ok {
@@ -210,7 +213,7 @@ func Test_FetcherRun_EmptySnapshot(t *testing.T) {
 		is       = is.New(t)
 		ctx      = test.Context(t)
 		pool     = test.ConnectPool(context.Background(), t, test.RegularConnString)
-		table    = test.SetupEmptyTestTable(context.Background(), t, pool)
+		table    = test.SetupEmptyTable(context.Background(), t, pool)
 		out      = make(chan []FetchData)
 		testTomb = &tomb.Tomb{}
 	)
@@ -242,7 +245,7 @@ func Test_FetcherRun_EmptySnapshot(t *testing.T) {
 func Test_FetcherRun_Initial(t *testing.T) {
 	var (
 		pool  = test.ConnectPool(context.Background(), t, test.RegularConnString)
-		table = test.SetupTestTable(context.Background(), t, pool)
+		table = test.SetupTable(context.Background(), t, pool)
 		is    = is.New(t)
 		out   = make(chan []FetchData)
 		ctx   = test.Context(t)
@@ -258,7 +261,7 @@ func Test_FetcherRun_Initial(t *testing.T) {
 		ctx = tt.Context(ctx)
 		defer close(out)
 
-		if err := f.Validate(ctx); err != nil {
+		if err := f.Init(ctx); err != nil {
 			return err
 		}
 		return f.Run(ctx)
@@ -272,16 +275,11 @@ func Test_FetcherRun_Initial(t *testing.T) {
 	is.NoErr(tt.Err())
 	is.Equal(len(gotFetchData), 4)
 
-	var (
-		value6 = []byte(`{"foo": "bar"}`)
-		value7 = []byte(`{"foo": "baz"}`)
-	)
-
 	expectedMatch := []opencdc.StructuredData{
-		{"id": int64(1), "key": []uint8{49}, "column1": "foo", "column2": int32(123), "column3": false, "column4": big.NewRat(122, 10), "column5": big.NewRat(4, 1), "column6": value6, "column7": value7, "UppercaseColumn1": int32(1)},
-		{"id": int64(2), "key": []uint8{50}, "column1": "bar", "column2": int32(456), "column3": true, "column4": big.NewRat(1342, 100), "column5": big.NewRat(8, 1), "column6": value6, "column7": value7, "UppercaseColumn1": int32(2)},
-		{"id": int64(3), "key": []uint8{51}, "column1": "baz", "column2": int32(789), "column3": false, "column4": nil, "column5": big.NewRat(9, 1), "column6": value6, "column7": value7, "UppercaseColumn1": int32(3)},
-		{"id": int64(4), "key": []uint8{52}, "column1": nil, "column2": nil, "column3": nil, "column4": big.NewRat(911, 10), "column5": nil, "column6": nil, "column7": nil, "UppercaseColumn1": nil},
+		{"id": int64(1), "key": []uint8{49}, "column1": "foo", "column2": int32(123), "column3": false, "column4": big.NewRat(122, 10), "UppercaseColumn1": int32(1)},
+		{"id": int64(2), "key": []uint8{50}, "column1": "bar", "column2": int32(456), "column3": true, "column4": big.NewRat(1342, 100), "UppercaseColumn1": int32(2)},
+		{"id": int64(3), "key": []uint8{51}, "column1": "baz", "column2": int32(789), "column3": false, "column4": big.NewRat(836, 25), "UppercaseColumn1": int32(3)},
+		{"id": int64(4), "key": []uint8{52}, "column1": "qux", "column2": int32(444), "column3": false, "column4": big.NewRat(911, 10), "UppercaseColumn1": int32(4)},
 	}
 
 	for i, got := range gotFetchData {
@@ -291,9 +289,7 @@ func Test_FetcherRun_Initial(t *testing.T) {
 			is.Equal("", cmp.Diff(
 				expectedMatch[i],
 				got.Payload,
-				cmp.Comparer(func(x, y *big.Rat) bool {
-					return x.Cmp(y) == 0
-				}),
+				test.BigRatComparer,
 			))
 
 			is.Equal(got.Position, position.SnapshotPosition{
@@ -308,7 +304,7 @@ func Test_FetcherRun_Initial(t *testing.T) {
 func Test_FetcherRun_Resume(t *testing.T) {
 	var (
 		pool  = test.ConnectPool(context.Background(), t, test.RegularConnString)
-		table = test.SetupTestTable(context.Background(), t, pool)
+		table = test.SetupTable(context.Background(), t, pool)
 		is    = is.New(t)
 		out   = make(chan []FetchData)
 		ctx   = test.Context(t)
@@ -333,7 +329,7 @@ func Test_FetcherRun_Resume(t *testing.T) {
 		ctx = tt.Context(ctx)
 		defer close(out)
 
-		if err := f.Validate(ctx); err != nil {
+		if err := f.Init(ctx); err != nil {
 			return err
 		}
 		return f.Run(ctx)
@@ -359,15 +355,10 @@ func Test_FetcherRun_Resume(t *testing.T) {
 				"column1":          "baz",
 				"column2":          int32(789),
 				"column3":          false,
-				"column4":          nil,
-				"column5":          big.NewRat(9, 1),
-				"column6":          []byte(`{"foo": "bar"}`),
-				"column7":          []byte(`{"foo": "baz"}`),
+				"column4":          big.NewRat(836, 25),
 				"UppercaseColumn1": int32(3),
 			},
-			cmp.Comparer(func(x, y *big.Rat) bool {
-				return x.Cmp(y) == 0
-			}),
+			test.BigRatComparer,
 		),
 	)
 
@@ -460,31 +451,6 @@ func Test_send(t *testing.T) {
 	is.Equal(err, context.Canceled)
 }
 
-func Test_FetchWorker_buildRecordData(t *testing.T) {
-	var (
-		is  = is.New(t)
-		now = time.Now().UTC()
-
-		// special case fields
-		fields       = []pgconn.FieldDescription{{Name: "id"}, {Name: "time"}}
-		values       = []any{1, now}
-		expectValues = []any{1, now}
-	)
-
-	key, payload, err := (&FetchWorker{
-		conf: FetchConfig{Table: "mytable", Key: "id"},
-	}).buildRecordData(fields, values)
-
-	is.NoErr(err)
-	is.Equal(len(payload), 2)
-	for i, fd := range fields {
-		is.Equal(payload[fd.Name], expectValues[i])
-	}
-
-	is.Equal(len(key), 1)
-	is.Equal(key["id"], 1)
-}
-
 func Test_FetchWorker_updateSnapshotEnd(t *testing.T) {
 	var (
 		is    = is.New(t)
@@ -493,7 +459,7 @@ func Test_FetchWorker_updateSnapshotEnd(t *testing.T) {
 		table = strings.ToUpper(test.RandomIdentifier(t))
 	)
 
-	test.SetupTestTableWithName(ctx, t, pool, table)
+	test.SetupTableWithName(ctx, t, pool, table)
 
 	tx, err := pool.Begin(ctx)
 	is.NoErr(err)
@@ -519,7 +485,7 @@ func Test_FetchWorker_updateSnapshotEnd(t *testing.T) {
 				Table: table,
 				Key:   "UppercaseColumn1",
 			}},
-			expected: 3,
+			expected: 4,
 		},
 		{
 			desc:     "skip update when set",
@@ -555,7 +521,7 @@ func Test_FetchWorker_updateSnapshotEnd(t *testing.T) {
 func Test_FetchWorker_createCursor(t *testing.T) {
 	var (
 		pool  = test.ConnectPool(context.Background(), t, test.RegularConnString)
-		table = test.SetupTestTable(context.Background(), t, pool)
+		table = test.SetupTable(context.Background(), t, pool)
 		is    = is.New(t)
 		ctx   = test.Context(t)
 	)

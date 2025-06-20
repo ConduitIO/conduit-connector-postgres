@@ -179,7 +179,7 @@ func (i *Iterator) initFetchers(ctx context.Context) error {
 			WithAvroSchema: i.conf.WithAvroSchema,
 		})
 
-		if err := w.Validate(ctx); err != nil {
+		if err := w.Init(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("failed to validate table fetcher %q config: %w", t, err))
 		}
 

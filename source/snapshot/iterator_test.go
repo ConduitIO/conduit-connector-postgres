@@ -30,7 +30,7 @@ func Test_Iterator_NextN(t *testing.T) {
 	var (
 		ctx   = test.Context(t)
 		pool  = test.ConnectPool(ctx, t, test.RegularConnString)
-		table = test.SetupTestTable(ctx, t, pool)
+		table = test.SetupTable(ctx, t, pool)
 	)
 
 	t.Run("success", func(t *testing.T) {

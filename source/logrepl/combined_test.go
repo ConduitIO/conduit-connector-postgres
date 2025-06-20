@@ -50,7 +50,7 @@ func TestConfig_Validate(t *testing.T) {
 func TestCombinedIterator_New(t *testing.T) {
 	ctx := test.Context(t)
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTable(ctx, t, pool)
+	table := test.SetupTable(ctx, t, pool)
 
 	t.Run("fails to parse initial position", func(t *testing.T) {
 		is := is.New(t)
@@ -145,7 +145,7 @@ func TestCombinedIterator_NextN(t *testing.T) {
 	is := is.New(t)
 
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-	table := test.SetupTestTable(ctx, t, pool)
+	table := test.SetupTable(ctx, t, pool)
 	i, err := NewCombinedIterator(ctx, pool, Config{
 		Position:        opencdc.Position{},
 		Tables:          []string{table},
@@ -158,8 +158,8 @@ func TestCombinedIterator_NextN(t *testing.T) {
 
 	// Add a record to the table for CDC mode testing
 	_, err = pool.Exec(ctx, fmt.Sprintf(
-		`INSERT INTO %s (id, column1, column2, column3, column4, column5, column6, column7)
-			VALUES (6, 'bizz', 1010, false, 872.2, 101, '{"foo12": "bar12"}', '{"foo13": "bar13"}')`,
+		`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+			VALUES (6, '6', 'bizz', 1010, false, 872.2, 6)`,
 		table,
 	))
 	is.NoErr(err)
@@ -276,15 +276,15 @@ func TestCombinedIterator_NextN(t *testing.T) {
 
 		// Insert two more records for testing CDC batch
 		_, err = pool.Exec(ctx, fmt.Sprintf(
-			`INSERT INTO %s (id, column1, column2, column3, column4, column5, column6, column7)
-				VALUES (7, 'buzz', 10101, true, 121.9, 51, '{"foo7": "bar7"}', '{"foo8": "bar8"}')`,
+			`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+				VALUES (7, '7', 'buzz', 10101, true, 121.9, 7)`,
 			table,
 		))
 		is.NoErr(err)
 
 		_, err = pool.Exec(ctx, fmt.Sprintf(
-			`INSERT INTO %s (id, column1, column2, column3, column4, column5, column6, column7)
-				VALUES (8, 'fizz', 20202, false, 232.8, 62, '{"foo9": "bar9"}', '{"foo10": "bar10"}')`,
+			`INSERT INTO %s (id, key, column1, column2, column3, column4, "UppercaseColumn1")
+				VALUES (8, '8', 'fizz', 20202, false, 232.8, 8)`,
 			table,
 		))
 		is.NoErr(err)
@@ -320,9 +320,7 @@ func TestCombinedIterator_NextN(t *testing.T) {
 			is.Equal("", cmp.Diff(
 				expectedRecords[6],
 				records[0].Payload.After.(opencdc.StructuredData),
-				cmp.Comparer(func(x, y *big.Rat) bool {
-					return x.Cmp(y) == 0
-				}),
+				test.BigRatComparer,
 			))
 
 			is.NoErr(i.Ack(ctx, records[0].Position))
@@ -369,9 +367,6 @@ func testRecords() []opencdc.StructuredData {
 			"column2":          int32(123),
 			"column3":          false,
 			"column4":          big.NewRat(122, 10),
-			"column5":          big.NewRat(4, 1),
-			"column6":          []byte(`{"foo": "bar"}`),
-			"column7":          []byte(`{"foo": "baz"}`),
 			"UppercaseColumn1": int32(1),
 		},
 		{
@@ -393,9 +388,6 @@ func testRecords() []opencdc.StructuredData {
 			"column2":          int32(789),
 			"column3":          false,
 			"column4":          nil,
-			"column5":          big.NewRat(9, 1),
-			"column6":          []byte(`{"foo": "bar"}`),
-			"column7":          []byte(`{"foo": "baz"}`),
 			"UppercaseColumn1": int32(3),
 		},
 		{
@@ -405,34 +397,25 @@ func testRecords() []opencdc.StructuredData {
 			"column2":          nil,
 			"column3":          nil,
 			"column4":          big.NewRat(911, 10), // 91.1
-			"column5":          nil,
-			"column6":          nil,
-			"column7":          nil,
-			"UppercaseColumn1": nil,
+			"UppercaseColumn1": int32(4),
 		},
 		{
 			"id":               int64(6),
-			"key":              nil,
+			"key":              []uint8("6"),
 			"column1":          "bizz",
 			"column2":          int32(1010),
 			"column3":          false,
 			"column4":          big.NewRat(8722, 10), // 872.2
-			"column5":          big.NewRat(101, 1),
-			"column6":          []byte(`{"foo12": "bar12"}`),
-			"column7":          []byte(`{"foo13": "bar13"}`),
-			"UppercaseColumn1": nil,
+			"UppercaseColumn1": int32(6),
 		},
 		{
 			"id":               int64(7),
-			"key":              nil,
+			"key":              []uint8("7"),
 			"column1":          "buzz",
 			"column2":          int32(10101),
 			"column3":          true,
 			"column4":          big.NewRat(1219, 10), // 121.9
-			"column5":          big.NewRat(51, 1),
-			"column6":          []byte(`{"foo7": "bar7"}`),
-			"column7":          []byte(`{"foo8": "bar8"}`),
-			"UppercaseColumn1": nil,
+			"UppercaseColumn1": int32(7),
 		},
 	}
 }

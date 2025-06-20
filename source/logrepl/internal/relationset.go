@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/types"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -50,7 +51,7 @@ func (rs *RelationSet) Get(id uint32) (*pglogrepl.RelationMessage, error) {
 	return msg, nil
 }
 
-func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]any, error) {
+func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData, tableInfo *internal.TableInfo) (map[string]any, error) {
 	if row == nil {
 		return nil, errors.New("no tuple data")
 	}
@@ -65,7 +66,7 @@ func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]a
 	// assert same number of row and rel columns
 	for i, tuple := range row.Columns {
 		col := rel.Columns[i]
-		v, decodeErr := rs.decodeValue(col, tuple.Data)
+		v, decodeErr := rs.decodeValue(col, tableInfo.Columns[col.Name], tuple.Data)
 		if decodeErr != nil {
 			return nil, fmt.Errorf("failed to decode value for column %q: %w", col.Name, err)
 		}
@@ -84,7 +85,7 @@ func (rs *RelationSet) oidToCodec(id uint32) pgtype.Codec {
 	return dt.Codec
 }
 
-func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, data []byte) (any, error) {
+func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, colInfo *internal.ColumnInfo, data []byte) (any, error) {
 	decoder := rs.oidToCodec(col.DataType)
 	// This workaround is due to an issue in pgx v5.7.1.
 	// Namely, that version introduces an XML codec
@@ -105,7 +106,7 @@ func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, data []
 		return nil, fmt.Errorf("failed to decode value of pgtype %v: %w", col.DataType, err)
 	}
 
-	v, err := types.Format(col.DataType, val)
+	v, err := types.Format(col.DataType, val, colInfo.IsNotNull)
 	if err != nil {
 		return nil, fmt.Errorf("failed to format column %q type %T: %w", col.Name, val, err)
 	}

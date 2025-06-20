@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
+	internal2 "github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -87,6 +88,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	handler := NewCDCHandler(
 		ctx,
 		internal.NewRelationSet(),
+		internal2.NewTableInfoFetcher(pool),
 		c.TableKeys,
 		batchesCh,
 		c.WithAvroSchema,
@@ -141,9 +143,8 @@ func (i *CDCIterator) StartSubscriber(ctx context.Context) error {
 	return nil
 }
 
-// NextN returns up to n records from the internal channel with records.
-// NextN is allowed to block until either at least one record is available
-// or the context gets canceled.
+// NextN takes and returns up to n records from the queue. NextN is allowed to
+// block until either at least one record is available or the context gets canceled.
 func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error) {
 	if !i.subscriberReady() {
 		return nil, errors.New("logical replication has not been started")
