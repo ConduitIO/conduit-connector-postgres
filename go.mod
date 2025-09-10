@@ -12,7 +12,7 @@ require (
 	github.com/hamba/avro/v2 v2.30.0
 	github.com/jackc/pgerrcode v0.0.0-20240316143900-6e2875d9b438
 	github.com/jackc/pglogrepl v0.0.0-20240307033717-828fbfe908e9
-	github.com/jackc/pgx/v5 v5.7.5
+	github.com/jackc/pgx/v5 v5.7.6
 	github.com/matryer/is v1.4.1
 	github.com/rs/zerolog v1.34.0
 	github.com/shopspring/decimal v1.4.0
