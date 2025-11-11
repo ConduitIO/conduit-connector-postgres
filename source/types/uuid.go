@@ -22,8 +22,8 @@ import (
 
 type UUIDFormatter struct{}
 
-// Format takes a slice of bytes and returns a UUID in string format
-// Returns error when byte array cannot be parsed.
+// Format transforms a byte array into a UUID in string format.
+// Returns an error if the byte array cannot be parsed.
 func (UUIDFormatter) Format(v any) (string, error) {
 	if v == nil {
 		return "", nil

@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-commons/lang"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/matryer/is"
 )
@@ -27,11 +28,11 @@ func Test_Format(t *testing.T) {
 	now := time.Now().UTC()
 
 	tests := []struct {
-		name        string
-		input       []any
-		inputOID    []uint32
-		expect      []any
-		withBuiltin bool
+		name           string
+		input          []any
+		inputOID       []uint32
+		expect         []any
+		expectNullable []any
 	}{
 		{
 			name: "int float string bool",
@@ -44,6 +45,9 @@ func Test_Format(t *testing.T) {
 			expect: []any{
 				1021, 199.2, "foo", true,
 			},
+			expectNullable: []any{
+				lang.Ptr(1021), lang.Ptr(199.2), lang.Ptr("foo"), lang.Ptr(true),
+			},
 		},
 		{
 			name: "pgtype.Numeric",
@@ -54,6 +58,9 @@ func Test_Format(t *testing.T) {
 				0, 0, 0, 0, 0,
 			},
 			expect: []any{
+				big.NewRat(122121, 10000), big.NewRat(101, 1), big.NewRat(0, 1), nil, nil,
+			},
+			expectNullable: []any{
 				big.NewRat(122121, 10000), big.NewRat(101, 1), big.NewRat(0, 1), nil, nil,
 			},
 		},
@@ -68,31 +75,40 @@ func Test_Format(t *testing.T) {
 			expect: []any{
 				now,
 			},
-			withBuiltin: true,
+			expectNullable: []any{
+				lang.Ptr(now),
+			},
 		},
 		{
 			name: "uuid",
 			input: []any{
-				[16]uint8{0xbd, 0x94, 0xee, 0x0b, 0x56, 0x4f, 0x40, 0x88, 0xbf, 0x4e, 0x8d, 0x5e, 0x62, 0x6c, 0xaf, 0x66}, nil,
+				[16]uint8{0xbd, 0x94, 0xee, 0x0b, 0x56, 0x4f, 0x40, 0x88, 0xbf, 0x4e, 0x8d, 0x5e, 0x62, 0x6c, 0xaf, 0x66},
+				nil,
 			},
 			inputOID: []uint32{
 				pgtype.UUIDOID, pgtype.UUIDOID,
 			},
 			expect: []any{
-				"bd94ee0b-564f-4088-bf4e-8d5e626caf66", "",
+				"bd94ee0b-564f-4088-bf4e-8d5e626caf66", nil,
+			},
+			expectNullable: []any{
+				lang.Ptr("bd94ee0b-564f-4088-bf4e-8d5e626caf66"), nil,
 			},
 		},
 	}
-	_ = time.Now()
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			is := is.New(t)
 
 			for i, in := range tc.input {
-				v, err := Format(tc.inputOID[i], in)
+				v, err := Format(tc.inputOID[i], in, true)
 				is.NoErr(err)
 				is.Equal(v, tc.expect[i])
+
+				vNullable, err := Format(tc.inputOID[i], in, false)
+				is.NoErr(err)
+				is.Equal(vNullable, tc.expectNullable[i])
 			}
 		})
 	}

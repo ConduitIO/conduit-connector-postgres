@@ -42,7 +42,7 @@ func Test_Cleanup(t *testing.T) {
 				PublicationName: "conduitpub1",
 			},
 			setup: func(t *testing.T) {
-				table := test.SetupTestTable(context.Background(), t, conn)
+				table := test.SetupTable(context.Background(), t, conn)
 				test.CreatePublication(t, conn, "conduitpub1", []string{table})
 				test.CreateReplicationSlot(t, conn, "conduitslot1")
 			},
@@ -54,7 +54,7 @@ func Test_Cleanup(t *testing.T) {
 				PublicationName: "conduitpub2",
 			},
 			setup: func(t *testing.T) {
-				table := test.SetupTestTable(context.Background(), t, conn)
+				table := test.SetupTable(context.Background(), t, conn)
 				test.CreatePublication(t, conn, "conduitpub2", []string{table})
 			},
 		},
@@ -76,7 +76,7 @@ func Test_Cleanup(t *testing.T) {
 				PublicationName: "conduitpub4",
 			},
 			setup: func(t *testing.T) {
-				table := test.SetupTestTable(context.Background(), t, conn)
+				table := test.SetupTable(context.Background(), t, conn)
 				test.CreatePublication(t, conn, "conduitpub4", []string{table})
 			},
 			wantErr: errors.New(`replication slot "conduitslot4" does not exist`),

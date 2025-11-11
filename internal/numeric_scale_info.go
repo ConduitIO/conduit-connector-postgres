@@ -22,28 +22,28 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// DbInfo provides information about tables in a database.
-type DbInfo struct {
+// NumericScaleInfo provides information about the scale of numeric columns
+// in a database.
+type NumericScaleInfo struct {
 	conn  *pgx.Conn
 	cache map[string]*tableCache
 }
 
 // tableCache stores information about a table.
-// The information is cached and refreshed every 'cacheExpiration'.
 type tableCache struct {
 	columns map[string]int
 }
 
-func NewDbInfo(conn *pgx.Conn) *DbInfo {
-	return &DbInfo{
+func NewDbInfo(conn *pgx.Conn) *NumericScaleInfo {
+	return &NumericScaleInfo{
 		conn:  conn,
 		cache: map[string]*tableCache{},
 	}
 }
 
-func (d *DbInfo) GetNumericColumnScale(ctx context.Context, table string, column string) (int, error) {
-	// Check if table exists in cache and is not expired
-	tableInfo, ok := d.cache[table]
+func (i *NumericScaleInfo) Get(ctx context.Context, table string, column string) (int, error) {
+	// Check if table exists in cache
+	tableInfo, ok := i.cache[table]
 	if ok {
 		scale, ok := tableInfo.columns[column]
 		if ok {
@@ -51,23 +51,23 @@ func (d *DbInfo) GetNumericColumnScale(ctx context.Context, table string, column
 		}
 	} else {
 		// Table info has expired, refresh the cache
-		d.cache[table] = &tableCache{
+		i.cache[table] = &tableCache{
 			columns: map[string]int{},
 		}
 	}
 
 	// Fetch scale from database
-	scale, err := d.numericScaleFromDb(ctx, table, column)
+	scale, err := i.fetchFromDB(ctx, table, column)
 	if err != nil {
 		return 0, err
 	}
 
-	d.cache[table].columns[column] = scale
+	i.cache[table].columns[column] = scale
 
 	return scale, nil
 }
 
-func (d *DbInfo) numericScaleFromDb(ctx context.Context, table string, column string) (int, error) {
+func (i *NumericScaleInfo) fetchFromDB(ctx context.Context, table string, column string) (int, error) {
 	// Query to get the column type and numeric scale
 	query := `
 		SELECT 
@@ -83,7 +83,7 @@ func (d *DbInfo) numericScaleFromDb(ctx context.Context, table string, column st
 	var dataType string
 	var numericScale *int
 
-	err := d.conn.QueryRow(ctx, query, table, column).Scan(&dataType, &numericScale)
+	err := i.conn.QueryRow(ctx, query, table, column).Scan(&dataType, &numericScale)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, fmt.Errorf("column %s not found in table %s", column, table)

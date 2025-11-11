@@ -29,7 +29,7 @@ func TestHandler_Batching_BatchSizeReached(t *testing.T) {
 	is := is.New(t)
 
 	ch := make(chan []opencdc.Record, 1)
-	underTest := NewCDCHandler(ctx, nil, nil, ch, false, 5, time.Second)
+	underTest := NewCDCHandler(ctx, nil, nil, nil, ch, false, 5, time.Second)
 	want := make([]opencdc.Record, 5)
 	for i := 0; i < cap(want); i++ {
 		rec := newTestRecord(i)
@@ -51,7 +51,7 @@ func TestHandler_Batching_FlushInterval(t *testing.T) {
 
 	ch := make(chan []opencdc.Record, 1)
 	flushInterval := time.Second
-	underTest := NewCDCHandler(ctx, nil, nil, ch, false, 5, flushInterval)
+	underTest := NewCDCHandler(ctx, nil, nil, nil, ch, false, 5, flushInterval)
 
 	want := make([]opencdc.Record, 3)
 	for i := 0; i < cap(want); i++ {
@@ -74,7 +74,7 @@ func TestHandler_Batching_ContextCancelled(t *testing.T) {
 	is := is.New(t)
 
 	ch := make(chan []opencdc.Record, 1)
-	underTest := NewCDCHandler(ctx, nil, nil, ch, false, 5, time.Second)
+	underTest := NewCDCHandler(ctx, nil, nil, nil, ch, false, 5, time.Second)
 	cancel()
 	<-ctx.Done()
 	underTest.addToBatch(ctx, newTestRecord(0))

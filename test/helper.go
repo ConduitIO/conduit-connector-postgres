@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 	"testing"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/conduitio/conduit-commons/csync"
 	"github.com/conduitio/conduit-connector-postgres/source/cpool"
+	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -44,9 +46,8 @@ const RegularConnString = "postgres://meroxauser:meroxapass@127.0.0.1:5433/merox
 const TestTableAvroSchemaV1 = `{
     "type": "record",
     "name": "%s",
-    "fields":
-    [
-	{"name":"UppercaseColumn1","type":"int"},
+    "fields": [
+		{"name":"UppercaseColumn1","type":"int"},
         {"name":"column1","type":"string"},
         {"name":"column2","type":"int"},
         {"name":"column3","type":"boolean"},
@@ -60,17 +61,6 @@ const TestTableAvroSchemaV1 = `{
                 "scale": 3
             }
         },
-        {
-            "name": "column5",
-            "type":
-            {
-                "type": "bytes",
-                "logicalType": "decimal",
-                "precision": 5
-            }
-        },
-        {"name":"column6","type":"bytes"},
-        {"name":"column7","type":"bytes"},
         {"name":"id","type":"long"},
         {"name":"key","type":"bytes"}
     ]
@@ -80,11 +70,10 @@ const TestTableAvroSchemaV1 = `{
 const TestTableAvroSchemaV2 = `{
     "type": "record",
     "name": "%s",
-    "fields":
-    [
-	{"name":"UppercaseColumn1","type":"int"},
+    "fields": [
+        {"name":"UppercaseColumn1","type":"int"},
         {"name":"column1","type":"string"},
-        {"name":"column101","type":{"type":"long","logicalType":"local-timestamp-micros"}},
+        {"name":"column101","type":["null", {"type":"long","logicalType":"local-timestamp-micros"}]},
         {"name":"column2","type":"int"},
         {"name":"column3","type":"boolean"},
         {
@@ -97,17 +86,6 @@ const TestTableAvroSchemaV2 = `{
                 "scale": 3
             }
         },
-        {
-            "name": "column5",
-            "type":
-            {
-                "type": "bytes",
-                "logicalType": "decimal",
-                "precision": 5
-            }
-        },
-        {"name":"column6","type":"bytes"},
-        {"name":"column7","type":"bytes"},
         {"name":"id","type":"long"},
         {"name":"key","type":"bytes"}
     ]
@@ -117,15 +95,12 @@ const TestTableAvroSchemaV2 = `{
 const TestTableAvroSchemaV3 = `{
     "type": "record",
     "name": "%s",
-    "fields":
-    [
-	{"name":"UppercaseColumn1","type":"int"},
+    "fields": [
+        {"name":"UppercaseColumn1","type":"int"},
         {"name":"column1","type":"string"},
-        {"name":"column101","type":{"type":"long","logicalType":"local-timestamp-micros"}},
+        {"name":"column101","type":["null", {"type":"long","logicalType":"local-timestamp-micros"}]},
         {"name":"column2","type":"int"},
         {"name":"column3","type":"boolean"},
-        {"name":"column6","type":"bytes"},
-        {"name":"column7","type":"bytes"},
         {"name":"id","type":"long"},
         {"name":"key","type":"bytes"}
     ]
@@ -145,16 +120,17 @@ const TestTableKeyAvroSchema = `{
 const testTableCreateQuery = `
 		CREATE TABLE %q (
 		id bigserial PRIMARY KEY,
-		key bytea,
-		column1 varchar(256),
-		column2 integer,
-		column3 boolean,
-		column4 numeric(16,3),
-		column5 numeric(5),
-		column6 jsonb,
-		column7 json,
-		"UppercaseColumn1" integer
+		key bytea not null,
+		column1 varchar(256) not null,
+		column2 integer not null,
+		column3 boolean not null,
+		column4 numeric(16,3) not null,
+		"UppercaseColumn1" integer not null
 	)`
+
+var BigRatComparer = cmp.Comparer(func(x, y *big.Rat) bool {
+	return x.Cmp(y) == 0
+})
 
 type Querier interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
@@ -185,14 +161,14 @@ func ConnectSimple(ctx context.Context, t *testing.T, connString string) *pgx.Co
 	return conn.Conn()
 }
 
-// SetupTestTable creates a new table and returns its name.
-func SetupEmptyTestTable(ctx context.Context, t *testing.T, conn Querier) string {
+// SetupEmptyTable creates an empty test table and returns its name.
+func SetupEmptyTable(ctx context.Context, t *testing.T, conn Querier) string {
 	table := RandomIdentifier(t)
-	SetupEmptyTestTableWithName(ctx, t, conn, table)
+	SetupEmptyTableWithName(ctx, t, conn, table)
 	return table
 }
 
-func SetupEmptyTestTableWithName(ctx context.Context, t *testing.T, conn Querier, table string) {
+func SetupEmptyTableWithName(ctx context.Context, t *testing.T, conn Querier, table string) {
 	is := is.New(t)
 
 	query := fmt.Sprintf(testTableCreateQuery, table)
@@ -207,25 +183,26 @@ func SetupEmptyTestTableWithName(ctx context.Context, t *testing.T, conn Querier
 	})
 }
 
-func SetupTestTableWithName(ctx context.Context, t *testing.T, conn Querier, table string) {
+// SetupTableWithName creates a test table with a few row inserted into it.
+func SetupTableWithName(ctx context.Context, t *testing.T, conn Querier, table string) {
 	is := is.New(t)
-	SetupEmptyTestTableWithName(ctx, t, conn, table)
+	SetupEmptyTableWithName(ctx, t, conn, table)
 
 	query := `
-		INSERT INTO %q (key, column1, column2, column3, column4, column5, column6, column7, "UppercaseColumn1")
-		VALUES ('1', 'foo', 123, false, 12.2, 4, '{"foo": "bar"}', '{"foo": "baz"}', 1),
-		('2', 'bar', 456, true, 13.42, 8, '{"foo": "bar"}', '{"foo": "baz"}', 2),
-		('3', 'baz', 789, false, null, 9, '{"foo": "bar"}', '{"foo": "baz"}', 3),
-		('4', null, null, null, 91.1, null, null, null, null)`
+		INSERT INTO %q (key, column1, column2, column3, column4, "UppercaseColumn1")
+		VALUES ('1', 'foo', 123, false, 12.2, 1),
+		('2', 'bar', 456, true, 13.42, 2),
+		('3', 'baz', 789, false, 33.44, 3),
+		('4', 'qux', 444, false, 91.1, 4)`
 	query = fmt.Sprintf(query, table)
 	_, err := conn.Exec(ctx, query)
 	is.NoErr(err)
 }
 
-// SetupTestTable creates a new table and returns its name.
-func SetupTestTable(ctx context.Context, t *testing.T, conn Querier) string {
+// SetupTable creates a new table and returns its name.
+func SetupTable(ctx context.Context, t *testing.T, conn Querier) string {
 	table := RandomIdentifier(t)
-	SetupTestTableWithName(ctx, t, conn, table)
+	SetupTableWithName(ctx, t, conn, table)
 	return table
 }
 

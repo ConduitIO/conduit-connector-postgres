@@ -35,8 +35,8 @@ func TestCreatePublication(t *testing.T) {
 	}
 
 	tables := []string{
-		test.SetupTestTable(ctx, t, pool),
-		test.SetupTestTable(ctx, t, pool),
+		test.SetupTable(ctx, t, pool),
+		test.SetupTable(ctx, t, pool),
 	}
 
 	for _, givenPubName := range pubNames {
@@ -75,8 +75,8 @@ func TestCreatePublicationForTables(t *testing.T) {
 	pool := test.ConnectPool(ctx, t, test.RegularConnString)
 
 	tables := [][]string{
-		{test.SetupTestTable(ctx, t, pool)},
-		{test.SetupTestTable(ctx, t, pool), test.SetupTestTable(ctx, t, pool)},
+		{test.SetupTable(ctx, t, pool)},
+		{test.SetupTable(ctx, t, pool), test.SetupTable(ctx, t, pool)},
 	}
 
 	for _, givenTables := range tables {
