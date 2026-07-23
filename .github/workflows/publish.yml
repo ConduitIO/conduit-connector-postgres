@@ -1,0 +1,110 @@
+# Publish workflow for conduit-connector-postgres.
+#
+# Adapted from ConduitIO/connector-publish-action's reference-publish-workflow.yml.
+# Triggered by a version tag push: this workflow's OWN identity
+# (ConduitIO/conduit-connector-postgres/.github/workflows/publish.yml@<tag>) is what
+# becomes the pinned publisher.expectedIdentityPattern on first registration in
+# the connector registry. See the action's README ("Why composite, not
+# reusable").
+#
+# Three jobs: build (cosign-keyless sign, this repo's identity) -> provenance
+# (SLSA L3 via the slsa-github-generator reusable workflow, isolated) -> register
+# (open/update the index-repo PR).
+
+name: publish
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write   # upload release assets
+  id-token: write   # cosign keyless OIDC + SLSA provenance OIDC
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      artifacts: ${{ steps.publish.outputs.artifacts }}
+      resolved-identity: ${{ steps.publish.outputs.resolved-identity }}
+      hashes: ${{ steps.hash.outputs.hashes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Action uploads signed assets with `gh release upload` (no create),
+      # so the release must exist first. release.yml (GoReleaser) also creates
+      # it on this same tag — both fire in parallel with no ordering. Create it
+      # here if absent (idempotent: `|| true` on the already-exists race);
+      # GoReleaser's `release.mode: keep-existing` then tolerates it. --generate-notes
+      # gives reasonable notes even when this step wins the race.
+      - name: Ensure the release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$TAG" --generate-notes \
+            || echo "release $TAG already exists — nothing to create"
+
+      - name: Build + cosign-sign the artifact matrix
+        id: publish
+        uses: ConduitIO/connector-publish-action@v1
+        with:
+          mode: build
+          connector-name: postgres
+          version: ${{ github.ref_name }}
+          build-command: |
+            CGO_ENABLED=0 go build -o "$OUTPUT_PATH" ./cmd/connector
+
+      - name: Format subjects for the SLSA generator
+        id: hash
+        env:
+          # Passed via env (not interpolated into the shell) so the artifacts
+          # JSON can never break the quoting / inject a command.
+          ARTIFACTS: ${{ steps.publish.outputs.artifacts }}
+        run: |
+          echo "hashes=$(printf '%s' "$ARTIFACTS" | \
+            jq -r '[.[] | "\(.sha256)  \(.url | split("/") | last)"] | join("\n")' | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+  provenance:
+    needs: build
+    permissions:
+      actions: read     # generator reads the build job's workflow run
+      id-token: write   # its own OIDC identity — THIS becomes builder.id
+      contents: write   # uploads the provenance attestation as a release asset
+    # Pinned to the ref that IS conduit's pkg/registry/trust.ExpectedBuilderID.
+    # connector-publish-action's test/canary/generator_ref_test.go fails at PR
+    # time if this ref ever drifts from that constant.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.build.outputs.hashes }}
+      upload-assets: true
+
+  register:
+    needs: [build, provenance]
+    permissions:
+      contents: read
+      id-token: write   # this job's own cosign identity must resolve the same as build's
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Open/update the index-repo PR
+        uses: ConduitIO/connector-publish-action@v1
+        with:
+          mode: publish
+          connector-name: postgres
+          version: ${{ github.ref_name }}
+          # build artifacts from job 1 — required because build and publish are
+          # separate jobs (a step output can't cross a job boundary).
+          artifacts-json: ${{ needs.build.outputs.artifacts }}
+          min-conduit-version: '0.15.0'
+          min-protocol-version: '0.9.0'
+          repository: https://github.com/ConduitIO/conduit-connector-postgres
+          # First-registration only — a human-authored, tag-scoped identity
+          # fragment. Omit on subsequent version bumps (routing.Decide ignores
+          # it once the name exists).
+          first-registration-identity-ref-pattern: 'refs/tags/v[0-9]+\.[0-9]+\.[0-9]+'
+          provenance-bundle-url: ${{ needs.provenance.outputs.provenance-bundle-url }}
+          index-repo-token: ${{ secrets.REGISTRY_INDEX_PR_TOKEN }}
