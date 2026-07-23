@@ -106,5 +106,5 @@ jobs:
           # fragment. Omit on subsequent version bumps (routing.Decide ignores
           # it once the name exists).
           first-registration-identity-ref-pattern: 'refs/tags/v[0-9]+\.[0-9]+\.[0-9]+'
-          provenance-bundle-url: ${{ needs.provenance.outputs.provenance-bundle-url }}
+          provenance-bundle-url: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ needs.provenance.outputs.provenance-name }}
           index-repo-token: ${{ secrets.REGISTRY_INDEX_PR_TOKEN }}
