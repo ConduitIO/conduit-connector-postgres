@@ -73,6 +73,31 @@ The connector will automatically look up the primary key column for the specifie
 and use them as the key value. If that can't be determined, the connector will return
 an error.
 
+### Unchanged TOASTed Columns
+
+Postgres stores large field values (`text`, `bytea`, `jsonb`, and other
+variable-length types past a size threshold) out-of-line using
+[TOAST](https://www.postgresql.org/docs/current/storage-toast.html). When a row is
+updated but a TOASTed column is **not** changed, Postgres omits that column's value
+from the logical-replication message to avoid re-transmitting large unchanged data.
+
+For such columns, this connector **omits the field from the record payload** rather
+than emitting it as `NULL`. Emitting `NULL` would be silent data corruption — a
+downstream sink cannot distinguish "the value was set to NULL" from "the value did
+not change". Omission preserves that distinction: absence means "unchanged".
+
+What this means for your destination:
+
+- **Partial-update / upsert sinks** (including this connector's own Postgres
+  destination, which builds its `ON CONFLICT DO UPDATE SET` clause only from the
+  fields present in the payload) handle omission correctly — an absent field is left
+  untouched in the target row.
+- **Full-row / full-document replace sinks** must treat an absent field as
+  "unchanged" and preserve the existing target value. If a sink cannot do this, set
+  `REPLICA IDENTITY FULL` on the source table. Under `REPLICA IDENTITY FULL` the old
+  row image carries every column, and this connector backfills unchanged TOASTed
+  values from it so the payload is always complete.
+
 ## Destination
 
 The Postgres Destination takes a Conduit record and stores it using a SQL statement.
