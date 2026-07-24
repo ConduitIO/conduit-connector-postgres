@@ -20,6 +20,7 @@ import (
 	"math/big"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +30,88 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/matryer/is"
 )
+
+// TestRelationSetValues_UnchangedToast is a fast, DB-less regression test for
+// invariant 6 (schema handling never silently mangles data).
+//
+// On an UPDATE, Postgres represents an unmodified, TOASTed column with
+// TupleDataColumn.DataType == 'u' (TupleDataTypeToast) and no Data bytes —
+// the same "no bytes" shape as a real NULL ('n' / TupleDataTypeNull). Before
+// the fix, RelationSet.Values ignored DataType entirely and decoded both the
+// same way, so an unchanged TOASTed column was emitted as NULL, silently
+// overwriting real data downstream. This test builds the tuple by hand (no
+// Postgres needed) and fails without the fix: it would assert `big_col` is
+// present and nil, whereas the fixed behavior is that `big_col` is omitted
+// entirely from the returned map.
+func TestRelationSetValues_UnchangedToast(t *testing.T) {
+	is := is.New(t)
+
+	rs := NewRelationSet()
+	rs.Add(&pglogrepl.RelationMessage{
+		RelationID:   1,
+		RelationName: "toast_test",
+		ColumnNum:    3,
+		Columns: []*pglogrepl.RelationMessageColumn{
+			{Name: "id", DataType: pgtype.Int8OID},
+			{Name: "small_col", DataType: pgtype.TextOID},
+			{Name: "big_col", DataType: pgtype.TextOID},
+		},
+	})
+
+	// Simulates an UPDATE that changed small_col but left the TOASTed
+	// big_col untouched: Postgres omits big_col's data and marks it 'u'.
+	row := &pglogrepl.TupleData{
+		ColumnNum: 3,
+		Columns: []*pglogrepl.TupleDataColumn{
+			{DataType: pglogrepl.TupleDataTypeText, Data: []byte("1")},
+			{DataType: pglogrepl.TupleDataTypeText, Data: []byte("changed")},
+			{DataType: pglogrepl.TupleDataTypeToast}, // no Data, same as NULL would look
+		},
+	}
+
+	values, err := rs.Values(1, row)
+	is.NoErr(err)
+
+	is.Equal(values["id"], int64(1))
+	is.Equal(values["small_col"], "changed")
+
+	// The defect: big_col must never surface as NULL. The fix omits it from
+	// the map entirely rather than reporting nil.
+	gotVal, isPresent := values["big_col"]
+	is.True(!isPresent) // big_col must be omitted, not present-as-nil
+	is.Equal(gotVal, nil)
+}
+
+// TestRelationSetValues_RealNull ensures the actual NULL case ('n') is still
+// reported as an explicit nil value (present in the map), distinguishing it
+// from the omitted-unchanged-TOAST case above.
+func TestRelationSetValues_RealNull(t *testing.T) {
+	is := is.New(t)
+
+	rs := NewRelationSet()
+	rs.Add(&pglogrepl.RelationMessage{
+		RelationID:   1,
+		RelationName: "null_test",
+		ColumnNum:    1,
+		Columns: []*pglogrepl.RelationMessageColumn{
+			{Name: "nullable_col", DataType: pgtype.TextOID},
+		},
+	})
+
+	row := &pglogrepl.TupleData{
+		ColumnNum: 1,
+		Columns: []*pglogrepl.TupleDataColumn{
+			{DataType: pglogrepl.TupleDataTypeNull},
+		},
+	}
+
+	values, err := rs.Values(1, row)
+	is.NoErr(err)
+
+	gotVal, isPresent := values["nullable_col"]
+	is.True(isPresent)    // a real NULL must still be present in the map ...
+	is.Equal(gotVal, nil) // ... and explicitly nil
+}
 
 func TestRelationSetUnregisteredType(t *testing.T) {
 	is := is.New(t)
@@ -99,6 +182,120 @@ func TestRelationSetAllTypes(t *testing.T) {
 		is.NoErr(err)
 		isValuesAllTypesStandalone(is, values)
 	})
+}
+
+// TestRelationSetValues_UnchangedToast_Integration is the end-to-end
+// counterpart to TestRelationSetValues_UnchangedToast: it drives a real
+// Postgres logical replication stream (see test/docker-compose.yml, `make
+// test`) instead of hand-building pglogrepl messages. An UPDATE changes only
+// small_col; big_col is a TOASTed column (SET STORAGE EXTERNAL, > 2KB value)
+// left untouched, so Postgres marks it DataType == 'u' and omits its bytes
+// from the wire. The decoded values for the UPDATE's new tuple must not show
+// big_col as NULL.
+func TestRelationSetValues_UnchangedToast_Integration(t *testing.T) {
+	ctx := test.Context(t)
+	is := is.New(t)
+
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+
+	table := setupTableToast(ctx, t, pool)
+	_, messages := setupSubscription(ctx, t, pool, table)
+
+	bigVal := strings.Repeat("x", 8000) // forces out-of-line TOAST storage
+	insertRowToast(ctx, t, pool, table, bigVal)
+
+	rs := NewRelationSet()
+
+	// drain BEGIN, RELATION, INSERT, COMMIT for the insert (allow for empty
+	// transactions to be received first, same pattern as TestRelationSetAllTypes)
+	for {
+		msg := <-messages
+		_ = msg.(*pglogrepl.BeginMessage)
+
+		msg = <-messages
+		if _, ok := msg.(*pglogrepl.CommitMessage); ok {
+			continue
+		}
+
+		rel := msg.(*pglogrepl.RelationMessage)
+		rs.Add(rel)
+		_ = (<-messages).(*pglogrepl.InsertMessage)
+		_ = (<-messages).(*pglogrepl.CommitMessage)
+		break
+	}
+
+	// UPDATE only small_col; big_col is left untouched.
+	updateSmallColToast(ctx, t, pool, table)
+
+	var upd *pglogrepl.UpdateMessage
+	for {
+		msg := <-messages
+		_ = msg.(*pglogrepl.BeginMessage)
+
+		msg = <-messages
+		if _, ok := msg.(*pglogrepl.CommitMessage); ok {
+			continue
+		}
+		if rm, ok := msg.(*pglogrepl.RelationMessage); ok {
+			rs.Add(rm)
+			msg = <-messages
+		}
+		upd = msg.(*pglogrepl.UpdateMessage)
+		_ = (<-messages).(*pglogrepl.CommitMessage)
+		break
+	}
+
+	values, err := rs.Values(upd.RelationID, upd.NewTuple)
+	is.NoErr(err)
+
+	is.Equal(values["small_col"], "changed")
+
+	// The defect under test: an unchanged TOASTed column must never surface
+	// as NULL. The fix omits it from the map entirely instead.
+	gotVal, isPresent := values["big_col"]
+	is.True(!isPresent) // big_col must be omitted, not present-as-nil
+	is.Equal(gotVal, nil)
+}
+
+// setupTableToast creates a table with a column forced to out-of-line
+// ("TOASTed") storage via SET STORAGE EXTERNAL, which also disables
+// compression so any value above the ~2KB inline threshold is guaranteed to
+// be stored out-of-line regardless of how compressible it is.
+func setupTableToast(ctx context.Context, t *testing.T, conn test.Querier) string {
+	is := is.New(t)
+	table := test.RandomIdentifier(t)
+
+	query := fmt.Sprintf(`
+		CREATE TABLE %s (
+		  id        bigserial PRIMARY KEY,
+		  small_col text,
+		  big_col   text
+		)`, table)
+	_, err := conn.Exec(ctx, query)
+	is.NoErr(err)
+
+	_, err = conn.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s ALTER COLUMN big_col SET STORAGE EXTERNAL`, table))
+	is.NoErr(err)
+
+	t.Cleanup(func() {
+		_, err := conn.Exec(context.Background(), fmt.Sprintf(`DROP TABLE %s`, table))
+		is.NoErr(err)
+	})
+	return table
+}
+
+func insertRowToast(ctx context.Context, t *testing.T, conn test.Querier, table, bigVal string) {
+	is := is.New(t)
+	query := fmt.Sprintf(`INSERT INTO %s (small_col, big_col) VALUES ('original', $1)`, table)
+	_, err := conn.Exec(ctx, query, bigVal)
+	is.NoErr(err)
+}
+
+func updateSmallColToast(ctx context.Context, t *testing.T, conn test.Querier, table string) {
+	is := is.New(t)
+	query := fmt.Sprintf(`UPDATE %s SET small_col = 'changed'`, table)
+	_, err := conn.Exec(ctx, query)
+	is.NoErr(err)
 }
 
 // setupTableAllTypes creates a new table with all types and returns its name.
