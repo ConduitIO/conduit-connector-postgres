@@ -14,14 +14,14 @@ Grounding this document in the actual connector source (not the one-paragraph ep
 surfaced two things worth stating plainly up front:
 
 1. **The existing "resumable" snapshot is not actually resumable in the correctness sense.** It
-   resumes the table *cursor position*, but silently loses the transactional consistency
+   resumes the table _cursor position_, but silently loses the transactional consistency
    guarantee (the exported snapshot) that made the original snapshot↔stream handoff gap-free.
    See [Finding 1](#finding-1-the-txsnapshotid-is-not-durable-across-a-restart).
 2. **The connector currently cannot distinguish "column is NULL" from "unchanged TOASTed column
    value" on UPDATE.** Both decode through the same code path today, which is a live invariant-6
    violation independent of anything DBZ-3 adds — surfaced here because DDL/TOAST handling shares
    the same relation-decoding path this design doc has to touch anyway. See
-   [Finding 2](#finding-2-toastdatatype-is-never-inspected-a-live-invariant-6-gap).
+   [Finding 2](#finding-2-toast-vs-null-is-never-disambiguated-a-live-invariant-6-gap).
 
 Both findings are cited to file:line below. Neither is fixed by this document — this document
 proposes how to fix them, as part of the same body of work DBZ-3 already has to do to the
@@ -46,10 +46,10 @@ it — plus the slot's `RestartLSN`. The snapshot iterator (`source/snapshot/ite
 `source/snapshot/fetch_worker.go:160-229`) then runs one `FetchWorker` per table, each opening a
 `REPEATABLE READ, READ ONLY` transaction and pinning it to the exported snapshot via
 `SET TRANSACTION SNAPSHOT '<TXSnapshotID>'` (`fetch_worker.go:407-422`). Because every table's
-snapshot read is pinned to the *exact* point-in-time view that existed when the replication slot
+snapshot read is pinned to the _exact_ point-in-time view that existed when the replication slot
 was created, and the CDC stream starts from that same slot's `RestartLSN`, the handoff is
 gap-free and dup-free by construction — this is the standard Debezium initial-snapshot design and
-it is correctly built, *for the case where the snapshot completes in one run*.
+it is correctly built, _for the case where the snapshot completes in one run_.
 
 **Per-table resumability** (`fetch_worker.go:105-127`, `source/position/position.go:41-46`): the
 position format already tracks `SnapshotPosition{LastRead, SnapshotEnd}` per table, and
@@ -57,14 +57,15 @@ position format already tracks `SnapshotPosition{LastRead, SnapshotEnd}` per tab
 a restart resumes each table's cursor from its last-acked key rather than re-reading from row
 zero. `updateSnapshotEnd` (`fetch_worker.go:257-270`) only (re)computes `snapshotEnd` when it is
 still `0`, i.e. the originally captured upper bound is preserved across a resume, not recomputed —
-so the *set of rows this snapshot covers* does not silently grow. This part is sound.
+so the _set of rows this snapshot covers_ does not silently grow. This part is sound.
 
-<a id="finding-1-the-txsnapshotid-is-not-durable-across-a-restart"></a>
-**Finding 1 — the TXSnapshotID is not durable across a restart.** This is the actual gap, and it
-undermines the gap-free/dup-free claim above the moment a snapshot spans a restart:
+#### Finding 1: the TXSnapshotID is not durable across a restart
+
+This is the actual gap, and it undermines the gap-free/dup-free claim above the moment a snapshot
+spans a restart:
 
 - `CreateSubscription` (`subscription.go:85-104`) calls `pglogrepl.CreateReplicationSlot` on
-  *every* connector start, including a resume. On resume the slot already exists, so the call
+  _every_ connector start, including a resume. On resume the slot already exists, so the call
   fails with Postgres error code `42710`; the duplicate-slot branch
   (`subscription.go:96-104`, guarded by `internal.IsPgDuplicateErr`) only logs a warning and
   continues — it does **not** re-derive a snapshot ID, because there is nothing to derive: an
@@ -76,7 +77,7 @@ undermines the gap-free/dup-free claim above the moment a snapshot spans a resta
   `snapshot.Config.TXSnapshotID`.
 - `FetchWorker.withSnapshot` (`fetch_worker.go:407-422`) checks for an empty `TXSnapshotID` and,
   finding one, **logs a warning and proceeds without `SET TRANSACTION SNAPSHOT`** — silently
-  falling back to whatever the fresh `REPEATABLE READ` transaction sees as of *now*, not as of
+  falling back to whatever the fresh `REPEATABLE READ` transaction sees as of _now_, not as of
   slot creation.
 
 The practical consequence: a snapshot that survives a crash and resumes is no longer reading a
@@ -86,21 +87,22 @@ but it silently drops the one property — "this table read and that WAL startin
 same instant" — that the whole snapshot→CDC handoff design depends on, and does so with no signal
 to the operator beyond a `Warn`-level log line. Concretely, once the resumed read is no longer
 snapshot-pinned:
-  - An **UPDATE** landing on an unread key (`lastRead < key <= snapshotEnd`) between the crash and
-    the resume is picked up by the resumed cursor read with its *new* values (looks like an
-    insert-shaped snapshot record), and is *also* replayed later by CDC as an UPDATE once
-    streaming starts (WAL for it was never pruned — nothing had confirmed past that LSN). Two
-    records, same final state — survivable under at-least-once, but not what "resumable snapshot"
-    is supposed to mean, and the "insert, then update to the same values" shape is confusing to a
-    consumer expecting Debezium's do-no-redundant-work semantics.
-  - A **DELETE** on an unread key is invisible to the resumed cursor read (the row is gone), so no
-    snapshot record is ever emitted for it, and CDC later emits the DELETE directly — this
-    specific case is actually correct by accident, not by design.
-  - The severity axis that matters for the design below is not data loss (none demonstrated) but
-    **loss of the explicit, auditable consistency guarantee**, which blocks ever supporting
-    Debezium's actual incremental-snapshot feature (ad-hoc re-snapshot of a table while streaming
-    is already running) — that feature requires exactly this kind of watermark reconciliation to
-    be designed in, not bolted on.
+
+- An **UPDATE** landing on an unread key (`lastRead < key <= snapshotEnd`) between the crash and
+  the resume is picked up by the resumed cursor read with its _new_ values (looks like an
+  insert-shaped snapshot record), and is _also_ replayed later by CDC as an UPDATE once
+  streaming starts (WAL for it was never pruned — nothing had confirmed past that LSN). Two
+  records, same final state — survivable under at-least-once, but not what "resumable snapshot"
+  is supposed to mean, and the "insert, then update to the same values" shape is confusing to a
+  consumer expecting Debezium's do-no-redundant-work semantics.
+- A **DELETE** on an unread key is invisible to the resumed cursor read (the row is gone), so no
+  snapshot record is ever emitted for it, and CDC later emits the DELETE directly — this
+  specific case is actually correct by accident, not by design.
+- The severity axis that matters for the design below is not data loss (none demonstrated) but
+  **loss of the explicit, auditable consistency guarantee**, which blocks ever supporting
+  Debezium's actual incremental-snapshot feature (ad-hoc re-snapshot of a table while streaming
+  is already running) — that feature requires exactly this kind of watermark reconciliation to
+  be designed in, not bolted on.
 
 **Schema / DDL** (`source/logrepl/handler.go:119-153`, `source/logrepl/internal/relationset.go:41-51`):
 `pgoutput` never emits a DDL statement. What it emits is a new `RelationMessage` — sent again by
@@ -114,8 +116,8 @@ off) no signal to the destination at all beyond payload keys quietly changing sh
 exactly the "no Conduit CDC connector auto-handles DDL" gap the epic names as the single largest
 universal gap versus Debezium — verified in code, not assumed.
 
-<a id="finding-2-toastdatatype-is-never-inspected-a-live-invariant-6-gap"></a>
-**Finding 2 — `TupleDataColumn.DataType` is never inspected: a live invariant-6 gap.**
+#### Finding 2: TOAST vs. NULL is never disambiguated (a live invariant-6 gap)
+
 `pglogrepl.TupleDataColumn` (vendored at
 `github.com/jackc/pglogrepl@v0.0.0-20240307033717-828fbfe908e9/message.go:361-422`) carries a
 `DataType` byte distinguishing four wire cases: `'n'` (SQL NULL), `'u'` (**unchanged TOASTed
@@ -156,7 +158,7 @@ acceptance criterion below, not folded silently into "general hardening."
   a real, separate hardening item, out of scope here to keep this doc's surface bounded to what
   the epic scoped.
 - Debezium's full ad-hoc **incremental snapshot** (re-snapshot a live table without stopping the
-  stream). Fixing Finding 1 makes crash-resume of the *initial* snapshot correct; it does not by
+  stream). Fixing Finding 1 makes crash-resume of the _initial_ snapshot correct; it does not by
   itself build the signal-table/watermark machinery for re-snapshotting a table that is already
   streaming. That is named as a fast-follow in [Alternatives — incremental snapshot](#area-1-resumable-snapshot-consistency)
   and is explicitly the deepest item the v0.20 contingency plan may defer to v0.21.
@@ -174,9 +176,12 @@ acceptance criterion below, not folded silently into "general hardening."
   durably persisted. Today this holds for data records: `Subscription.Ack`
   (`subscription.go:270-273`) is only invoked from `CDCIterator.Ack`
   (`source/logrepl/cdc.go:266-287`), which the SDK calls after the engine's own
-  persist-before-ack fix (`045f283`, `pkg/connector/source.go` in conduit core). Any heartbeat
-  mechanism must preserve this — it may advance the WAL watermark using heartbeat-generated LSNs,
-  never using inferred/optimistic data LSNs.
+  persist-before-ack fix (`045f283`, `pkg/connector/source.go` in Conduit core). Any heartbeat
+  mechanism must preserve this — it may advance the reported WAL watermark using a
+  heartbeat-generated LSN **only when no emitted data record is currently unacked**
+  (`walFlushed == walWritten`, per the corrected gate in [Heartbeats](#heartbeats) below); it must
+  never advance past an outstanding, unacked data record merely because a heartbeat message was
+  itself observed or processed.
 - **Invariant 2 (monotonic, crash-safe positions).** The connector's own position format
   (`source/position/position.go`) is versioned implicitly by field presence today; this doc adds
   an explicit `Version` field and defines the upgrade path (below).
@@ -190,7 +195,7 @@ acceptance criterion below, not folded silently into "general hardening."
   responsibility (the connector returns a position on each record; the engine persists it). This
   doc does not add a connector-owned state store — heartbeat/DDL-history state, if any needs to
   persist across restarts, rides the existing position, not a new file or table the connector
-  privately owns (see [DDL history](#area-2-ddl-reconstruction) below for the one exception, which
+  privately owns (see [DDL history](#area-2-ddl-reconstruction-from-pgoutput) below for the one exception, which
   is Postgres-owned, not connector-owned).
 - **Invariant 6 (schema handling).** DDL drift and TOAST/NULL disambiguation must never silently
   coerce. Both get an explicit, configured, testable policy.
@@ -205,8 +210,6 @@ acceptance criterion below, not folded silently into "general hardening."
   the new format with the same runtime behavior it has today.
 
 ## Area 1: Resumable snapshot consistency
-
-<a id="area-1-resumable-snapshot-consistency"></a>
 
 ### Alternatives considered
 
@@ -230,18 +233,18 @@ work" as its enforcement mechanism).
 existing per-table cursor design.** Structure:
 
 1. **Record the watermark LSN, not just a snapshot ID, at snapshot start.** When the CDC iterator
-   creates the replication slot for the first time, capture both `TXSnapshotID` (for the *first*
+   creates the replication slot for the first time, capture both `TXSnapshotID` (for the _first_
    run's pinned read) and the slot's `RestartLSN` as the snapshot's **low watermark**, and persist
    both in the position (`position.Position` gains `SnapshotLowWatermarkLSN string`, alongside the
    existing `LastLSN`).
 2. **On resume, do not attempt to re-acquire a `TXSnapshotID`.** It cannot be re-acquired; stop
-   pretending otherwise. Instead, resume the per-table cursor read *without* `SET TRANSACTION
+   pretending otherwise. Instead, resume the per-table cursor read _without_ `SET TRANSACTION
    SNAPSHOT` (as today), but tag every snapshot record emitted after a resume with a
    `opencdc.Metadata["postgres.snapshot.resumed"] = "true"` marker and reconcile at the CDC
    boundary: **do not allow the CDC stream to prune WAL (advance `confirmed_flush_lsn`) past the
    low watermark until the snapshot has fully completed**, exactly as today (this already holds,
    because CDC doesn't start consuming until `useCDCIterator`, `combined.go:228-242`). This
-   guarantees every UPDATE/DELETE that lands in the resumed-but-unpinned window is *also* replayed
+   guarantees every UPDATE/DELETE that lands in the resumed-but-unpinned window is _also_ replayed
    by CDC afterward — so the resumed snapshot's loss of consistency degrades to "possible harmless
    duplicate," never "gap." This makes the existing accidental-correctness argument in Finding 1 an
    explicit, tested guarantee instead of an accident.
@@ -267,8 +270,6 @@ actual (weaker, replay-based) guarantee explicit and tested instead of implicit 
 doesn't foreclose incremental snapshot later.
 
 ## Area 2: DDL reconstruction from `pgoutput`
-
-<a id="area-2-ddl-reconstruction"></a>
 
 ### Alternatives considered
 
@@ -312,7 +313,7 @@ overwriting:
    configurable) to keep the position payload bounded, consistent with invariant-2's "positions
    are monotonic and crash-safe," not "positions grow unboundedly."
 3. **Configured drift policy — `logrepl.schemaDrift.policy`, one of `halt | dlq | evolve`
-   (default `halt`)**, evaluated the moment a diff is detected, *before* the first record referencing
+   (default `halt`)**, evaluated the moment a diff is detected, _before_ the first record referencing
    the new shape is emitted:
    - `halt`: the pipeline stops with a coded, actionable error naming the table, the specific
      columns added/dropped/retyped, and the LSN at which the change was observed. This is the safe
@@ -320,12 +321,12 @@ overwriting:
    - `dlq`: records using the new shape are routed to the connector's error-return path (Conduit's
      existing DLQ mechanism at the pipeline level) until an operator acknowledges the drift via the
      operator API (see below); inherits the existing "no queryable DLQ record content" gap named in
-     `docs/design-documents/20260715-dlq-record-visibility.md` in conduit core — this document does
+     `docs/design-documents/20260715-dlq-record-visibility.md` in Conduit core — this document does
      not build a Postgres-specific DLQ record store as a side effect, per that gap's explicit
      inheritance rule in the epic.
    - `evolve`: the new shape is accepted automatically, a schema-drift event is emitted on the
      operator API and (if `WithAvroSchema`) a new Avro schema is registered and attached going
-     forward — but *never* for a narrowing change (dropped column, incompatible type change) without
+     forward — but _never_ for a narrowing change (dropped column, incompatible type change) without
      `dlq` or `halt` semantics also applying to in-flight records referencing the dropped/changed
      column; `evolve` only auto-proceeds for backward-compatible widenings (new nullable column,
      compatible type widening per the existing Avro schema-compatibility rules already used for
@@ -350,6 +351,46 @@ per-table version history a real drift policy needs. B would have been simpler t
 wrong on both correctness (race) and cost (continuous catalog polling against the source database,
 which this epic's own critique of trigger-based CDC argues against).
 
+## Position carry-forward is an implementation requirement, not just a struct field
+
+Adding `SnapshotLowWatermarkLSN` and `SchemaHistory` to `position.Position` (Areas 1 and 2 above)
+is necessary but not sufficient. **`CDCHandler.buildPosition`
+(`source/logrepl/handler.go:312-318`) currently constructs a brand-new `position.Position{}` for
+every single CDC record**, populating only `Type` and `LastLSN`:
+
+```go
+func (*CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
+	return position.Position{
+		Type:    position.TypeCDC,
+		LastLSN: lsn.String(),
+	}.ToSDKPosition()
+}
+```
+
+If this doesn't change, `SnapshotLowWatermarkLSN` and `SchemaHistory` would be set once (on the
+snapshot-side positions, via `snapshot.Iterator.buildRecord`, `iterator.go:149-165`, which does
+carry `i.lastPosition` forward correctly) and then **silently dropped the instant the first CDC
+record is emitted** after the snapshot→CDC handoff — every position from that point on would be a
+fresh, field-sparse `Position{Type: TypeCDC, LastLSN: ...}` with no low watermark and no schema
+history. A restart immediately after that point would see `Version == 0`-shaped data (per the
+upgrade section below) even on a connector that has run past its first snapshot — silently
+regressing to Finding-1/pre-DDL-tracking behavior on every single CDC-mode restart, not just on a
+genuine version rollback. That would make Areas 1 and 2 correct only in the snapshot phase and
+silently inert for the entire (much longer) CDC-streaming lifetime of a pipeline — the opposite of
+what this document is for.
+
+**Requirement:** `CDCHandler` must hold the current `position.Position` (or at minimum its
+`SnapshotLowWatermarkLSN` and `SchemaHistory` fields) as part of its own state, seeded from the
+position the connector was started with, and `buildPosition` must carry those fields forward
+unchanged on every record, updating only `Type`/`LastLSN` per record and `SchemaHistory` itself
+only at the moment Area 2's diff logic detects and records a new relation version. This is
+equivalent in spirit to how `snapshot.Iterator` already threads `i.lastPosition` through
+`buildRecord` (`iterator.go:150-153`) — the CDC side needs the same threading, which it does not
+have today, and this document's Areas 1 and 2 are not actually implemented until it does. This is
+called out as its own acceptance criterion below, separate from the watermark and schema-history
+mechanisms themselves, because it is the kind of easy-to-omit wiring detail that would otherwise
+only surface as a confusing intermittent regression during review or, worse, in production.
+
 ## Heartbeats
 
 **The gap:** `Subscription.listen` (`subscription.go:168-215`) already sends a
@@ -357,7 +398,7 @@ which this epic's own critique of trigger-based CDC argues against).
 `subscription.go:43,133,171-180`) — but that update only **re-reports the last known
 `walWritten`/`walFlushed` positions** (`sendStandbyStatusUpdate`, `subscription.go:382-423`). It
 does not generate new WAL activity. Debezium's heartbeat problem is specifically: if the
-*publication's* tables are idle but unrelated WAL activity elsewhere in the database (other
+_publication's_ tables are idle but unrelated WAL activity elsewhere in the database (other
 tables, other publications, autovacuum, etc.) keeps growing, this subscriber never receives
 `XLogData` for any of it (pgoutput only forwards changes matching the publication), so
 `walWritten` never advances, and the slot's `restart_lsn`/`confirmed_flush_lsn` stays pinned,
@@ -374,18 +415,50 @@ the problem it looks like it solves.
   deliver, because the heartbeat table is a member of the publication (this connector already
   manages publication membership programmatically, `internal.CreatePublication`,
   `publication.go`).
-- **The heartbeat's LSN is tracked separately from the data-ack LSN.** `Subscription` gains a
-  second flushed-position field, `heartbeatFlushed`, updated only when a heartbeat message's own
-  XLogData is observed and processed (never inferred). `sendStandbyStatusUpdate`'s reported
-  `WALFlushPosition` becomes `max(dataWalFlushed, heartbeatWalFlushed-that-is-safe-to-report)` —
-  and critically, **the heartbeat LSN is only safe to report once it has itself been "processed"
-  by the same handler path data records go through** (it flows through `Handle`, gets recognized as
-  a heartbeat-table change, and is immediately considered "flushed" because a heartbeat carries no
-  application data requiring downstream durability — there is nothing to lose by confirming it).
-  This preserves invariant 1: **the reported flush position never exceeds the durably-persisted
-  data-record watermark plus whatever heartbeat activity has no data-durability obligation of its
-  own.** A heartbeat can safely unstick a stalled slot without ever telling Postgres "I've flushed"
-  a data record the engine hasn't actually durably ack'd yet.
+- **The heartbeat's LSN is tracked separately from the data-ack LSN, and is only safe to report
+  when no data record is outstanding — never merely because the heartbeat message itself was
+  "processed."** An earlier draft of this section gated heartbeat-driven advancement on "the
+  heartbeat's `XLogData` was processed," which is wrong and reintroduces the exact sev-0 pattern
+  this doc cites: `Handle` (`handler.go:119-153`) hands insert/update/delete records off to
+  `CDCHandler`'s batch (`addToBatch`, `handler.go:264-279`) and the batching channel
+  (`batchesCh`/`out`, `cdc.go:56,86-96`) well before the engine has acked them — `walFlushed` only
+  ever advances via an explicit `Subscription.Ack(lsn)` call
+  (`subscription.go:270-273`), driven by `CDCIterator.Ack` (`cdc.go:266-287`), which the SDK
+  invokes only after the engine's persist-before-ack fix has durably written the position. A data
+  record can be sitting in `recordBatch` or already handed to a slow destination, with a lower LSN
+  than a heartbeat's, at the moment the heartbeat's own commit is observed. Reporting the
+  heartbeat's LSN as flushed at that moment would tell Postgres it's safe to prune WAL past that
+  unacked record — crash before the destination durably writes it, and the record is gone forever,
+  unrecoverable because the WAL that would have redelivered it is already pruned. That is
+  invariant 1/2/3 violated via a side channel, not a hypothetical.
+
+  **The corrected gate:** the connector already tracks exactly the state needed to gate this
+  correctly, without inventing new machinery. `Subscription.walWritten`
+  (`subscription.go:55-58`) is updated in `handleXLogData` to the LSN of the most recent record
+  actually **emitted** downstream (`writtenLSN`, returned non-zero only for
+  insert/update/delete, `handler.go:129-143`, `subscription.go:261-263`); `walFlushed`
+  (`subscription.go:270-273`) is updated only on an actual engine ack. `sendStandbyStatusUpdate`
+  already computes `walFlushed == s.walWritten` today, for an unrelated purpose — deciding whether
+  it's safe to reply with `serverWALEnd` for keepalive (`subscription.go:392-394`,
+  `replyWithWALEnd := walFlushed == s.walWritten && ...`). That comparison is _precisely_ "no
+  emitted data record is currently unacked," and it is the correct, and only correct, gate for
+  heartbeat-driven advancement too:
+  - Track a separate `heartbeatObservedLSN`, updated when the heartbeat table's own `XLogData` is
+    decoded (a heartbeat write is itself just another row change flowing through `Handle`,
+    recognized by table name and short-circuited before reaching `addToBatch` — it never enters
+    the data record path).
+  - The reported `WALFlushPosition` in `sendStandbyStatusUpdate` is `walFlushed` **unless
+    `walFlushed == walWritten`** (no data record outstanding, the existing check) **and
+    `heartbeatObservedLSN > walFlushed`**, in which case it is safe to advance to
+    `heartbeatObservedLSN` — because with no outstanding emitted-but-unacked record, there is
+    nothing left whose durability the advancement could be lying about.
+  - This is exactly the case heartbeats are meant to cover — a genuinely idle publication has no
+    outstanding records by definition — so the fix costs the feature nothing: heartbeats still
+    advance the watermark whenever there's truly no application traffic, and are correctly
+    withheld the moment there is.
+  - This replaces the flawed `max(dataWalFlushed, heartbeatWalFlushed-that-is-safe-to-report)`
+    framing from the earlier draft, which asserted a guarantee ("never exceeds the durably
+    persisted watermark") the mechanism as originally specified did not actually provide.
 - Heartbeat writes are skipped (not queued, not retried into a backlog) if the connector is
   currently in snapshot mode or mid-teardown — heartbeats only run once CDC streaming is active,
   matching the constraint that nothing should perturb the pinned/resumed snapshot transaction
@@ -428,9 +501,10 @@ before this ships, each with symptom → diagnosis → remediation, per the exis
 | Failure | Behavior after this design | Invariant(s) |
 | --- | --- | --- |
 | **Crash mid-snapshot** (`kill -9` while a `FetchWorker` cursor is open) | Resume reopens the cursor at `lastRead` (unchanged, already correct). `TXSnapshotID` is unavailable (Finding 1); resumed read runs unpinned, tagged `postgres.snapshot.resumed`, and CDC does not prune WAL past the recorded low watermark until snapshot completion — any UPDATE/DELETE in the resumed window is guaranteed to also arrive via CDC replay. No gap; possible harmless duplicate; explicitly observable via the operator API, not silent. | 1, 2, 3 |
+| **Crash at the snapshot→CDC switchover boundary** (every `FetchWorker` has reached end-of-cursor, but the crash happens before `useCDCIterator`/`StartSubscriber` runs, so the persisted position is still `Type == TypeSnapshot`) | On resume, `CombinedIterator.initSnapshotIterator` (`combined.go:198-224`) sees `pos.Type == TypeSnapshot` and reconstructs the snapshot iterator and its `FetchWorker`s exactly as if the snapshot were still in progress. But every table's cursor range is now empty (`lastRead == snapshotEnd` for each, since all workers had already finished before the crash), so `createCursor`/`fetch` (`fetch_worker.go:201-229`) immediately hits `n == 0`, the worker's `tomb` completes with no records sent, `Iterator.data` closes (`iterator.go:192-206`), and `NextN` returns `ErrIteratorDone` on the first call (`iterator.go:97-106`) — `CombinedIterator.NextN` then calls `useCDCIterator` (`combined.go:117-138`) and CDC picks up cleanly from the recorded low-watermark LSN, which was never pruned because CDC hadn't started consuming before the crash. **This is correct today only as a side effect of the empty-range short-circuit, not by explicit design** — it is not gap-free by an intentional check, it happens to be gap-free because there is nothing left to read. Called out explicitly here (rather than left unanalyzed) precisely because a future change to the empty-cursor path (e.g. an optimization that skips re-validating an empty-range table) could silently break this without anyone noticing it was ever load-bearing. Requires its own chaos test (acceptance criterion below) rather than resting on this analysis alone. | 1, 2, 3 |
 | **DDL during an active snapshot on the same table** | `ALTER TABLE` requires `ACCESS EXCLUSIVE`; the `FetchWorker`'s open cursor holds `ACCESS SHARE` for the transaction's duration, so the DDL blocks until the snapshot transaction commits (standard Postgres lock semantics — not something this connector controls). Documented as an operational caveat: a DDL on a currently-snapshotting table will queue behind the snapshot, not corrupt it. Once the snapshot transaction ends and the DDL proceeds, the next `RelationMessage` triggers the diff/policy path in Area 2. | 6 |
 | **DDL during active CDC streaming (steady state)** | New `RelationMessage` observed, diffed against history, policy applied (`halt`/`dlq`/`evolve`) before any record using the new shape is emitted. Narrowing changes always halt or DLQ regardless of configured policy. | 6 |
-| **Replication slot lost/dropped externally** (e.g. an operator runs `pg_drop_replication_slot`, or Postgres invalidates it due to `max_slot_wal_keep_size`) | `CreateSubscription`'s duplicate-check path only handles "already exists"; slot *absence* on a resume that expects one is a distinct, currently under-handled case. This design adds an explicit check: if the configured slot name does not exist AND the position indicates CDC has already started (`position.Type == TypeCDC`), fail fast with a coded, actionable error (`slot lost, cannot resume without full re-snapshot`) rather than silently recreating a fresh slot at the current WAL position, which would silently skip every change between the last confirmed position and slot recreation — a real gap-class data-loss bug if allowed to happen quietly. Recovery requires an explicit operator-triggered full re-snapshot, never an automatic one. | 1, 2, 3 |
+| **Replication slot lost/dropped externally** (e.g. an operator runs `pg_drop_replication_slot`, or Postgres invalidates it due to `max_slot_wal_keep_size`) | `CreateSubscription`'s duplicate-check path only handles "already exists"; slot _absence_ on a resume that expects one is a distinct, currently under-handled case. This design adds an explicit check: if the configured slot name does not exist AND the position indicates CDC has already started (`position.Type == TypeCDC`), fail fast with a coded, actionable error (`slot lost, cannot resume without full re-snapshot`) rather than silently recreating a fresh slot at the current WAL position, which would silently skip every change between the last confirmed position and slot recreation — a real gap-class data-loss bug if allowed to happen quietly. Recovery requires an explicit operator-triggered full re-snapshot, never an automatic one. | 1, 2, 3 |
 | **Long-running transaction upstream** (an app holds open a multi-hour transaction touching a subscribed table) | Postgres cannot advance the slot's `restart_lsn` past the open transaction's start regardless of what this connector does — WAL grows on the server for the duration. This is a Postgres-level constraint, not one this design can fix; the mitigation is observability (replication-lag/heartbeat-staleness surfaced early) plus a runbook entry naming this specific cause distinctly from a stalled/misbehaving connector, so an operator does not waste time debugging the connector for a problem that's actually an application-side long transaction. | (observability only; no invariant fix possible) |
 | **Disk full on WAL (server-side)** | Out of this connector's control to prevent; what's in scope is not lying about flush state under backpressure. If the standby-status-update send itself fails (`subscription.go:404-419` returns an error), `listen` returns the error and the subscription tears down (`doneReplication`, `subscription.go:442-451`) rather than silently continuing with the wrong last-known state — already correct today; this design does not weaken it, and heartbeat writes get the same treatment (a failed heartbeat write surfaces as heartbeat-write staleness, not swallowed). | 1, 3 |
 | **Txn boundaries: a large transaction spanning many `Begin`/`Commit` pairs mid-batch** | Boundary metadata (if enabled) is emitted per actual `BeginMessage`/`CommitMessage` pair observed, using the existing ordering check (`handler.go:144-149`) as the correctness backstop — an out-of-order commit already returns a hard error today (`handler.go:147-149`), which this design preserves rather than loosens for the sake of boundary-metadata convenience. | 4 |
@@ -448,7 +522,7 @@ before this ships, each with symptom → diagnosis → remediation, per the exis
   no pipeline needs to be paused to upgrade.
   Rollback (new connector version → old): a position written by the new version that has never
   hit a resumed-snapshot or DDL-diff path is byte-compatible with the old struct (extra JSON fields
-  are ignored by the old connector's `json.Unmarshal`). A position that *has* recorded a low
+  are ignored by the old connector's `json.Unmarshal`). A position that _has_ recorded a low
   watermark or schema history and is then read by an old connector binary loses that
   information silently on decode (old struct doesn't have the fields) — this is the one asymmetric
   case, and it is stated here rather than glossed over: **rolling back past a resumed-snapshot or
@@ -471,13 +545,13 @@ before this ships, each with symptom → diagnosis → remediation, per the exis
 1. **Default for `logrepl.schemaDrift.policy`.** This doc proposes `halt` as the safe default
    (never silently evolve without an explicit opt-in). That is a behavior change in spirit — today
    there is no policy at all, drift just silently flows through — so existing pipelines upgrading
-   to a DBZ-3 connector version will, for the first time, see pipelines *stop* on a DDL that
+   to a DBZ-3 connector version will, for the first time, see pipelines _stop_ on a DDL that
    previously passed silently. Confirm `halt`-by-default is the intended tradeoff (safety over
    silent continuity) before this becomes an acceptance criterion.
 2. **Rename detection.** Stated above as "cannot be distinguished from drop+add using `pgoutput`
    alone." An alternative is requiring `REPLICA IDENTITY FULL` plus a heuristic (same
    `TypeModifier`/`DataType`, adjacent ordinal position, no intervening DML on the "old" name) to
-   *guess* a rename with a confidence flag rather than always treating it as drop+add. This adds
+   _guess_ a rename with a confidence flag rather than always treating it as drop+add. This adds
    real complexity for a heuristic that can still be wrong. Recommend NOT building the heuristic in
    this workstream (ship drop+add, correct but noisier) — confirming that call before it's load-
    bearing on the acceptance criteria.
@@ -507,9 +581,11 @@ before this ships, each with symptom → diagnosis → remediation, per the exis
    `jsonb` column untouched must not null that column downstream; the test fails without the fix
    and passes with it, per the bug-fix-ships-with-its-test rule.
 5. Heartbeat test: an idle publication with unrelated WAL activity elsewhere in the database shows
-   `confirmed_flush_lsn` advancing via heartbeat, and a chaos test confirms the reported flush
-   position never exceeds the durably-acked data watermark even under heartbeat pressure
-   (invariant 1).
+   `confirmed_flush_lsn` advancing via heartbeat when `walFlushed == walWritten` (no data record
+   outstanding), and a dedicated chaos test asserts the reported flush position **never** advances
+   to a heartbeat-observed LSN while a data record has been emitted (`walWritten`) but not yet
+   acked (`walFlushed < walWritten`) — i.e. the corrected gate in [Heartbeats](#heartbeats) holds
+   under concurrent heartbeat and data traffic, not just in the idle case (invariant 1, 2, 3).
 6. Benchi throughput comparison attached to the implementation PR (heartbeats/snapshot changes
    touch the hot path) — see open question 4.
 7. Runbook entries for replication-slot bloat and heartbeat staleness land in `docs/operations/`
@@ -518,6 +594,14 @@ before this ships, each with symptom → diagnosis → remediation, per the exis
    lag, heartbeat staleness, schema-drift decisions — cross-checked, not eyeballed.
 9. Position-format upgrade test: a v0.14-serialized position deserializes and resumes correctly
    under the new connector version with zero-value new fields.
+10. Switchover-boundary chaos test: `kill -9` after every `FetchWorker` reaches end-of-cursor but
+    before `useCDCIterator`/`StartSubscriber` runs; assert the resumed run transitions cleanly to
+    CDC with no gap and no duplicate, exercising the empty-cursor-range short-circuit explicitly
+    rather than relying on the analysis alone.
+11. Position carry-forward test: after a snapshot→CDC handoff, assert every subsequent CDC-mode
+    position (not just the first) carries `SnapshotLowWatermarkLSN` and the latest `SchemaHistory`
+    forward unchanged except where Area 2's diff logic updates the latter — asserting
+    `CDCHandler.buildPosition` threads this state rather than resetting it per record.
 
 ## Related
 
@@ -528,8 +612,8 @@ before this ships, each with symptom → diagnosis → remediation, per the exis
   observability).
 - Internal plan: `v020-execution-plan.md`, Workstream 7 — sequencing behind WS0 (chaos-CI gate)
   and WS6 (DBZ-2 engine-side correctness suite); this connector's own Tier-1 review is separate
-  from and does not inherit conduit-core's standing admin-merge authorization.
-- `docs/design-documents/20260715-dlq-record-visibility.md` (conduit core, issue #2640) — the
+  from and does not inherit Conduit-core's standing admin-merge authorization.
+- `docs/design-documents/20260715-dlq-record-visibility.md` (Conduit core, issue #2640) — the
   deferred Tier-1 DLQ record-store gap this document's `dlq` policy option inherits rather than
   building a parallel Postgres-specific store.
 - Source cited throughout: `source/logrepl/combined.go`, `source/logrepl/internal/subscription.go`,
