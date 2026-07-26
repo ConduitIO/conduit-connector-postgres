@@ -227,6 +227,21 @@ func (h *CDCHandler) handleUpdate(
 		sdk.Logger(ctx).Trace().Err(err).Msg("could not parse old values from UpdateMessage")
 	}
 
+	// Invariant 6: RelationSet.Values omits columns that arrived as unchanged
+	// TOASTed values (Postgres sends no data for them) instead of reporting
+	// them as NULL. If the old tuple has the real value — which happens with
+	// REPLICA IDENTITY FULL, where OldTuple carries the full previous row —
+	// backfill it into newValues so the emitted payload reflects the
+	// (unchanged) value rather than dropping the field. With the default
+	// REPLICA IDENTITY, OldTuple only has key columns, so non-key TOASTed
+	// columns stay omitted from newValues; that is the documented fallback,
+	// never a silent NULL.
+	for col, oldVal := range oldValues {
+		if _, ok := newValues[col]; !ok {
+			newValues[col] = oldVal
+		}
+	}
+
 	rec := sdk.Util.Source.NewRecordUpdate(
 		h.buildPosition(lsn),
 		h.buildRecordMetadata(rel),
