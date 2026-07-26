@@ -15,6 +15,7 @@
 package position
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/conduitio/conduit-commons/opencdc"
@@ -112,6 +113,35 @@ func Test_Position_RoundTrip_NewFields(t *testing.T) {
 	is.Equal(pn.Version, 999)
 	is.Equal(pn.Type, TypeCDC)
 	is.Equal(pn.LastLSN, "4/137515E8")
+}
+
+// Test_Position_ReadOnlyContract_LossyRewrite pins the actual limit of the
+// "readable by N+1 versions" compatibility contract: it is READ-ONLY. When this
+// build parses a position written by a newer connector (carrying a field it
+// does not know) and then RE-SERIALIZES it, the unknown field is dropped and
+// Version is re-stamped down to this build's CurrentPositionVersion. So a
+// downgrade path that reads-then-rewrites a newer position permanently loses
+// the newer state — a future field-adding slice (e.g. SchemaHistory) must not
+// assume an older build preserves its state across a re-write. Regression guard
+// for that assumption before it can be made.
+func Test_Position_ReadOnlyContract_LossyRewrite(t *testing.T) {
+	is := is.New(t)
+
+	newer := opencdc.Position(
+		[]byte(`{"version":999,"type":2,"last_lsn":"4/137515E8","future_field":"x"}`),
+	)
+	parsed, err := ParseSDKPosition(newer)
+	is.NoErr(err)
+	is.Equal(parsed.Version, 999) // read faithfully
+
+	// A rewrite by THIS build is lossy: the unknown future_field is gone and the
+	// version is stamped back down to what this build knows.
+	rewritten := parsed.ToSDKPosition()
+	is.True(!strings.Contains(string(rewritten), "future_field")) // unknown field dropped
+
+	reparsed, err := ParseSDKPosition(rewritten)
+	is.NoErr(err)
+	is.Equal(reparsed.Version, CurrentPositionVersion) // version downgraded on rewrite
 }
 
 func Test_PositionLSN(t *testing.T) {
