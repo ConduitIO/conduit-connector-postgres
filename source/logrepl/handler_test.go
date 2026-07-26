@@ -131,6 +131,50 @@ func TestCDCHandler_buildPosition_CarriesForwardWatermark(t *testing.T) {
 	}
 }
 
+// TestCDCHandler_HandoffReseed_FirstRunSameRun is the regression test for the
+// load-bearing DBZ-3 Area 1 fix that slice 1 could not cover: the FIRST-run
+// same-run snapshot->CDC handoff. On a first run the snapshot low watermark is
+// captured only when the replication slot is created — which happens after the
+// CDCHandler is constructed — so the handler starts with an EMPTY watermark
+// (unlike the resumed case slice 1 tested, where the persisted position already
+// carries it). Without the handoff re-seed, the watermark would ride snapshot
+// records but be silently dropped the instant CDC took over, so criterion 11
+// would hold only for a resume and regress intermittently on a first run.
+//
+// This exercises the exact seam CombinedIterator.useCDCIterator uses
+// (CDCIterator.SetSnapshotLowWatermarkLSN -> setBasePositionLowWatermark) and
+// asserts EVERY subsequent CDC position carries the watermark, not just the first.
+func TestCDCHandler_HandoffReseed_FirstRunSameRun(t *testing.T) {
+	is := is.New(t)
+
+	const watermark = "0/1600000"
+	// First-run handler: seeded from an initial (empty) start position exactly as
+	// NewCDCIterator seeds it before the slot — and thus the watermark — exists.
+	h := &CDCHandler{basePosition: position.Position{Type: position.TypeInitial}}
+
+	// Before the handoff re-seed, buildPosition cannot carry a watermark. This
+	// pins the gap the re-seed closes (and would catch a regression that seeded
+	// the watermark too early or not at all).
+	before, err := position.ParseSDKPosition(h.buildPosition(0x1600010))
+	is.NoErr(err)
+	is.Equal(before.SnapshotLowWatermarkLSN, "")
+
+	// Simulate the handoff through the public iterator seam CombinedIterator uses.
+	it := &CDCIterator{handler: h}
+	it.SetSnapshotLowWatermarkLSN(watermark)
+
+	// After the handoff, the watermark rides EVERY CDC position, not just the first.
+	lsns := []pglogrepl.LSN{0x1600020, 0x1600030, 0x1600040}
+	for _, lsn := range lsns {
+		got, err := position.ParseSDKPosition(h.buildPosition(lsn))
+		is.NoErr(err)
+		is.Equal(got.Type, position.TypeCDC)
+		is.Equal(got.LastLSN, lsn.String())
+		is.Equal(got.SnapshotLowWatermarkLSN, watermark)
+		is.Equal(got.Version, position.CurrentPositionVersion)
+	}
+}
+
 // newRelationSetForToastTests builds a RelationSet with a single 3-column
 // relation (id, small_col, big_col) registered under RelationID 1, used by
 // the handleUpdate invariant-6 regression tests below.

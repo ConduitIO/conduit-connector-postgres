@@ -43,6 +43,18 @@ type Subscription struct {
 	StatusTimeout time.Duration
 	TXSnapshotID  string
 
+	// RestartLSN is the replication slot's restart_lsn as read at subscription
+	// creation. When the slot was freshly created on this run (TXSnapshotID is
+	// non-empty), this is the slot's consistent point — the WAL position the
+	// exported snapshot is consistent with — and it is the snapshot low watermark
+	// used by DBZ-3 Area 1's resumable-snapshot reconciliation. On a resume (the
+	// slot already existed, TXSnapshotID is empty) this reflects the slot's
+	// current restart_lsn, which may have advanced past the original snapshot
+	// point; callers must therefore only treat it as the low watermark when
+	// TXSnapshotID is non-empty and otherwise carry the persisted watermark
+	// forward from the position.
+	RestartLSN pglogrepl.LSN
+
 	conn *pgxpool.Conn
 	pool *pgxpool.Pool
 
@@ -132,6 +144,7 @@ func CreateSubscription(
 		Handler:       h,
 		StatusTimeout: 10 * time.Second,
 		TXSnapshotID:  result.SnapshotName,
+		RestartLSN:    slotInfo.RestartLSN,
 
 		conn: conn,
 		pool: pool,

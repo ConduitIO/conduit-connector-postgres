@@ -24,8 +24,10 @@ import (
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
+	"github.com/conduitio/conduit-connector-postgres/source/snapshot"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/google/go-cmp/cmp"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
 )
 
@@ -435,4 +437,257 @@ func testRecords() []opencdc.StructuredData {
 			"UppercaseColumn1": nil,
 		},
 	}
+}
+
+// snapshotTableIDs returns the full set of primary-key ids currently in the
+// table, used by the resumable-snapshot chaos tests to assert no rows are
+// skipped ("no gap") across a crash+resume.
+func snapshotTableIDs(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string) map[int64]bool {
+	is := is.New(t)
+	rows, err := pool.Query(ctx, fmt.Sprintf("SELECT id FROM %q ORDER BY id", table))
+	is.NoErr(err)
+	defer rows.Close()
+
+	ids := make(map[int64]bool)
+	for rows.Next() {
+		var id int64
+		is.NoErr(rows.Scan(&id))
+		ids[id] = true
+	}
+	is.NoErr(rows.Err())
+	return ids
+}
+
+func recordID(t *testing.T, r opencdc.Record) int64 {
+	is := is.New(t)
+	data, ok := r.Payload.After.(opencdc.StructuredData)
+	is.True(ok)
+	id, ok := data["id"].(int64)
+	is.True(ok)
+	return id
+}
+
+// TestCombinedIterator_ResumeMidSnapshot_ResumedTag is DBZ-3 Area 1 acceptance
+// criterion 2 (crash-mid-snapshot chaos): a snapshot is interrupted partway, the
+// connector is torn down (simulating a crash), and a fresh connector resumes from
+// the persisted snapshot position. It asserts:
+//   - first-run records are NOT tagged resumed;
+//   - every record emitted by the resumed run carries
+//     postgres.snapshot.resumed=true AND carries the low watermark forward on its
+//     position;
+//   - the union of ids read across both runs covers the whole table (no gap).
+//
+// This is DB-gated (needs the test Postgres from test/docker-compose.yml). It is
+// WRITTEN-BUT-UNRUN wherever docker is unavailable; CI runs it via `make test`.
+func TestCombinedIterator_ResumeMidSnapshot_ResumedTag(t *testing.T) {
+	ctx := test.Context(t)
+	ctx, cancel := context.WithTimeout(ctx, time.Second*120)
+	defer cancel()
+	is := is.New(t)
+
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupTestTable(ctx, t, pool)
+
+	// Seed extra rows so a small-batch read leaves the snapshot genuinely
+	// incomplete at the simulated crash.
+	for n := 0; n < 20; n++ {
+		_, err := pool.Exec(ctx, fmt.Sprintf(
+			`INSERT INTO %q (key, column1, column2, column3, column4, column5, column6, column7, "UppercaseColumn1")
+				VALUES ('%d', 'r', 1, false, 1.1, 1, '{"a":1}', '{"a":1}', 1)`,
+			table, n))
+		is.NoErr(err)
+	}
+
+	// Capture the exact id set the snapshot must cover BEFORE inserting any
+	// post-crash CDC sentinel row.
+	wantIDs := snapshotTableIDs(ctx, t, pool, table)
+	seen := make(map[int64]bool)
+
+	// --- Run 1: partial snapshot, then "crash" (teardown). ---
+	i1, err := NewCombinedIterator(ctx, pool, Config{
+		Position:        opencdc.Position{},
+		Tables:          []string{table},
+		TableKeys:       map[string]string{table: "id"},
+		PublicationName: table,
+		SlotName:        table,
+		WithSnapshot:    true,
+		BatchSize:       2,
+	})
+	is.NoErr(err)
+
+	var lastPos opencdc.Position
+	for n := 0; n < 3; n++ { // read only a few batches, leaving the snapshot unfinished
+		recs, err := i1.NextN(ctx, 2)
+		is.NoErr(err)
+		for _, r := range recs {
+			pos, err := position.ParseSDKPosition(r.Position)
+			is.NoErr(err)
+			is.Equal(pos.Type, position.TypeSnapshot)
+			_, tagged := r.Metadata[snapshot.MetadataSnapshotResumed]
+			is.True(!tagged) // first run must never be labeled resumed
+			seen[recordID(t, r)] = true
+			lastPos = r.Position
+			is.NoErr(i1.Ack(ctx, r.Position))
+		}
+	}
+	is.NoErr(i1.Teardown(ctx))
+
+	// The persisted resume position is snapshot-typed with real progress.
+	pp, err := position.ParseSDKPosition(lastPos)
+	is.NoErr(err)
+	is.Equal(pp.Type, position.TypeSnapshot)
+
+	// Insert one post-crash row: it is NOT part of the snapshot set and serves as
+	// a CDC sentinel so the resumed run cleanly signals "snapshot done -> CDC"
+	// (a CDC-typed position) instead of blocking on an idle stream.
+	_, err = pool.Exec(ctx, fmt.Sprintf(
+		`INSERT INTO %q (key, column1, column2, column3, column4, column5, column6, column7, "UppercaseColumn1")
+			VALUES ('cdc-sentinel', 'r', 1, false, 1.1, 1, '{"a":1}', '{"a":1}', 1)`,
+		table))
+	is.NoErr(err)
+
+	// --- Run 2: resume from the persisted snapshot position. ---
+	i2, err := NewCombinedIterator(ctx, pool, Config{
+		Position:        lastPos,
+		Tables:          []string{table},
+		TableKeys:       map[string]string{table: "id"},
+		PublicationName: table,
+		SlotName:        table,
+		WithSnapshot:    true,
+		BatchSize:       4,
+	})
+	is.NoErr(err)
+
+	sawResumed := false
+drain:
+	for {
+		recs, err := i2.NextN(ctx, 4)
+		is.NoErr(err)
+		for _, r := range recs {
+			pos, err := position.ParseSDKPosition(r.Position)
+			is.NoErr(err)
+			if pos.Type == position.TypeCDC {
+				// Snapshot fully drained; CDC has taken over. Stop.
+				is.NoErr(i2.Ack(ctx, r.Position))
+				break drain
+			}
+			is.Equal(r.Metadata[snapshot.MetadataSnapshotResumed], "true")
+			is.True(pos.SnapshotLowWatermarkLSN != "") // watermark carried across resume
+			seen[recordID(t, r)] = true
+			is.NoErr(i2.Ack(ctx, r.Position))
+			sawResumed = true
+		}
+	}
+	is.True(sawResumed)
+
+	// No gap: every id present at snapshot start was read across the two runs.
+	for id := range wantIDs {
+		is.True(seen[id])
+	}
+
+	is.NoErr(i2.Teardown(ctx))
+	is.NoErr(Cleanup(context.Background(), CleanupConfig{
+		URL:             pool.Config().ConnString(),
+		SlotName:        table,
+		PublicationName: table,
+	}))
+}
+
+// TestCombinedIterator_ResumeAtSwitchoverBoundary is DBZ-3 Area 1 acceptance
+// criterion 10 (switchover-boundary chaos): the snapshot fully drains (every
+// FetchWorker reaches end-of-cursor) but the connector is torn down BEFORE the
+// snapshot->CDC handoff runs, so the persisted position is still snapshot-typed.
+// On resume the connector must reconstruct the (now empty-range) snapshot,
+// short-circuit to done, and transition cleanly to CDC from the low watermark
+// with no gap and no duplicate. It asserts a row inserted after the crash is
+// delivered exactly once via CDC on resume.
+//
+// DB-gated; WRITTEN-BUT-UNRUN where docker is unavailable; CI runs it.
+func TestCombinedIterator_ResumeAtSwitchoverBoundary(t *testing.T) {
+	ctx := test.Context(t)
+	ctx, cancel := context.WithTimeout(ctx, time.Second*120)
+	defer cancel()
+	is := is.New(t)
+
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupTestTable(ctx, t, pool)
+
+	wantIDs := snapshotTableIDs(ctx, t, pool, table)
+
+	// --- Run 1: drain the ENTIRE snapshot, ack it, but stop before the call that
+	// would trigger the snapshot->CDC transition. ---
+	i1, err := NewCombinedIterator(ctx, pool, Config{
+		Position:        opencdc.Position{},
+		Tables:          []string{table},
+		TableKeys:       map[string]string{table: "id"},
+		PublicationName: table,
+		SlotName:        table,
+		WithSnapshot:    true,
+		BatchSize:       2,
+	})
+	is.NoErr(err)
+
+	seen := make(map[int64]bool)
+	var lastPos opencdc.Position
+	for len(seen) < len(wantIDs) {
+		recs, err := i1.NextN(ctx, 2)
+		is.NoErr(err)
+		for _, r := range recs {
+			pos, err := position.ParseSDKPosition(r.Position)
+			is.NoErr(err)
+			is.Equal(pos.Type, position.TypeSnapshot) // still snapshot: no transition yet
+			seen[recordID(t, r)] = true
+			lastPos = r.Position
+			is.NoErr(i1.Ack(ctx, r.Position))
+		}
+	}
+	// Stop here: every snapshot row read+acked, but useCDCIterator never ran.
+	is.NoErr(i1.Teardown(ctx))
+
+	pp, err := position.ParseSDKPosition(lastPos)
+	is.NoErr(err)
+	is.Equal(pp.Type, position.TypeSnapshot) // crash is exactly at the boundary
+
+	// Insert a row after the crash: it must arrive via CDC on resume (never lost),
+	// and only once (never also re-emitted as a phantom snapshot record).
+	_, err = pool.Exec(ctx, fmt.Sprintf(
+		`INSERT INTO %q (key, column1, column2, column3, column4, column5, column6, column7, "UppercaseColumn1")
+			VALUES ('post-crash', 'r', 1, false, 1.1, 1, '{"a":1}', '{"a":1}', 1)`,
+		table))
+	is.NoErr(err)
+
+	// --- Run 2: resume; must transition cleanly to CDC and deliver the new row. ---
+	i2, err := NewCombinedIterator(ctx, pool, Config{
+		Position:        lastPos,
+		Tables:          []string{table},
+		TableKeys:       map[string]string{table: "id"},
+		PublicationName: table,
+		SlotName:        table,
+		WithSnapshot:    true,
+		BatchSize:       2,
+	})
+	is.NoErr(err)
+
+	var cdcCount int
+	for retries := 0; retries < 20 && cdcCount == 0; retries++ {
+		recs, err := i2.NextN(ctx, 2)
+		is.NoErr(err)
+		for _, r := range recs {
+			pos, err := position.ParseSDKPosition(r.Position)
+			is.NoErr(err)
+			// No phantom snapshot record must be emitted for an already-completed
+			// snapshot at the switchover boundary.
+			is.Equal(pos.Type, position.TypeCDC)
+			cdcCount++
+			is.NoErr(i2.Ack(ctx, r.Position))
+		}
+	}
+	is.True(cdcCount >= 1) // the post-crash row arrived via CDC (no gap)
+
+	is.NoErr(i2.Teardown(ctx))
+	is.NoErr(Cleanup(context.Background(), CleanupConfig{
+		URL:             pool.Config().ConnString(),
+		SlotName:        table,
+		PublicationName: table,
+	}))
 }

@@ -39,6 +39,15 @@ type CombinedIterator struct {
 	cdcIterator      *CDCIterator
 	snapshotIterator *snapshot.Iterator
 	activeIterator   iterator
+
+	// snapshotLowWatermarkLSN is the effective snapshot low watermark for this
+	// run (DBZ-3 Area 1): the persisted watermark on a resume, or the slot's
+	// consistent point captured at fresh slot creation on a first run. It is
+	// stored here so useCDCIterator can re-seed the CDC handler with it at the
+	// snapshot->CDC handoff, ensuring every CDC-mode position carries the
+	// watermark forward even on a first-run same-run handoff. Empty when this run
+	// does not snapshot (WithSnapshot=false or resuming directly in CDC mode).
+	snapshotLowWatermarkLSN string
 }
 
 type Config struct {
@@ -86,10 +95,25 @@ func NewCombinedIterator(ctx context.Context, pool *pgxpool.Pool, conf Config) (
 		pool: pool,
 	}
 
-	// Initialize the CDC iterator.
+	// Initialize the CDC iterator. This creates (or, on a resume, reuses) the
+	// replication slot, so the slot's consistent point is only known afterwards.
 	if err := c.initCDCIterator(ctx, pos); err != nil {
 		return nil, err
 	}
+
+	// DBZ-3 Area 1: determine the effective snapshot low watermark before starting
+	// the snapshot. On a fresh slot creation (TXSnapshotID present) the slot's
+	// restart_lsn is the consistent point the exported snapshot is correlated with,
+	// so it becomes the low watermark. On a resume the watermark is already carried
+	// in the persisted position and must NOT be overwritten (the slot's current
+	// restart_lsn may have advanced past the original snapshot point). Only capture
+	// it when this run will actually snapshot; a pure CDC start has no snapshot to
+	// reconcile against.
+	willSnapshot := c.conf.WithSnapshot && pos.Type != position.TypeCDC
+	if willSnapshot && pos.SnapshotLowWatermarkLSN == "" && c.cdcIterator.TXSnapshotID() != "" {
+		pos.SnapshotLowWatermarkLSN = c.cdcIterator.LowWatermarkLSN().String()
+	}
+	c.snapshotLowWatermarkLSN = pos.SnapshotLowWatermarkLSN
 
 	// Initialize the snapshot iterator when snapshotting is enabled and not completed.
 	// The CDC iterator must be initialized first when snapshotting is requested.
@@ -209,12 +233,20 @@ func (c *CombinedIterator) initSnapshotIterator(ctx context.Context, pos positio
 	}
 
 	snapshotIterator, err := snapshot.NewIterator(ctx, c.pool, snapshot.Config{
-		Position:       c.conf.Position,
+		// Pass the enriched position (carrying the captured/persisted low
+		// watermark) rather than c.conf.Position, so every snapshot record
+		// carries SnapshotLowWatermarkLSN forward (DBZ-3 Area 1).
+		Position:       pos.ToSDKPosition(),
 		Tables:         c.conf.Tables,
 		TableKeys:      c.conf.TableKeys,
 		TXSnapshotID:   c.cdcIterator.TXSnapshotID(),
 		FetchSize:      c.conf.BatchSize,
 		WithAvroSchema: c.conf.WithAvroSchema,
+		// A snapshot-typed start position means a prior run already persisted
+		// snapshot progress: this is a resume, so tag emitted records
+		// accordingly (DBZ-3 Area 1). A first run starts from an initial/empty
+		// position and is therefore not tagged.
+		SnapshotResumed: pos.Type == position.TypeSnapshot,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create snapshot iterator: %w", err)
@@ -237,6 +269,26 @@ func (c *CombinedIterator) useCDCIterator(ctx context.Context) error {
 	}
 
 	c.activeIterator, c.snapshotIterator = c.cdcIterator, nil
+
+	// DBZ-3 Area 1 (load-bearing): re-seed the CDC handler's low watermark at the
+	// snapshot->CDC handoff, BEFORE StartSubscriber launches the subscription
+	// goroutine. On a first run the watermark was captured only after the CDC
+	// iterator (and its handler) were constructed, so the handler's base position
+	// does not yet carry it; without this re-seed the watermark would ride
+	// snapshot records but be dropped the instant CDC took over — criterion 11
+	// would hold for the resumed case but silently regress on the first-run
+	// same-run handoff (the "intermittent regression" the design doc warns about).
+	// Re-seeding here is race-free: Handle (the only reader of the base position)
+	// does not run until StartSubscriber below.
+	//
+	// Invariant 1 (no early ack / WAL not pruned past unpersisted data): starting
+	// the subscriber here is the FIRST point CDC consumes or acks anything, so the
+	// slot's confirmed_flush_lsn cannot have advanced past the low watermark during
+	// the snapshot — it advances only via CDCIterator.Ack after the engine durably
+	// persists a record, all of which happens strictly after this handoff. This
+	// re-seed reads/writes only in-process position state and does not touch the
+	// ack or SendStandbyStatusUpdate path, so it cannot advance the slot early.
+	c.cdcIterator.SetSnapshotLowWatermarkLSN(c.snapshotLowWatermarkLSN)
 
 	if err := c.cdcIterator.StartSubscriber(ctx); err != nil {
 		return fmt.Errorf("failed to start CDC iterator: %w", err)

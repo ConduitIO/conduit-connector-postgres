@@ -49,8 +49,9 @@ type CDCConfig struct {
 // CDCIterator asynchronously listens for events from the logical replication
 // slot and returns them to the caller through NextN.
 type CDCIterator struct {
-	config CDCConfig
-	sub    *internal.Subscription
+	config  CDCConfig
+	sub     *internal.Subscription
+	handler *CDCHandler
 
 	// batchesCh is a channel shared between this iterator and a CDCHandler,
 	// to which the CDCHandler is sending batches of records.
@@ -118,6 +119,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		config:    c,
 		batchesCh: batchesCh,
 		sub:       sub,
+		handler:   handler,
 	}, nil
 }
 
@@ -318,4 +320,37 @@ func (i *CDCIterator) subscriberReady() bool {
 // iterator is resuming.
 func (i *CDCIterator) TXSnapshotID() string {
 	return i.sub.TXSnapshotID
+}
+
+// LowWatermarkLSN returns the replication slot's restart_lsn captured when the
+// slot was read at subscription creation (DBZ-3 Area 1). It is only the snapshot
+// low watermark — the consistent point the initial snapshot is correlated with —
+// when this run freshly created the slot, i.e. when TXSnapshotID() is non-empty.
+// On a resume it reflects the slot's current restart_lsn and must not be used as
+// the watermark; the persisted position's SnapshotLowWatermarkLSN is authoritative
+// in that case. See CombinedIterator for the gating.
+func (i *CDCIterator) LowWatermarkLSN() pglogrepl.LSN {
+	return i.sub.RestartLSN
+}
+
+// SetSnapshotLowWatermarkLSN re-seeds the SnapshotLowWatermarkLSN that the
+// handler carries forward onto every CDC-mode position it builds (DBZ-3 Area 1,
+// acceptance criterion 11).
+//
+// It exists to fix the in-run snapshot->CDC handoff: NewCDCIterator seeds the
+// handler's base position once, at construction, from the position the connector
+// started with. On a first run that start position has no watermark (it is
+// captured only when the slot is created, which happens inside NewCDCIterator
+// itself), so without this call the watermark would ride snapshot records but be
+// silently dropped the instant CDC took over — criterion 11 would hold only for
+// the resumed case, not the first-run same-run handoff. CombinedIterator calls
+// this at the handoff (useCDCIterator) with the effective watermark.
+//
+// Concurrency: this MUST be called before StartSubscriber. The handler's base
+// position is only read on the single subscription goroutine (via Handle), which
+// does not run until StartSubscriber launches it, so re-seeding beforehand needs
+// no locking — the same single-writer-before-start discipline the base position
+// relied on at construction.
+func (i *CDCIterator) SetSnapshotLowWatermarkLSN(lsn string) {
+	i.handler.setBasePositionLowWatermark(lsn)
 }
