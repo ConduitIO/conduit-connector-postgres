@@ -58,9 +58,12 @@ type CDCHandler struct {
 	// Position{Type: CDC, LastLSN} for every record and silently drop those
 	// fields the instant the snapshot->CDC handoff completes — see the DBZ-3
 	// design doc's "Position carry-forward is an implementation requirement"
-	// section (acceptance criterion 11). It is written once at construction and
-	// only read thereafter (all reads happen on the single subscription goroutine
-	// via Handle), so it needs no locking.
+	// section (acceptance criterion 11). It is written at construction and may be
+	// re-seeded exactly once more at the snapshot->CDC handoff via
+	// setBasePositionLowWatermark (see there for why the handoff re-seed is
+	// required and why it is race-free). All reads happen on the single
+	// subscription goroutine via Handle, which does not start until
+	// StartSubscriber; both writes happen before that, so it needs no locking.
 	basePosition position.Position
 }
 
@@ -357,6 +360,17 @@ func (h *CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 		LastLSN:                 lsn.String(),
 		SnapshotLowWatermarkLSN: h.basePosition.SnapshotLowWatermarkLSN,
 	}.ToSDKPosition()
+}
+
+// setBasePositionLowWatermark re-seeds the SnapshotLowWatermarkLSN carried
+// forward by buildPosition (DBZ-3 Area 1, acceptance criterion 11). It is called
+// once, at the snapshot->CDC handoff, before the subscription goroutine starts —
+// see CDCIterator.SetSnapshotLowWatermarkLSN for the concurrency contract and the
+// reason the handoff re-seed is load-bearing (on a first run the watermark is not
+// known when the handler is constructed, only after the slot is created, so it
+// must be re-applied before CDC positions are built).
+func (h *CDCHandler) setBasePositionLowWatermark(lsn string) {
+	h.basePosition.SnapshotLowWatermarkLSN = lsn
 }
 
 // updateAvroSchema generates and stores avro schema based on the relation's row

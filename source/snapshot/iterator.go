@@ -30,6 +30,15 @@ import (
 
 var ErrIteratorDone = errors.New("snapshot complete")
 
+// MetadataSnapshotResumed is set to "true" on every snapshot record emitted by a
+// snapshot that is resuming from a prior run's persisted progress (DBZ-3 Area 1).
+// It lets a downstream consumer distinguish a resumed-snapshot record — read
+// without the transaction-snapshot pin, whose point-in-time consistency is
+// guaranteed only by CDC replay reconciliation, not by snapshot isolation — from
+// a first-run snapshot record read under a pinned exported snapshot. See the
+// DBZ-3 design doc, "Area 1: Resumable snapshot consistency".
+const MetadataSnapshotResumed = "postgres.snapshot.resumed"
+
 type Config struct {
 	Position       opencdc.Position
 	Tables         []string
@@ -37,6 +46,15 @@ type Config struct {
 	TXSnapshotID   string
 	FetchSize      int
 	WithAvroSchema bool
+
+	// SnapshotResumed indicates this snapshot is resuming from a prior run's
+	// persisted progress (the start position was already snapshot-typed). When
+	// true, every emitted record is tagged with MetadataSnapshotResumed. The
+	// resumed read runs without the transaction-snapshot pin (it cannot be
+	// re-acquired across a restart — see the design doc's Finding 1), so its
+	// consistency degrades to "possibly-duplicate, never-gap" reconciled by CDC
+	// replay; the tag makes that observable rather than silent.
+	SnapshotResumed bool
 }
 
 type Iterator struct {
@@ -154,6 +172,11 @@ func (i *Iterator) buildRecord(d FetchData) opencdc.Record {
 	pos := i.lastPosition.ToSDKPosition()
 	metadata := make(opencdc.Metadata)
 	metadata[opencdc.MetadataCollection] = d.Table
+	if i.conf.SnapshotResumed {
+		// DBZ-3 Area 1: tag records emitted by a resumed (unpinned) snapshot so
+		// the degraded, replay-reconciled consistency is observable downstream.
+		metadata[MetadataSnapshotResumed] = "true"
+	}
 
 	rec := sdk.Util.Source.NewRecordSnapshot(pos, metadata, d.Key, d.Payload)
 	if i.conf.WithAvroSchema {

@@ -26,6 +26,55 @@ import (
 	"github.com/matryer/is"
 )
 
+// Test_Iterator_buildRecord_ResumedTag is a white-box unit test (no DB) for the
+// DBZ-3 Area 1 resumed-snapshot tag. When the iterator was constructed for a
+// resume (SnapshotResumed=true), every emitted record must carry
+// postgres.snapshot.resumed=true and carry the captured low watermark forward on
+// its position; a first-run snapshot (SnapshotResumed=false) must NOT carry the
+// tag, so a resumed record is distinguishable downstream and a first-run record
+// is never mislabeled.
+func Test_Iterator_buildRecord_ResumedTag(t *testing.T) {
+	const watermark = "0/1A2B3C4"
+	fd := FetchData{
+		Key:      opencdc.StructuredData{"id": int64(1)},
+		Payload:  opencdc.StructuredData{"id": int64(1), "name": "x"},
+		Position: position.SnapshotPosition{LastRead: 1, SnapshotEnd: 10},
+		Table:    "orders",
+	}
+
+	t.Run("resumed tags every record and carries watermark", func(t *testing.T) {
+		is := is.New(t)
+		i := &Iterator{
+			conf: Config{SnapshotResumed: true},
+			lastPosition: position.Position{
+				Snapshots:               make(position.SnapshotPositions),
+				SnapshotLowWatermarkLSN: watermark,
+			},
+		}
+
+		rec := i.buildRecord(fd)
+		is.Equal(rec.Metadata[MetadataSnapshotResumed], "true")
+		is.Equal(rec.Metadata[opencdc.MetadataCollection], "orders")
+
+		pos, err := position.ParseSDKPosition(rec.Position)
+		is.NoErr(err)
+		is.Equal(pos.Type, position.TypeSnapshot)
+		is.Equal(pos.SnapshotLowWatermarkLSN, watermark) // watermark rides snapshot positions
+	})
+
+	t.Run("first run is not tagged resumed", func(t *testing.T) {
+		is := is.New(t)
+		i := &Iterator{
+			conf:         Config{SnapshotResumed: false},
+			lastPosition: position.Position{Snapshots: make(position.SnapshotPositions)},
+		}
+
+		rec := i.buildRecord(fd)
+		_, ok := rec.Metadata[MetadataSnapshotResumed]
+		is.True(!ok) // a first-run snapshot record must never be labeled resumed
+	})
+}
+
 func Test_Iterator_NextN(t *testing.T) {
 	var (
 		ctx   = test.Context(t)
