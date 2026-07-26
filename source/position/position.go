@@ -32,10 +32,45 @@ const (
 	TypeCDC
 )
 
+// CurrentPositionVersion is the format version this connector build writes into
+// every position it serializes (see ToSDKPosition). It exists so that code can
+// distinguish a position written by a DBZ-3-aware connector (Version >= 1, may
+// carry SnapshotLowWatermarkLSN and future DBZ-3 fields) from a legacy v0.14
+// position (Version == 0, guaranteed to carry none of them).
+//
+// Backward/forward compatibility contract (see the DBZ-3 design doc,
+// docs/design-documents/20260724-dbz3-postgres-cdc-parity.md, "Upgrade / rollback"):
+//   - A legacy v0.14 position has no "version" key, so it deserializes with
+//     Version == 0. Version == 0 MUST be treated as "no low watermark recorded,
+//     no schema history — behave exactly as v0.14 did" until a later event
+//     naturally populates the new fields.
+//   - All new fields are additive and omitempty, so a position written by this
+//     version is still readable by an older connector (it ignores unknown keys)
+//     and by a newer one. We deliberately do NOT reject a position whose Version
+//     is greater than CurrentPositionVersion: the format is additive-only, so a
+//     newer position stays structurally readable, and rejecting it would break
+//     the "readable by N+1 versions" rule. A newer position read here simply
+//     degrades to the fields this build understands.
+const CurrentPositionVersion = 1
+
 type Position struct {
+	// Version identifies the position format. See CurrentPositionVersion for the
+	// compatibility contract. Zero (the JSON key absent) means a legacy v0.14
+	// position that predates DBZ-3's additive fields.
+	Version   int               `json:"version,omitempty"`
 	Type      Type              `json:"type"`
 	Snapshots SnapshotPositions `json:"snapshots,omitempty"`
 	LastLSN   string            `json:"last_lsn,omitempty"`
+
+	// SnapshotLowWatermarkLSN is the replication slot's RestartLSN captured at
+	// snapshot start, used by the resumable-snapshot consistency reconciliation
+	// (DBZ-3 Area 1). It is threaded forward unchanged across every CDC-mode
+	// position by CDCHandler.buildPosition so it survives the snapshot->CDC
+	// handoff. Empty on a legacy (Version == 0) position and until Area 1's
+	// capture-at-slot-creation logic lands. Populating it is a later DBZ-3 slice;
+	// this field and its carry-forward wiring are the foundation that slice
+	// attaches to.
+	SnapshotLowWatermarkLSN string `json:"snapshot_low_watermark_lsn,omitempty"`
 }
 
 type SnapshotPositions map[string]SnapshotPosition
@@ -58,7 +93,15 @@ func ParseSDKPosition(sdkPos opencdc.Position) (Position, error) {
 	return p, nil
 }
 
+// ToSDKPosition serializes the position, stamping it with CurrentPositionVersion
+// so every position this connector build writes carries an explicit format
+// version. Stamping here (rather than at each construction site) guarantees the
+// version is set consistently on both snapshot- and CDC-mode positions and that
+// re-serializing a parsed legacy position upgrades it to the current version on
+// first write, with no forced migration step.
 func (p Position) ToSDKPosition() opencdc.Position {
+	p.Version = CurrentPositionVersion // p is a value copy; safe to mutate.
+
 	v, err := json.Marshal(p)
 	if err != nil {
 		// This should never happen, all Position structs should be valid.

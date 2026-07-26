@@ -15,6 +15,7 @@
 package position
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/conduitio/conduit-commons/opencdc"
@@ -33,10 +34,114 @@ func Test_ToSDKPosition(t *testing.T) {
 	}
 
 	sdkPos := p.ToSDKPosition()
+	// ToSDKPosition stamps the current format version onto every serialized
+	// position (leading "version" key).
 	is.Equal(
 		string(sdkPos),
-		`{"type":1,"snapshots":{"orders":{"last_read":1,"snapshot_end":2}},"last_lsn":"4/137515E8"}`,
+		`{"version":1,"type":1,"snapshots":{"orders":{"last_read":1,"snapshot_end":2}},"last_lsn":"4/137515E8"}`,
 	)
+}
+
+// Test_ToSDKPosition_StampsVersion asserts ToSDKPosition upgrades a legacy
+// (Version == 0) position to CurrentPositionVersion on first write, with no
+// forced migration step (DBZ-3 upgrade path).
+func Test_ToSDKPosition_StampsVersion(t *testing.T) {
+	is := is.New(t)
+
+	// A position value with no version set (as a legacy in-memory position would be).
+	legacy := Position{Type: TypeCDC, LastLSN: "4/137515E8"}
+	is.Equal(legacy.Version, 0)
+
+	upgraded, err := ParseSDKPosition(legacy.ToSDKPosition())
+	is.NoErr(err)
+	is.Equal(upgraded.Version, CurrentPositionVersion)
+	is.Equal(upgraded.Type, TypeCDC)
+	is.Equal(upgraded.LastLSN, "4/137515E8")
+}
+
+// Test_ParseSDKPosition_LegacyV014 asserts DBZ-3 acceptance criterion 9: a
+// v0.14-serialized position (no "version" key, none of the new fields)
+// deserializes cleanly with Version == 0 and zero-value new fields, so the
+// connector can treat it as legacy and behave exactly as v0.14 did.
+func Test_ParseSDKPosition_LegacyV014(t *testing.T) {
+	is := is.New(t)
+
+	legacyCDC := opencdc.Position(
+		[]byte(`{"type":2,"last_lsn":"4/137515E8"}`),
+	)
+	p, err := ParseSDKPosition(legacyCDC)
+	is.NoErr(err)
+	is.Equal(p.Version, 0) // absent "version" key => legacy
+	is.Equal(p.Type, TypeCDC)
+	is.Equal(p.LastLSN, "4/137515E8")
+	is.Equal(p.SnapshotLowWatermarkLSN, "") // new field absent on legacy
+
+	legacySnapshot := opencdc.Position(
+		[]byte(`{"type":1,"snapshots":{"orders":{"last_read":1,"snapshot_end":2}},"last_lsn":"4/137515E8"}`),
+	)
+	ps, err := ParseSDKPosition(legacySnapshot)
+	is.NoErr(err)
+	is.Equal(ps.Version, 0)
+	is.Equal(ps.Snapshots["orders"], SnapshotPosition{LastRead: 1, SnapshotEnd: 2})
+	is.Equal(ps.SnapshotLowWatermarkLSN, "")
+}
+
+// Test_Position_RoundTrip_NewFields asserts the new DBZ-3 fields survive a
+// serialize/parse round trip and that a newer-than-current Version is NOT
+// rejected (additive-only forward compatibility).
+func Test_Position_RoundTrip_NewFields(t *testing.T) {
+	is := is.New(t)
+
+	p := Position{
+		Type:                    TypeCDC,
+		LastLSN:                 "4/137515E8",
+		SnapshotLowWatermarkLSN: "4/13750000",
+	}
+	got, err := ParseSDKPosition(p.ToSDKPosition())
+	is.NoErr(err)
+	is.Equal(got.SnapshotLowWatermarkLSN, "4/13750000")
+	is.Equal(got.Version, CurrentPositionVersion)
+
+	// A position from a hypothetical newer connector (higher version, unknown
+	// extra key) must still parse — the format is additive-only and must remain
+	// readable by N+1 versions per the compatibility contract.
+	newer := opencdc.Position(
+		[]byte(`{"version":999,"type":2,"last_lsn":"4/137515E8","future_field":"x"}`),
+	)
+	pn, err := ParseSDKPosition(newer)
+	is.NoErr(err)
+	is.Equal(pn.Version, 999)
+	is.Equal(pn.Type, TypeCDC)
+	is.Equal(pn.LastLSN, "4/137515E8")
+}
+
+// Test_Position_ReadOnlyContract_LossyRewrite pins the actual limit of the
+// "readable by N+1 versions" compatibility contract: it is READ-ONLY. When this
+// build parses a position written by a newer connector (carrying a field it
+// does not know) and then RE-SERIALIZES it, the unknown field is dropped and
+// Version is re-stamped down to this build's CurrentPositionVersion. So a
+// downgrade path that reads-then-rewrites a newer position permanently loses
+// the newer state — a future field-adding slice (e.g. SchemaHistory) must not
+// assume an older build preserves its state across a re-write. Regression guard
+// for that assumption before it can be made.
+func Test_Position_ReadOnlyContract_LossyRewrite(t *testing.T) {
+	is := is.New(t)
+
+	newer := opencdc.Position(
+		[]byte(`{"version":999,"type":2,"last_lsn":"4/137515E8","future_field":"x"}`),
+	)
+	parsed, err := ParseSDKPosition(newer)
+	is.NoErr(err)
+	is.Equal(parsed.Version, 999) // read faithfully
+
+	// A rewrite by THIS build is lossy: the unknown future_field is gone and the
+	// version is stamped back down to what this build knows.
+	rewritten := parsed.ToSDKPosition()
+	is.True(!strings.Contains(string(rewritten), "future_field")) // unknown field dropped
+
+	reparsed, err := ParseSDKPosition(rewritten)
+	is.NoErr(err)
+	is.Equal(reparsed.Version, CurrentPositionVersion) // version downgraded on rewrite
 }
 
 func Test_PositionLSN(t *testing.T) {

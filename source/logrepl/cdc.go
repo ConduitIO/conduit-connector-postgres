@@ -39,6 +39,11 @@ type CDCConfig struct {
 	// BatchSize is the maximum size of a batch that will be read from the DB
 	// in one go and processed by the CDCHandler.
 	BatchSize int
+	// StartPosition is the position the connector was started/resumed with. Its
+	// DBZ-3 carry-forward fields (e.g. SnapshotLowWatermarkLSN) are threaded into
+	// every CDC-mode position the handler emits so they survive the snapshot->CDC
+	// handoff and every subsequent CDC restart. See CDCHandler.buildPosition.
+	StartPosition position.Position
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -93,6 +98,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		c.BatchSize,
 		// todo make configurable
 		time.Second,
+		c.StartPosition,
 	)
 
 	sub, err := internal.CreateSubscription(

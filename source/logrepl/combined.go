@@ -184,6 +184,10 @@ func (c *CombinedIterator) initCDCIterator(ctx context.Context, pos position.Pos
 		TableKeys:       c.conf.TableKeys,
 		WithAvroSchema:  c.conf.WithAvroSchema,
 		BatchSize:       c.conf.BatchSize,
+		// Seed the handler with the start position so DBZ-3 carry-forward fields
+		// (e.g. SnapshotLowWatermarkLSN) survive across the snapshot->CDC handoff
+		// and every subsequent CDC restart.
+		StartPosition: pos,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create CDC iterator: %w", err)
