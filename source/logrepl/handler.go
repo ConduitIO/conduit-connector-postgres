@@ -50,6 +50,18 @@ type CDCHandler struct {
 	withAvroSchema bool
 	keySchemas     map[string]cschema.Schema
 	payloadSchemas map[string]cschema.Schema
+
+	// basePosition holds the position the connector was started with. Its
+	// carry-forward fields (currently SnapshotLowWatermarkLSN; DBZ-3 Area 2 will
+	// add SchemaHistory) are threaded, unchanged, into every CDC-mode position by
+	// buildPosition. Without this, buildPosition would mint a field-sparse
+	// Position{Type: CDC, LastLSN} for every record and silently drop those
+	// fields the instant the snapshot->CDC handoff completes — see the DBZ-3
+	// design doc's "Position carry-forward is an implementation requirement"
+	// section (acceptance criterion 11). It is written once at construction and
+	// only read thereafter (all reads happen on the single subscription goroutine
+	// via Handle), so it needs no locking.
+	basePosition position.Position
 }
 
 func NewCDCHandler(
@@ -60,6 +72,7 @@ func NewCDCHandler(
 	withAvroSchema bool,
 	batchSize int,
 	flushInterval time.Duration,
+	startPosition position.Position,
 ) *CDCHandler {
 	h := &CDCHandler{
 		tableKeys:      tableKeys,
@@ -71,6 +84,7 @@ func NewCDCHandler(
 		payloadSchemas: make(map[string]cschema.Schema),
 		batchSize:      batchSize,
 		flushInterval:  flushInterval,
+		basePosition:   startPosition,
 	}
 
 	go h.scheduleFlushing(ctx)
@@ -309,11 +323,24 @@ func (h *CDCHandler) buildRecordPayload(values map[string]any) opencdc.Data {
 	return opencdc.StructuredData(values)
 }
 
-// buildPosition stores the LSN in position and converts it to bytes.
-func (*CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
+// buildPosition builds the position for a CDC record at the given LSN, carrying
+// forward the DBZ-3 fields from basePosition unchanged (currently just
+// SnapshotLowWatermarkLSN; Area 2 will also carry SchemaHistory here, and update
+// it in place only when its diff logic records a new relation version). Only
+// Type and LastLSN are set per record. Snapshots is intentionally NOT carried
+// forward: it is snapshot-phase cursor state with no meaning in CDC mode, and
+// copying it would bloat and change the shape of every CDC position.
+//
+// Invariant 2 (monotonic, crash-safe positions): the carry-forward must be
+// unconditional per record. If any single CDC position dropped
+// SnapshotLowWatermarkLSN, a restart landing on that position would regress to
+// legacy (Version 0 / Finding-1) behavior even on a connector that has run well
+// past its first snapshot — the intermittent regression the design doc calls out.
+func (h *CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 	return position.Position{
-		Type:    position.TypeCDC,
-		LastLSN: lsn.String(),
+		Type:                    position.TypeCDC,
+		LastLSN:                 lsn.String(),
+		SnapshotLowWatermarkLSN: h.basePosition.SnapshotLowWatermarkLSN,
 	}.ToSDKPosition()
 }
 
