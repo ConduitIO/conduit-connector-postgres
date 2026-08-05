@@ -90,6 +90,8 @@ func NewIterator(ctx context.Context, db *pgxpool.Pool, c Config) (*Iterator, er
 		lastPosition: p,
 	}
 
+	emitResumeWarning(ctx, c.SnapshotResumed, p)
+
 	if err := i.initFetchers(ctx); err != nil {
 		return nil, fmt.Errorf("failed to initialize table fetchers: %w", err)
 	}
@@ -226,4 +228,40 @@ func (i *Iterator) startWorkers() {
 		<-i.workersTomb.Dead()
 		close(i.data)
 	}()
+}
+
+// emitResumeWarning announces a resumed (unpinned) snapshot once per run.
+//
+// Extracted so the decision is directly testable — see
+// Test_Iterator_ResumeWarning_NotSilent.
+// DBZ-3 Area 1, step 3: make the degraded mode observable, not silent.
+//
+// A resumed snapshot cannot re-acquire the original TXSnapshotID, so it
+// reads WITHOUT the transaction-snapshot pin the first run had. That is
+// deliberate and safe — CDC replays the unpinned window afterwards because
+// the stream cannot prune past the low watermark until the snapshot
+// completes, so the weakened isolation degrades to possible duplicates,
+// never a gap. But "safe because something else compensates" is exactly the
+// kind of guarantee that must not be invisible: an operator watching a long
+// resumed snapshot otherwise has no way to tell it is in replay-reconciled
+// mode rather than the same-guarantee-as-fresh mode.
+//
+// Per-record metadata (MetadataSnapshotResumed) already marks the records.
+// This is the once-per-run counterpart, so the condition is visible in logs
+// at the moment it is entered rather than only by inspecting record
+// metadata downstream.
+func emitResumeWarning(ctx context.Context, resumed bool, p position.Position) {
+	if !resumed {
+		return
+	}
+
+	sdk.Logger(ctx).Warn().
+		Str("snapshot_low_watermark_lsn", p.SnapshotLowWatermarkLSN).
+		Int("tables_resuming", len(p.Snapshots)).
+		Msg("resuming snapshot WITHOUT a transaction-snapshot pin: the original " +
+			"TXSnapshotID cannot be re-acquired across a restart. Consistency for the " +
+			"resumed window is provided by CDC replay (the stream cannot prune past the " +
+			"low watermark until the snapshot completes), so the degradation is possible " +
+			"duplicate delivery, never a gap. Records emitted by this run carry " +
+			"postgres.snapshot.resumed=true")
 }
