@@ -202,10 +202,17 @@ func Test_SchemaHistory_StaysBounded(t *testing.T) {
 
 	h := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC})
 
-	for i := range 50 {
+	// Counters are typed rather than converted from the loop index: a
+	// int -> int32/uint64 conversion trips gosec's overflow check, and silencing
+	// it would be noise for a bound of 50.
+	var typeMod int32
+	lsn := pglogrepl.LSN(100)
+	for range 50 {
 		cols := append([]*pglogrepl.RelationMessageColumn{relCol("id", 23, -1)},
-			relCol("churn", 23, int32(i)))
-		h.handleRelation(ctx, relMsg(cols...), pglogrepl.LSN(100+i))
+			relCol("churn", 23, typeMod))
+		h.handleRelation(ctx, relMsg(cols...), lsn)
+		typeMod++
+		lsn++
 	}
 
 	is.Equal(len(h.basePosition.SchemaHistory["public.users"]), position.DefaultSchemaHistoryVersions)
