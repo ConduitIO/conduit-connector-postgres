@@ -71,6 +71,16 @@ type Position struct {
 	// this field and its carry-forward wiring are the foundation that slice
 	// attaches to.
 	SnapshotLowWatermarkLSN string `json:"snapshot_low_watermark_lsn,omitempty"`
+
+	// SchemaHistory records the recently-observed shapes of each table so schema
+	// drift stays detectable across a restart (DBZ-3 Area 2 step 2). Without it
+	// the in-memory RelationMessage cache starts empty on every process start,
+	// so a DDL applied while the connector was down is invisible and the first
+	// RelationMessage after a restart is accepted with nothing to compare it
+	// against. Bounded per table — see DefaultSchemaHistoryVersions — because
+	// this rides in the position payload, which is checkpointed constantly.
+	// Empty on a legacy (Version == 0) position.
+	SchemaHistory SchemaHistories `json:"schema_history,omitempty"`
 }
 
 type SnapshotPositions map[string]SnapshotPosition

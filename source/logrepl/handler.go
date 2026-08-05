@@ -142,7 +142,9 @@ func (h *CDCHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogr
 	switch m := m.(type) {
 	case *pglogrepl.RelationMessage:
 		// We have to add the Relations to our Set so that we can decode our own output
-		h.relationSet.Add(m)
+		// The returned drift kind is not acted on yet; reporting is Area 2 step 2,
+		// the halt/dlq/evolve policy is step 3.
+		_ = h.handleRelation(ctx, m, lsn)
 	case *pglogrepl.InsertMessage:
 		if err := h.handleInsert(ctx, m, lsn); err != nil {
 			return 0, fmt.Errorf("logrepl handler insert: %w", err)
@@ -359,6 +361,7 @@ func (h *CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 		Type:                    position.TypeCDC,
 		LastLSN:                 lsn.String(),
 		SnapshotLowWatermarkLSN: h.basePosition.SnapshotLowWatermarkLSN,
+		SchemaHistory:           h.basePosition.SchemaHistory,
 	}.ToSDKPosition()
 }
 
@@ -371,6 +374,130 @@ func (h *CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 // must be re-applied before CDC positions are built).
 func (h *CDCHandler) setBasePositionLowWatermark(lsn string) {
 	h.basePosition.SnapshotLowWatermarkLSN = lsn
+}
+
+// driftKind classifies what a RelationMessage means relative to everything
+// known about that table's shape.
+//
+// It is returned by handleRelation so the decision is assertable in a test
+// rather than only observable in a log line, and it is the seam the drift policy
+// (Area 2 step 3) attaches to: halt/dlq/evolve is a function of this kind plus
+// SchemaDiff.IsNarrowing.
+type driftKind int
+
+const (
+	// driftNone: the shape matches the last durable version. The common case —
+	// Postgres re-sends a RelationMessage after a reconnect and when a new
+	// subscriber attaches.
+	driftNone driftKind = iota
+	// driftInitial: first shape ever recorded for this table. Not drift; there
+	// is nothing to compare against.
+	driftInitial
+	// driftInProcess: the shape changed while this process was running, so the
+	// full column-level diff is available.
+	driftInProcess
+	// driftAcrossRestart: the shape differs from the last durable version but
+	// this process saw no earlier shape, so the change happened while the
+	// connector was down. Only the hash survived, so the affected columns are
+	// not recoverable.
+	driftAcrossRestart
+)
+
+// relationKey identifies a table in the durable schema history.
+//
+// Namespace+name, not RelationID: the ID is a pg_class OID, which a
+// drop-and-recreate changes, and history keyed by it would silently start over
+// for what an operator considers the same table. The name is also what appears
+// in an operator-facing message.
+func relationKey(r *pglogrepl.RelationMessage) string {
+	return r.Namespace + "." + r.RelationName
+}
+
+// columnIdentities projects a RelationMessage onto the identity triple the
+// schema hash is computed over. Kept in lockstep with diffRelations' notion of
+// column identity — if the two disagreed, a shape could pass the hash
+// comparison while the diff reported drift, or the reverse.
+func columnIdentities(r *pglogrepl.RelationMessage) []position.ColumnIdentity {
+	out := make([]position.ColumnIdentity, 0, len(r.Columns))
+	for _, c := range r.Columns {
+		out = append(out, position.ColumnIdentity{
+			Name:         c.Name,
+			DataType:     c.DataType,
+			TypeModifier: c.TypeModifier,
+		})
+	}
+	return out
+}
+
+// handleRelation caches a relation and reports schema drift against both the
+// in-memory cache (drift within this process) and the durable history carried
+// in the position (drift across a restart).
+//
+// The two are not redundant. The in-memory diff describes exactly what changed
+// but is empty on every process start; the durable history survives restarts but
+// stores only a hash, so it can prove the shape changed without saying how. A
+// DDL applied while the connector was down is visible ONLY through the second.
+//
+// This step detects and reports. It does not yet halt, DLQ, or evolve — that is
+// the drift policy (Area 2 step 3), where making halt the default is a breaking
+// change that owes a migration note.
+//
+// Concurrency: basePosition is read and written only here and in
+// setBasePositionLowWatermark. Both run before or on the single subscription
+// goroutine (see the basePosition field comment), so no locking is needed. The
+// SchemaHistory map is handed to buildPosition by reference, but ToSDKPosition
+// marshals to JSON eagerly, so no live reference to it ever escapes into an
+// emitted position.
+func (h *CDCHandler) handleRelation(ctx context.Context, r *pglogrepl.RelationMessage, lsn pglogrepl.LSN) driftKind {
+	diff := h.relationSet.Update(r)
+
+	key := relationKey(r)
+	hash := position.HashColumnSet(columnIdentities(r))
+
+	// Read before recording: RecordSchemaVersion mutates what LastSchemaVersion
+	// returns.
+	prev, hadHistory := h.basePosition.LastSchemaVersion(key)
+	changed := h.basePosition.RecordSchemaVersion(key, hash, lsn.String())
+
+	switch {
+	case !changed:
+		// Same shape as the last durable version. Postgres re-sends a
+		// RelationMessage after a reconnect and when a new subscriber attaches,
+		// so this is the common case and must stay silent.
+		return driftNone
+	case !hadHistory:
+		// First shape ever recorded for this table — on a first run, or on the
+		// first run after upgrading from a position that predates the history.
+		// Nothing to compare against, so this is not drift.
+		sdk.Logger(ctx).Debug().
+			Str("table", key).
+			Str("schema_hash", hash).
+			Msg("recorded initial schema version for table")
+		return driftInitial
+	case diff.HasDrift():
+		// Drift within this process: the full diff is available.
+		sdk.Logger(ctx).Warn().
+			Str("table", key).
+			Str("lsn", lsn.String()).
+			Bool("narrowing", diff.IsNarrowing()).
+			Msg("schema drift detected: " + diff.String())
+		return driftInProcess
+	default:
+		// The shape differs from the last durable version but this process has
+		// no earlier shape to diff against: the change happened while the
+		// connector was not running. Only the hash is retained, so this reports
+		// THAT the schema changed, not which columns.
+		sdk.Logger(ctx).Warn().
+			Str("table", key).
+			Str("lsn", lsn.String()).
+			Str("previous_schema_hash", prev.ColumnSetHash).
+			Str("previous_seen_lsn", prev.FirstSeenLSN).
+			Str("current_schema_hash", hash).
+			Msg("schema of table changed while the connector was not running; " +
+				"the change happened before this process started, so the affected " +
+				"columns cannot be reported — compare against your DDL history")
+		return driftAcrossRestart
+	}
 }
 
 // updateAvroSchema generates and stores avro schema based on the relation's row
