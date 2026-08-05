@@ -168,3 +168,40 @@ func Test_SchemaHistory_AbsentOnLegacyPosition(t *testing.T) {
 	// Recording against a legacy position must work, not panic on a nil map.
 	is.True(p.RecordSchemaVersion("public.users", "abc", "0/1"))
 }
+
+// legacyPosition mirrors the Position struct as it existed BEFORE SchemaHistory
+// was added. It is the N-1 reader.
+type legacyPosition struct {
+	Version                 int    `json:"version"`
+	Type                    Type   `json:"type"`
+	LastLSN                 string `json:"last_lsn,omitempty"`
+	SnapshotLowWatermarkLSN string `json:"snapshot_low_watermark_lsn,omitempty"`
+}
+
+// Test_SchemaHistory_DowngradeIsSafe is the other half of the serialized-format
+// contract, and the half that is easy to forget.
+//
+// LegacyPositionSeedsWithoutDrift covers N reading an N-1 position. This covers
+// N-1 reading an N position, which is what happens on a ROLLBACK — the case that
+// matters most, because a rollback is already an incident and a position that
+// fails to parse would turn it into a worse one.
+//
+// It works because ParseSDKPosition uses a permissive json.Unmarshal. Pinning it
+// here means adding DisallowUnknownFields later fails this test instead of
+// silently making every rollback unrecoverable.
+func Test_SchemaHistory_DowngradeIsSafe(t *testing.T) {
+	is := is.New(t)
+
+	p := Position{Type: TypeCDC, LastLSN: "0/ABC", SnapshotLowWatermarkLSN: "0/100"}
+	p.RecordSchemaVersion("public.users", "somehash", "0/AAA")
+	encoded := p.ToSDKPosition()
+
+	var old legacyPosition
+	is.NoErr(json.Unmarshal(encoded, &old))
+
+	// The unknown field is ignored, and everything the old reader relies on
+	// survives intact — dropping either of these would resume from the wrong LSN.
+	is.Equal(old.LastLSN, "0/ABC")
+	is.Equal(old.SnapshotLowWatermarkLSN, "0/100")
+	is.Equal(old.Type, TypeCDC)
+}
