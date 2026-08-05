@@ -540,6 +540,38 @@ before this ships, each with symptom → diagnosis → remediation, per the exis
   table alongside the slot/publication on connector deletion, defaulting to leave-it-in-place to
   avoid surprising drops of an operator-visible table).
 
+## Decisions (DeVaris, 2026-08-03)
+
+All four open questions below are RESOLVED. Recorded here rather than in a new document because
+they answer questions this doc posed; the questions are kept intact underneath so the reasoning
+that produced each answer stays readable.
+
+1. **`logrepl.schemaDrift.policy` default = `halt`.** Confirmed: safety over silent continuity.
+   **This is a BREAKING CHANGE** and must ship with a migration note and a deprecation plan per
+   CLAUDE.md — pipelines upgrading to a DBZ-3 connector version will, for the first time, stop on
+   a DDL that previously passed through silently. The note must say plainly what changed, how to
+   restore the old behaviour (`evolve`), and why the default moved (silent drift is an
+   invariant-6 violation). Acceptance: the note exists and is linked from the release notes, not
+   buried in a changelog line.
+
+2. **Rename detection: NOT built in this workstream.** Confirmed. `pgoutput` cannot distinguish a
+   rename from drop+add, and the `REPLICA IDENTITY FULL` heuristic can still be wrong. Ship
+   drop+add — correct, noisier. This is a decision that the heuristic is not worth its complexity,
+   not a deferral; revisit only on a concrete user report.
+
+3. **Heartbeat table: keep `_conduit_heartbeat`; defer collision handling.** Confirmed. The table
+   stays visible to any other consumer of the same publication. Collision with a coexisting
+   Debezium heartbeat table during a migration-in-progress is real but belongs to the KC-migration
+   compatibility-report path. Carry it forward there so it is not lost.
+
+4. **Benchi: connector-local measurement, `postgres→log` reference.** Confirmed. Two reasons this
+   does NOT block on the repo-level benchi harness: that harness was retracted as unfit for engine
+   comparison (ConduitIO/conduit#2748 — its metric is not comparable across engines and its A/A
+   noise floor exceeded the effect), and `postgres→s3` is blocked on conduit-connector-s3#963
+   (MinIO checksum). A connector-local before/after on the heartbeat and resumed-snapshot-tagging
+   hot paths answers criterion 6 without inheriting the engine-benchmark problem. **Any number
+   reported must cite an A/A floor beside it**, per the methodology in that retraction.
+
 ## Open questions for DeVaris
 
 1. **Default for `logrepl.schemaDrift.policy`.** This doc proposes `halt` as the safe default
