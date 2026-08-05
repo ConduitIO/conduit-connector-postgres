@@ -15,8 +15,10 @@
 package snapshot
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,6 +26,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/matryer/is"
+	"github.com/rs/zerolog"
 )
 
 // Test_Iterator_buildRecord_ResumedTag is a white-box unit test (no DB) for the
@@ -240,4 +243,40 @@ func Test_Iterator_NextN(t *testing.T) {
 		is.True(err != nil)
 		is.Equal(err.Error(), "n must be greater than 0, got -1")
 	})
+}
+
+// Test_Iterator_ResumeWarning_NotSilent covers DBZ-3 Area 1 step 3: a resumed
+// (unpinned) snapshot must announce itself once per run, not only per record.
+//
+// The per-record MetadataSnapshotResumed tag and this warning answer different
+// questions. The tag tells a downstream consumer "this record came from a
+// degraded read". The warning tells the operator "this run is in degraded mode"
+// at the moment it starts — the only signal available before any record has been
+// emitted, which on a long resumed snapshot is exactly when someone is looking.
+// Without it the condition stays invisible until records land, which is the
+// silence the design explicitly rules out.
+func Test_Iterator_ResumeWarning_NotSilent(t *testing.T) {
+	is := is.New(t)
+
+	pos := position.Position{
+		Type:                    position.TypeSnapshot,
+		Snapshots:               position.SnapshotPositions{"tbl": {}},
+		SnapshotLowWatermarkLSN: "0/1A2B3C4",
+	}
+
+	// Resumed run: must warn, and must carry the low watermark so an operator
+	// can correlate the message with the replication slot.
+	var buf bytes.Buffer
+	ctx := zerolog.New(&buf).WithContext(context.Background())
+	emitResumeWarning(ctx, true, pos)
+	out := buf.String()
+	is.True(strings.Contains(out, "WITHOUT a transaction-snapshot pin"))
+	is.True(strings.Contains(out, "0/1A2B3C4"))
+
+	// First run: must NOT warn. A signal that fires on every start is noise,
+	// and operators learn to ignore noise.
+	buf.Reset()
+	ctx = zerolog.New(&buf).WithContext(context.Background())
+	emitResumeWarning(ctx, false, pos)
+	is.Equal(buf.String(), "")
 }
