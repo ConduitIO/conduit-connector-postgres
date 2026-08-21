@@ -8,6 +8,19 @@ Origin: adversarial review of the v0.20 release plan, finding F2 — "ACs 7.5/7.
 SIGKILL chaos harness. No such harness exists. Multi-day work was hidden inside three
 checkboxes."
 
+## Summary
+
+`conduit-connector-postgres` has no way to prove a hard process kill (`kill -9`, not `SIGTERM`)
+mid-snapshot or mid-handoff doesn't lose or duplicate a record. This document plans a
+process-kill chaos harness that re-execs the connector's own test binary as a real, SIGKILL-able
+child process, drives a real `*postgres.Source` against a real dockerized Postgres, and records
+every delivery to a durable, fsync-before-ack ledger so a scenario can assert exact gap/duplicate
+properties over data the test itself generated. It unblocks DBZ-3 acceptance criteria 2, 5, and
+10. This document's numbered sections (§0-§12) are cited by exact number throughout this
+package's code comments and its own acceptance-criteria table (§9); headings below keep that
+numbering even where their wording has been aligned to this repo's other design docs, so a
+renumbering here does not silently break those citations.
+
 ## Status
 
 This document was authored to plan B0-1 through B0-5 before any of the code existed. It is
@@ -255,7 +268,7 @@ report of what runs today.
 | B0.15 | `doc.go` states what is NOT covered (gRPC transport, engine persister, SDK serving) | Met (B0-2) |
 | B0.16 | The PRs do **not** claim AC 5 / 7.5 is closed | Met — B0-2's `doc.go` states the scope explicitly |
 
-## 10. How the harness can lie
+## 10. Failure-mode analysis: how the harness can lie
 
 | The lie | Why plausible here | Mitigation |
 | --- | --- | --- |
@@ -303,6 +316,22 @@ Assumed-but-absent: `.golangci.yml` has no `build-tags` (tagged files unlinted t
 does not exist (B3 must create it); `ReadReplicationSlot` returns only 3 columns; there is no `TestMain`,
 `os/exec` or `syscall` anywhere in the repo — every line of process supervision is new code, which is why
 B0-2 is 3–4 days and not one.
+
+## Upgrade / rollback
+
+N/A in the usual sense this section covers elsewhere in this repo (no serialized state, pipeline
+config, or protocol format changes here) — stated explicitly rather than silently omitted, per
+this repo's design-doc convention. This harness ships no code that runs in a user's pipeline:
+everything it adds is gated behind the `conduitchaos` build tag (never passed by
+`.goreleaser.yml` or `publish.yml`), plus a new, additive CI job (`chaos.yml`) and `Makefile`
+target. "Rollback" is reverting the PR(s) that introduce it — there is no data, no persisted
+state, and no released artifact that could carry this harness's code forward across a version
+boundary. The one thing that *is* a compatibility surface going forward is the ledger's JSON-line
+format (`ledger.go`) once B0-3/B0-4 add a kill+restart scenario that reopens a prior run's ledger
+file across process invocations within a single test — see `LedgerEntry.Seq`'s doc comment. That
+format has no versioning story yet because nothing outside a single `go test` invocation ever
+reads a ledger file; if a later slice needs a ledger to survive across CI runs or tool versions,
+that slice must add one rather than assume this format is stable by default.
 
 ## Where B0-1/B0-2 diverged from this plan
 
