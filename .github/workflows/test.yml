@@ -51,9 +51,21 @@ jobs:
       # caught. Keeping the config untouched means both variants are linted:
       # the default job covers the code that ships, this one covers the code
       # that only the harness builds.
+      # Version comes from tools/go.mod, exactly as lint.yml derives it. Pinning
+      # matters here: golangci-lint-action's default is a v1 release, and this
+      # repo's .golangci.yml is v2 config — an unpinned action fails with
+      # "the configuration contains invalid elements" rather than a lint error,
+      # which reads like a broken config instead of a broken workflow.
+      - name: Resolve golangci-lint version
+        id: golangci-lint-version
+        run: |
+          GOLANGCI_LINT_VERSION=$( go list -modfile=tools/go.mod -m -f '{{.Version}}' github.com/golangci/golangci-lint/v2 )
+          echo "v=${GOLANGCI_LINT_VERSION}" >> "$GITHUB_OUTPUT"
+
       - name: Lint (conduitchaos)
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
+          version: ${{ steps.golangci-lint-version.outputs.v }}
           args: --build-tags conduitchaos
 
       - name: Vet (conduitchaos)
