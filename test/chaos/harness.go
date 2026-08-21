@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -163,7 +164,11 @@ func spawnChildWithEnv(t *testing.T, env []string) *childProcess {
 	// package's actual "stop the child" mechanism is sigkill (below),
 	// which every scenario calls explicitly.
 	cmd := exec.Command(exe)
-	cmd.Env = append(os.Environ(), env...)
+	// envParentPID (env.go) is appended here, not by the caller: it must
+	// always be THIS process's real PID, stamped at the moment of spawn -
+	// see its doc comment for why isRealChildInvocation/
+	// isEchoChildInvocation key their fail-closed check on it.
+	cmd.Env = append(append(os.Environ(), env...), envParentPID+"="+strconv.Itoa(os.Getpid()))
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -288,16 +293,35 @@ func (c *childProcess) waitForMarker(t *testing.T, prefix string, timeout time.D
 			found = l
 			return true
 		}
-		// The marker check above always wins a race against exited(): the
-		// scanner goroutine appends every line it reads to c.lines BEFORE
-		// closing readerDone (see spawnChildWithEnv), so a marker printed
-		// right before the child exits is never missed here. If we get
-		// this far the marker genuinely never arrived - a dead child would
-		// otherwise burn the full timeout and blame the wrong thing (it
-		// looks identical to "still running, just slow"). Fresh
-		// diagnostics, not pollUntil's (possibly much later) timeout
-		// message.
+		// c.line() above and c.exited() below are two SEPARATE reads of
+		// independent state (c.lines under c.mu; readerDone via a channel
+		// receive) - not one atomic observation. The scanner goroutine
+		// does append every line before closing readerDone (see
+		// spawnChildWithEnv), but that only means the append
+		// happens-before the close; it says nothing about when THIS
+		// goroutine's read of c.lines happened relative to either. If the
+		// scanner appends the final marker and closes readerDone in the
+		// gap between the c.line() call above and this c.exited() call,
+		// the snapshot c.line() already took is stale and genuinely
+		// missed a marker that was, in fact, written - a spurious
+		// t.Fatalf below despite the child behaving correctly. Not a data
+		// race (-race is clean here; the channel op is synchronized), just
+		// a stale-read race, amplified by high-volume children that print
+		// their final marker and exit immediately (see this function's
+		// package-level flake writeup). Re-checking c.line() AFTER
+		// observing exited() fixes it: that observation is an acquire
+		// against the mutex-protected appends, so this second read is
+		// guaranteed to see everything the child ever wrote.
 		if c.exited() {
+			if l, ok := c.line(prefix); ok {
+				found = l
+				return true
+			}
+			// If we get this far the marker genuinely never arrived - a
+			// dead child would otherwise burn the full timeout and blame
+			// the wrong thing (it looks identical to "still running, just
+			// slow"). Fresh diagnostics, not pollUntil's (possibly much
+			// later) timeout message.
 			t.Fatalf("child exited before marker %q\n%s", prefix, c.diagnostics())
 		}
 		return false
@@ -315,9 +339,15 @@ func (c *childProcess) waitForCount(t *testing.T, prefix string, n int, timeout 
 		if c.progressCount(prefix) >= n {
 			return true
 		}
-		// See waitForMarker's identical check for why the count check
-		// above always wins the race against exited().
+		// See waitForMarker's identical shape for why this re-checks
+		// AFTER observing exited(), rather than trusting the snapshot
+		// already taken above: the two reads are not atomic, and a
+		// child that appends its Nth line and closes readerDone in the
+		// gap between them would otherwise cause a spurious t.Fatalf here.
 		if c.exited() {
+			if c.progressCount(prefix) >= n {
+				return true
+			}
 			t.Fatalf("child exited before %d lines with prefix %q\n%s", n, prefix, c.diagnostics())
 		}
 		return false

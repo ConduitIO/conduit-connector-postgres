@@ -45,7 +45,16 @@ func preSweepBestEffort(ctx context.Context) {
 	}
 	defer pool.Close()
 
-	names, err := listChaosObjects(ctx, pool)
+	// Same postSweepQueryTimeout bound the post-suite half uses (see its
+	// doc comment): without it, this pre-suite half would run the exact
+	// same listing/drop queries against the exact same "could be wedged"
+	// Postgres on a bare context.Background(), just earlier in TestMain's
+	// lifecycle - a hang here has no test-level timeout to save it either,
+	// since it happens before m.Run() even starts.
+	queryCtx, cancel := context.WithTimeout(ctx, postSweepQueryTimeout)
+	defer cancel()
+
+	names, err := listChaosObjects(queryCtx, pool)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "chaos: pre-suite sweep: list pgchaos_%% objects: %v\n", err)
 		return
@@ -56,7 +65,7 @@ func preSweepBestEffort(ctx context.Context) {
 
 	fmt.Fprintf(os.Stderr, "chaos: pre-suite sweep: reaping %d stale slot(s) and %d stale publication(s) "+
 		"left behind by a prior run\n", len(names.slots), len(names.pubs))
-	if err := dropChaosObjects(ctx, pool, names); err != nil {
+	if err := dropChaosObjects(queryCtx, pool, names); err != nil {
 		fmt.Fprintf(os.Stderr, "chaos: pre-suite sweep: %v\n", err)
 	}
 }
@@ -76,9 +85,16 @@ const postSweepQueryTimeout = 10 * time.Second
 // It also returns true (fail the run) if the LISTING query itself errors on
 // an otherwise-live connection: an error there means "we don't know whether
 // a leak exists", which must not be reported as "no leak found". That is
-// different from dialForSweep failing to connect at all (the stack is
+// different from dialForSweep failing to prove liveness at all (the stack is
 // already torn down, e.g. `docker compose down` already ran) - that case is
-// not a leak signal and correctly returns false below.
+// not a leak signal and correctly returns false below. dialForSweep's Ping
+// is what makes these two cases actually distinguishable: pgxpool.NewWithConfig
+// never dials eagerly (MinConns defaults to 0), so without an explicit Ping,
+// "stack is down" and "stack is up but the listing query itself failed"
+// were indistinguishable - both surfaced as a Query error from
+// listChaosObjects, and were being treated identically as "not a leak
+// signal", silently disabling the fail-closed listing-error case above for
+// the (very common) stack-down scenario.
 func postSweepOrFail(ctx context.Context) bool {
 	pool, err := dialForSweep(ctx)
 	if err != nil {
@@ -109,10 +125,27 @@ func postSweepOrFail(ctx context.Context) bool {
 	return true
 }
 
+// dialForSweep builds a pool AND proves it can actually reach the server.
+// cpool.New (pgxpool.NewWithConfig under it) never dials eagerly - MinConns
+// defaults to 0 - so it essentially never errors on its own, even when the
+// chaos stack is completely down; a "connection refused" only ever used to
+// surface later, on the first real Query inside listChaosObjects, which is
+// exactly the fail-closed "possible leak" branch below and made "stack down"
+// indistinguishable from "stack up but query failed". Ping forces the dial
+// here, where a failure can be attributed correctly.
 func dialForSweep(ctx context.Context) (*pgxpool.Pool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	return cpool.New(ctx, RepmgrConnString)
+
+	pool, err := cpool.New(ctx, RepmgrConnString)
+	if err != nil {
+		return nil, err
+	}
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return pool, nil
 }
 
 type chaosObjectNames struct {

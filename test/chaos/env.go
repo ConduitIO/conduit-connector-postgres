@@ -16,7 +16,10 @@
 
 package chaos
 
-import "os"
+import (
+	"os"
+	"strconv"
+)
 
 // Environment variables forming the parent<->child re-exec protocol
 // (harness plan §3.3). TestMain (main_test.go) checks envRealChild/envEcho to
@@ -68,8 +71,40 @@ const (
 	// chaospoint.Reach before exiting.
 	envEchoReaches = "PGCHAOS_ECHO_REACHES"
 
+	// envParentPID is the OS PID of the process that spawned this
+	// invocation via spawnChildWithEnv (harness.go), stamped onto every
+	// child's environment as os.Getpid() of the parent at spawn time.
+	// isRealChildInvocation/isEchoChildInvocation require this to equal
+	// os.Getppid() as observed by THIS process, not merely that the
+	// PGCHAOS_REAL_CHILD/PGCHAOS_ECHO_CHILD sentinel is "1" - because a
+	// process's real OS parent PID cannot be forged by exporting an env
+	// var, whereas the sentinels themselves can be. Without this check, a
+	// developer who exports PGCHAOS_ECHO_CHILD=1 by hand to drive a child
+	// directly, then reruns `go test -tags conduitchaos ./test/chaos/` in
+	// the same shell without unsetting it, gets TestMain routing into
+	// runEchoChild - which os.Exit(0)s before a single Go test runs - and
+	// `go test` reports that exit status as `ok`, with zero `=== RUN`
+	// lines: a silent false green from the one suite whose entire value is
+	// that it cannot report green wrongly. A bare shell export can never
+	// also happen to equal this process's actual OS parent PID, so the
+	// check fails closed in exactly that case.
+	envParentPID = "PGCHAOS_PARENT_PID"
+
 	envValueTrue = "1"
 )
 
-func isRealChildInvocation() bool { return os.Getenv(envRealChild) == envValueTrue }
-func isEchoChildInvocation() bool { return os.Getenv(envEchoChild) == envValueTrue }
+func isRealChildInvocation() bool {
+	return os.Getenv(envRealChild) == envValueTrue && hasRealParent()
+}
+
+func isEchoChildInvocation() bool {
+	return os.Getenv(envEchoChild) == envValueTrue && hasRealParent()
+}
+
+// hasRealParent reports whether envParentPID, as set in THIS process's
+// environment, equals this process's actual OS parent PID (os.Getppid()) -
+// see envParentPID's doc comment for why that can't be forged by a plain
+// shell export.
+func hasRealParent() bool {
+	return os.Getenv(envParentPID) == strconv.Itoa(os.Getppid())
+}
