@@ -14,7 +14,9 @@
 
 // Package chaos is the DBZ-3 process-kill chaos harness for
 // conduit-connector-postgres (v0.20 Workstream 7, "DBZ-3 B0 — process-kill
-// test harness", plan doc: dbz3-b0-kill-harness-plan.md). It supervises a
+// test harness", plan doc: docs/design-documents/20260821-dbz3-b0-kill-harness.md
+// — every "harness plan §N" citation in this package's comments refers to
+// that file's numbered sections). It supervises a
 // real *postgres.Source (this repo's Source, github.com/conduitio/
 // conduit-connector-postgres) driven directly — no sdk.Serve, no engine, no
 // gRPC — against a real, dockerized Postgres, so scenarios can assert
