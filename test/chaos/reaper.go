@@ -123,7 +123,14 @@ type chaosObjectNames struct {
 func listChaosObjects(ctx context.Context, pool *pgxpool.Pool) (chaosObjectNames, error) {
 	var out chaosObjectNames
 
-	rows, err := pool.Query(ctx, "SELECT slot_name FROM pg_replication_slots WHERE slot_name LIKE $1", chaosPrefix+"%")
+	// starts_with(), not LIKE $1 with a hand-built '%' pattern: chaosPrefix
+	// ("pgchaos_") itself contains an unescaped LIKE wildcard ('_' matches
+	// any single character), so "pgchaos_%" as a LIKE pattern also matches
+	// e.g. "pgchaosX-anything" for any single character X, not just a
+	// literal underscore. starts_with is a plain prefix comparison with no
+	// wildcard semantics at all, so it can't silently over- or
+	// under-match, and it needs no ESCAPE clause to reason about.
+	rows, err := pool.Query(ctx, "SELECT slot_name FROM pg_replication_slots WHERE starts_with(slot_name, $1)", chaosPrefix)
 	if err != nil {
 		return out, fmt.Errorf("query pg_replication_slots: %w", err)
 	}
@@ -140,7 +147,8 @@ func listChaosObjects(ctx context.Context, pool *pgxpool.Pool) (chaosObjectNames
 		return out, fmt.Errorf("iterate pg_replication_slots: %w", err)
 	}
 
-	rows, err = pool.Query(ctx, "SELECT pubname FROM pg_publication WHERE pubname LIKE $1", chaosPrefix+"%")
+	// See the identical starts_with() note on the slot query above.
+	rows, err = pool.Query(ctx, "SELECT pubname FROM pg_publication WHERE starts_with(pubname, $1)", chaosPrefix)
 	if err != nil {
 		return out, fmt.Errorf("query pg_publication: %w", err)
 	}
