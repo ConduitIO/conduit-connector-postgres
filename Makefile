@@ -8,7 +8,7 @@ build:
 test:
 	# run required docker containers, execute integration tests, stop containers after tests
 	docker compose -f test/docker-compose.yml up --force-recreate --quiet-pull -d --wait
-	go test $(GOTEST_FLAGS) -race ./...; ret=$$?; \
+	go test -count=1 $(GOTEST_FLAGS) -race ./...; ret=$$?; \
 		docker compose -f test/docker-compose.yml down --volumes; \
 		exit $$ret
 
@@ -23,7 +23,7 @@ test-chaos:
 	# suite itself (test/chaos/pgstate.go's requireChaosStack), not a
 	# quietly green run.
 	docker compose -f test/docker-compose.chaos.yml up --force-recreate --quiet-pull -d --wait
-	go test -tags conduitchaos $(GOTEST_FLAGS) -race ./test/chaos/...; ret=$$?; \
+	go test -tags conduitchaos -count=1 $(GOTEST_FLAGS) -race ./test/chaos/...; ret=$$?; \
 		docker compose -f test/docker-compose.chaos.yml down --volumes; \
 		exit $$ret
 
