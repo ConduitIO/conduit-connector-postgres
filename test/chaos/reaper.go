@@ -61,9 +61,24 @@ func preSweepBestEffort(ctx context.Context) {
 	}
 }
 
+// postSweepQueryTimeout bounds the listing/drop queries below. dialForSweep
+// only bounds the CONNECT; without a separate deadline on the queries
+// themselves, a wedged Postgres (e.g. a hung lock on pg_replication_slots)
+// would hang this call forever - and it runs AFTER every test has already
+// passed, at the very end of TestMain, so a hang here has no test-level
+// timeout to save it. chaos.yml's job-level timeout-minutes is the last
+// resort if this one is somehow bypassed.
+const postSweepQueryTimeout = 10 * time.Second
+
 // postSweepOrFail returns true if it found (and, best-effort, cleaned up) a
 // leaked pgchaos_ slot or publication after the suite finished - the signal
 // TestMain uses to force a non-zero exit even if every test itself passed.
+// It also returns true (fail the run) if the LISTING query itself errors on
+// an otherwise-live connection: an error there means "we don't know whether
+// a leak exists", which must not be reported as "no leak found". That is
+// different from dialForSweep failing to connect at all (the stack is
+// already torn down, e.g. `docker compose down` already ran) - that case is
+// not a leak signal and correctly returns false below.
 func postSweepOrFail(ctx context.Context) bool {
 	pool, err := dialForSweep(ctx)
 	if err != nil {
@@ -73,10 +88,14 @@ func postSweepOrFail(ctx context.Context) bool {
 	}
 	defer pool.Close()
 
-	names, err := listChaosObjects(ctx, pool)
+	queryCtx, cancel := context.WithTimeout(ctx, postSweepQueryTimeout)
+	defer cancel()
+
+	names, err := listChaosObjects(queryCtx, pool)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "chaos: post-suite sweep: list pgchaos_%% objects: %v\n", err)
-		return false
+		fmt.Fprintf(os.Stderr, "chaos: post-suite sweep: list pgchaos_%% objects: %v - "+
+			"treating as a possible leak, since we can't rule one out\n", err)
+		return true
 	}
 	if len(names.slots) == 0 && len(names.pubs) == 0 {
 		return false
@@ -84,7 +103,7 @@ func postSweepOrFail(ctx context.Context) bool {
 
 	fmt.Fprintf(os.Stderr, "chaos: post-suite sweep: FOUND LEAKED chaos object(s) - a test's own "+
 		"t.Cleanup should have dropped these: slots=%v publications=%v\n", names.slots, names.pubs)
-	if err := dropChaosObjects(ctx, pool, names); err != nil {
+	if err := dropChaosObjects(queryCtx, pool, names); err != nil {
 		fmt.Fprintf(os.Stderr, "chaos: post-suite sweep: cleanup itself failed: %v\n", err)
 	}
 	return true

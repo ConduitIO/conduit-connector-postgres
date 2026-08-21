@@ -27,6 +27,12 @@ on:
 jobs:
   chaos:
     runs-on: ubuntu-latest
+    # Without this, GitHub's default (6h) applies. postSweepOrFail
+    # (test/chaos/reaper.go) now bounds its own queries, but this is the
+    # backstop if a wedged Postgres hangs somewhere this job doesn't have
+    # its own deadline - a wedged run should fail in minutes, not silently
+    # occupy a runner for hours after every test already passed.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
