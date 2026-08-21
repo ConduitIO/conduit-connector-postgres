@@ -19,7 +19,7 @@ package chaos
 import "os"
 
 // Environment variables forming the parent<->child re-exec protocol
-// (harness plan §3.3). TestMain (reaper.go) checks envRealChild/envEcho to
+// (harness plan §3.3). TestMain (main_test.go) checks envRealChild/envEcho to
 // decide whether this process invocation is a test run at all, or one of
 // the two child modes below.
 const (

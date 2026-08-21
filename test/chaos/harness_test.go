@@ -26,6 +26,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/conduitio/conduit-connector-postgres/internal/chaospoint"
 )
 
 // TestHarness_EchoChild_CleanExit proves the non-parking path end to end:
@@ -62,13 +64,13 @@ func TestHarness_EchoChild_ParkThenSigkill(t *testing.T) {
 	cp := spawnChildWithEnv(t, []string{
 		envEchoChild + "=" + envValueTrue,
 		envEchoReaches + "=5",
-		"PGCHAOS_PARK=" + fmt.Sprintf("%s:%d", "snapshot.fetch.row", parkAtNth),
+		"PGCHAOS_PARK=" + fmt.Sprintf("%s:%d", chaospoint.SnapshotFetchRow, parkAtNth),
 	})
 
 	cp.waitForMarker(t, "OPENED", 10*time.Second)
 
 	parked := cp.waitForMarker(t, "PARKED", 10*time.Second)
-	wantParked := fmt.Sprintf("PARKED snapshot.fetch.row %d", parkAtNth)
+	wantParked := fmt.Sprintf("PARKED %s %d", chaospoint.SnapshotFetchRow, parkAtNth)
 	if parked != wantParked {
 		t.Fatalf("marker mismatch: got %q, want %q", parked, wantParked)
 	}
@@ -115,7 +117,7 @@ func TestHarness_WaitForMarker_TimesOutWhenMarkerNeverArrives(t *testing.T) {
 	cp := spawnChildWithEnv(t, []string{
 		envEchoChild + "=" + envValueTrue,
 		envEchoReaches + "=1",
-		"PGCHAOS_PARK=snapshot.fetch.row:99", // unreachable in a 1-reach run
+		"PGCHAOS_PARK=" + fmt.Sprintf("%s:99", chaospoint.SnapshotFetchRow), // unreachable in a 1-reach run
 	})
 
 	cp.waitForMarker(t, "DONE", 10*time.Second)

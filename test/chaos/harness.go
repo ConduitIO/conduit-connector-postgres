@@ -19,7 +19,6 @@ package chaos
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -158,7 +157,12 @@ func spawnChildWithEnv(t *testing.T, env []string) *childProcess {
 		exe = resolved
 	}
 
-	cmd := exec.CommandContext(context.Background(), exe)
+	// exec.Command, not exec.CommandContext(context.Background(), exe): a
+	// context.Background() deadline never fires, so CommandContext here
+	// bought nothing but the appearance of cancellation support. This
+	// package's actual "stop the child" mechanism is sigkill (below),
+	// which every scenario calls explicitly.
+	cmd := exec.Command(exe)
 	cmd.Env = append(os.Environ(), env...)
 
 	stdout, err := cmd.StdoutPipe()

@@ -42,9 +42,10 @@
 // # The supervision model, and what "child" means here
 //
 // A scenario re-execs the test binary itself (os.Args[0]) as a child OS
-// process (harness.go's spawnChildWithEnv), with TestMain (reaper.go)
+// process (harness.go's spawnChildWithEnv), with TestMain (main_test.go)
 // intercepting on an environment-variable sentinel and routing into
-// child.go's runChild instead of running the package's actual Go tests.
+// child.go's runRealChild or runEchoChild instead of running the package's
+// actual Go tests.
 // The child constructs a real *postgres.Source exactly the way
 // source_integration_test.go's TestSource_Open/TestSource_Read already
 // prove works outside sdk.Serve — sdk.Util.ParseConfig, then Open, then a
