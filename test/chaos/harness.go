@@ -164,11 +164,23 @@ func spawnChildWithEnv(t *testing.T, env []string) *childProcess {
 	// package's actual "stop the child" mechanism is sigkill (below),
 	// which every scenario calls explicitly.
 	cmd := exec.Command(exe)
-	// envParentPID (env.go) is appended here, not by the caller: it must
-	// always be THIS process's real PID, stamped at the moment of spawn -
-	// see its doc comment for why isRealChildInvocation/
-	// isEchoChildInvocation key their fail-closed check on it.
-	cmd.Env = append(append(os.Environ(), env...), envParentPID+"="+strconv.Itoa(os.Getpid()))
+	// The child's PGCHAOS_ environment is built from scratch, not inherited.
+	// Forwarding os.Environ() wholesale made the re-exec protocol additive:
+	// with a stray PGCHAOS_REAL_CHILD=1 exported in the shell, an ECHO child
+	// would be spawned carrying both sentinels, and main_test.go tests the
+	// real-child sentinel first, so it routed into runRealChild and died on a
+	// missing PGCHAOS_TOTAL. That failed red rather than green, but it blamed
+	// the harness for an environment problem - the exact confusion the
+	// parent-PID check was added to remove. Stripping the prefix first makes
+	// the protocol hermetic: the child sees precisely the vars this call
+	// passed, and nothing a developer happened to export.
+	//
+	// envParentPID is appended here, not by the caller: it must always be
+	// THIS process's real PID, stamped at the moment of spawn - see its doc
+	// comment for why isRealChildInvocation/isEchoChildInvocation key their
+	// fail-closed check on it.
+	cmd.Env = append(append(envWithoutChaosVars(), env...),
+		envParentPID+"="+strconv.Itoa(os.Getpid()))
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

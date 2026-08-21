@@ -15,6 +15,7 @@
 // This file carries no build tag (see doc.go) — the ledger format and its
 // analyzer are plain data-structure code with no Postgres dependency, so
 // they run under a bare `go test ./...` via ledger_test.go.
+
 package chaos
 
 import (

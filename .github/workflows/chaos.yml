@@ -45,9 +45,23 @@ jobs:
         # -count=1 on every PR/push/manual run; nightly's scheduled trigger
         # repeats the whole suite three times (harness plan §7) to surface
         # timing-sensitive flakes that a single run wouldn't catch.
+        #
+        # The output is tee'd because a green `go test` is NOT sufficient
+        # evidence that this suite ran. Every scenario is behind
+        # `-tags conduitchaos`; drop or typo that tag and `go test` compiles
+        # the untagged variant, runs only the ledger unit tests, and reports
+        # `ok` - proving nothing while looking identical to success.
+        # test.yml's chaos-build job only COMPILES the tagged variant, so it
+        # would not catch it either. Asserting the scenario by name is the
+        # cheapest thing that distinguishes "passed" from "never ran".
         run: |
+          set -o pipefail
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            make test-chaos GOTEST_FLAGS="-v -count=3"
+            make test-chaos GOTEST_FLAGS="-v -count=3" | tee chaos-output.txt
           else
-            make test-chaos GOTEST_FLAGS="-v -count=1"
+            make test-chaos GOTEST_FLAGS="-v -count=1" | tee chaos-output.txt
+          fi
+          if ! grep -q -- '--- PASS: TestSmoke_NoKillOpenReadAckTeardown' chaos-output.txt; then
+            echo "::error::the chaos suite reported success without running TestSmoke_NoKillOpenReadAckTeardown - the conduitchaos build tag is probably not reaching go test, so no scenario executed" >&2
+            exit 1
           fi

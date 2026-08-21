@@ -86,9 +86,17 @@ func requireChaosStack(t *testing.T) *pgxpool.Pool {
 		pool.Close()
 		t.Fatalf("INFRA: chaos stack reports max_replication_slots=%s, want %s - this is not "+
 			"the chaos stack (test/docker-compose.chaos.yml), or it's stale; refusing to run "+
-			"against it (harness plan §7, §10 'shared port silently downgrades the stack')",
+			"against it (harness plan §7, §12 F-10 'shared port silently downgrades the stack')",
 			got, wantMaxReplicationSlots)
 	}
+
+	// Record that the stack was genuinely reachable during this run. The
+	// post-suite sweep reads this to decide what a FAILED dial means: if no
+	// test ever connected, the stack was simply never up and there is nothing
+	// to have leaked; but if a test did connect and create slots, and the
+	// sweep then cannot reach the server, "no leak found" is not a conclusion
+	// anyone is entitled to draw. See postSweepOrFail.
+	stackWasReachable.Store(true)
 
 	t.Cleanup(pool.Close)
 	return pool

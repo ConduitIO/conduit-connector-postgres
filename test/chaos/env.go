@@ -19,6 +19,7 @@ package chaos
 import (
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Environment variables forming the parent<->child re-exec protocol
@@ -29,6 +30,11 @@ const (
 	// envRealChild, when "1", routes this process invocation into
 	// runRealChild (child.go): a real *postgres.Source, driven end to end
 	// against the Postgres connection in envURL.
+	// chaosEnvPrefix namespaces every var this protocol owns, so a child
+	// environment can be built by exclusion rather than by listing them all -
+	// a new var added below is stripped automatically.
+	chaosEnvPrefix = "PGCHAOS_"
+
 	envRealChild = "PGCHAOS_REAL_CHILD"
 
 	// envEchoChild, when "1", routes this process invocation into
@@ -107,4 +113,21 @@ func isEchoChildInvocation() bool {
 // shell export.
 func hasRealParent() bool {
 	return os.Getenv(envParentPID) == strconv.Itoa(os.Getppid())
+}
+
+// envWithoutChaosVars returns the parent environment with every PGCHAOS_ var
+// removed, so a child's chaos environment is exactly what its spawner passed.
+//
+// Everything else is forwarded unchanged: the child is a real Go binary that
+// still needs PATH, HOME, and the Go toolchain's own variables to run.
+func envWithoutChaosVars() []string {
+	parent := os.Environ()
+	out := make([]string, 0, len(parent))
+	for _, kv := range parent {
+		if strings.HasPrefix(kv, chaosEnvPrefix) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }

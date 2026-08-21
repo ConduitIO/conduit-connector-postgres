@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/source/cpool"
@@ -79,27 +80,59 @@ func preSweepBestEffort(ctx context.Context) {
 // resort if this one is somehow bypassed.
 const postSweepQueryTimeout = 10 * time.Second
 
+// stackWasReachable records whether any test actually connected to the chaos
+// stack during this run. Set by requireChaosStack (pgstate.go), read only by
+// postSweepOrFail, which needs it to tell "nothing ever ran" apart from
+// "things ran and we can no longer check them". Package-level and atomic
+// because TestMain's sweep runs after every test goroutine has finished, but
+// the write happens on test goroutines.
+var stackWasReachable atomic.Bool
+
 // postSweepOrFail returns true if it found (and, best-effort, cleaned up) a
 // leaked pgchaos_ slot or publication after the suite finished - the signal
 // TestMain uses to force a non-zero exit even if every test itself passed.
-// It also returns true (fail the run) if the LISTING query itself errors on
-// an otherwise-live connection: an error there means "we don't know whether
-// a leak exists", which must not be reported as "no leak found". That is
-// different from dialForSweep failing to prove liveness at all (the stack is
-// already torn down, e.g. `docker compose down` already ran) - that case is
-// not a leak signal and correctly returns false below. dialForSweep's Ping
-// is what makes these two cases actually distinguishable: pgxpool.NewWithConfig
-// never dials eagerly (MinConns defaults to 0), so without an explicit Ping,
-// "stack is down" and "stack is up but the listing query itself failed"
-// were indistinguishable - both surfaced as a Query error from
-// listChaosObjects, and were being treated identically as "not a leak
-// signal", silently disabling the fail-closed listing-error case above for
-// the (very common) stack-down scenario.
+//
+// The rule is "never report 'no leak' unless we actually looked", and it
+// takes three cases to say that honestly:
+//
+//   - The listing query errors on a live connection: we don't know whether a
+//     leak exists. Fail.
+//   - We cannot reach the server AND no test ever reached it either
+//     (stackWasReachable is false - the docker-free subset, or the stack was
+//     never up): nothing ran that could have created a slot, so there is
+//     nothing to have leaked. Skip, without failing. This is the case the
+//     Ping in dialForSweep exists to identify.
+//   - We cannot reach the server BUT a test did reach it earlier: tests
+//     created slots against a server we can no longer inspect. Fail.
+//
+// That third case is the one worth spelling out, because the obvious
+// implementation gets it backwards. Treating every dial failure as "skip"
+// makes the WORSE condition (server unreachable) quieter than the milder one
+// (query failed), and it is reproducible: plant a leaked slot mid-run, stop
+// or pause the container before the sweep, and the suite exits 0 with the
+// slot still present. Today the window is narrow - main_test.go only
+// upgrades a zero exit, so every test must also have passed - but B0-3/B0-4
+// run longer and SIGKILL children mid-replication, which is exactly when a
+// connection is most likely to fail. That correlates the fail-open with the
+// very condition the sweep exists to catch.
+//
+// dialForSweep's Ping is what makes cases 1 and 2 distinguishable at all:
+// pgxpool.NewWithConfig never dials eagerly (MinConns defaults to 0), so
+// without an explicit Ping a "connection refused" only surfaced later as a
+// Query error from listChaosObjects - indistinguishable from a genuine
+// listing failure.
 func postSweepOrFail(ctx context.Context) bool {
 	pool, err := dialForSweep(ctx)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "chaos: post-suite sweep: could not connect (stack already torn "+
-			"down?), skipping leak check: %v\n", err)
+		if stackWasReachable.Load() {
+			fmt.Fprintf(os.Stderr, "chaos: post-suite sweep: a test reached the chaos stack "+
+				"during this run, but the sweep cannot: %v - treating as a possible leak, "+
+				"since slots may exist on a server we can no longer inspect\n", err)
+			return true
+		}
+		fmt.Fprintf(os.Stderr, "chaos: post-suite sweep: could not connect and no test ever "+
+			"did either (stack never up, or docker-free subset), so nothing could have "+
+			"leaked; skipping leak check: %v\n", err)
 		return false
 	}
 	defer pool.Close()
