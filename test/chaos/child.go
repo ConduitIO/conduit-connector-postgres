@@ -193,6 +193,17 @@ func buildLedgerEntry(run int, table string, rec opencdc.Record) (LedgerEntry, e
 		RawPosition: base64.StdEncoding.EncodeToString(rec.Position),
 		Resumed:     rec.Metadata[snapshot.MetadataSnapshotResumed] == "true",
 	}
+	// rec.Key, not the decoded position's snapshot/CDC identity: this is the
+	// ROW's own business key (the connector's default "id" column), captured
+	// so a scenario can assert the exact set of rows delivered - see
+	// LedgerEntry.Key's doc comment for why that is a different property
+	// than DeliveryKey proves. Both the snapshot and CDC iterators always
+	// set rec.Key (source/snapshot/fetch_worker.go, source/logrepl), but
+	// guard the nil case anyway rather than let a future connector change
+	// that stops doing so panic here instead of failing the test loudly.
+	if rec.Key != nil {
+		entry.Key = string(rec.Key.Bytes())
+	}
 
 	switch pos.Type {
 	case position.TypeSnapshot:

@@ -68,6 +68,20 @@ type LedgerEntry struct {
 	// ledger analyzer needs no schema awareness.
 	DeliveryKey string `json:"delivery_key"`
 
+	// Key is opencdc.Record.Key.Bytes() - the row identity the CONNECTOR
+	// itself attaches to the record (its "id" column, by default), captured
+	// verbatim. This is deliberately independent of DeliveryKey (derived
+	// from the record's position, not the row) and of Seq (assigned by this
+	// ledger, not the connector): DeliveryKey/Seq can only prove "this
+	// harness never durably recorded the same POSITION twice" - they say
+	// nothing about whether every distinct ROW was actually delivered, so a
+	// connector that redelivered row 1 under four different snapshot
+	// cursors and never delivered rows 2-4 would still pass a
+	// DeliveryKey-only duplicate/gap check. Key is what lets a scenario
+	// assert the actual set of rows seen, independent of how many times or
+	// under what position each one arrived.
+	Key string `json:"key"`
+
 	// Resumed mirrors source/snapshot.MetadataSnapshotResumed on the record
 	// this entry represents — true only when a prior run's persisted
 	// position caused this snapshot record to be re-emitted. Always false in

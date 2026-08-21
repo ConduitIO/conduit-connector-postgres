@@ -20,10 +20,12 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/matryer/is"
 )
@@ -38,10 +40,17 @@ import (
 // coverage touches - fails loud here, not silently three files into a kill
 // scenario that assumed it all just worked.
 //
-// It asserts a perfectly clean ledger: every seeded row and every row
-// inserted mid-run is delivered exactly once, in order, snapshot records
-// first then CDC records, none marked resumed (this is an uninterrupted
-// single run), no corrupt lines.
+// It asserts a perfectly clean ledger: no corrupt lines, no gap or
+// duplicate DELIVERY (by position - DeliveryKey), snapshot records strictly
+// before CDC records, none marked resumed (this is an uninterrupted single
+// run) - AND, independently, that the exact set of ROW keys observed
+// (LedgerEntry.Key, the connector's own "id" per record) is precisely the
+// `seeded` seed keys plus the `extra` keys inserted mid-run, each exactly
+// once. That second check is load-bearing: DeliveryKey is derived from the
+// record's position, so a connector that redelivered row 1 under four
+// distinct snapshot cursors and never delivered rows 2-4 would still pass
+// every position-based check above it - a bug this test would otherwise
+// miss entirely.
 func TestSmoke_NoKillOpenReadAckTeardown(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
@@ -116,7 +125,7 @@ func TestSmoke_NoKillOpenReadAckTeardown(t *testing.T) {
 	is.Equal(FindDuplicates(entries), []Duplicate(nil))
 
 	var snapshotCount, cdcCount int
-	sawCDCAfterSnapshot := false
+	gotKeys := make([]string, 0, len(entries))
 	for _, e := range entries {
 		is.Equal(e.Run, 1)
 		is.Equal(e.Table, table)
@@ -130,14 +139,29 @@ func TestSmoke_NoKillOpenReadAckTeardown(t *testing.T) {
 			snapshotCount++
 		case "cdc":
 			cdcCount++
-			sawCDCAfterSnapshot = true
 		default:
 			t.Fatalf("unexpected op %q at seq %d", e.Op, e.Seq)
 		}
+		gotKeys = append(gotKeys, e.Key)
 	}
 	is.Equal(snapshotCount, seeded)
-	is.Equal(cdcCount, extra)
-	is.True(sawCDCAfterSnapshot)
+	is.Equal(cdcCount, extra) // cdcCount > 0 already proves a CDC delivery was observed after the snapshot loop above
+
+	// The row-identity check the doc comment above promises: the exact set
+	// of keys delivered must be precisely ids 1..total (the table's
+	// bigserial primary key, starting at 1 on this fresh table - `seeded`
+	// then `extra` rows, inserted in that order, nothing else ever writes
+	// to it) - each exactly once. This is independent of, and stronger
+	// than, the position-based FindGaps/FindDuplicates checks above: those
+	// only prove no DELIVERY POSITION repeated or went missing, not that
+	// every ROW was actually seen.
+	wantKeys := make([]string, 0, total)
+	for id := 1; id <= total; id++ {
+		wantKeys = append(wantKeys, string(opencdc.StructuredData{"id": int64(id)}.Bytes()))
+	}
+	sort.Strings(wantKeys)
+	sort.Strings(gotKeys)
+	is.Equal(gotKeys, wantKeys)
 
 	// Parent-side slot introspection (pgstate.go) actually works, and
 	// reflects a cleanly torn-down child: no active replication connection
