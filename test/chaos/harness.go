@@ -46,7 +46,14 @@ import (
 // reason that has nothing to do with the invariant under test. A polling
 // wait with an explicit, generous deadline degrades gracefully instead: it
 // only ever gets closer to its timeout, never produces a false pass.
-func pollUntil(t *testing.T, timeout time.Duration, msg string, cond func() bool) {
+// msg is evaluated ONLY on the timeout path, not on every poll iteration: it
+// typically calls childProcess.diagnostics(), which snapshots stdout/stderr
+// as of the call. Building it eagerly (as this signature used to require)
+// meant every caller froze the child's diagnostics at the moment pollUntil
+// was entered rather than at the moment it actually timed out - a child
+// that crashed 300ms into a 60s wait would report empty/stale stderr in the
+// failure message instead of its real, already-written CHILD_FATAL line.
+func pollUntil(t *testing.T, timeout time.Duration, msg func() string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for {
@@ -54,7 +61,7 @@ func pollUntil(t *testing.T, timeout time.Duration, msg string, cond func() bool
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("timed out after %s waiting for: %s", timeout, msg)
+			t.Fatalf("timed out after %s waiting for: %s", timeout, msg())
 		}
 		// The one fixed-interval sleep in this package - see the doc
 		// comment above.
@@ -255,7 +262,9 @@ func (c *childProcess) diagnostics() string {
 func (c *childProcess) waitForMarker(t *testing.T, prefix string, timeout time.Duration) string {
 	t.Helper()
 	var found string
-	pollUntil(t, timeout, fmt.Sprintf("marker %q\n%s", prefix, c.diagnostics()), func() bool {
+	pollUntil(t, timeout, func() string {
+		return fmt.Sprintf("marker %q\n%s", prefix, c.diagnostics())
+	}, func() bool {
 		l, ok := c.line(prefix)
 		if ok {
 			found = l
@@ -269,7 +278,9 @@ func (c *childProcess) waitForMarker(t *testing.T, prefix string, timeout time.D
 // prefix have been observed, or fails the test after timeout.
 func (c *childProcess) waitForCount(t *testing.T, prefix string, n int, timeout time.Duration) {
 	t.Helper()
-	pollUntil(t, timeout, fmt.Sprintf("%d lines with prefix %q\n%s", n, prefix, c.diagnostics()), func() bool {
+	pollUntil(t, timeout, func() string {
+		return fmt.Sprintf("%d lines with prefix %q\n%s", n, prefix, c.diagnostics())
+	}, func() bool {
 		return c.progressCount(prefix) >= n
 	})
 }
