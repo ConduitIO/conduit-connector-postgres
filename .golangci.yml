@@ -1,14 +1,4 @@
 version: "2"
-run:
-  # Without this, golangci-lint never sees files gated by the conduitchaos
-  # build tag (internal/chaospoint's real implementation, and later the
-  # DBZ-3 process-kill chaos harness under test/chaos) — they would ship
-  # unlinted forever, silently, because `golangci-lint run` builds with the
-  # default tag set unless told otherwise. `make test` has the same blind
-  # spot for `go vet`/`go build`, which is why CI runs a separate
-  # `-tags conduitchaos` build/vet job rather than relying on lint alone.
-  build-tags:
-    - conduitchaos
 linters:
   default: none
   enable:

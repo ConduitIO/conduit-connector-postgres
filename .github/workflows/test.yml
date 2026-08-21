@@ -40,5 +40,21 @@ jobs:
       - name: Build (conduitchaos)
         run: go build -tags conduitchaos ./...
 
+      # Lints the TAGGED variant. This is a separate invocation, not a
+      # build-tags entry in .golangci.yml, and the difference is load-bearing:
+      # golangci-lint v2 merges config build-tags additively, so putting
+      # conduitchaos in the config makes the DEFAULT `golangci-lint run` — the
+      # one lint.yml and `make lint` already invoke — analyze the tagged
+      # variant and silently stop analyzing the untagged one. Verified
+      # empirically: a deliberate `declared and not used` in the !conduitchaos
+      # file went unreported, while the same bait in the tagged file was
+      # caught. Keeping the config untouched means both variants are linted:
+      # the default job covers the code that ships, this one covers the code
+      # that only the harness builds.
+      - name: Lint (conduitchaos)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          args: --build-tags conduitchaos
+
       - name: Vet (conduitchaos)
         run: go vet -tags conduitchaos ./...
