@@ -59,9 +59,6 @@ linters:
           - gosec
         path: test/helper\.go
       - linters:
-          - gosec
-        path: test/chaos/pgstate\.go
-      - linters:
           - forbidigo
         path: source/cpool/cpool\.go
       - linters:

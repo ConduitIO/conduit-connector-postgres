@@ -36,7 +36,11 @@ import (
 // preflight check below fail loudly, per test/conf.d/postgresql.conf vs.
 // test/conf.d.chaos/postgresql.conf, harness plan §7).
 const (
-	RepmgrConnString  = "postgres://repmgr:repmgrmeroxa@127.0.0.1:5434/meroxadb?sslmode=disable"
+	// #nosec G101 -- fixed, published, local-only credentials for this
+	// suite's own docker-compose chaos stack (test/docker-compose.chaos.yml,
+	// port 5434), not a real secret.
+	RepmgrConnString = "postgres://repmgr:repmgrmeroxa@127.0.0.1:5434/meroxadb?sslmode=disable"
+	// #nosec G101 -- see RepmgrConnString above; same local-only chaos stack.
 	RegularConnString = "postgres://meroxauser:meroxapass@127.0.0.1:5434/meroxadb?sslmode=disable"
 )
 
