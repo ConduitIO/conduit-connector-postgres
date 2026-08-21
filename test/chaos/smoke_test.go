@@ -50,7 +50,14 @@ func TestSmoke_NoKillOpenReadAckTeardown(t *testing.T) {
 
 	regPool := test.ConnectPool(ctx, t, RegularConnString)
 
-	table := test.RandomIdentifier(t)
+	// randChaosName(), not test.RandomIdentifier(t): the latter's suffix is
+	// time.Now().UnixMicro()%1000, only 1000 distinct values - the same
+	// collision risk finding F-8 flagged for slots/publications under
+	// nightly's -count=3 applies just as much to the table name, and slots
+	// and publications were moved off it for exactly that reason. No
+	// exemption for the table here.
+	table, err := randChaosName()
+	is.NoErr(err)
 	test.SetupTestTableWithName(ctx, t, regPool, table) // creates the table AND seeds 4 rows
 
 	slot, err := randChaosName()
