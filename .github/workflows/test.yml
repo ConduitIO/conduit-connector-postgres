@@ -18,3 +18,27 @@ jobs:
 
       - name: Test
         run: make test GOTEST_FLAGS="-v -count=1"
+
+  # `make test` (the job above) never passes -tags conduitchaos, so it never
+  # compiles internal/chaospoint's real (parking) implementation or, once
+  # B0-2 lands, test/chaos itself. Without this job a rename anywhere the
+  # chaos build reaches (e.g. a call site under source/) would break the
+  # kill harness silently: nothing in CI would notice until someone tried
+  # to run it. No path filter, on every push/PR, same as `test` above — the
+  # repo is small enough that a change detector would only add a
+  # fail-closed surface for no real saving (see the B0 harness plan, §7).
+  chaos-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Build (conduitchaos)
+        run: go build -tags conduitchaos ./...
+
+      - name: Vet (conduitchaos)
+        run: go vet -tags conduitchaos ./...

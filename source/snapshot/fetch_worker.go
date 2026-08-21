@@ -25,6 +25,7 @@ import (
 	"github.com/conduitio/conduit-commons/opencdc"
 	cschema "github.com/conduitio/conduit-commons/schema"
 	"github.com/conduitio/conduit-connector-postgres/internal"
+	"github.com/conduitio/conduit-connector-postgres/internal/chaospoint"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	"github.com/conduitio/conduit-connector-postgres/source/types"
@@ -304,6 +305,17 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 		}
 
 		toBeSent = append(toBeSent, data)
+
+		// Invariant 2 / DBZ-3 B0 kill point (chaospoint.SnapshotFetchRow): a
+		// kill landing exactly here proves a mid-batch snapshot crash, where
+		// this row is only in the in-memory toBeSent slice — not yet sent
+		// (f.send, below) and therefore not yet durably acked downstream.
+		// Recovery must resume at f.lastRead (the last row a prior fetch
+		// actually completed sending), never at this row, or the NO GAP /
+		// DUP BOUND properties in the chaos harness would be unprovable.
+		// No-op outside the conduitchaos build (see internal/chaospoint).
+		chaospoint.Reach(chaospoint.SnapshotFetchRow)
+
 		nread++
 	}
 

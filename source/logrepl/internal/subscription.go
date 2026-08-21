@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/conduitio/conduit-connector-postgres/internal/chaospoint"
 	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
@@ -405,6 +406,17 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 	// N.B. Manage replication slot lag, by responding with the last server LSN, when
 	//      all previous slot relevant msgs have been written and flushed
 	replyWithWALEnd := walFlushed == s.walWritten && walFlushed < s.serverWALEnd
+
+	// Invariant 1 / DBZ-3 B0 kill point (chaospoint.StandbyStatusUpdate):
+	// walFlushed is loaded and the reply decision is made, but neither wire
+	// send below has happened yet. A kill landing exactly here proves the
+	// window between "the engine knows what it has durably acked" and "the
+	// server has been told" — if walFlushed < s.walWritten at this point,
+	// Postgres's view of confirmed_flush_lsn must not advance past
+	// walFlushed on the next status update after recovery, or the slot
+	// could prune WAL for records this process never actually acked.
+	// No-op outside the conduitchaos build (see internal/chaospoint).
+	chaospoint.Reach(chaospoint.StandbyStatusUpdate)
 
 	sdk.Logger(ctx).Trace().
 		Stringer("wal_write", s.walWritten).
