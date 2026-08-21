@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-postgres/internal/chaospoint"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/snapshot"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -262,6 +263,17 @@ func (c *CombinedIterator) initSnapshotIterator(ctx context.Context, pos positio
 // useCDCIterator will activate and start the CDC iterator. The snapshot iterator
 // will be torn down if initialized.
 func (c *CombinedIterator) useCDCIterator(ctx context.Context) error {
+	// Invariant 2 / DBZ-3 B0 kill point (chaospoint.PreStartSubscriber): the
+	// FIRST statement here, before the snapshot iterator is torn down,
+	// before the low watermark is re-seeded, and before StartSubscriber. A
+	// kill landing exactly here proves the snapshot->CDC handoff boundary:
+	// every table's snapshot progress is already persisted (this method is
+	// only reached after NextN observed ErrIteratorDone), but CDC has not
+	// yet consumed or acked anything, so recovery must resume the CDC slot
+	// at RestartLSN, never mid-handoff. No-op outside the conduitchaos
+	// build (see internal/chaospoint).
+	chaospoint.Reach(chaospoint.PreStartSubscriber)
+
 	if c.snapshotIterator != nil {
 		if err := c.snapshotIterator.Teardown(ctx); err != nil {
 			return fmt.Errorf("failed to teardown snapshot iterator during switch: %w", err)
