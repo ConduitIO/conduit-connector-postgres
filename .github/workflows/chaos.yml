@@ -1,0 +1,47 @@
+name: chaos
+
+# Runs the DBZ-3 process-kill chaos harness (test/chaos, `make test-chaos`)
+# against a real, dockerized Postgres. This is DIFFERENT from test.yml's
+# `chaos-build` job: that job only compiles/vets/lints the conduitchaos
+# build (no docker, no Postgres) so a rename anywhere the harness reaches
+# fails fast; this job actually runs the suite end to end.
+#
+# No path filter, same as test.yml - the repo is small enough that a change
+# detector would only add a fail-closed surface for no real saving (harness
+# plan §7). Fail closed everywhere: no continue-on-error, no skip step for
+# missing docker (ubuntu-latest ships docker; a genuinely missing/
+# misconfigured stack fails inside the suite itself as an INFRA: t.Fatal -
+# see test/chaos/pgstate.go's requireChaosStack - which is exactly as fatal
+# to this job as any other test failure). No retries: a flaky chaos test is
+# fixed at its cause, not hidden by re-running it.
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+  schedule:
+    # Nightly, 05:17 UTC (an off-the-hour time to avoid piling onto other
+    # scheduled jobs' load). -count=3 below only applies to this trigger.
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+jobs:
+  chaos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Chaos suite
+        # -count=1 on every PR/push/manual run; nightly's scheduled trigger
+        # repeats the whole suite three times (harness plan §7) to surface
+        # timing-sensitive flakes that a single run wouldn't catch.
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            make test-chaos GOTEST_FLAGS="-v -count=3"
+          else
+            make test-chaos GOTEST_FLAGS="-v -count=1"
+          fi
