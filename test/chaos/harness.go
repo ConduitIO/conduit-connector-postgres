@@ -205,6 +205,21 @@ func spawnChildWithEnv(t *testing.T, env []string) *childProcess {
 	return cp
 }
 
+// exited reports whether the child's stdout-reading goroutine has finished
+// (readerDone closed), i.e. the child process has exited - cleanly, crashed,
+// or SIGKILLed - and the OS has closed its stdout fd. Non-blocking. See
+// readerDone's doc comment on childProcess: it closes at/after the child's
+// actual exit regardless of whether the parent has called Wait() yet, so
+// this is safe to poll from waitForMarker/waitForCount without racing reap().
+func (c *childProcess) exited() bool {
+	select {
+	case <-c.readerDone:
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *childProcess) linesSnapshot() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -265,11 +280,23 @@ func (c *childProcess) waitForMarker(t *testing.T, prefix string, timeout time.D
 	pollUntil(t, timeout, func() string {
 		return fmt.Sprintf("marker %q\n%s", prefix, c.diagnostics())
 	}, func() bool {
-		l, ok := c.line(prefix)
-		if ok {
+		if l, ok := c.line(prefix); ok {
 			found = l
+			return true
 		}
-		return ok
+		// The marker check above always wins a race against exited(): the
+		// scanner goroutine appends every line it reads to c.lines BEFORE
+		// closing readerDone (see spawnChildWithEnv), so a marker printed
+		// right before the child exits is never missed here. If we get
+		// this far the marker genuinely never arrived - a dead child would
+		// otherwise burn the full timeout and blame the wrong thing (it
+		// looks identical to "still running, just slow"). Fresh
+		// diagnostics, not pollUntil's (possibly much later) timeout
+		// message.
+		if c.exited() {
+			t.Fatalf("child exited before marker %q\n%s", prefix, c.diagnostics())
+		}
+		return false
 	})
 	return found
 }
@@ -281,7 +308,15 @@ func (c *childProcess) waitForCount(t *testing.T, prefix string, n int, timeout 
 	pollUntil(t, timeout, func() string {
 		return fmt.Sprintf("%d lines with prefix %q\n%s", n, prefix, c.diagnostics())
 	}, func() bool {
-		return c.progressCount(prefix) >= n
+		if c.progressCount(prefix) >= n {
+			return true
+		}
+		// See waitForMarker's identical check for why the count check
+		// above always wins the race against exited().
+		if c.exited() {
+			t.Fatalf("child exited before %d lines with prefix %q\n%s", n, prefix, c.diagnostics())
+		}
+		return false
 	})
 }
 
