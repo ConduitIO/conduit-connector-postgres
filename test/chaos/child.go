@@ -97,16 +97,21 @@ func runRealChild() {
 		// handoff instead of an unrelated pre-existing encoding edge case.
 		//
 		// TODO(#326): this is broader than "a NULL numeric column" - Avro
-		// schema extraction emits a non-nullable field type for ANY
-		// nullable, bytes-backed-logical-type Postgres column, and
-		// WithAvroSchema defaults to true (source/config.go), so this is
-		// the connector's shipped default failing against its own standard
-		// test table. B0-3/B0-4 must make an explicit decision about
-		// whether to keep withAvroSchema=false here or fix #326 first,
-		// rather than silently inheriting this workaround - DBZ-3 Area 2 is
-		// specifically about schema behaviour across a restart, and
-		// proving crash-safety with schema attachment off is a narrower
-		// claim than it reads as.
+		// schema extraction (source/schema/avro.go) emits a non-nullable
+		// field type for ANY nullable Postgres column of any type it maps
+		// at all, not just bytes-backed logical types: neither
+		// pgconn.FieldDescription nor pglogrepl.RelationMessageColumn - the
+		// extractor's only inputs - carry a nullability flag, so it
+		// structurally cannot emit a union today for anything. Deleting the
+		// seeded NULL-numeric row and rerunning still fails, on a plain
+		// nullable int column, which is what proves this. WithAvroSchema
+		// defaults to true (source/config.go), so this is the connector's
+		// shipped default failing against its own standard test table.
+		// B0-3/B0-4 must make an explicit decision about whether to keep
+		// withAvroSchema=false here or fix #326 first, rather than silently
+		// inheriting this workaround - DBZ-3 Area 2 is specifically about
+		// schema behaviour across a restart, and proving crash-safety with
+		// schema attachment off is a narrower claim than it reads as.
 		"logrepl.withAvroSchema": "false",
 		"sdk.batch.size":         strconv.Itoa(batchSize),
 	}
