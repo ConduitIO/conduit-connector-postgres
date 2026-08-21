@@ -19,6 +19,7 @@
 // runEchoChild), so a bug in THIS package's process supervision is never
 // masked by - or mistaken for - a bug in the real connector. It needs no
 // docker stack: it never dials Postgres.
+
 package chaos
 
 import (

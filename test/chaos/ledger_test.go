@@ -16,6 +16,7 @@
 // here dials Postgres or spawns a process — and runs under a bare
 // `go test ./...`, which is exactly what keeps the ledger analyzer inside
 // `make test` (acceptance criterion B0.12).
+
 package chaos
 
 import (

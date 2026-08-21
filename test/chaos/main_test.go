@@ -23,7 +23,7 @@ import (
 )
 
 // TestMain intercepts the "am I a chaos child?" case before any actual Go
-// test runs (harness plan §3.3's re-exec protocol; see harness.go's
+// test runs (harness plan §3's re-exec protocol; see harness.go's
 // spawnChildWithEnv), then sweeps every pgchaos_ replication slot and
 // publication before and after the real test run (reaper.go).
 //

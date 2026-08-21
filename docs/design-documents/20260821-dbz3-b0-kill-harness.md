@@ -242,6 +242,7 @@ report of what runs today.
 | B0.2 | Default build unchanged; both tagged and untagged `build`/`vet` green | Met (B0-1/B0-2) |
 | B0.3 | No released artifact can contain the injector (`.goreleaser.yml`/`publish.yml` pass no `-tags`) | Met (B0-1) |
 | B0.4 | `golangci-lint` green with `build-tags: [conduitchaos]` added | Superseded — see drift note below; met via a separate lint invocation instead |
+| B0.5 | *(retired during drafting — no criterion was ever assigned this number; not the same as the B0-5 standby-gate slice in §11, which is unrelated and still pending)* | N/A |
 | B0.6 | A park that is never reached FAILS — proven with an impossible `nth` | Met (B0-2, `harness_test.go`) |
 | B0.7 | Run-1 termination asserted to be SIGKILL — proven by a clean-exit mutation | Met (B0-2, `harness_test.go`) |
 | B0.8 | Run 2's position provably came from disk; between-run writes delivered | Not yet (B0-3/B0-4) |
@@ -250,6 +251,7 @@ report of what runs today.
 | B0.11 | Zero `pgchaos_%` slots remain after a full run | Met (B0-2, `reaper.go` + `TestMain`) |
 | B0.12 | The analyzer detects an injected gap and an out-of-bound dup, without docker | Met (B0-1/B0-2, `ledger_test.go`) |
 | B0.13 | Perturbation evidence in the PR description | N/A until B0-3/B0-4 |
+| B0.14 | *(retired during drafting — no criterion was ever assigned this number)* | N/A |
 | B0.15 | `doc.go` states what is NOT covered (gRPC transport, engine persister, SDK serving) | Met (B0-2) |
 | B0.16 | The PRs do **not** claim AC 5 / 7.5 is closed | Met — B0-2's `doc.go` states the scope explicitly |
 

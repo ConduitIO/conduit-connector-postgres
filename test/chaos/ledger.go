@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/crc32"
-	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -133,12 +132,19 @@ const lineSep = ' '
 // ledger a first run started, with Seq staying globally monotonic across
 // both (see LedgerEntry.Seq's doc comment).
 //
-// A malformed or truncated trailing line (e.g. the file was truncated mid
-// fsync by a kill landing inside AppendSync itself, not after it — see that
-// method's doc) is tolerated: replay stops at the first bad line and OpenLedger
-// continues from the Seq after the last GOOD line, exactly as if the bad
-// tail had never been written. It is the caller's job (via ReadLedger) to
-// decide whether a torn tail is itself a test failure.
+// A malformed or truncated line (e.g. the file was truncated mid fsync by a
+// kill landing inside AppendSync itself, not after it — see that method's
+// doc) is tolerated: replay does NOT stop there. ReadLedger scans every
+// line in the file, skipping each bad one and continuing to the next, so a
+// bad line anywhere does not hide any good line after it. next is therefore
+// the Seq of the last GOOD entry anywhere in the file, in file order — not
+// necessarily "the line immediately before the first bad one" if a bad line
+// happened to be followed by more good lines (which cannot happen from a
+// real AppendSync crash, since fsync-before-return means only the very last
+// line written can ever be torn, but ReadLedger's scan makes no such
+// assumption and neither should this doc). It is the caller's job (via
+// ReadLedger's own returned []CorruptLine) to decide whether a torn line is
+// itself a test failure.
 func OpenLedger(path string) (*Ledger, error) {
 	existing, _, err := ReadLedger(path)
 	if err != nil && !os.IsNotExist(err) {
@@ -272,7 +278,10 @@ func ReadLedger(path string) ([]LedgerEntry, []CorruptLine, error) {
 
 		entries = append(entries, e)
 	}
-	if err := sc.Err(); err != nil && err != io.EOF {
+	// bufio.Scanner.Err() never returns io.EOF (it reports nil at a clean
+	// EOF - see the bufio docs), so there is no io.EOF case to special-case
+	// here; any non-nil error is a genuine scan failure.
+	if err := sc.Err(); err != nil {
 		return entries, bad, fmt.Errorf("scan ledger %q: %w", path, err)
 	}
 

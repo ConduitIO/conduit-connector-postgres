@@ -41,7 +41,7 @@ import (
 // real `conduit run`) to also call Ack and Teardown. It never returns:
 // every exit path is an explicit os.Exit.
 //
-// Contract with the parent (harness plan §3.3):
+// Contract with the parent (harness plan §3):
 //  1. durable before ack: every record is appended (and fsynced - see
 //     Ledger.AppendSync) to the shared ledger strictly before this child
 //     acks it upstream via Source.Ack.
