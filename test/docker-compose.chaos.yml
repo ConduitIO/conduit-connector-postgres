@@ -1,0 +1,42 @@
+# A deliberately SEPARATE compose file, not an override layered on
+# test/docker-compose.yml, and a separate compose project name, host port
+# (5434, not 5433) and volume - so a developer's regular `make test` stack
+# can never silently end up serving this suite with the base stack's
+# max_replication_slots=5 (DBZ-3 B0 harness plan §7, §12 F-10 "shared port
+# silently downgrades the stack"). test/chaos/pgstate.go's requireChaosStack
+# additionally asserts max_replication_slots=20 live, so even a
+# misconfigured or stale chaos stack fails loudly instead of quietly.
+name: conduit-connector-postgres-chaos
+services:
+  # Named pg-chaos-0, not pg-chaos: the bitnami postgresql-repmgr image
+  # requires REPMGR_NODE_NAME to match ^.*+-[0-9]+$ (it validates this
+  # itself and refuses to start otherwise) - test/docker-compose.yml's own
+  # "pg-0" follows the same convention.
+  pg-chaos-0:
+    image: docker.io/bitnamilegacy/postgresql-repmgr:17.5.0
+    ports:
+      - "5434:5432"
+    volumes:
+      - "pg_chaos_data:/bitnami/postgresql"
+      - "./conf.d.chaos/:/bitnami/postgresql/conf/conf.d/"
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-q", "-d", "meroxadb", "-U", "meroxauser" ]
+      timeout: 30s
+      interval: 10s
+      retries: 5
+    environment:
+      - POSTGRESQL_POSTGRES_PASSWORD=meroxaadmin
+      - POSTGRESQL_USERNAME=meroxauser
+      - POSTGRESQL_PASSWORD=meroxapass
+      - POSTGRESQL_DATABASE=meroxadb
+      - REPMGR_USERNAME=repmgr
+      - REPMGR_PASSWORD=repmgrmeroxa
+      - REPMGR_PRIMARY_HOST=pg-chaos-0
+      - REPMGR_PRIMARY_PORT=5432
+      - REPMGR_PARTNER_NODES=pg-chaos-0
+      - REPMGR_NODE_NAME=pg-chaos-0
+      - REPMGR_NODE_NETWORK_NAME=pg-chaos-0
+      - REPMGR_PORT_NUMBER=5432
+volumes:
+  pg_chaos_data:
+    driver: local

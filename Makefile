@@ -8,8 +8,23 @@ build:
 test:
 	# run required docker containers, execute integration tests, stop containers after tests
 	docker compose -f test/docker-compose.yml up --force-recreate --quiet-pull -d --wait
-	go test $(GOTEST_FLAGS) -race ./...; ret=$$?; \
+	go test -count=1 $(GOTEST_FLAGS) -race ./...; ret=$$?; \
 		docker compose -f test/docker-compose.yml down --volumes; \
+		exit $$ret
+
+.PHONY: test-chaos
+test-chaos:
+	# DBZ-3 process-kill chaos harness (test/chaos). Separate compose
+	# project/port(5434)/volume from `make test` - see
+	# test/docker-compose.chaos.yml - so the two suites can never collide
+	# or silently share a misconfigured stack. Fails closed: no
+	# continue-on-error here or in chaos.yml, no skip on missing docker -
+	# a missing/misconfigured stack is an INFRA: t.Fatal from inside the
+	# suite itself (test/chaos/pgstate.go's requireChaosStack), not a
+	# quietly green run.
+	docker compose -f test/docker-compose.chaos.yml up --force-recreate --quiet-pull -d --wait
+	go test -tags conduitchaos -count=1 $(GOTEST_FLAGS) -race ./test/chaos/...; ret=$$?; \
+		docker compose -f test/docker-compose.chaos.yml down --volumes; \
 		exit $$ret
 
 .PHONY: lint
