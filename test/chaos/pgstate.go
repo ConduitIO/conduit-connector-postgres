@@ -82,6 +82,13 @@ func requireChaosStack(t *testing.T) *pgxpool.Pool {
 			"`docker compose -f test/docker-compose.chaos.yml up --wait`) running? %v", err)
 	}
 
+	// Above the wrong-stack check below, not after it: by here the server has
+	// answered a query, so it WAS reachable. Setting it later would leave
+	// "connected fine but it is the stale stack" recorded as unreachable,
+	// contradicting this flag's meaning. Can only ever turn an already-red run
+	// red, never the reverse.
+	chaosObjectsMayExist.Store(true)
+
 	if got != wantMaxReplicationSlots {
 		pool.Close()
 		t.Fatalf("INFRA: chaos stack reports max_replication_slots=%s, want %s - this is not "+
@@ -89,14 +96,6 @@ func requireChaosStack(t *testing.T) *pgxpool.Pool {
 			"against it (harness plan §7, §12 F-10 'shared port silently downgrades the stack')",
 			got, wantMaxReplicationSlots)
 	}
-
-	// Record that the stack was genuinely reachable during this run. The
-	// post-suite sweep reads this to decide what a FAILED dial means: if no
-	// test ever connected, the stack was simply never up and there is nothing
-	// to have leaked; but if a test did connect and create slots, and the
-	// sweep then cannot reach the server, "no leak found" is not a conclusion
-	// anyone is entitled to draw. See postSweepOrFail.
-	stackWasReachable.Store(true)
 
 	t.Cleanup(pool.Close)
 	return pool

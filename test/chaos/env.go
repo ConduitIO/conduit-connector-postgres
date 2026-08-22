@@ -27,14 +27,16 @@ import (
 // decide whether this process invocation is a test run at all, or one of
 // the two child modes below.
 const (
+	// chaosEnvPrefix namespaces every var this protocol owns, so a child
+	// environment can be built by exclusion rather than by listing them all -
+	// a new var added below is stripped automatically. Note PGCHAOS_PARK is
+	// part of the protocol too but lives in internal/chaospoint, so it is
+	// covered by the prefix rather than by a constant here.
+	chaosEnvPrefix = "PGCHAOS_"
+
 	// envRealChild, when "1", routes this process invocation into
 	// runRealChild (child.go): a real *postgres.Source, driven end to end
 	// against the Postgres connection in envURL.
-	// chaosEnvPrefix namespaces every var this protocol owns, so a child
-	// environment can be built by exclusion rather than by listing them all -
-	// a new var added below is stripped automatically.
-	chaosEnvPrefix = "PGCHAOS_"
-
 	envRealChild = "PGCHAOS_REAL_CHILD"
 
 	// envEchoChild, when "1", routes this process invocation into

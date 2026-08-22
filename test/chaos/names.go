@@ -48,5 +48,10 @@ func randChaosName() (string, error) {
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", fmt.Errorf("read crypto/rand for chaos object name: %w", err)
 	}
+	// From this point a pgchaos_ object can exist, so the post-suite sweep's
+	// "could anything have leaked" question is now answered yes. Set here
+	// rather than at a connect helper because this is the choke-point no
+	// caller can go around - see chaosObjectsMayExist (reaper.go).
+	chaosObjectsMayExist.Store(true)
 	return chaosPrefix + hex.EncodeToString(b[:]), nil
 }

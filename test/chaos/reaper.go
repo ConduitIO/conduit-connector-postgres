@@ -80,13 +80,31 @@ func preSweepBestEffort(ctx context.Context) {
 // resort if this one is somehow bypassed.
 const postSweepQueryTimeout = 10 * time.Second
 
-// stackWasReachable records whether any test actually connected to the chaos
-// stack during this run. Set by requireChaosStack (pgstate.go), read only by
-// postSweepOrFail, which needs it to tell "nothing ever ran" apart from
-// "things ran and we can no longer check them". Package-level and atomic
-// because TestMain's sweep runs after every test goroutine has finished, but
-// the write happens on test goroutines.
-var stackWasReachable atomic.Bool
+// chaosObjectsMayExist records whether this run could have created a
+// pgchaos_ object at all. postSweepOrFail reads it to tell "nothing ever ran"
+// apart from "things ran and we can no longer check them".
+//
+// It is set by randChaosName (names.go), NOT by requireChaosStack, and the
+// difference matters. Keying on the preflight helper would mean the signal is
+// correct only by convention: a future scenario that connects with
+// test.ConnectPool or cpool.New directly - entirely plausible for a B0-3
+// restart's second run, where the preflight already ran in run 1 - would
+// create slots while leaving this false. The sweep would then dial, fail, take
+// the nothing-ever-ran branch, and exit 0 with a real leak on disk. That is
+// verbatim the round-3 fail-open, reintroduced by the very code that comes
+// next.
+//
+// randChaosName is the choke-point that cannot be bypassed: every chaos slot,
+// publication and table name comes from it, so no pgchaos_ object can exist
+// without it having been called. requireChaosStack also sets it, which is
+// redundant but free and keeps the signal true for a test that connects and
+// then fails before naming anything.
+//
+// Package-level and atomic: TestMain's sweep runs after every test goroutine
+// has finished, but the writes happen on test goroutines. Process-global, so
+// under -count=N it stays set across iterations - monotonic OR is the correct
+// semantics for "could anything have leaked".
+var chaosObjectsMayExist atomic.Bool
 
 // postSweepOrFail returns true if it found (and, best-effort, cleaned up) a
 // leaked pgchaos_ slot or publication after the suite finished - the signal
@@ -98,7 +116,7 @@ var stackWasReachable atomic.Bool
 //   - The listing query errors on a live connection: we don't know whether a
 //     leak exists. Fail.
 //   - We cannot reach the server AND no test ever reached it either
-//     (stackWasReachable is false - the docker-free subset, or the stack was
+//     (chaosObjectsMayExist is false - the docker-free subset, or no chaos
 //     never up): nothing ran that could have created a slot, so there is
 //     nothing to have leaked. Skip, without failing. This is the case the
 //     Ping in dialForSweep exists to identify.
@@ -124,15 +142,17 @@ var stackWasReachable atomic.Bool
 func postSweepOrFail(ctx context.Context) bool {
 	pool, err := dialForSweep(ctx)
 	if err != nil {
-		if stackWasReachable.Load() {
-			fmt.Fprintf(os.Stderr, "chaos: post-suite sweep: a test reached the chaos stack "+
-				"during this run, but the sweep cannot: %v - treating as a possible leak, "+
-				"since slots may exist on a server we can no longer inspect\n", err)
+		if chaosObjectsMayExist.Load() {
+			fmt.Fprintf(os.Stderr, "chaos: post-suite sweep: this run created chaos object names, but the "+
+				"sweep cannot reach the server: %v - treating as a possible leak, since "+
+				"pgchaos_ objects may exist on a server we can no longer inspect. Check "+
+				"by hand: SELECT slot_name FROM pg_replication_slots WHERE "+
+				"starts_with(slot_name, 'pgchaos_');\n", err)
 			return true
 		}
-		fmt.Fprintf(os.Stderr, "chaos: post-suite sweep: could not connect and no test ever "+
-			"did either (stack never up, or docker-free subset), so nothing could have "+
-			"leaked; skipping leak check: %v\n", err)
+		fmt.Fprintf(os.Stderr, "chaos: post-suite sweep: could not connect, and this run never "+
+			"created a chaos object name (stack never up, or docker-free subset), so "+
+			"nothing could have leaked; skipping leak check: %v\n", err)
 		return false
 	}
 	defer pool.Close()

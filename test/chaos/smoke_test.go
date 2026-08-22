@@ -51,6 +51,13 @@ import (
 // distinct snapshot cursors and never delivered rows 2-4 would still pass
 // every position-based check above it - a bug this test would otherwise
 // miss entirely.
+// NOTE: .github/workflows/chaos.yml greps its own output for this exact test
+// name to prove the conduitchaos-tagged suite actually RAN - without it, a
+// dropped or typo'd build tag makes `go test` compile the untagged variant,
+// run only the ledger unit tests, and report ok while proving nothing.
+// Renaming this function disarms that guard silently: the build still
+// compiles, chaos-build still passes, and the chaos job fails with a message
+// blaming the build tag. Update the workflow in the same commit as any rename.
 func TestSmoke_NoKillOpenReadAckTeardown(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
