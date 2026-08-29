@@ -22,11 +22,13 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/conduitio/conduit-commons/config"
 	"github.com/conduitio/conduit-commons/opencdc"
 	postgres "github.com/conduitio/conduit-connector-postgres"
 	"github.com/conduitio/conduit-connector-postgres/internal/chaospoint"
+	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/snapshot"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -73,6 +75,27 @@ func runRealChild() {
 	slot := requireEnv(envSlot)
 	pub := requireEnv(envPub)
 	ledgerPath := requireEnv(envLedger)
+	haltExpected := os.Getenv(envHaltExpected) == envValueTrue
+
+	// Resume protocol: the ledger's last entry is the model of the engine's
+	// last durable checkpoint (every entry is fsynced before its ack), so a
+	// restart opens the source AT that entry's raw position — the same
+	// position bytes the engine would have persisted. This is what makes
+	// every B1 restart scenario (approve, re-detect, wedge regression) run
+	// the connector's real resume path.
+	entries, _, err := ReadLedger(ledgerPath)
+	if err != nil && !os.IsNotExist(err) {
+		childFatalf("read ledger: %v", err)
+	}
+	var resumePosition opencdc.Position
+	if len(entries) > 0 {
+		raw, err := base64.StdEncoding.DecodeString(entries[len(entries)-1].RawPosition)
+		if err != nil {
+			childFatalf("decode last ledger position: %v", err)
+		}
+		resumePosition = opencdc.Position(raw)
+		printMarker("RESUME %d", len(entries))
+	}
 
 	ledger, err := OpenLedger(ledgerPath)
 	if err != nil {
@@ -127,7 +150,7 @@ func runRealChild() {
 		childFatalf("parse config: %v", err)
 	}
 
-	if err := src.Open(ctx, nil); err != nil {
+	if err := src.Open(ctx, resumePosition); err != nil {
 		childFatalf("open: %v", err)
 	}
 	printMarker("OPENED")
@@ -136,6 +159,27 @@ func runRealChild() {
 	for acked < total {
 		recs, err := src.ReadN(ctx, 1)
 		if err != nil {
+			// The B1 halt (D5) is a terminal, coded error: when this run
+			// expects it (envHaltExpected), report it and exit 0 so the
+			// parent can assert on the message; when it is NOT expected, a
+			// halt error is exactly as fatal as any other read failure.
+			if haltExpected && strings.Contains(err.Error(), logrepl.ErrorCodeSchemaDriftHalt) {
+				fmt.Fprintf(os.Stderr, "HALT_MSG: %s\n", err.Error())
+				printMarker("HALTED")
+				// Teardown before exit, exactly like the engine does when a
+				// pipeline stops on a terminal error: the connector's
+				// subscription stop sends a final standby status update
+				// (subscription.sentStandbyDone), which is what makes the
+				// marker's acked position visible to the server as
+				// confirmed_flush_lsn (FM10). Exiting without it would race
+				// the 1s standby tick and leave the slot's flush position
+				// arbitrarily stale — a harness artifact, not engine
+				// behavior.
+				if err := src.Teardown(ctx); err != nil {
+					fmt.Fprintf(os.Stderr, "HALT_TEARDOWN_ERR: %v\n", err)
+				}
+				os.Exit(0)
+			}
 			childFatalf("readn (after %d acked): %v", acked, err)
 		}
 
@@ -145,11 +189,31 @@ func runRealChild() {
 				childFatalf("build ledger entry: %v", err)
 			}
 
+			// The FM2 kill window (design doc): the drift marker has been
+			// delivered by the connector (it is in the iterator's channel)
+			// but is not yet durable. Parking here proves a kill whose
+			// restart must NOT see an approval: it resumes below the marker
+			// and halts again via driftAcrossRestart.
+			if entry.Drift {
+				chaospoint.Reach(chaospoint.DriftMarkerSeen)
+			}
+
 			// Invariant 1 / F-6 model (Ledger.AppendSync's doc comment):
 			// durable-before-ack. This append (and its fsync, inside
 			// AppendSync) MUST complete before Ack is called below.
 			if _, err := ledger.AppendSync(entry); err != nil {
 				childFatalf("ledger append: %v", err)
+			}
+
+			if entry.Drift {
+				// The FM1 kill window (design doc): the marker is durable
+				// (fsynced) but not yet acked. Parking here proves a kill
+				// whose restart IS the approval — it resumes from the
+				// marker's position and never halts again. The marker's
+				// durability is asserted to be observable (the drift entry
+				// exists in the ledger), not prevented.
+				chaospoint.Reach(chaospoint.DriftMarkerAppended)
+				printMarker("DRIFT_PERSISTED")
 			}
 
 			if err := src.Ack(ctx, rec.Position); err != nil {
@@ -197,6 +261,7 @@ func buildLedgerEntry(run int, table string, rec opencdc.Record) (LedgerEntry, e
 		Table:       table,
 		RawPosition: base64.StdEncoding.EncodeToString(rec.Position),
 		Resumed:     rec.Metadata[snapshot.MetadataSnapshotResumed] == "true",
+		Drift:       rec.Metadata[logrepl.MetadataSchemaDrift] == "true",
 	}
 	// rec.Key, not the decoded position's snapshot/CDC identity: this is the
 	// ROW's own business key (the connector's default "id" column), captured
