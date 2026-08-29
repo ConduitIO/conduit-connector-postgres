@@ -155,6 +155,16 @@ pipelines:
           # Type: string
           # Required: no
           logrepl.publicationName: "conduitpub"
+          # LogreplSchemaDriftPolicy determines how the connector handles schema
+          # drift (a DDL that changes a table's shape during CDC; DBZ-3 B1): -
+          # "halt" (default): emit a drift marker record, checkpoint before it,
+          # and stop with a terminal error until the pipeline is restarted to
+          # approve the change. - "evolve": accept additive changes silently;
+          # incompatible (narrowing) changes still halt. "dlq" is reserved for a
+          # future version and rejected at validation.
+          # Type: string
+          # Required: no
+          logrepl.schemaDrift.policy: "halt"
           # LogreplSlotName determines the replication slot name in case the
           # connector uses logical replication to listen to changes (see
           # CDCMode). Can only contain lower-case letters, numbers, and the
