@@ -382,7 +382,7 @@ func (h *CDCHandler) setBasePositionLowWatermark(lsn string) {
 // It is returned by handleRelation so the decision is assertable in a test
 // rather than only observable in a log line, and it is the seam the drift policy
 // (Area 2 step 3) attaches to: halt/dlq/evolve is a function of this kind plus
-// SchemaDiff.IsNarrowing.
+// SchemaDiff.IsIncompatible.
 type driftKind int
 
 const (
@@ -479,7 +479,7 @@ func (h *CDCHandler) handleRelation(ctx context.Context, r *pglogrepl.RelationMe
 		sdk.Logger(ctx).Warn().
 			Str("table", key).
 			Str("lsn", lsn.String()).
-			Bool("narrowing", diff.IsNarrowing()).
+			Bool("incompatible", diff.IsIncompatible()).
 			Msg("schema drift detected: " + diff.String())
 		return driftInProcess
 	default:

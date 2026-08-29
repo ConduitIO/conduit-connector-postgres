@@ -94,14 +94,14 @@ type SchemaDiff struct {
 // HasDrift reports whether anything changed.
 func (d SchemaDiff) HasDrift() bool { return len(d.Changes) > 0 }
 
-// IsNarrowing reports whether the diff removes or retypes a column, as opposed
+// IsIncompatible reports whether the diff removes or retypes a column, as opposed
 // to only adding.
 //
 // The distinction is load-bearing for the evolve policy: adding a column is
 // safe to accept automatically because nothing downstream can already depend on
 // it, while dropping or retyping one can break a consumer that does. Policy
 // treats those differently; see the drift policy in the DBZ-3 design doc.
-func (d SchemaDiff) IsNarrowing() bool {
+func (d SchemaDiff) IsIncompatible() bool {
 	for _, c := range d.Changes {
 		if c.Kind == ColumnDropped || c.Kind == ColumnTypeChanged {
 			return true

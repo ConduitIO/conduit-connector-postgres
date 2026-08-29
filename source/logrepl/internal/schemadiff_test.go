@@ -41,33 +41,33 @@ func Test_RelationSet_Update_DetectsDrift(t *testing.T) {
 	const relID = 42
 
 	tests := []struct {
-		name       string
-		before     []*pglogrepl.RelationMessageColumn
-		after      []*pglogrepl.RelationMessageColumn
-		wantKinds  []ColumnChangeKind
-		wantNames  []string
-		wantNarrow bool
+		name             string
+		before           []*pglogrepl.RelationMessageColumn
+		after            []*pglogrepl.RelationMessageColumn
+		wantKinds        []ColumnChangeKind
+		wantNames        []string
+		wantIncompatible bool
 	}{
 		{
 			name:      "ADD COLUMN",
 			before:    []*pglogrepl.RelationMessageColumn{col("id", 23, -1)},
 			after:     []*pglogrepl.RelationMessageColumn{col("id", 23, -1), col("email", 25, -1)},
 			wantKinds: []ColumnChangeKind{ColumnAdded}, wantNames: []string{"email"},
-			wantNarrow: false,
+			wantIncompatible: false,
 		},
 		{
 			name:      "DROP COLUMN",
 			before:    []*pglogrepl.RelationMessageColumn{col("id", 23, -1), col("email", 25, -1)},
 			after:     []*pglogrepl.RelationMessageColumn{col("id", 23, -1)},
 			wantKinds: []ColumnChangeKind{ColumnDropped}, wantNames: []string{"email"},
-			wantNarrow: true,
+			wantIncompatible: true,
 		},
 		{
 			name:      "ALTER COLUMN TYPE",
 			before:    []*pglogrepl.RelationMessageColumn{col("n", 23, -1)},
 			after:     []*pglogrepl.RelationMessageColumn{col("n", 20, -1)},
 			wantKinds: []ColumnChangeKind{ColumnTypeChanged}, wantNames: []string{"n"},
-			wantNarrow: true,
+			wantIncompatible: true,
 		},
 		{
 			// varchar(10) -> varchar(20): same DataType, different TypeModifier.
@@ -77,17 +77,17 @@ func Test_RelationSet_Update_DetectsDrift(t *testing.T) {
 			before:    []*pglogrepl.RelationMessageColumn{col("s", 1043, 14)},
 			after:     []*pglogrepl.RelationMessageColumn{col("s", 1043, 24)},
 			wantKinds: []ColumnChangeKind{ColumnTypeChanged}, wantNames: []string{"s"},
-			wantNarrow: true,
+			wantIncompatible: true,
 		},
 		{
 			// A rename is indistinguishable from drop+add in pgoutput, and per
 			// the 2026-08-03 decision we report it as such rather than guess.
-			name:       "RENAME COLUMN reported as drop+add",
-			before:     []*pglogrepl.RelationMessageColumn{col("old", 25, -1)},
-			after:      []*pglogrepl.RelationMessageColumn{col("new", 25, -1)},
-			wantKinds:  []ColumnChangeKind{ColumnAdded, ColumnDropped},
-			wantNames:  []string{"new", "old"},
-			wantNarrow: true,
+			name:             "RENAME COLUMN reported as drop+add",
+			before:           []*pglogrepl.RelationMessageColumn{col("old", 25, -1)},
+			after:            []*pglogrepl.RelationMessageColumn{col("new", 25, -1)},
+			wantKinds:        []ColumnChangeKind{ColumnAdded, ColumnDropped},
+			wantNames:        []string{"new", "old"},
+			wantIncompatible: true,
 		},
 		{
 			// Adding a column in the MIDDLE shifts every later column's position
@@ -97,13 +97,13 @@ func Test_RelationSet_Update_DetectsDrift(t *testing.T) {
 			before:    []*pglogrepl.RelationMessageColumn{col("a", 23, -1), col("c", 25, -1)},
 			after:     []*pglogrepl.RelationMessageColumn{col("a", 23, -1), col("b", 16, -1), col("c", 25, -1)},
 			wantKinds: []ColumnChangeKind{ColumnAdded}, wantNames: []string{"b"},
-			wantNarrow: false,
+			wantIncompatible: false,
 		},
 		{
 			name:      "no change",
 			before:    []*pglogrepl.RelationMessageColumn{col("id", 23, -1), col("email", 25, -1)},
 			after:     []*pglogrepl.RelationMessageColumn{col("id", 23, -1), col("email", 25, -1)},
-			wantKinds: nil, wantNames: nil, wantNarrow: false,
+			wantKinds: nil, wantNames: nil, wantIncompatible: false,
 		},
 	}
 
@@ -119,7 +119,7 @@ func Test_RelationSet_Update_DetectsDrift(t *testing.T) {
 			got := rs.Update(rel(relID, tt.after...))
 			is.Equal(len(got.Changes), len(tt.wantKinds))
 			is.Equal(got.HasDrift(), len(tt.wantKinds) > 0)
-			is.Equal(got.IsNarrowing(), tt.wantNarrow)
+			is.Equal(got.IsIncompatible(), tt.wantIncompatible)
 
 			gotKinds := map[ColumnChangeKind]int{}
 			gotNames := map[string]bool{}
@@ -149,7 +149,7 @@ func Test_RelationSet_Update_FirstMessageIsNotDrift(t *testing.T) {
 
 	d := rs.Update(rel(7, col("id", 23, -1), col("name", 25, -1)))
 	is.True(!d.HasDrift())
-	is.True(!d.IsNarrowing())
+	is.True(!d.IsIncompatible())
 	is.Equal(d.String(), "no schema drift")
 }
 
