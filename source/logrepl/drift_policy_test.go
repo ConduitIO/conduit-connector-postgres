@@ -248,8 +248,9 @@ func Test_HaltError_AcrossRestartMessage(t *testing.T) {
 }
 
 // Test_HandleRelation_StackedDDL_OneMarker pins FM8/AC9: a second DDL while a
-// halt is pending records the version but emits no second marker and returns no
-// LSN — exactly one marker per halt, and the second shape halts on restart.
+// halt is pending is classified as drift but is neither committed to the live
+// history nor marked — exactly one marker per halt, and the second shape halts
+// on restart (no durable state claims it, so the restart re-derives it).
 func Test_HandleRelation_StackedDDL_OneMarker(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
@@ -269,6 +270,14 @@ func Test_HandleRelation_StackedDDL_OneMarker(t *testing.T) {
 	is.Equal(lsn, pglogrepl.LSN(0)) // no second marker
 	is.Equal(h.driftMarkerLSN.Load(), uint64(0))
 
+	// Re-review should-fix: the staged shape must not leak into the LIVE
+	// history before emission — not even the first drift sighting commits
+	// (that happens at marker emission), and the second sighting is skipped
+	// before any commit. A leaked shape would ride an unrelated record's
+	// position into a checkpoint (persist-before-ack) and dedupe the drift
+	// away on a restart before the drifted table's own DML.
+	is.Equal(len(h.basePosition.SchemaHistory["public.users"]), 1)
+
 	// The first DML emits exactly one marker, at its own LSN (D2).
 	err := h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 1}, 310)
 	is.NoErr(err)
@@ -281,9 +290,13 @@ func Test_HandleRelation_StackedDDL_OneMarker(t *testing.T) {
 		t.Fatalf("expected exactly one marker, got another batch: %v", batch)
 	default:
 	}
-	// The second shape is recorded into LIVE history so a restart from a
-	// pre-marker checkpoint halts for it.
-	is.Equal(len(h.basePosition.SchemaHistory["public.users"]), 3)
+	// The staged shape was committed at marker EMISSION, never at the sighting
+	// (re-review should-fix): the live history now carries [v1, v2]. The
+	// second shape (v3) was deliberately NOT committed — the FM8 guard skipped
+	// before any commit — so no position serialized in this window can
+	// checkpoint it and dedupe the drift away on a restart; the restart
+	// re-delivers the v3 relation message and halts (asserted below).
+	is.Equal(len(h.basePosition.SchemaHistory["public.users"]), 2)
 
 	// Review Blocker 1: the marker's position is a snapshot of the history at
 	// STAGING time — [v1, v2] — never live history at emission ([v1, v2, v3]).
@@ -384,7 +397,11 @@ func Test_HandleRelation_DMLSkippedAfterMarker(t *testing.T) {
 // the staged drifted relation itself. Pre-fix, ANY DML fired it — an unrelated
 // table's record was dropped (D4) and the marker was checkpointed at the wrong
 // LSN. The relation comparison is namespace+name (relationKey), stable across
-// pgoutput RelationID reassignments.
+// pgoutput RelationID reassignments. It also pins the re-review should-fix:
+// the unrelated record's position must not carry the staged shape (the
+// position it checkpoints is the exact restart point of the reviewer's
+// reachability — restart before the drifted table's own DML must re-derive the
+// drift and halt, never dedupe it).
 func Test_HandleRelation_DriftMarkerFiresOnlyOnStagedRelation(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
@@ -424,6 +441,19 @@ func Test_HandleRelation_DriftMarkerFiresOnlyOnStagedRelation(t *testing.T) {
 	is.NoErr(err)
 	is.Equal(recLSN, pglogrepl.LSN(300)) // the orders record flows at its own LSN
 
+	// Re-review should-fix: the unrelated record's position must NOT carry the
+	// staged users shape — the shape lives only in the staging snapshot until
+	// emission. If it leaked, a restart from this checkpoint (before the users
+	// DML) would dedupe the replayed users relation message against it
+	// (driftNone) and admit the drift with no halt, no approval, no
+	// disclosure; a narrowing change would then flow without review.
+	is.Equal(len(p.SchemaHistory["public.users"]), 1) // v1 only; v2 stays staged
+	resumed, err := position.ParseSDKPosition(batch[0].Position)
+	is.NoErr(err)
+	h2, _ := newHandlerWithOut(t, resumed, SchemaDriftPolicyHalt)
+	kind, _ := h2.handleRelation(ctx, relMsg(shapeV2...), 500)
+	is.Equal(kind, driftAcrossRestart) // re-derives the drift; pre-fix: driftNone (silent admission)
+
 	// The users DML fires the marker at its own LSN and is itself skipped (D4).
 	err = h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 1}, 400)
 	is.NoErr(err)
@@ -438,6 +468,9 @@ func Test_HandleRelation_DriftMarkerFiresOnlyOnStagedRelation(t *testing.T) {
 	markerLSN, err := p.LSN()
 	is.NoErr(err)
 	is.Equal(markerLSN, pglogrepl.LSN(400))
+	// The marker's own position still carries the staged snapshot [v1, v2] —
+	// the emission-time commit must not change what the marker checkpoints.
+	is.Equal(len(p.SchemaHistory["public.users"]), 2)
 }
 
 // Test_MaybeArmDriftHalt_AckGating pins the D3 boundary on the handler: acks

@@ -399,8 +399,11 @@ adds nothing to the key and nothing to the format (D7).
   template (D5) is honest.
 - **FM8 — Stacked DDLs between sighting and halt.** The subscription keeps
   streaming between the marker's emission and its ack (D3 step 2). A second DDL on
-  the same table within that window records another version in memory; only the
-  marker's version is checkpointed. On restart the newer shape diff shows
+  the same table within that window is classified as drift but is not committed to
+  the history — the FM8 guard skips before any commit, so the shape cannot leak
+  into an unrelated record's position and dedupe the drift away on a restart
+  (re-review should-fix) — and only the marker's version is checkpointed. On
+  restart the newer shape diff shows
   `driftAcrossRestart` against the checkpointed one — the pipeline halts again for
   the second DDL. Correct behavior (no silent admission of the second DDL); the
   halt message's LSN correlation (`FirstSeenLSN`) tells the operator what

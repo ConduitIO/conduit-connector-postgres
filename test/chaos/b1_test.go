@@ -897,15 +897,18 @@ func TestB1_AC9_StackedDDLBetweenSightingAndAck(t *testing.T) {
 //     guard inside handleRelation — which is reached only when the live
 //     connector processes the second shape's relation message. The second
 //     PARKED line is the liveness witness that the in-run processing
-//     actually happened: the version was durably recorded (RecordSchemaVersion
-//     ran before the guard), the DML was skipped, and no second marker was
-//     emitted.
+//     actually happened: the second sighting was classified as drift and
+//     skipped by the FM8 guard before any commit — the version is
+//     deliberately NOT written to the live history (re-review should-fix: a
+//     leaked shape would ride an unrelated record's position into a
+//     checkpoint and dedupe the drift away on a restart) — the DML was
+//     skipped, and no second marker was emitted.
 //
 // The first marker's position, built before the second DDL was processed,
-// carries only the first change — the staging-time snapshot (Blocker 1) — so
-// the kill's restart resumes from [v1, v2], re-derives the second shape
-// across the restart (its DML was never acked), and halts; run 3 approves
-// and resumes.
+// carries only the first change — the staging-time snapshot (Blocker 1), the
+// only checkpointed authority for the second shape — so the kill's restart
+// resumes from [v1, v2], re-derives the second shape across the restart (its
+// DML was never acked), and halts; run 3 approves and resumes.
 //
 // Reachability note (honest): the reviewer's literal trigger — the second
 // RelationMessage arriving BETWEEN the drift sighting and the marker build —
@@ -922,12 +925,19 @@ func TestB1_AC9_StackedDDLBetweenSightingAndAck(t *testing.T) {
 // Perturbation proof: if the FM8 guard were removed (a second marker
 // emitted), run 1 would ledger two drift entries and the len(drift)==1
 // assertion below fails. If the marker position were built from (or re-read
-// from) live history after the second version was recorded, the marker's
+// from) live history after the second shape was seen, the marker's
 // position would carry three versions and the len(versions)==2 assertion
-// fails. If the second shape were silently admitted on the restart, run 2's
-// HALTED never arrives and this test times out. If the in-run FM8 processing
-// never happened, the second PARKED line (DriftVersionSkipped) never arrives
-// and the park wait times out.
+// fails. The staged-shape leak (re-review should-fix) is itself INVISIBLE to
+// this scenario: the marker's snapshot is identical with or without a
+// sighting-time commit, and no unrelated record's position is checkpointed
+// here — so it is pinned by the unit test
+// Test_HandleRelation_DriftMarkerFiresOnlyOnStagedRelation, whose restart
+// simulation fails against a sighting-time commit (perturbation run and
+// verified); run 2's replay below exercises the same restart surface the
+// leak would corrupt. If the second shape were silently admitted on the
+// restart, run 2's HALTED never arrives and this test times out. If the
+// in-run FM8 processing never happened, the second PARKED line
+// (DriftVersionSkipped) never arrives and the park wait times out.
 func TestB1_AC9_StackedDDLInRun(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()

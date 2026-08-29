@@ -96,7 +96,12 @@ func Test_HandleRelation_RepeatIsSilent(t *testing.T) {
 }
 
 // Test_HandleRelation_InProcessDrift pins the step-1 path still fires: a DDL
-// applied while the connector is running produces a fully described diff.
+// applied while the connector is running produces a fully described diff. It
+// also pins the re-review should-fix on the B1 drift policy: the staged shape
+// is held in the staging snapshot only, never committed to the live history at
+// the sighting — a sighting-time commit would leak the shape into unrelated
+// records' positions and dedupe the drift away on a restart before the drifted
+// table's own DML.
 func Test_HandleRelation_InProcessDrift(t *testing.T) {
 	is := is.New(t)
 	h := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
@@ -106,7 +111,8 @@ func Test_HandleRelation_InProcessDrift(t *testing.T) {
 	is.Equal(kind, driftInitial)
 	kind, _ = h.handleRelation(ctx, relMsg(shapeV2...), 200)
 	is.Equal(kind, driftInProcess)
-	is.Equal(len(h.basePosition.SchemaHistory["public.users"]), 2)
+	is.Equal(len(h.basePosition.SchemaHistory["public.users"]), 1) // v2 not leaked: live history stays [v1]
+	is.Equal(len(h.driftPendingHistory["public.users"]), 2)        // the staged snapshot carries [v1, v2]
 }
 
 // Test_HandleRelation_DriftAcrossRestart is the whole point of this change.
