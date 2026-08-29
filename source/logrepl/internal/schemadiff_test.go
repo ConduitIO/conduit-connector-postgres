@@ -71,12 +71,35 @@ func Test_RelationSet_Update_DetectsDrift(t *testing.T) {
 		},
 		{
 			// varchar(10) -> varchar(20): same DataType, different TypeModifier.
-			// Ignoring TypeModifier would miss it entirely, and a consumer with a
-			// fixed-width schema very much cares.
+			// The Avro mapping for varchar is String regardless of TypeModifier
+			// (source/schema/avro.go), so the change preserves the Avro shape and
+			// the evolve policy admits it (Q2 in the B1 design doc). This case
+			// pins that the compatibility judgement is per-type, not "any type
+			// change blocks".
 			name:      "ALTER COLUMN length only (TypeModifier)",
 			before:    []*pglogrepl.RelationMessageColumn{col("s", 1043, 14)},
 			after:     []*pglogrepl.RelationMessageColumn{col("s", 1043, 24)},
 			wantKinds: []ColumnChangeKind{ColumnTypeChanged}, wantNames: []string{"s"},
+			wantIncompatible: false,
+		},
+		{
+			// text -> varchar and varchar -> text: same Avro String shape.
+			name:      "ALTER COLUMN text to varchar",
+			before:    []*pglogrepl.RelationMessageColumn{col("s", 25, -1)},
+			after:     []*pglogrepl.RelationMessageColumn{col("s", 1043, 24)},
+			wantKinds: []ColumnChangeKind{ColumnTypeChanged}, wantNames: []string{"s"},
+			wantIncompatible: false,
+		},
+		{
+			// numeric(10,2) -> numeric(12,4): the Avro decimal logical type
+			// carries precision and scale, so the Avro schema changes and the
+			// change is incompatible — a consumer reading the decimal bytes
+			// against the old schema gets mis-scaled values.
+			// typmod = ((precision << 16) | scale) + 4 (VARHDRSZ).
+			name:      "ALTER COLUMN numeric precision/scale",
+			before:    []*pglogrepl.RelationMessageColumn{col("n", 1700, 655366)}, // 4 + ((10 << 16) | 2)
+			after:     []*pglogrepl.RelationMessageColumn{col("n", 1700, 786440)}, // 4 + ((12 << 16) | 4)
+			wantKinds: []ColumnChangeKind{ColumnTypeChanged}, wantNames: []string{"n"},
 			wantIncompatible: true,
 		},
 		{

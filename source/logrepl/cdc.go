@@ -44,6 +44,9 @@ type CDCConfig struct {
 	// every CDC-mode position the handler emits so they survive the snapshot->CDC
 	// handoff and every subsequent CDC restart. See CDCHandler.buildPosition.
 	StartPosition position.Position
+	// SchemaDriftPolicy is what the connector does on schema drift (halt by
+	// default). Validated via ParseSchemaDriftPolicy in Config.Validate.
+	SchemaDriftPolicy SchemaDriftPolicy
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -100,6 +103,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		// todo make configurable
 		time.Second,
 		c.StartPosition,
+		c.SchemaDriftPolicy,
 	)
 
 	sub, err := internal.CreateSubscription(
@@ -161,6 +165,15 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 		return nil, fmt.Errorf("n must be greater than 0, got %d", n)
 	}
 
+	// D3 step 4: once the marker's ack has armed the halt, NextN surfaces the
+	// terminal drift error instead of records — including any records from a
+	// previous batch, which cannot exist past the marker (the marker is the
+	// last record emitted, D4). The check is on entry so the error is
+	// deterministic regardless of how many records the caller asks for.
+	if err := i.handler.driftHaltError(); err != nil {
+		return nil, err
+	}
+
 	// First, we check if there are any records from the previous batch
 	// that we can start with.
 	recs := make([]opencdc.Record, len(i.recordsForNextRead), n)
@@ -200,6 +213,31 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 // or for the context to be done, or for the subscription to be done,
 // whichever comes first.
 func (i *CDCIterator) nextRecordsBatchBlocking(ctx context.Context) ([]opencdc.Record, error) {
+	if i.handler.driftMarkerPending() {
+		// F6 / AC4: while a drift marker is pending, prefer the marker batch
+		// over a racing sub.Done (the select would otherwise choose randomly
+		// among ready cases) so the subscription dying can never strand the
+		// marker — the halt is acked-gated (D3), and a stranded marker means
+		// the approval checkpoint is never persisted. Also select the halt
+		// channel: if the marker's ack arms the halt while this call is
+		// blocked, the terminal error must surface here rather than leaving
+		// the caller blocked forever.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case batch := <-i.batchesCh:
+			sdk.Logger(ctx).Trace().
+				Int("records", len(batch)).
+				Msg("CDCIterator.NextN received batch of records (blocking)")
+			return batch, nil
+		case <-i.handler.driftHaltCh:
+			if err := i.handler.driftHaltError(); err != nil {
+				return nil, err
+			}
+			return nil, errors.New("drift halt channel closed without an armed halt (this smells like a bug)")
+		}
+	}
+
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -224,6 +262,25 @@ func (i *CDCIterator) nextRecordsBatchBlocking(ctx context.Context) ([]opencdc.R
 }
 
 func (i *CDCIterator) nextRecordsBatch(ctx context.Context) ([]opencdc.Record, error) {
+	if i.handler.driftMarkerPending() {
+		// F6 / AC4, non-blocking variant: while a marker is pending, a dead
+		// subscription must not surface an error that would discard the
+		// marker the caller already holds (the NextN top-up loop returns an
+		// error immediately, dropping recs). Treat it as no-more-records so
+		// the caller returns the marker batch it got.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case batch := <-i.batchesCh:
+			sdk.Logger(ctx).Trace().
+				Int("records", len(batch)).
+				Msg("CDCIterator.NextN received batch of records")
+			return batch, nil
+		default:
+			return nil, nil
+		}
+	}
+
 	select {
 	case <-ctx.Done():
 		// Return what we have with the error
@@ -291,6 +348,15 @@ func (i *CDCIterator) Ack(_ context.Context, sdkPos opencdc.Position) error {
 	}
 
 	i.sub.Ack(lsn)
+
+	// D3 step 3: arming is acked-gated, never sighting-gated — the halt
+	// surfaces only once the engine acked the marker (or anything past it),
+	// proving the checkpoint the marker carries is durable. This is the
+	// boundary the escape hatch depends on: the ack moves the slot's
+	// confirmed_flush_lsn to exactly the point the connector has seen and no
+	// further, and the engine's persisted position is the operator's approval.
+	i.handler.maybeArmDriftHalt(lsn)
+
 	return nil
 }
 

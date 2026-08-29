@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	"github.com/jackc/pglogrepl"
 )
 
@@ -94,17 +95,31 @@ type SchemaDiff struct {
 // HasDrift reports whether anything changed.
 func (d SchemaDiff) HasDrift() bool { return len(d.Changes) > 0 }
 
-// IsIncompatible reports whether the diff removes or retypes a column, as opposed
-// to only adding.
+// IsIncompatible reports whether the diff removes a column or retypes one in a
+// way that changes its Avro shape, as opposed to only adding columns or
+// widening within the same Avro shape.
 //
-// The distinction is load-bearing for the evolve policy: adding a column is
-// safe to accept automatically because nothing downstream can already depend on
-// it, while dropping or retyping one can break a consumer that does. Policy
-// treats those differently; see the drift policy in the DBZ-3 design doc.
+// The distinction is load-bearing for the evolve policy: adding a column is safe
+// to accept automatically because nothing downstream can already depend on it;
+// dropping one, or changing one's Avro schema (e.g. numeric precision/scale,
+// which alters the Avro decimal logical type), can break a consumer that does.
+// Length-only changes to types whose Avro mapping ignores TypeModifier (varchar,
+// text) are compatible and evolve accepts them (Q2 in the B1 design doc: the
+// judgement is per-type against the Avro extraction rules, via
+// schema.TypeChangePreservesSchema, not "any type change blocks"). Policy
+// treats the two differently; see the drift policy in the DBZ-3 design doc.
 func (d SchemaDiff) IsIncompatible() bool {
 	for _, c := range d.Changes {
-		if c.Kind == ColumnDropped || c.Kind == ColumnTypeChanged {
+		switch c.Kind {
+		case ColumnDropped:
 			return true
+		case ColumnTypeChanged:
+			if !schema.Avro.TypeChangePreservesSchema(
+				c.OldDataType, c.OldTypeModifier,
+				c.NewDataType, c.NewTypeModifier,
+			) {
+				return true
+			}
 		}
 	}
 	return false

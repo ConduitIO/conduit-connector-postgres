@@ -113,6 +113,32 @@ func (p *Position) LastSchemaVersion(table string) (SchemaVersion, bool) {
 	return versions[len(versions)-1], true
 }
 
+// SetFirstSeenLSN replaces the placeholder FirstSeenLSN of the most recently
+// recorded shape for a table with the LSN of the first DML that actually used
+// that shape, and reports whether it updated.
+//
+// RecordSchemaVersion is called from handleRelation, which only ever sees the
+// RelationMessage's WALStart of 0, so every recorded FirstSeenLSN starts as
+// "0/0" — a meaningless value in the drift-halt message ("last durable shape
+// first seen at LSN 0/0" told an operator nothing). pgoutput always sends the
+// first DML using a relation's shape immediately after its RelationMessage, so
+// that DML's LSN is the true first-seen position, and the DML handlers backfill
+// it here before building the position. A shape that already carries a real
+// LSN is left untouched: the first DML backfills, later ones must not
+// clobber it with a later LSN.
+func (p *Position) SetFirstSeenLSN(table, lsn string) bool {
+	versions := p.SchemaHistory[table]
+	if len(versions) == 0 {
+		return false
+	}
+	last := &versions[len(versions)-1]
+	if last.FirstSeenLSN != "" && last.FirstSeenLSN != "0/0" {
+		return false
+	}
+	last.FirstSeenLSN = lsn
+	return true
+}
+
 // RecordSchemaVersion appends a newly observed shape for a table and prunes the
 // history to DefaultSchemaHistoryVersions, oldest first.
 //

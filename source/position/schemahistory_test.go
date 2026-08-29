@@ -98,6 +98,48 @@ func Test_RecordSchemaVersion_DedupesCurrentShape(t *testing.T) {
 	is.Equal(len(p.SchemaHistory["public.t"]), 2)
 }
 
+// Test_SetFirstSeenLSN pins the 0/0 backfill: handleRelation records every
+// version with the RelationMessage's WALStart 0, so FirstSeenLSN is a
+// meaningless "0/0" until the first DML using the shape replaces it with its
+// own LSN. The drift-halt message reports this value ("last durable shape
+// first seen at LSN ..."), so a version whose first-seen stays "0/0" lies to
+// the operator.
+func Test_SetFirstSeenLSN(t *testing.T) {
+	is := is.New(t)
+
+	p := Position{}
+	h := HashColumnSet(cols(ci("id", 23, -1)))
+
+	// No history: nothing to backfill.
+	is.True(!p.SetFirstSeenLSN("public.t", "0/42"))
+
+	// The relation-message record carries the 0/0 placeholder.
+	is.True(p.RecordSchemaVersion("public.t", h, "0/0"))
+	last, ok := p.LastSchemaVersion("public.t")
+	is.True(ok)
+	is.Equal(last.FirstSeenLSN, "0/0")
+
+	// First DML backfills it with its real LSN.
+	is.True(p.SetFirstSeenLSN("public.t", "0/42"))
+	last, ok = p.LastSchemaVersion("public.t")
+	is.True(ok)
+	is.Equal(last.FirstSeenLSN, "0/42")
+
+	// A later DML must not clobber the real first-seen with a later LSN.
+	is.True(!p.SetFirstSeenLSN("public.t", "0/99"))
+	last, ok = p.LastSchemaVersion("public.t")
+	is.True(ok)
+	is.Equal(last.FirstSeenLSN, "0/42")
+
+	// Only the LAST version is touched: the previous shape keeps its own LSN.
+	h2 := HashColumnSet(cols(ci("id", 23, -1), ci("new", 25, -1)))
+	is.True(p.RecordSchemaVersion("public.t", h2, "0/0"))
+	is.True(p.SetFirstSeenLSN("public.t", "0/100"))
+	versions := p.SchemaHistory["public.t"]
+	is.Equal(versions[0].FirstSeenLSN, "0/42")
+	is.Equal(versions[1].FirstSeenLSN, "0/100")
+}
+
 // Test_RecordSchemaVersion_PrunesOldestFirst pins that the bound keeps the
 // NEWEST versions. Pruning newest-first would retain ancient history and
 // discard the shape a drift decision is actually made against.

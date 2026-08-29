@@ -41,15 +41,15 @@ func relCol(name string, dt uint32, tm int32) *pglogrepl.RelationMessageColumn {
 }
 
 // newHandlerWithPosition builds a handler as the connector does on start, with
-// the position it resumed from.
-func newHandlerWithPosition(t *testing.T, p position.Position) *CDCHandler {
+// the position it resumed from and the drift policy in effect.
+func newHandlerWithPosition(t *testing.T, p position.Position, policy SchemaDriftPolicy) *CDCHandler {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
 	out := make(chan []opencdc.Record, 16)
 	return NewCDCHandler(ctx, internal.NewRelationSet(), map[string]string{"users": "id"},
-		out, false, 1, time.Hour, p)
+		out, false, 1, time.Hour, p, policy)
 }
 
 var (
@@ -63,9 +63,10 @@ var (
 // the default, every pipeline start would refuse to run.
 func Test_HandleRelation_FirstSightIsNotDrift(t *testing.T) {
 	is := is.New(t)
-	h := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC})
+	h := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
 
-	is.Equal(h.handleRelation(context.Background(), relMsg(shapeV1...), 100), driftInitial)
+	kind, _ := h.handleRelation(context.Background(), relMsg(shapeV1...), 100)
+	is.Equal(kind, driftInitial)
 
 	// The shape is now durable.
 	v, ok := h.basePosition.LastSchemaVersion("public.users")
@@ -79,12 +80,15 @@ func Test_HandleRelation_FirstSightIsNotDrift(t *testing.T) {
 // on every reconnect.
 func Test_HandleRelation_RepeatIsSilent(t *testing.T) {
 	is := is.New(t)
-	h := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC})
+	h := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
 	ctx := context.Background()
 
-	is.Equal(h.handleRelation(ctx, relMsg(shapeV1...), 100), driftInitial)
-	is.Equal(h.handleRelation(ctx, relMsg(shapeV1...), 200), driftNone)
-	is.Equal(h.handleRelation(ctx, relMsg(shapeV1...), 300), driftNone)
+	kind, _ := h.handleRelation(ctx, relMsg(shapeV1...), 100)
+	is.Equal(kind, driftInitial)
+	kind, _ = h.handleRelation(ctx, relMsg(shapeV1...), 200)
+	is.Equal(kind, driftNone)
+	kind, _ = h.handleRelation(ctx, relMsg(shapeV1...), 300)
+	is.Equal(kind, driftNone)
 
 	// And no duplicate versions accumulated, which would eventually prune away
 	// the older shapes that carry the drift signal.
@@ -95,11 +99,13 @@ func Test_HandleRelation_RepeatIsSilent(t *testing.T) {
 // applied while the connector is running produces a fully described diff.
 func Test_HandleRelation_InProcessDrift(t *testing.T) {
 	is := is.New(t)
-	h := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC})
+	h := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
 	ctx := context.Background()
 
-	is.Equal(h.handleRelation(ctx, relMsg(shapeV1...), 100), driftInitial)
-	is.Equal(h.handleRelation(ctx, relMsg(shapeV2...), 200), driftInProcess)
+	kind, _ := h.handleRelation(ctx, relMsg(shapeV1...), 100)
+	is.Equal(kind, driftInitial)
+	kind, _ = h.handleRelation(ctx, relMsg(shapeV2...), 200)
+	is.Equal(kind, driftInProcess)
 	is.Equal(len(h.basePosition.SchemaHistory["public.users"]), 2)
 }
 
@@ -117,8 +123,9 @@ func Test_HandleRelation_DriftAcrossRestart(t *testing.T) {
 	ctx := context.Background()
 
 	// Run 1: connector sees shapeV1 and checkpoints.
-	h1 := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC})
-	is.Equal(h1.handleRelation(ctx, relMsg(shapeV1...), 100), driftInitial)
+	h1 := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
+	kind, _ := h1.handleRelation(ctx, relMsg(shapeV1...), 100)
+	is.Equal(kind, driftInitial)
 	checkpoint := h1.buildPosition(150)
 
 	// Connector stops. Someone runs ALTER TABLE users ADD COLUMN age int.
@@ -126,9 +133,10 @@ func Test_HandleRelation_DriftAcrossRestart(t *testing.T) {
 	// Run 2: fresh process, empty relation cache, resumes from the checkpoint.
 	resumed, err := position.ParseSDKPosition(checkpoint)
 	is.NoErr(err)
-	h2 := newHandlerWithPosition(t, resumed)
+	h2 := newHandlerWithPosition(t, resumed, SchemaDriftPolicyHalt)
 
-	is.Equal(h2.handleRelation(ctx, relMsg(shapeV2...), 200), driftAcrossRestart)
+	kind, _ = h2.handleRelation(ctx, relMsg(shapeV2...), 200)
+	is.Equal(kind, driftAcrossRestart)
 }
 
 // Test_HandleRelation_NoDriftAcrossCleanRestart is the counterpart: restarting
@@ -139,15 +147,16 @@ func Test_HandleRelation_NoDriftAcrossCleanRestart(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 
-	h1 := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC})
-	h1.handleRelation(ctx, relMsg(shapeV1...), 100)
+	h1 := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
+	_, _ = h1.handleRelation(ctx, relMsg(shapeV1...), 100)
 	checkpoint := h1.buildPosition(150)
 
 	resumed, err := position.ParseSDKPosition(checkpoint)
 	is.NoErr(err)
-	h2 := newHandlerWithPosition(t, resumed)
+	h2 := newHandlerWithPosition(t, resumed, SchemaDriftPolicyHalt)
 
-	is.Equal(h2.handleRelation(ctx, relMsg(shapeV1...), 200), driftNone)
+	kind, _ := h2.handleRelation(ctx, relMsg(shapeV1...), 200)
+	is.Equal(kind, driftNone)
 }
 
 // Test_HandleRelation_LegacyPositionSeedsWithoutDrift pins the upgrade path. A
@@ -161,8 +170,9 @@ func Test_HandleRelation_LegacyPositionSeedsWithoutDrift(t *testing.T) {
 	is.NoErr(err)
 	is.Equal(len(legacy.SchemaHistory), 0)
 
-	h := newHandlerWithPosition(t, legacy)
-	is.Equal(h.handleRelation(context.Background(), relMsg(shapeV2...), 100), driftInitial)
+	h := newHandlerWithPosition(t, legacy, SchemaDriftPolicyHalt)
+	kind, _ := h.handleRelation(context.Background(), relMsg(shapeV2...), 100)
+	is.Equal(kind, driftInitial)
 }
 
 // Test_BuildPosition_CarriesSchemaHistoryOnEveryRecord is the regression test
@@ -180,8 +190,8 @@ func Test_BuildPosition_CarriesSchemaHistoryOnEveryRecord(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 
-	h := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC})
-	h.handleRelation(ctx, relMsg(shapeV1...), 100)
+	h := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
+	_, _ = h.handleRelation(ctx, relMsg(shapeV1...), 100)
 
 	for lsn := range pglogrepl.LSN(20) {
 		p, err := position.ParseSDKPosition(h.buildPosition(lsn + 101))
@@ -200,7 +210,11 @@ func Test_SchemaHistory_StaysBounded(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 
-	h := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC})
+	// Evolve policy, not halt: each iteration is a typeMod-only change on an
+	// int4 column, which the Avro compatibility judgement (Q2) treats as
+	// preserved, so evolve accepts it without emitting a marker. Under halt the
+	// loop would emit a marker per change and block on the unbuffered consumer.
+	h := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyEvolve)
 
 	// Counters are typed rather than converted from the loop index: a
 	// int -> int32/uint64 conversion trips gosec's overflow check, and silencing
@@ -210,7 +224,7 @@ func Test_SchemaHistory_StaysBounded(t *testing.T) {
 	for range 50 {
 		cols := append([]*pglogrepl.RelationMessageColumn{relCol("id", 23, -1)},
 			relCol("churn", 23, typeMod))
-		h.handleRelation(ctx, relMsg(cols...), lsn)
+		_, _ = h.handleRelation(ctx, relMsg(cols...), lsn)
 		typeMod++
 		lsn++
 	}

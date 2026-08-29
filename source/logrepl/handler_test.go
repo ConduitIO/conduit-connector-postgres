@@ -33,7 +33,7 @@ func TestHandler_Batching_BatchSizeReached(t *testing.T) {
 	is := is.New(t)
 
 	ch := make(chan []opencdc.Record, 1)
-	underTest := NewCDCHandler(ctx, nil, nil, ch, false, 5, time.Second, position.Position{})
+	underTest := NewCDCHandler(ctx, nil, nil, ch, false, 5, time.Second, position.Position{}, SchemaDriftPolicyHalt)
 	want := make([]opencdc.Record, 5)
 	for i := 0; i < cap(want); i++ {
 		rec := newTestRecord(i)
@@ -55,7 +55,7 @@ func TestHandler_Batching_FlushInterval(t *testing.T) {
 
 	ch := make(chan []opencdc.Record, 1)
 	flushInterval := time.Second
-	underTest := NewCDCHandler(ctx, nil, nil, ch, false, 5, flushInterval, position.Position{})
+	underTest := NewCDCHandler(ctx, nil, nil, ch, false, 5, flushInterval, position.Position{}, SchemaDriftPolicyHalt)
 
 	want := make([]opencdc.Record, 3)
 	for i := 0; i < cap(want); i++ {
@@ -78,7 +78,7 @@ func TestHandler_Batching_ContextCancelled(t *testing.T) {
 	is := is.New(t)
 
 	ch := make(chan []opencdc.Record, 1)
-	underTest := NewCDCHandler(ctx, nil, nil, ch, false, 5, time.Second, position.Position{})
+	underTest := NewCDCHandler(ctx, nil, nil, ch, false, 5, time.Second, position.Position{}, SchemaDriftPolicyHalt)
 	cancel()
 	<-ctx.Done()
 	underTest.addToBatch(ctx, newTestRecord(0))
@@ -205,7 +205,7 @@ func TestHandler_HandleUpdate_UnchangedToastOmittedByDefault(t *testing.T) {
 	is := is.New(t)
 
 	ch := make(chan []opencdc.Record, 1)
-	h := NewCDCHandler(ctx, newRelationSetForToastTests(), map[string]string{"toast_test": "id"}, ch, false, 1, time.Hour, position.Position{})
+	h := NewCDCHandler(ctx, newRelationSetForToastTests(), map[string]string{"toast_test": "id"}, ch, false, 1, time.Hour, position.Position{}, SchemaDriftPolicyHalt)
 
 	msg := &pglogrepl.UpdateMessage{
 		RelationID: 1,
@@ -247,7 +247,7 @@ func TestHandler_HandleUpdate_UnchangedToastBackfilledFromOldTuple(t *testing.T)
 	is := is.New(t)
 
 	ch := make(chan []opencdc.Record, 1)
-	h := NewCDCHandler(ctx, newRelationSetForToastTests(), map[string]string{"toast_test": "id"}, ch, false, 1, time.Hour, position.Position{})
+	h := NewCDCHandler(ctx, newRelationSetForToastTests(), map[string]string{"toast_test": "id"}, ch, false, 1, time.Hour, position.Position{}, SchemaDriftPolicyHalt)
 
 	msg := &pglogrepl.UpdateMessage{
 		RelationID:   1,
