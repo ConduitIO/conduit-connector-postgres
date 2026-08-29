@@ -96,6 +96,13 @@ type CDCHandler struct {
 	//     B1 design doc's AC evidence). Between detection and emission nothing
 	//     is special: the drift boundary has not been fixed yet, so records
 	//     may still flow and be acked at positions below the future marker.
+	//     driftPendingHistory is a DEEP COPY of the schema history taken at
+	//     staging time: the marker's position is built from it, never from the
+	//     live history at emission, so a DDL that lands between staging and
+	//     emission is not checkpointed by the first marker (review Blocker 1).
+	//     The marker fires only on a DML of the staged drifted relation itself
+	//     (review should-fix 3): an unrelated table's DML flows normally until
+	//     the drifted table's own next DML emits it.
 	//   - driftMarkerLSN is written on the subscription goroutine
 	//     (emitDriftMarker, after the marker is queued) and read on the engine
 	//     goroutine (CDCIterator.Ack -> maybeArmDriftHalt, the D4 skip checks,
@@ -113,15 +120,16 @@ type CDCHandler struct {
 	//     NextN call would never see the error.
 	//
 	// No locks (D8): the atomics above order every read after its write.
-	driftPendingRel  *pglogrepl.RelationMessage
-	driftPendingKind driftKind
-	driftPendingDiff internal.SchemaDiff
-	driftPendingPrev position.SchemaVersion
-	driftPendingHash string
-	driftMarkerLSN   atomic.Uint64
-	driftHaltArmed   atomic.Bool
-	driftHaltErr     error
-	driftHaltCh      chan struct{}
+	driftPendingRel     *pglogrepl.RelationMessage
+	driftPendingKind    driftKind
+	driftPendingDiff    internal.SchemaDiff
+	driftPendingPrev    position.SchemaVersion
+	driftPendingHash    string
+	driftPendingHistory position.SchemaHistories
+	driftMarkerLSN      atomic.Uint64
+	driftHaltArmed      atomic.Bool
+	driftHaltErr        error
+	driftHaltCh         chan struct{}
 }
 
 func NewCDCHandler(
@@ -250,7 +258,9 @@ func (h *CDCHandler) handleInsert(
 	// This DML always follows its relation message (pgoutput emits the
 	// relation message immediately before the first DML using it), so the
 	// marker LSN is the earliest real WAL position at the drift boundary.
-	h.emitPendingDriftMarker(ctx, lsn)
+	// The emission is gated on this DML's relation being the staged drifted
+	// one (should-fix 3): an unrelated table's DML flows normally below.
+	h.emitPendingDriftMarkerIfMatching(ctx, lsn, msg.RelationID)
 
 	if h.driftMarkerPending() {
 		// D4: once the drift marker is emitted, emit nothing — not even for
@@ -309,7 +319,7 @@ func (h *CDCHandler) handleUpdate(
 	msg *pglogrepl.UpdateMessage,
 	lsn pglogrepl.LSN,
 ) error {
-	h.emitPendingDriftMarker(ctx, lsn)
+	h.emitPendingDriftMarkerIfMatching(ctx, lsn, msg.RelationID)
 
 	if h.driftMarkerPending() {
 		// D4: see handleInsert. Global across relations for the same reason.
@@ -379,7 +389,7 @@ func (h *CDCHandler) handleDelete(
 	msg *pglogrepl.DeleteMessage,
 	lsn pglogrepl.LSN,
 ) error {
-	h.emitPendingDriftMarker(ctx, lsn)
+	h.emitPendingDriftMarkerIfMatching(ctx, lsn, msg.RelationID)
 
 	if h.driftMarkerPending() {
 		// D4: see handleInsert. Global across relations for the same reason.
@@ -637,12 +647,24 @@ func (h *CDCHandler) handleRelation(ctx context.Context, r *pglogrepl.RelationMe
 	}
 
 	if h.driftMarkerPending() || h.driftPendingRel != nil {
+		// FM8 chaospoint: reached after the second shape was durably recorded
+		// (RecordSchemaVersion above) and before the skip return. Parking here
+		// proves a kill with the second version in LIVE history while the
+		// first marker is still pending — the in-run half of the FM8 window
+		// (AC9 parks the down-variant at DriftMarkerAppended instead). No-op
+		// outside the conduitchaos build.
+		chaospoint.Reach(chaospoint.DriftVersionSkipped)
+
 		// FM8 / AC9: a second DDL while a halt is already pending (marker
 		// emitted, not yet acked) or detected (relation message seen, marker
-		// not yet emitted). The version is recorded above so the second shape
-		// halts again on restart; emitting a second marker now would grow the
-		// history twice per halt and break the "exactly one marker per halt"
-		// contract. Return no LSN: nothing new was emitted.
+		// not yet emitted). The version is recorded above, so the second shape
+		// halts again on restart: the first marker's position is a snapshot of
+		// the history taken at STAGING time (driftPendingHistory), which this
+		// sighting happened after, so the marker never checkpointed this
+		// version and the restart re-derives it as drift. Emitting a second
+		// marker now would grow the history twice per halt and break the
+		// "exactly one marker per halt" contract. Return no LSN: nothing new
+		// was emitted.
 		sdk.Logger(ctx).Warn().
 			Str("table", key).
 			Str("lsn", lsn.String()).
@@ -670,12 +692,59 @@ func (h *CDCHandler) handleRelation(ctx context.Context, r *pglogrepl.RelationMe
 	h.driftPendingDiff = diff
 	h.driftPendingPrev = prev
 	h.driftPendingHash = hash
+	// Snapshot the schema history at STAGING time, deep-copied. The marker is
+	// emitted later, by the first new-shape DML, and its position must reflect
+	// exactly the state the halt decision was made against: RecordSchemaVersion
+	// keeps appending to the LIVE history for every subsequent sighting, so a
+	// marker built from live history at emission would checkpoint DDLs that
+	// landed after staging and silently admit them on the restart (review
+	// Blocker 1 on the B1 drift policy).
+	h.driftPendingHistory = h.basePosition.SchemaHistory.Clone()
 	return kind, 0
 }
 
+// emitPendingDriftMarkerIfMatching emits the staged drift marker, but only on
+// a DML of the staged drifted relation itself (adversarial-review should-fix 3
+// on the B1 drift policy): firing on ANY DML would checkpoint the marker at an
+// unrelated record's LSN and then drop that record (D4) — e.g. a drift staged
+// on users could ride an orders insert, losing the orders record and
+// mislabeling the marker. An unrelated DML is emitted normally and the marker
+// stays pending for the drifted table's own next DML, which pgoutput always
+// sends right after its relation message. Once the marker is emitted this is a
+// no-op and the D4 skip in the caller handles the drop, so the skip still
+// fires before any relation lookup (an unknown RelationID must not error at
+// the gate — the D4 skip covers it).
+//
+// The marker's position is built from the schema-history snapshot taken at
+// STAGING time (driftPendingHistory), never from live history at emission:
+// handleRelation records every version it sees into basePosition.SchemaHistory
+// the moment it sees it, so a second DDL landing between staging and emission
+// would otherwise be checkpointed by the first marker and silently admitted on
+// the restart (review Blocker 1). The staged snapshot keeps the marker
+// position identical to the state the halt decision was made against.
+func (h *CDCHandler) emitPendingDriftMarkerIfMatching(ctx context.Context, lsn pglogrepl.LSN, relationID uint32) {
+	if h.driftPendingRel == nil {
+		return
+	}
+	rel, err := h.relationSet.Get(relationID)
+	if err != nil {
+		// Relation unknown (a message whose RelationMessage never arrived).
+		// Cannot prove this is the staged table: the marker stays pending and
+		// this DML flows on; if it WAS the staged table's DML, the marker
+		// fires on the next DML that resolves to it.
+		return
+	}
+	if relationKey(rel) != relationKey(h.driftPendingRel) {
+		return
+	}
+	h.emitPendingDriftMarker(ctx, lsn)
+}
+
 // emitPendingDriftMarker emits the staged drift marker at the LSN of the DML
-// message that triggered it. Called at the top of the DML handlers; the DML
-// itself is never emitted (the D4 skip below handles it).
+// that triggered it, with the schema-history snapshot taken at staging time.
+// Called only from emitPendingDriftMarkerIfMatching after the relation gate
+// matched; the DML itself is never emitted (the D4 skip in the caller handles
+// it).
 func (h *CDCHandler) emitPendingDriftMarker(ctx context.Context, lsn pglogrepl.LSN) {
 	if h.driftPendingRel == nil {
 		return
@@ -683,8 +752,10 @@ func (h *CDCHandler) emitPendingDriftMarker(ctx context.Context, lsn pglogrepl.L
 	h.emitDriftMarker(
 		ctx, h.driftPendingRel, lsn,
 		h.driftPendingKind, h.driftPendingDiff, h.driftPendingPrev, h.driftPendingHash,
+		h.driftPendingHistory,
 	)
 	h.driftPendingRel = nil
+	h.driftPendingHistory = nil
 }
 
 // haltsOnDrift decides whether the drift policy stops records for this drift.
@@ -715,15 +786,22 @@ func (h *CDCHandler) haltsOnDrift(kind driftKind, diff internal.SchemaDiff) bool
 // the batch channel, set the pending flag).
 //
 // The marker is OperationCreate with nil key and nil payload; the evidence is
-// all in the metadata (D1). Its position is buildPosition(lsn) — lsn is the
-// LSN of the first DML that uses the new shape, not the RelationMessage's:
-// pgoutput delivers the RelationMessage with WALStart 0 (verified 2026-08-29),
-// so the relation message carries no usable position and the marker is emitted
-// by the DML that follows it (see handleRelation/emitPendingDriftMarker). The
-// schema history the position carries already contains the new shape — below
-// this LSN everything was acked in FIFO order and at or above it nothing will
-// be emitted (D4). Handle returns the same LSN for that DML, which advances
-// the subscription's walWritten (D2), so the marker's ack can never trip the
+// all in the metadata (D1). Its position is built explicitly — never via
+// buildPosition — from the schema-history SNAPSHOT taken at staging time
+// (history; review Blocker 1 on the B1 drift policy): lsn is the LSN of the
+// first DML that uses the new shape, not the RelationMessage's — pgoutput
+// delivers the RelationMessage with WALStart 0 (verified 2026-08-29), so the
+// relation message carries no usable position and the marker is emitted by
+// the DML that follows it (see handleRelation/emitPendingDriftMarkerIfMatching).
+// The snapshot contains exactly the state the halt decision was made against;
+// versions recorded after staging (a stacked DDL) stay in the live history but
+// are not checkpointed by this marker, so the restart re-derives them and
+// halts again instead of silently admitting them. The snapshot receives the
+// same FirstSeenLSN backfill as the live history below, so the marker's
+// position never carries a "0/0" first-seen (FM7). Below the marker LSN
+// everything was acked in FIFO order and at or above it nothing will be
+// emitted (D4). Handle returns the same LSN for that DML, which advances the
+// subscription's walWritten (D2), so the marker's ack can never trip the
 // walFlushed > walWritten guard (subscription.go).
 func (h *CDCHandler) emitDriftMarker(
 	ctx context.Context,
@@ -733,6 +811,7 @@ func (h *CDCHandler) emitDriftMarker(
 	diff internal.SchemaDiff,
 	prev position.SchemaVersion,
 	hash string,
+	history position.SchemaHistories,
 ) pglogrepl.LSN {
 	// FM3 chaospoint: first statement, before the marker record exists in
 	// memory. Parking here proves a kill after the new shape was durably
@@ -748,6 +827,10 @@ func (h *CDCHandler) emitDriftMarker(
 	// PREVIOUS shape, which was already backfilled by its own first DML, so the
 	// error message's "first seen at LSN" is real for both sides of the arrow.
 	h.basePosition.SetFirstSeenLSN(key, lsn.String())
+	// The marker position is built from the STAGING snapshot below; backfill
+	// its new shape's FirstSeenLSN too, or the marker would checkpoint the
+	// "0/0" placeholder the relation message left (FM7).
+	history.SetFirstSeenLSN(key, lsn.String())
 	// The D5 error is built here, at the marker's real LSN — the first DML
 	// that uses the new shape — never at the relation message's (WALStart 0).
 	haltErr := newDriftHaltError(kind, key, diff, prev, hash, lsn)
@@ -765,7 +848,12 @@ func (h *CDCHandler) emitDriftMarker(
 	}
 
 	rec := sdk.Util.Source.NewRecordCreate(
-		h.buildPosition(lsn),
+		position.Position{
+			Type:                    position.TypeCDC,
+			LastLSN:                 lsn.String(),
+			SnapshotLowWatermarkLSN: h.basePosition.SnapshotLowWatermarkLSN,
+			SchemaHistory:           history, // the staging-time snapshot, not live history (Blocker 1)
+		}.ToSDKPosition(),
 		metadata,
 		nil,
 		nil,

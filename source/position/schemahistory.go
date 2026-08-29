@@ -127,7 +127,15 @@ func (p *Position) LastSchemaVersion(table string) (SchemaVersion, bool) {
 // LSN is left untouched: the first DML backfills, later ones must not
 // clobber it with a later LSN.
 func (p *Position) SetFirstSeenLSN(table, lsn string) bool {
-	versions := p.SchemaHistory[table]
+	return p.SchemaHistory.SetFirstSeenLSN(table, lsn)
+}
+
+// SetFirstSeenLSN is Position.SetFirstSeenLSN's standalone form for a
+// SchemaHistories value, so a copied history can be backfilled independently
+// of the live one (the B1 drift marker's staging snapshot needs the same
+// backfill as the live history; see CDCHandler.emitDriftMarker).
+func (h SchemaHistories) SetFirstSeenLSN(table, lsn string) bool {
+	versions := h[table]
 	if len(versions) == 0 {
 		return false
 	}
@@ -137,6 +145,25 @@ func (p *Position) SetFirstSeenLSN(table, lsn string) bool {
 	}
 	last.FirstSeenLSN = lsn
 	return true
+}
+
+// Clone returns a deep copy of the histories: the map and every per-table
+// version slice. A position that must be fixed at a point in time — the B1
+// drift marker, which is staged when the drift is seen but emitted later —
+// must not share slices with the live history, which keeps recording versions
+// in between (adversarial-review Blocker 1 on the B1 drift policy: the marker
+// position must reflect the state the halt decision was made against, or a
+// DDL that lands between staging and emission gets checkpointed by the first
+// marker and silently admitted on the restart).
+func (h SchemaHistories) Clone() SchemaHistories {
+	if h == nil {
+		return nil
+	}
+	out := make(SchemaHistories, len(h))
+	for table, versions := range h {
+		out[table] = append([]SchemaVersion(nil), versions...)
+	}
+	return out
 }
 
 // RecordSchemaVersion appends a newly observed shape for a table and prunes the

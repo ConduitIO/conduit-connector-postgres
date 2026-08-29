@@ -26,10 +26,16 @@
 // marker's durability, injected with the child-side chaospoint reaches; FM3
 // is injected with the production-side reach inside emitDriftMarker.
 //
-// A note on the resume boundary: the connector resumes AT the checkpoint LSN
-// (START_REPLICATION FROM it), so the record at that exact LSN is re-read
-// after every restart — a legitimate at-least-once redelivery. b1AssertNoUnexpectedDups
-// allows exactly that one expected duplicate per resume; anything else fails.
+// A note on the resume boundary: START_REPLICATION resumes FROM the
+// checkpoint LSN, and the subscription guard (subscription.go) skips the
+// message at exactly that LSN, so a normal restart never redelivers the
+// boundary record — the record at the checkpoint was already acked before
+// the restart. b1AssertNoUnexpectedDups allows a duplicate only for a record
+// that was in flight at a kill boundary (the parent cannot know whether the
+// child's ack reached the slot before the kill); anything else fails. The
+// drift marker is the one deliberate deviation from this: its boundary DML
+// is skipped on the wire, never re-read, so a B1 restart delivers the
+// marker's shape, never the dropped DML (D4).
 
 package chaos
 
@@ -65,7 +71,7 @@ type b1ChildSpec struct {
 	run          int
 	total        int
 	haltExpected bool
-	park         string // "name:nth" for PGCHAOS_PARK, "" to not park
+	park         string // "name:nth[,name:nth...]" for PGCHAOS_PARK, "" to not park
 	ledgerPath   string
 	table        string
 	slot         string
@@ -854,6 +860,150 @@ func TestB1_AC9_StackedDDLBetweenSightingAndAck(t *testing.T) {
 	is.Equal(len(drift), 2) // one marker in run 2 as well — never two for the stacked pair
 	marker2 := drift[1]
 	is.Equal(marker2.Run, 2)
+
+	// Run 3: approval by restart — clean resume.
+	cp3 := b1SpawnChild(t, b1ChildSpec{
+		run: 3, total: 1, haltExpected: false,
+		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
+	})
+	cp3.waitForMarker(t, "RESUME ", 30*time.Second)
+	cp3.waitForMarker(t, "OPENED", 30*time.Second)
+	_, err = regPool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('post-approval')`, table))
+	is.NoErr(err)
+	cp3.waitForCount(t, "ACKED ", 1, 60*time.Second)
+	cp3.waitForMarker(t, "DONE", 60*time.Second)
+	cp3.waitExit(t, 30*time.Second)
+	b1AssertNoHalt(t, cp3)
+
+	entries = b1ReadLedger(t, ledgerPath)
+	b1AssertNoGaps(t, entries)
+	b1AssertNoUnexpectedDups(t, entries, &marker2)
+	is.Equal(len(b1DriftEntries(t, entries)), 2) // no third marker for the second shape
+}
+
+// TestB1_AC9_StackedDDLInRun is AC9's FM8 IN-RUN variant (adversarial review
+// of B1 PR #329: "a chaos scenario for the in-run window"): the second ALTER
+// lands while the connector is still alive — mid-halt, the first marker
+// emitted but unacked — not, as in the down-variant, after the kill. Run 1
+// parks TWO goroutines in the same process, each provably suspended, before
+// the kill:
+//
+//  1. the harness's read-loop goroutine at DriftMarkerAppended (marker
+//     fsynced, unacked — the acked-gated halt cannot arm, so the child
+//     cannot exit on it), freezing the harness while the connector's own
+//     subscription goroutine keeps streaming the wire;
+//  2. then, after the test lands the second DDL and its DML, the
+//     connector's subscription goroutine at DriftVersionSkipped — the FM8
+//     guard inside handleRelation — which is reached only when the live
+//     connector processes the second shape's relation message. The second
+//     PARKED line is the liveness witness that the in-run processing
+//     actually happened: the version was durably recorded (RecordSchemaVersion
+//     ran before the guard), the DML was skipped, and no second marker was
+//     emitted.
+//
+// The first marker's position, built before the second DDL was processed,
+// carries only the first change — the staging-time snapshot (Blocker 1) — so
+// the kill's restart resumes from [v1, v2], re-derives the second shape
+// across the restart (its DML was never acked), and halts; run 3 approves
+// and resumes.
+//
+// Reachability note (honest): the reviewer's literal trigger — the second
+// RelationMessage arriving BETWEEN the drift sighting and the marker build —
+// is not reachable through pgoutput: relation messages are lazy (they arrive
+// only with the first DML using the shape) and the connector processes
+// messages sequentially on one goroutine, so no relation message can be
+// processed between staging and emission. That window is pinned by the unit
+// test Test_HandleRelation_StackedDDL_OneMarker's restart simulation, which
+// drives the synthetic interleaving directly. This scenario pins the
+// REACHABLE in-run FM8 contract end to end: a second DDL processed by a live
+// connector mid-halt emits exactly one marker, leaves the first marker's
+// position at the staged state, and halts on restart.
+//
+// Perturbation proof: if the FM8 guard were removed (a second marker
+// emitted), run 1 would ledger two drift entries and the len(drift)==1
+// assertion below fails. If the marker position were built from (or re-read
+// from) live history after the second version was recorded, the marker's
+// position would carry three versions and the len(versions)==2 assertion
+// fails. If the second shape were silently admitted on the restart, run 2's
+// HALTED never arrives and this test times out. If the in-run FM8 processing
+// never happened, the second PARKED line (DriftVersionSkipped) never arrives
+// and the park wait times out.
+func TestB1_AC9_StackedDDLInRun(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+
+	_, regPool, table, slot, pub, ledgerPath := b1Setup(t)
+
+	// Run 1: ALTER1 + DML1 emit the marker; the harness parks at
+	// DriftMarkerAppended (marker fsynced, unacked) while the connector stays
+	// alive in the same process. The second park target (DriftVersionSkipped)
+	// is armed for the connector's FM8 guard, reached only when the second
+	// DDL's relation message is processed in-run.
+	cp := b1SpawnChild(t, b1ChildSpec{
+		run: 1, total: 7, haltExpected: false,
+		park: fmt.Sprintf("%s:%d,%s:%d",
+			chaospoint.DriftMarkerAppended, 1,
+			chaospoint.DriftVersionSkipped, 1),
+		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
+	})
+	b1Baseline(t, cp, regPool, table)
+	b1DriftTrigger(t, regPool, table, b1DriftColumn, `ALTER TABLE %q ADD COLUMN %s timestamp`)
+	cp.waitForMarker(t, "PARKED "+chaospoint.DriftMarkerAppended, 60*time.Second)
+
+	// Second DDL while the connector is ALIVE (the first park froze only the
+	// harness's read-loop goroutine, before the marker's ack — so the halt
+	// cannot arm and the child cannot exit; the connector's subscription
+	// goroutine keeps streaming). The connector processes the second shape
+	// through the FM8 guard: version durably recorded, DML skipped, no second
+	// marker — and parks at DriftVersionSkipped, the witnessed proof the
+	// in-run processing happened before the kill.
+	_, err := regPool.Exec(ctx, fmt.Sprintf(`ALTER TABLE %q ADD COLUMN column102 timestamp`, table))
+	is.NoErr(err)
+	_, err = regPool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('second-ddl-dml')`, table))
+	is.NoErr(err)
+	cp.waitForMarker(t, "PARKED "+chaospoint.DriftVersionSkipped, 60*time.Second)
+	cp.sigkill(t)
+
+	entries := b1ReadLedger(t, ledgerPath)
+	drift := b1DriftEntries(t, entries)
+	is.Equal(len(drift), 1) // exactly one marker for the stacked pair — the FM8 guard held in-run
+	marker1 := drift[0]
+	// The marker's position is the staging-time snapshot: two versions, even
+	// though the connector processed (and recorded into LIVE history) the
+	// second shape before the kill — the marker must never absorb a version
+	// recorded after it was staged (review Blocker 1).
+	marker1Pos, err := b1DecodePosition(t, marker1.RawPosition)
+	is.NoErr(err)
+	is.Equal(len(marker1Pos.SchemaHistory["public."+table]), 2)
+
+	// Run 2: resumes from marker1; the second DDL's txn replays (its DML was
+	// never acked), the second shape halts across the restart.
+	cp2 := b1SpawnChild(t, b1ChildSpec{
+		run: 2, total: 7, haltExpected: true,
+		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
+	})
+	cp2.waitForMarker(t, "RESUME ", 30*time.Second)
+	cp2.waitForMarker(t, "OPENED", 30*time.Second)
+	_, err = regPool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('post-second-ddl')`, table))
+	is.NoErr(err)
+	cp2.waitForMarker(t, "DRIFT_PERSISTED", 60*time.Second)
+	cp2.waitForMarker(t, "HALTED", 30*time.Second)
+	cp2.waitExit(t, 30*time.Second)
+
+	stderr := cp2.stderr.String()
+	is.True(strings.Contains(stderr, logrepl.ErrorCodeSchemaDriftHalt))
+	is.True(strings.Contains(stderr, b1HaltTrap))
+
+	entries = b1ReadLedger(t, ledgerPath)
+	b1AssertNoGaps(t, entries)
+	b1AssertNoUnexpectedDups(t, entries, &marker1)
+	drift = b1DriftEntries(t, entries)
+	is.Equal(len(drift), 2) // one marker in run 2 as well — never two for the stacked pair
+	marker2 := drift[1]
+	is.Equal(marker2.Run, 2)
+	marker2Pos, err := b1DecodePosition(t, marker2.RawPosition)
+	is.NoErr(err)
+	is.Equal(len(marker2Pos.SchemaHistory["public."+table]), 3) // v1, v2, v3 — the restart checkpointed the second shape
 
 	// Run 3: approval by restart — clean resume.
 	cp3 := b1SpawnChild(t, b1ChildSpec{

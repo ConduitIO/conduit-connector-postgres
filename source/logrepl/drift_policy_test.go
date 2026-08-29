@@ -281,8 +281,33 @@ func Test_HandleRelation_StackedDDL_OneMarker(t *testing.T) {
 		t.Fatalf("expected exactly one marker, got another batch: %v", batch)
 	default:
 	}
-	// The second shape is recorded so it halts on restart.
+	// The second shape is recorded into LIVE history so a restart from a
+	// pre-marker checkpoint halts for it.
 	is.Equal(len(h.basePosition.SchemaHistory["public.users"]), 3)
+
+	// Review Blocker 1: the marker's position is a snapshot of the history at
+	// STAGING time — [v1, v2] — never live history at emission ([v1, v2, v3]).
+	// Live history recorded v3 at sighting, after staging; if the marker had
+	// checkpointed it, the restart below would silently admit the second DDL
+	// (invariant 6).
+	p, err := position.ParseSDKPosition(batch[0].Position)
+	is.NoErr(err)
+	v, ok := p.LastSchemaVersion("public.users")
+	is.True(ok)
+	is.Equal(v.ColumnSetHash, position.HashColumnSet(columnIdentities(relMsg(shapeV2...))))
+	is.Equal(len(p.SchemaHistory["public.users"]), 2)     // the staged state, not the sighted state
+	is.Equal(v.FirstSeenLSN, pglogrepl.LSN(200).String()) // recorded at the relation sighting; the backfill is a no-op under synthetic LSNs (the "0/0" placeholder case is pinned by the AC7 chaos scenario)
+
+	// Restart from the marker position: v3 is NOT in it, so the restart
+	// re-derives the second DDL as drift and halts again — FM8's "no silent
+	// admission" holds at the marker's own checkpoint. Pre-fix (live-history
+	// emission), the marker carried [v1, v2, v3], v3 deduped against it, and
+	// the restart classified driftNone: silent admission.
+	resumed, err := position.ParseSDKPosition(batch[0].Position)
+	is.NoErr(err)
+	h2, _ := newHandlerWithOut(t, resumed, SchemaDriftPolicyHalt)
+	kind, _ = h2.handleRelation(ctx, relMsg(shapeV3...), 500)
+	is.Equal(kind, driftAcrossRestart)
 }
 
 // Test_HandleRelation_SecondTableDrift_NoSecondMarker pins that drift in a
@@ -352,6 +377,67 @@ func Test_HandleRelation_DMLSkippedAfterMarker(t *testing.T) {
 		t.Fatalf("expected nothing after the marker, got %d records", len(batch))
 	default:
 	}
+}
+
+// Test_HandleRelation_DriftMarkerFiresOnlyOnStagedRelation pins the
+// adversarial-review should-fix 3: the staged marker may fire only on a DML of
+// the staged drifted relation itself. Pre-fix, ANY DML fired it — an unrelated
+// table's record was dropped (D4) and the marker was checkpointed at the wrong
+// LSN. The relation comparison is namespace+name (relationKey), stable across
+// pgoutput RelationID reassignments.
+func Test_HandleRelation_DriftMarkerFiresOnlyOnStagedRelation(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+	h, out := newHandlerWithOut(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
+
+	orders := &pglogrepl.RelationMessage{
+		RelationID: 2, Namespace: "public", RelationName: "orders",
+		Columns: []*pglogrepl.RelationMessageColumn{relCol("id", 23, -1)},
+	}
+	_, _ = h.handleRelation(ctx, orders, 100)
+	_, _ = h.handleRelation(ctx, relMsg(shapeV1...), 150)
+	_, lsn := h.handleRelation(ctx, relMsg(shapeV2...), 200) // drift staged on users
+	is.Equal(lsn, pglogrepl.LSN(0))                          // staged, not yet emitted
+
+	// An orders insert (an unrelated relation) must NOT fire the users marker:
+	// it is emitted as a normal record at its own LSN, and the marker stays
+	// pending. Pre-fix (any-DML emission), this insert fired the users marker,
+	// was dropped, and checkpointed the marker at LSN 300.
+	err := h.handleInsert(ctx, &pglogrepl.InsertMessage{
+		RelationID: 2,
+		Tuple: &pglogrepl.TupleData{
+			ColumnNum: 1,
+			Columns: []*pglogrepl.TupleDataColumn{
+				{DataType: pglogrepl.TupleDataTypeText, Data: []byte("7")},
+			},
+		},
+	}, 300)
+	is.NoErr(err)
+	is.Equal(h.driftMarkerLSN.Load(), uint64(0)) // marker still pending
+
+	batch := <-out
+	is.Equal(len(batch), 1)
+	is.Equal(batch[0].Metadata[MetadataSchemaDrift], "") // a normal record, not a marker
+	p, err := position.ParseSDKPosition(batch[0].Position)
+	is.NoErr(err)
+	recLSN, err := p.LSN()
+	is.NoErr(err)
+	is.Equal(recLSN, pglogrepl.LSN(300)) // the orders record flows at its own LSN
+
+	// The users DML fires the marker at its own LSN and is itself skipped (D4).
+	err = h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 1}, 400)
+	is.NoErr(err)
+	is.Equal(h.driftMarkerLSN.Load(), uint64(400))
+
+	batch = <-out
+	is.Equal(len(batch), 1)
+	is.Equal(batch[0].Metadata[MetadataSchemaDrift], "true")
+	is.Equal(batch[0].Metadata[MetadataSchemaDriftTable], "public.users")
+	p, err = position.ParseSDKPosition(batch[0].Position)
+	is.NoErr(err)
+	markerLSN, err := p.LSN()
+	is.NoErr(err)
+	is.Equal(markerLSN, pglogrepl.LSN(400))
 }
 
 // Test_MaybeArmDriftHalt_AckGating pins the D3 boundary on the handler: acks

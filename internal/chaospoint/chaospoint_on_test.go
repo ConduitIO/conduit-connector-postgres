@@ -54,7 +54,11 @@ func TestReachParks(t *testing.T) {
 		point = "chaospoint.unit_test.point"
 		nth   = 1
 	)
-	t.Setenv("PGCHAOS_PARK", fmt.Sprintf("%s:%d", point, nth))
+	// Multi-target form (comma-separated): the second target is never
+	// reached, which is fine — parsing it must not prevent the first target
+	// from parking. The B1 in-run stacked-DDL scenario parks two goroutines
+	// this way.
+	t.Setenv("PGCHAOS_PARK", fmt.Sprintf("%s:%d,chaospoint.unit_test.never:2", point, nth))
 
 	// Redirect the process's real stdout so the test can observe the exact
 	// bytes Reach writes, the same channel the harness's parent process

@@ -99,4 +99,13 @@ const (
 	// checkpointed), not prevented: a restart resumes from the marker, which
 	// IS the operator's approval.
 	DriftMarkerAppended = "child.drift_marker_appended"
+
+	// DriftVersionSkipped is reached in source/logrepl/handler.go's FM8 guard:
+	// a second DDL recorded while a drift halt is already pending (marker
+	// emitted but unacked, or staged but not yet emitted), before the "no
+	// second marker" return. Parking here proves a kill AFTER the second
+	// shape was durably recorded and its DML skipped, while the first marker
+	// is still pending — the in-run half of the FM8/AC9 window (the
+	// down-variant parks at DriftMarkerAppended instead).
+	DriftVersionSkipped = "logrepl.drift_version_skipped"
 )
