@@ -163,62 +163,14 @@ func runRealChild() {
 			// expects it (envHaltExpected), report it and exit 0 so the
 			// parent can assert on the message; when it is NOT expected, a
 			// halt error is exactly as fatal as any other read failure.
-			if haltExpected && strings.Contains(err.Error(), logrepl.ErrorCodeSchemaDriftHalt) {
-				fmt.Fprintf(os.Stderr, "HALT_MSG: %s\n", err.Error())
-				printMarker("HALTED")
-				// Teardown before exit, exactly like the engine does when a
-				// pipeline stops on a terminal error: the connector's
-				// subscription stop sends a final standby status update
-				// (subscription.sentStandbyDone), which is what makes the
-				// marker's acked position visible to the server as
-				// confirmed_flush_lsn (FM10). Exiting without it would race
-				// the 1s standby tick and leave the slot's flush position
-				// arbitrarily stale — a harness artifact, not engine
-				// behavior.
-				if err := src.Teardown(ctx); err != nil {
-					fmt.Fprintf(os.Stderr, "HALT_TEARDOWN_ERR: %v\n", err)
-				}
-				os.Exit(0)
+			if handleDriftHalt(ctx, src, err, haltExpected) {
+				return // unreachable: handleDriftHalt exits 0
 			}
 			childFatalf("readn (after %d acked): %v", acked, err)
 		}
 
 		for _, rec := range recs {
-			entry, err := buildLedgerEntry(run, table, rec)
-			if err != nil {
-				childFatalf("build ledger entry: %v", err)
-			}
-
-			// The FM2 kill window (design doc): the drift marker has been
-			// delivered by the connector (it is in the iterator's channel)
-			// but is not yet durable. Parking here proves a kill whose
-			// restart must NOT see an approval: it resumes below the marker
-			// and halts again via driftAcrossRestart.
-			if entry.Drift {
-				chaospoint.Reach(chaospoint.DriftMarkerSeen)
-			}
-
-			// Invariant 1 / F-6 model (Ledger.AppendSync's doc comment):
-			// durable-before-ack. This append (and its fsync, inside
-			// AppendSync) MUST complete before Ack is called below.
-			if _, err := ledger.AppendSync(entry); err != nil {
-				childFatalf("ledger append: %v", err)
-			}
-
-			if entry.Drift {
-				// The FM1 kill window (design doc): the marker is durable
-				// (fsynced) but not yet acked. Parking here proves a kill
-				// whose restart IS the approval — it resumes from the
-				// marker's position and never halts again. The marker's
-				// durability is asserted to be observable (the drift entry
-				// exists in the ledger), not prevented.
-				chaospoint.Reach(chaospoint.DriftMarkerAppended)
-				printMarker("DRIFT_PERSISTED")
-			}
-
-			if err := src.Ack(ctx, rec.Position); err != nil {
-				childFatalf("ack: %v", err)
-			}
+			appendAndAck(ctx, src, ledger, run, table, rec)
 
 			acked++
 			printMarker("ACKED %d", acked)
@@ -239,6 +191,75 @@ func runRealChild() {
 	}
 
 	os.Exit(0)
+}
+
+// handleDriftHalt reports whether err is the D5 schema-drift halt and, when
+// it is (and this run expects it, per envHaltExpected), handles it as the
+// child's expected terminal: the halt message goes to stderr (HALT_MSG, for
+// the parent's assertions), the HALTED marker to stdout, then Teardown before
+// exit 0. Teardown matters, exactly like the engine when a pipeline stops on
+// a terminal error: the connector's subscription stop sends a final standby
+// status update (subscription.sentStandbyDone), which is what makes the
+// marker's acked position visible to the server as confirmed_flush_lsn
+// (FM10). Exiting without it would race the 1s standby tick and leave the
+// slot's flush position arbitrarily stale — a harness artifact, not engine
+// behavior. Returns false when err is not the halt error, so the caller
+// keeps treating it as fatal.
+func handleDriftHalt(ctx context.Context, src sdk.Source, err error, haltExpected bool) bool {
+	if !haltExpected || !strings.Contains(err.Error(), logrepl.ErrorCodeSchemaDriftHalt) {
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "HALT_MSG: %s\n", err.Error())
+	printMarker("HALTED")
+	if err := src.Teardown(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "HALT_TEARDOWN_ERR: %v\n", err)
+	}
+	os.Exit(0)
+	return true
+}
+
+// appendAndAck models the engine's durable-before-ack step for one record:
+// build the ledger entry, park at the FM2 kill window when it is the drift
+// marker (delivered but not yet durable — a kill here must NOT read as an
+// approval), fsync the entry (invariant 1 / F-6), park at the FM1 kill
+// window when it is the marker (durable but not yet acked — a kill here IS
+// the approval), then ack. Failures are fatal via childFatalf, with the
+// exact messages the inline loop used.
+func appendAndAck(ctx context.Context, src sdk.Source, ledger *Ledger, run int, table string, rec opencdc.Record) {
+	entry, err := buildLedgerEntry(run, table, rec)
+	if err != nil {
+		childFatalf("build ledger entry: %v", err)
+	}
+
+	// The FM2 kill window (design doc): the drift marker has been
+	// delivered by the connector (it is in the iterator's channel) but is
+	// not yet durable. Parking here proves a kill whose restart must NOT
+	// see an approval: it resumes below the marker and halts again via
+	// driftAcrossRestart.
+	if entry.Drift {
+		chaospoint.Reach(chaospoint.DriftMarkerSeen)
+	}
+
+	// Invariant 1 / F-6 model (Ledger.AppendSync's doc comment):
+	// durable-before-ack. This append (and its fsync, inside AppendSync)
+	// MUST complete before Ack is called below.
+	if _, err := ledger.AppendSync(entry); err != nil {
+		childFatalf("ledger append: %v", err)
+	}
+
+	if entry.Drift {
+		// The FM1 kill window (design doc): the marker is durable
+		// (fsynced) but not yet acked. Parking here proves a kill whose
+		// restart IS the approval — it resumes from the marker's position
+		// and never halts again. The marker's durability is asserted to be
+		// observable (the drift entry exists in the ledger), not prevented.
+		chaospoint.Reach(chaospoint.DriftMarkerAppended)
+		printMarker("DRIFT_PERSISTED")
+	}
+
+	if err := src.Ack(ctx, rec.Position); err != nil {
+		childFatalf("ack: %v", err)
+	}
 }
 
 // buildLedgerEntry decodes rec's position to classify it as a snapshot or
