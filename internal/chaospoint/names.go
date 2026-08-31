@@ -75,4 +75,37 @@ const (
 	// crash can leave the slot's confirmed_flush_lsn stale relative to what
 	// was actually durably acked.
 	StandbyStatusUpdate = "subscription.standby_status"
+
+	// DriftVersionRecorded is reached as the first statement of
+	// source/logrepl/handler.go's emitDriftMarker, before the marker record
+	// exists. Parking here proves a kill after the new schema shape was
+	// durably recorded in the position's schema history (RecordSchemaVersion)
+	// but before any marker record was queued — the FM3 kill window of the B1
+	// design doc (restart must halt again via driftAcrossRestart, and never
+	// duplicate the marker).
+	DriftVersionRecorded = "logrepl.drift_version_recorded"
+
+	// DriftMarkerSeen is reached in test/chaos/child.go's read loop after a
+	// drift marker was read from the connector but before it is appended to
+	// the ledger: the marker is in the iterator's channel (delivered) but not
+	// durably persisted — the FM2 kill window (restart resumes below the
+	// marker and must halt again via driftAcrossRestart).
+	DriftMarkerSeen = "child.drift_marker_seen"
+
+	// DriftMarkerAppended is reached in test/chaos/child.go's read loop after
+	// a drift marker was appended to the ledger (fsync-before-return) but
+	// before it is acked — the FM1 kill window. The B1 design doc asserts this
+	// window is observable (the marker record exists and is durably
+	// checkpointed), not prevented: a restart resumes from the marker, which
+	// IS the operator's approval.
+	DriftMarkerAppended = "child.drift_marker_appended"
+
+	// DriftVersionSkipped is reached in source/logrepl/handler.go's FM8 guard:
+	// a second DDL recorded while a drift halt is already pending (marker
+	// emitted but unacked, or staged but not yet emitted), before the "no
+	// second marker" return. Parking here proves a kill AFTER the second
+	// shape was durably recorded and its DML skipped, while the first marker
+	// is still pending — the in-run half of the FM8/AC9 window (the
+	// down-variant parks at DriftMarkerAppended instead).
+	DriftVersionSkipped = "logrepl.drift_version_skipped"
 )

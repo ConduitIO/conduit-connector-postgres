@@ -52,14 +52,15 @@ type CombinedIterator struct {
 }
 
 type Config struct {
-	Position        opencdc.Position
-	SlotName        string
-	PublicationName string
-	Tables          []string
-	TableKeys       map[string]string
-	WithSnapshot    bool
-	WithAvroSchema  bool
-	BatchSize       int
+	Position          opencdc.Position
+	SlotName          string
+	PublicationName   string
+	Tables            []string
+	TableKeys         map[string]string
+	WithSnapshot      bool
+	WithAvroSchema    bool
+	BatchSize         int
+	SchemaDriftPolicy SchemaDriftPolicy
 }
 
 // Validate performs validation tasks on the config.
@@ -70,6 +71,10 @@ func (c Config) Validate() error {
 		if c.TableKeys[tableName] == "" {
 			errs = append(errs, fmt.Errorf("missing key for table %q", tableName))
 		}
+	}
+
+	if _, err := ParseSchemaDriftPolicy(string(c.SchemaDriftPolicy)); err != nil {
+		errs = append(errs, err)
 	}
 
 	return errors.Join(errs...)
@@ -212,7 +217,8 @@ func (c *CombinedIterator) initCDCIterator(ctx context.Context, pos position.Pos
 		// Seed the handler with the start position so DBZ-3 carry-forward fields
 		// (e.g. SnapshotLowWatermarkLSN) survive across the snapshot->CDC handoff
 		// and every subsequent CDC restart.
-		StartPosition: pos,
+		StartPosition:     pos,
+		SchemaDriftPolicy: c.conf.SchemaDriftPolicy,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create CDC iterator: %w", err)

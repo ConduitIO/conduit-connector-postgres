@@ -476,21 +476,33 @@ func (s *Subscription) doneReplication() {
 }
 
 // sentStandbyDone signals replication done and submits the last flushed LSN.
+//
+// The final status update MUST precede the CopyDone: once the server
+// receives CopyDone the logical-replication stream is over and walsender
+// stops processing further client messages, so a status update sent after it
+// never advances confirmed_flush_lsn. That was the original (buggy) order
+// here, and it was invisible until the B1 chaos harness asserted the slot's
+// flush position after a halt (FM10): the final standby carried the marker
+// LSN but the server never recorded it. In production the failure mode is
+// benign (confirmed_flush lagging only means the server retains more WAL
+// than it must), which is why it shipped unnoticed — but B1's escape hatch
+// explicitly depends on the slot confirming the marker position (D2), so
+// the order matters now.
 func (s *Subscription) sentStandbyDone(ctx context.Context) error {
 	var errs []error
 
+	// send last status update while the stream is still active
+	if err := s.sendStandbyStatusUpdate(ctx); err != nil {
+		sdk.Logger(ctx).Error().
+			Err(err).
+			Msg("failed to send final status update")
+		errs = append(errs, err)
+	}
 	// send copy done message indicating replication is done
 	if err := s.sendStandbyCopyDone(ctx); err != nil {
 		sdk.Logger(ctx).Error().
 			Err(err).
 			Msg("failed to send standby copy done")
-		errs = append(errs, err)
-	}
-	// send last status update
-	if err := s.sendStandbyStatusUpdate(ctx); err != nil {
-		sdk.Logger(ctx).Error().
-			Err(err).
-			Msg("failed to send final status update")
 		errs = append(errs, err)
 	}
 

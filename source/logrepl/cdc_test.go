@@ -683,14 +683,19 @@ func TestCDCIterator_NextN(t *testing.T) {
 }
 
 func testCDCIterator(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string, start bool) *CDCIterator {
+	return testCDCIteratorPolicy(ctx, t, pool, table, start, SchemaDriftPolicyHalt)
+}
+
+func testCDCIteratorPolicy(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string, start bool, policy SchemaDriftPolicy) *CDCIterator {
 	is := is.New(t)
 	config := CDCConfig{
-		Tables:          []string{table},
-		TableKeys:       map[string]string{table: "id"},
-		PublicationName: table, // table is random, reuse for publication name
-		SlotName:        table, // table is random, reuse for slot name
-		WithAvroSchema:  true,
-		BatchSize:       2,
+		Tables:            []string{table},
+		TableKeys:         map[string]string{table: "id"},
+		PublicationName:   table, // table is random, reuse for publication name
+		SlotName:          table, // table is random, reuse for slot name
+		WithAvroSchema:    true,
+		BatchSize:         2,
+		SchemaDriftPolicy: policy,
 	}
 
 	i, err := NewCDCIterator(ctx, pool, config)
@@ -744,7 +749,10 @@ func TestCDCIterator_Schema(t *testing.T) {
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
 	table := test.SetupTestTable(ctx, t, pool)
 
-	i := testCDCIterator(ctx, t, pool, table, true)
+	// The evolve policy admits the additive column change silently, so the
+	// schema-advance assertions exercise the extractor on the new shape; the
+	// drop subtest pins that even evolve halts on an incompatible change (B1).
+	i := testCDCIteratorPolicy(ctx, t, pool, table, true, SchemaDriftPolicyEvolve)
 	<-i.sub.Ready()
 
 	t.Run("initial table schema", func(t *testing.T) {
@@ -796,6 +804,9 @@ func TestCDCIterator_Schema(t *testing.T) {
 		_, err := pool.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s DROP COLUMN column4, DROP COLUMN column5;`, table))
 		is.NoErr(err)
 
+		// A drop is incompatible under EVERY policy, evolve included: the
+		// connector emits the drift marker and serves nothing else (D4), so the
+		// insert below is skipped, never emitted.
 		_, err = pool.Exec(
 			ctx,
 			fmt.Sprintf(`INSERT INTO %s (id, key, column1, column2, column3, column6, column7, column101)
@@ -805,12 +816,19 @@ func TestCDCIterator_Schema(t *testing.T) {
 
 		rr, err := i.NextN(ctx, 1)
 		is.NoErr(err)
-		is.True(len(rr) > 0)
+		is.True(len(rr) == 1)
 
 		r := rr[0]
+		is.Equal(r.Metadata[MetadataSchemaDrift], "true")
+		is.Equal(r.Metadata[MetadataSchemaDriftTable], "public."+table)
+		is.Equal(r.Metadata[MetadataSchemaDriftNarrowing], "true")
 
-		assertPayloadSchemaOK(ctx, is, test.TestTableAvroSchemaV3, table, r)
-		assertKeySchemaOK(ctx, is, table, r)
+		// Acking the marker arms the halt: the next read is the terminal error
+		// (D3), never another record.
+		is.NoErr(i.Ack(ctx, r.Position))
+		_, err = i.NextN(ctx, 1)
+		is.True(err != nil)
+		is.True(strings.Contains(err.Error(), ErrorCodeSchemaDriftHalt))
 	})
 }
 

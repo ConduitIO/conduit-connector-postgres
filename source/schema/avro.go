@@ -119,6 +119,37 @@ func (a *avroExtractor) Extract(schemaName string, fields []pgconn.FieldDescript
 	return sch, nil
 }
 
+// TypeChangePreservesSchema reports whether a column whose DataType/TypeModifier
+// pair changed from (oldType, oldTypeMod) to (newType, newTypeMod) still yields
+// the same Avro schema — i.e. whether the change is invisible to a consumer that
+// reads the Avro-encoded value. It is the evolve-policy compatibility judgement
+// (Q2 in the DBZ-3 B1 design doc): a change that preserves the Avro shape is
+// compatible and can be admitted automatically, one that doesn't must halt.
+//
+// The judgement mirrors how Extract derives schemas: OIDs that map to a fixed
+// primitive (e.g. varchar/text -> String, ignoring TypeModifier) are preserved
+// under length-only changes; numeric changes precision/scale and therefore
+// changes the Avro decimal schema. Fail closed on anything the extractor cannot
+// resolve: an unmapped type might differ in ways we cannot see.
+func (a *avroExtractor) TypeChangePreservesSchema(oldType uint32, oldTypeMod int32, newType uint32, newTypeMod int32) bool {
+	oldT, oldOK := a.pgMap.TypeForOID(oldType)
+	newT, newOK := a.pgMap.TypeForOID(newType)
+	if !oldOK || !newOK {
+		return false
+	}
+
+	oldS, err := a.extractType(oldT, oldTypeMod)
+	if err != nil {
+		return false
+	}
+	newS, err := a.extractType(newT, newTypeMod)
+	if err != nil {
+		return false
+	}
+
+	return oldS.String() == newS.String()
+}
+
 func (a *avroExtractor) extractType(t *pgtype.Type, typeMod int32) (avro.Schema, error) {
 	if ps, ok := a.avroMap[t.Name]; ok {
 		return ps, nil

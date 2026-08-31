@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/google/go-cmp/cmp"
@@ -189,6 +190,100 @@ func TestDestination_Write(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDestination_SchemaDriftMarkerNoop pins FM6/AC6: the drift marker record
+// (keyless, payload-less OperationCreate carrying postgres.schema.drift
+// metadata) must be an explicit no-op at the connector's own destination —
+// never a silent wrong row (inserting it would produce `INSERT ... DEFAULT
+// VALUES`). A marker mixed into a batch with real records must not disturb
+// them, and the full batch count is still acked (the marker's position
+// checkpoint flows end to end).
+//
+// Perturbation proof: removing the marker skip in Destination.Write turns the
+// marker into an INSERT ... DEFAULT VALUES (or a NOT NULL constraint error) —
+// this test fails on the row-count assertion.
+func TestDestination_SchemaDriftMarkerNoop(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+
+	tableName := strings.ToUpper(test.RandomIdentifier(t))
+	test.SetupTestTableWithName(ctx, t, conn, tableName)
+
+	d := NewDestination()
+	err := sdk.Util.ParseConfig(
+		ctx,
+		map[string]string{
+			"url":   test.RegularConnString,
+			"table": "{{ index .Metadata \"opencdc.collection\" }}",
+		},
+		d.Config(),
+		Connector.NewSpecification().DestinationParams,
+	)
+	is.NoErr(err)
+
+	err = d.Open(ctx)
+	is.NoErr(err)
+	defer func() {
+		is.NoErr(d.Teardown(ctx))
+	}()
+
+	marker := opencdc.Record{
+		Position:  opencdc.Position("marker"),
+		Operation: opencdc.OperationCreate,
+		Metadata: map[string]string{
+			opencdc.MetadataCollection:       tableName,
+			logrepl.MetadataSchemaDrift:      "true",
+			logrepl.MetadataSchemaDriftTable: tableName,
+		},
+		Key:     nil,
+		Payload: opencdc.Change{After: nil},
+	}
+
+	// The seeded table has 4 rows; the marker alone must not add one.
+	var count int
+	err = conn.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM %q`, tableName)).Scan(&count)
+	is.NoErr(err)
+	is.Equal(count, 4)
+
+	i, err := d.Write(ctx, []opencdc.Record{marker})
+	is.NoErr(err)
+	is.Equal(i, 1)
+
+	err = conn.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM %q`, tableName)).Scan(&count)
+	is.NoErr(err)
+	is.Equal(count, 4)
+
+	// Marker mixed with a real record in one batch: the real record is written,
+	// the marker is skipped, and both are acked.
+	realRec := opencdc.Record{
+		Position:  opencdc.Position("real"),
+		Operation: opencdc.OperationCreate,
+		Metadata:  map[string]string{opencdc.MetadataCollection: tableName},
+		Key:       opencdc.StructuredData{"id": 9000},
+		Payload: opencdc.Change{
+			After: opencdc.StructuredData{
+				"column1":          "real",
+				"column2":          1,
+				"column3":          true,
+				"column4":          nil,
+				"UppercaseColumn1": 1,
+			},
+		},
+	}
+	i, err = d.Write(ctx, []opencdc.Record{marker, realRec})
+	is.NoErr(err)
+	is.Equal(i, 2)
+
+	got, err := queryTestTable(ctx, conn, tableName, 9000)
+	is.NoErr(err)
+	is.Equal("", cmp.Diff(realRec.Payload.After, got,
+		cmp.Comparer(func(x, y *big.Rat) bool { return x.Cmp(y) == 0 })))
+
+	err = conn.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM %q`, tableName)).Scan(&count)
+	is.NoErr(err)
+	is.Equal(count, 5) // 4 seeded + the one real record; the marker wrote nothing
 }
 
 func TestDestination_Batch(t *testing.T) {

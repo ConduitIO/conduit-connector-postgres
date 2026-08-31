@@ -79,6 +79,15 @@ const (
 	// chaospoint.Reach before exiting.
 	envEchoReaches = "PGCHAOS_ECHO_REACHES"
 
+	// envHaltExpected, when "1", tells the child that a terminal schema-drift
+	// halt error (postgres.schema_drift.halt, the B1 D5 coded error) is the
+	// EXPECTED outcome of this run. Instead of CHILD_FATAL-ing on the read
+	// error, the child prints the halt message to stderr, reports HALTED on
+	// stdout, and exits 0. Set only on runs whose scenario asserts a halt; a
+	// halt error on a run WITHOUT it is a hard failure, so a scenario that
+	// forgets to set it fails loudly rather than passing by accident.
+	envHaltExpected = "PGCHAOS_HALT_EXPECTED"
+
 	// envParentPID is the OS PID of the process that spawned this
 	// invocation via spawnChildWithEnv (harness.go), stamped onto every
 	// child's environment as os.Getpid() of the parent at spawn time.

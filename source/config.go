@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
 )
@@ -79,6 +80,16 @@ type Config struct {
 	// WithAvroSchema determines whether the connector should attach an avro schema on each
 	// record.
 	WithAvroSchema bool `json:"logrepl.withAvroSchema" default:"true"`
+
+	// LogreplSchemaDriftPolicy determines how the connector handles schema
+	// drift (a DDL that changes a table's shape during CDC; DBZ-3 B1):
+	//   - "halt" (default): emit a drift marker record, checkpoint before it,
+	//     and stop with a terminal error until the pipeline is restarted to
+	//     approve the change.
+	//   - "evolve": accept additive changes silently; incompatible (narrowing)
+	//     changes still halt.
+	// "dlq" is reserved for a future version and rejected at validation.
+	LogreplSchemaDriftPolicy logrepl.SchemaDriftPolicy `json:"logrepl.schemaDrift.policy" default:"halt"`
 }
 
 // Validate validates the provided config values.
@@ -90,6 +101,13 @@ func (c *Config) Validate(ctx context.Context) error {
 
 	err := c.DefaultSourceMiddleware.Validate(ctx)
 	if err != nil {
+		errs = append(errs, err)
+	}
+
+	// "dlq" and unknown values are rejected with a stable coded error
+	// (postgres.schema_drift.policy.unsupported); the SDK default fills in
+	// "halt" when the param is absent.
+	if _, err := logrepl.ParseSchemaDriftPolicy(string(c.LogreplSchemaDriftPolicy)); err != nil {
 		errs = append(errs, err)
 	}
 

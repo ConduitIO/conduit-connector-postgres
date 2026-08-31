@@ -271,6 +271,17 @@ func (c *childProcess) progressCount(prefix string) int {
 	return n
 }
 
+// stderrTail returns the last ~4KiB of the child's stderr — for failure
+// messages where the full stdout dump diagnostics() produces is noise and
+// the decisive evidence (a halt message, a teardown error) lives in stderr.
+func (c *childProcess) stderrTail() string {
+	s := c.stderr.String()
+	if len(s) <= 4096 {
+		return s
+	}
+	return s[len(s)-4096:]
+}
+
 func (c *childProcess) diagnostics() string {
 	// stderr is its own syncBuffer (self-synchronizing, see its doc), not
 	// guarded by c.mu - c.mu only ever protected lines. Reading it while the

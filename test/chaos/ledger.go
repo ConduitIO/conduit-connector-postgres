@@ -88,6 +88,16 @@ type LedgerEntry struct {
 	// a single, uninterrupted run (e.g. the no-kill smoke scenario).
 	Resumed bool `json:"resumed"`
 
+	// Drift is true when this entry is the schema-drift marker record
+	// (metadata postgres.schema.drift=true, source/logrepl) rather than a
+	// real row delivery. Markers are keyless and payload-less, so Key is
+	// empty for them; their position carries the first-new-shape DML LSN and
+	// the schema history through the approval checkpoint (D1 of the B1
+	// design doc). A scenario asserts on this flag for "exactly one marker
+	// per run" and for the FM1/FM2 window classification (was the marker
+	// durable before the kill).
+	Drift bool `json:"drift,omitempty"`
+
 	// RawPosition is the record's raw opencdc.Position bytes, so a later
 	// scenario can independently recompute a RESUME_FROM hash (harness plan
 	// §6) from the ledger rather than trusting the child's own claim about

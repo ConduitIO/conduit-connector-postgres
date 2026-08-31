@@ -27,6 +27,7 @@ import (
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/destination"
 	"github.com/conduitio/conduit-connector-postgres/internal"
+	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
@@ -74,7 +75,23 @@ func (d *Destination) Open(ctx context.Context) error {
 // operation.
 func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, error) {
 	b := &pgx.Batch{}
+	var skipped int
 	for _, rec := range recs {
+		// Schema-drift markers (postgres.schema.drift, source/logrepl) are
+		// keyless, payload-less OperationCreate records that carry the approval
+		// checkpoint for the escape hatch. Writing them would insert an empty
+		// DEFAULT VALUES row (or error on NOT NULL columns) — FM6 in
+		// docs/design-documents/20260829-dbz3-b1-schema-drift-escape-hatch.md
+		// pins an explicit no-op: never a silent wrong row. The record is still
+		// acked (Write returns the full count), so the marker's position
+		// checkpoint flows end to end.
+		if rec.Metadata[logrepl.MetadataSchemaDrift] == "true" {
+			sdk.Logger(ctx).Debug().
+				Str("table", rec.Metadata[logrepl.MetadataSchemaDriftTable]).
+				Msg("skipping schema-drift marker record at the destination (FM6 no-op)")
+			skipped++
+			continue
+		}
 		var err error
 		rec, err = d.ensureStructuredData(rec)
 		if err != nil {
@@ -100,7 +117,7 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 	br := d.conn.SendBatch(ctx, b)
 	defer br.Close()
 
-	for i := range recs {
+	for i := 0; i < len(recs)-skipped; i++ {
 		// fetch error for each statement
 		_, err := br.Exec()
 		if err != nil {
