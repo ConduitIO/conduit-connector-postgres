@@ -142,6 +142,7 @@ func Test_HandleRelation_HaltEmitsMarker(t *testing.T) {
 	is.True(h.driftHaltArmed.Load())
 	is.True(strings.HasPrefix(h.driftHaltError().Error(), ErrorCodeSchemaDriftHalt))
 	is.True(strings.Contains(h.driftHaltError().Error(), haltRevertTrap))
+	is.True(strings.Contains(h.driftHaltError().Error(), haltDisclosure))
 }
 
 // Test_HandleRelation_EvolveAcceptsAdditive pins that evolve admits a purely
@@ -244,7 +245,8 @@ func Test_HaltError_AcrossRestartMessage(t *testing.T) {
 	is.True(strings.Contains(msg, "schema hash "))
 	is.True(strings.Contains(msg, "0/64")) // prev.FirstSeenLSN
 	is.True(strings.Contains(msg, haltRevertTrap))
-	is.True(!strings.Contains(msg, "age")) // AC7: never fabricates a column diff
+	is.True(strings.Contains(msg, haltDisclosure)) // Blocker 2: disclose the dropped boundary record
+	is.True(!strings.Contains(msg, "age"))         // AC7: never fabricates a column diff
 }
 
 // Test_HandleRelation_StackedDDL_OneMarker pins FM8/AC9: a second DDL while a

@@ -260,7 +260,9 @@ message start, since the protocol carries no structured code field:
 postgres.schema_drift.halt: table "public.users": column "age" added (type 23);
 observed at LSN 0/16B3748. Restart this pipeline to approve the change, or revert
 the DDL — a restart after reverting halts once more before resuming (the approved
-shape is still the last checkpointed one).
+shape is still the last checkpointed one). The first record under the new schema
+shape is not delivered (dropped at the wire on restart — the marker emits at the
+boundary DML's LSN); verify it manually.
 ```
 
 For `driftAcrossRestart` the column diff is unrecoverable (`handler.go:485-500`);
@@ -268,6 +270,17 @@ the message names the table and the hash transition plus `FirstSeenLSN` of the
 last durable shape (`schemahistory.go:63-65`) and tells the operator to compare
 against their DDL history — the parent doc's promise of a precise diff holds only
 for `driftInProcess`, and the doc must not overpromise (finding F7).
+
+The final sentence is the Blocker-2 disclosure: the first DML under the new
+shape is not delivered. In-process the trigger DML is skipped by D4 (the marker
+emits at its LSN, then nothing); across a restart the boundary DML is dropped at
+the wire — the subscription resumes exactly at the marker's LSN, and the resume
+guard skips the transaction starting there (`subscription.go:258-262`). The
+operator approves by restarting and must verify that record manually.
+**Decision (2026-08-30): disclose for v0.20.** The alternative — no-drop,
+re-delivering the boundary record before the marker — would put a new-shape
+record ahead of the marker in the resume stream and un-make the marker's
+"approval checkpoint" invariant; it is filed as a follow-up rather than shipped.
 
 ### D6. Approval state for dlq rides the same marker
 

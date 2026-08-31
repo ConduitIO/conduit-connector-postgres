@@ -123,6 +123,19 @@ const haltRevertTrap = "Restart this pipeline to approve the change, or revert t
 	" — a restart after reverting halts once more before resuming (the approved" +
 	" shape is still the last checkpointed one)."
 
+// haltDisclosure is the D5 sentence that discloses the one record the halt
+// path does not deliver: the first DML under the new shape rides the marker's
+// LSN (pgoutput delivers the relation message with WALStart 0, so the marker
+// can only be positioned there), and on the operator-approved restart the
+// subscription resumes exactly at that LSN, so pgoutput skips the boundary
+// DML at the wire — it is not re-delivered. The operator must verify that
+// record manually. Decision 2026-08-30 (Blocker 2): disclose for v0.20;
+// no-drop (deliver the boundary record before the marker) is filed as a
+// follow-up.
+const haltDisclosure = " The first record under the new schema shape is not delivered" +
+	" (dropped at the wire on restart — the marker emits at the boundary DML's" +
+	" LSN); verify it manually."
+
 // newDriftHaltError builds the D5 terminal error for a halting drift kind.
 //
 // driftInProcess renders the full column diff (the diff exists — this process
@@ -140,17 +153,17 @@ func newDriftHaltError(
 ) error {
 	switch kind {
 	case driftInProcess:
-		return fmt.Errorf("%s: %s; observed at LSN %s. %s",
-			ErrorCodeSchemaDriftHalt, diff.String(), lsn.String(), haltRevertTrap)
+		return fmt.Errorf("%s: %s; observed at LSN %s. %s %s",
+			ErrorCodeSchemaDriftHalt, diff.String(), lsn.String(), haltRevertTrap, haltDisclosure)
 	case driftAcrossRestart:
 		return fmt.Errorf(
 			"%s: table %s changed while the connector was not running"+
 				" (schema hash %s -> %s; last durable shape first seen at LSN %s);"+
-				" observed at LSN %s. %s Compare against your DDL history for the"+
+				" observed at LSN %s. %s %s Compare against your DDL history for the"+
 				" exact columns",
 			ErrorCodeSchemaDriftHalt, key,
 			prev.ColumnSetHash, hash, prev.FirstSeenLSN,
-			lsn.String(), haltRevertTrap)
+			lsn.String(), haltRevertTrap, haltDisclosure)
 	default:
 		// driftNone/driftInitial never halt; this is defensive and unreachable.
 		return fmt.Errorf("%s: unexpected drift kind %d (this smells like a bug)",
