@@ -40,15 +40,16 @@ const (
 //     LastLSN, the LSN of the record's own change.
 //   - 1: the DBZ-3 format on main (adds snapshot low watermark and schema
 //     history). Never written by v0.14.x. Read like 0 here: the extra
-//     fields are ignored, and there is no TxCommitLSN.
-//   - 2: CDC positions also carry TxCommitLSN, the commit LSN of the
-//     record's transaction (#331). Written by this build.
+//     fields are ignored, and there is no change key.
+//   - 2: CDC positions also carry the change key (#331): TxCommitLSN, the
+//     commit LSN of the record's transaction, and TxSeq, the change's
+//     ordinal within it. Written by this build.
 //
 // The format is additive only. Every field is omitempty, an older connector
 // ignores keys it does not know, and a position with a higher version than
 // this build knows is read, not rejected. What a reader may rely on is the
-// presence of a field, not the version number: a CDC position without
-// TxCommitLSN (versions 0 and 1) gets the legacy resume point (see
+// presence of a field, not the version number: a CDC position without both
+// TxCommitLSN and TxSeq (versions 0 and 1) gets the legacy resume point (see
 // logrepl/internal.ResumePoint).
 const CurrentPositionVersion = 2
 
