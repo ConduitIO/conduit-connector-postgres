@@ -30,7 +30,14 @@ import (
 
 // CDCConfig holds configuration values for CDCIterator.
 type CDCConfig struct {
-	LSN             pglogrepl.LSN
+	LSN pglogrepl.LSN
+	// TxCommitLSN is the commit LSN of the checkpointed record's transaction,
+	// 0 when the position does not carry one. With it, a restart skips
+	// exactly what was delivered (#331).
+	TxCommitLSN pglogrepl.LSN
+	// TxSeq is the checkpointed change's ordinal within that transaction, 0
+	// when the position does not carry one.
+	TxSeq           uint64
 	SlotName        string
 	PublicationName string
 	Tables          []string
@@ -107,6 +114,18 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize subscription: %w", err)
 	}
+
+	if key := (internal.ChangeKey{CommitLSN: c.TxCommitLSN, Seq: c.TxSeq}); key.Known() {
+		// Exact resume point from a position that carries its change key
+		// (format version 2). It uses the position's raw LSN, not the start
+		// LSN CreateSubscription may have moved up to the slot's restart_lsn:
+		// the key, not the LSN, decides. Without a key, CreateSubscription's
+		// legacy point applies (see internal.ResumePoint). Set before Run.
+		sub.Resume = internal.ResumePoint{Key: key, LSN: c.LSN}
+	}
+	// The handler stamps each record's position with the subscription's
+	// current change key. Set before the subscription goroutine starts.
+	handler.changeKey = sub.CurrentChange
 
 	return &CDCIterator{
 		config:    c,
@@ -282,7 +301,11 @@ func (i *CDCIterator) Ack(_ context.Context, sdkPos opencdc.Position) error {
 		return fmt.Errorf("cannot ack zero position")
 	}
 
-	i.sub.Ack(lsn)
+	commit, err := pos.TxCommit()
+	if err != nil {
+		return err
+	}
+	i.sub.Ack(lsn, internal.ChangeKey{CommitLSN: commit, Seq: pos.TxSeq})
 	return nil
 }
 
