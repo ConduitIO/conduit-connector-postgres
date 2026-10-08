@@ -99,6 +99,16 @@ change replaces that test with the key comparison.
     are FIFO, so that means everything emitted is acked. LSN equality cannot
     prove that (problem 4).
   - The report never decreases.
+  - **One assumption is reasoned, not tested.** The keepalive WAL end passed
+    the gate is taken to never sit inside a transaction the connector has not
+    finished receiving. The walsender advances the position it reports in
+    keepalives only after it has fully processed a WAL record, and a
+    transaction's changes are sent when its commit record is decoded, so a
+    keepalive cannot report a position past a commit whose changes are still
+    on the way. The connector also ignores the WAL end carried in data
+    messages and takes it only from keepalives. v0.14.2's echo relied on the
+    same assumption. A test cannot force a keepalive into the middle of a
+    transaction's messages.
 - **Streamed transactions are refused.** pgoutput's `streaming` option sends
   in-progress transactions in chunks, which breaks "whole transactions at
   commit, in commit order". The connector does not enable it. If such

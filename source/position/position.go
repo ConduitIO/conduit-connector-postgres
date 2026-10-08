@@ -40,9 +40,10 @@ const (
 //     LastLSN, the LSN of the record's own change.
 //   - 1: DBZ-3 (this branch before #331): may carry SnapshotLowWatermarkLSN
 //     and SchemaHistory.
-//   - 2: CDC positions also carry TxCommitLSN, the commit LSN of the record's
-//     transaction (#331). Written by this build and by the v0.14.x hotfix
-//     (which has no DBZ-3 fields).
+//   - 2: CDC positions also carry the change key (#331): TxCommitLSN, the
+//     commit LSN of the record's transaction, and TxSeq, the change's ordinal
+//     within it. Written by this build and by the v0.14.x hotfix (which has
+//     no DBZ-3 fields).
 //
 // Backward/forward compatibility contract (see the DBZ-3 design doc,
 // docs/design-documents/20260724-dbz3-postgres-cdc-parity.md, "Upgrade / rollback"):
@@ -53,10 +54,10 @@ const (
 //     understands.
 //   - Code must key on a field's presence, never on the version number: a
 //     version 2 position written by the v0.14.x hotfix has TxCommitLSN but no
-//     DBZ-3 fields, and a version 1 position has DBZ-3 fields but no
-//     TxCommitLSN. An absent SnapshotLowWatermarkLSN/SchemaHistory means
-//     "behave as v0.14 did"; an absent TxCommitLSN means the legacy resume
-//     point (logrepl/internal.ResumePoint).
+//     DBZ-3 fields, and a version 1 position has DBZ-3 fields but no change
+//     key. An absent SnapshotLowWatermarkLSN/SchemaHistory means
+//     "behave as v0.14 did"; a missing TxCommitLSN or TxSeq means the legacy
+//     resume point (logrepl/internal.ResumePoint).
 const CurrentPositionVersion = 2
 
 type Position struct {
