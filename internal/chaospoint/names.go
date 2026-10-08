@@ -67,8 +67,8 @@ const (
 
 	// StandbyStatusUpdate is reached in
 	// source/logrepl/internal/subscription.go's sendStandbyStatusUpdate,
-	// after walFlushed is loaded and the reply-with-WAL-end decision is
-	// computed, but before either status update variant is written to the
+	// after walFlushed is loaded and the reported positions are decided
+	// (reportedPositions), but before the status update is written to the
 	// replication connection. Parking here proves a kill between "the
 	// engine has decided what the server should learn about flush progress"
 	// and "the server actually learned it" — the window in which a
@@ -108,4 +108,19 @@ const (
 	// is still pending — the in-run half of the FM8/AC9 window (the
 	// down-variant parks at DriftMarkerAppended instead).
 	DriftVersionSkipped = "logrepl.drift_version_skipped"
+
+	// HeartbeatObserved is reached in source/logrepl/handler.go's
+	// handleHeartbeat after a heartbeat change's LSN was recorded as the
+	// heartbeat-observed LSN (a flush candidate) and before Handle returns.
+	// It counts heartbeats delivered through the replication stream (DBZ-3
+	// B2); parking here freezes the subscription goroutine with a heartbeat
+	// observed and any earlier records possibly unacked.
+	HeartbeatObserved = "logrepl.heartbeat_observed"
+
+	// RecordSeen is reached in test/chaos/child.go's read loop for every
+	// record, after it was read from the connector and before it is appended
+	// to the ledger: delivered, not durable, not acked. Parking its Nth reach
+	// holds one specific record in flight while the connector keeps running
+	// (the DBZ-3 B2 kill scenario keeps heartbeats flowing past it).
+	RecordSeen = "child.record_seen"
 )

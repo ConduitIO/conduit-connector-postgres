@@ -67,6 +67,54 @@ pipelines:
 attempt to delete the replication slot and publication. This is the default behaviour
 and can be disabled by setting `logrepl.autoCleanup` to `false`.
 
+#### Heartbeats
+
+With `logrepl.heartbeat.enabled: "true"`, once CDC is streaming the connector
+upserts one row per replication slot into a heartbeat table
+(`public._conduit_heartbeat` by default) every `logrepl.heartbeat.interval`
+(default `30s`). On start it creates the table if it is missing and adds it to the
+connector's publication, so every write comes back through the replication stream.
+Heartbeat changes are never emitted as records.
+
+What it gives you:
+
+- **A delivery check.** A heartbeat arriving proves the connector can write, the
+  publication still contains the table, and Postgres is delivering changes. If no
+  heartbeat arrives for three intervals, the connector logs
+  `postgres.heartbeat.stale` and says whether the writes themselves are failing. A
+  failed write logs `postgres.heartbeat.write_failed`; it is not retried.
+- **A second way to advance the slot.** While no emitted record is waiting for an
+  ack, the connector may confirm the heartbeat's WAL position to Postgres, which
+  lets the server discard older WAL. It never confirms a position past a record
+  that has not been acked.
+
+The connector already confirms the server's WAL position from keepalive messages
+when nothing is in flight, so an idle publication does not pin the slot even with
+heartbeats off.
+
+Requirements: `CREATE` on the heartbeat schema (or create the table yourself),
+`INSERT`, `UPDATE` and `SELECT` on the table, and ownership of the table and the
+publication unless the publication already contains the table. Setup failures stop
+the connector at start with `postgres.heartbeat.setup_failed`.
+
+While heartbeats are enabled the heartbeat table is reserved: `tables: "*"` skips
+it, and listing it in `tables` is a configuration error. Disabling heartbeats
+leaves the table and its publication membership in place. If you no longer need
+them, run `ALTER PUBLICATION <publication> DROP TABLE <schema>.<table>` and drop
+the table; otherwise a later `tables: "*"`, or another connector still writing to
+the table, makes its rows show up as records. Do the same when rolling back to a
+connector version without heartbeats.
+
+:warning: **Running next to Debezium.** Debezium's Postgres connector heartbeats
+through `heartbeat.action.query`, usually into its own table (for example
+`debezium_heartbeat`). Do not set `logrepl.heartbeat.table` to Debezium's heartbeat
+table, or the other way round: each would count the other's writes as its own, and
+staleness would go unnoticed. If both connectors use the same publication, or
+Debezium uses a `FOR ALL TABLES` publication, each one receives the other's
+heartbeat changes as data. Give each connector its own publication, and exclude the
+other's heartbeat table (`table.exclude.list` in Debezium; leave it out of `tables`
+here).
+
 ### Key Handling
 
 The connector will automatically look up the primary key column for the specified tables
@@ -149,6 +197,32 @@ pipelines:
           # Type: bool
           # Required: no
           logrepl.autoCleanup: "true"
+          # LogreplHeartbeatEnabled turns on the heartbeat (DBZ-3 B2): once CDC
+          # is streaming, the connector upserts a row for its replication slot
+          # into the heartbeat table every logrepl.heartbeat.interval. The table
+          # is added to the publication, so each write comes back through the
+          # replication stream and proves the stream is delivering. Heartbeat
+          # changes are never emitted as records. Requires CREATE on the
+          # heartbeat schema (or a pre-created table), INSERT/UPDATE/SELECT on
+          # the table, and ownership of the table and the publication unless the
+          # publication already contains the table.
+          # Type: bool
+          # Required: no
+          logrepl.heartbeat.enabled: "false"
+          # LogreplHeartbeatInterval is the time between heartbeat writes.
+          # Type: duration
+          # Required: no
+          logrepl.heartbeat.interval: "30s"
+          # LogreplHeartbeatSchema is the schema of the heartbeat table.
+          # Type: string
+          # Required: no
+          logrepl.heartbeat.schema: "public"
+          # LogreplHeartbeatTable is the name of the heartbeat table. Must not
+          # be one of the source tables, and must not be another tool's
+          # heartbeat table (for example Debezium's).
+          # Type: string
+          # Required: no
+          logrepl.heartbeat.table: "_conduit_heartbeat"
           # LogreplPublicationName determines the publication name in case the
           # connector uses logical replication to listen to changes (see
           # CDCMode).

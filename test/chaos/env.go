@@ -88,6 +88,11 @@ const (
 	// forgets to set it fails loudly rather than passing by accident.
 	envHaltExpected = "PGCHAOS_HALT_EXPECTED"
 
+	// envHeartbeatTable, when non-empty, turns on the connector's DBZ-3 B2
+	// heartbeat with this table name (in the public schema) and a 250ms
+	// interval. Unset leaves heartbeats off, the connector default.
+	envHeartbeatTable = "PGCHAOS_HEARTBEAT_TABLE"
+
 	// envParentPID is the OS PID of the process that spawned this
 	// invocation via spawnChildWithEnv (harness.go), stamped onto every
 	// child's environment as os.Getpid() of the parent at spawn time.

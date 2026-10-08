@@ -47,6 +47,8 @@ type CDCConfig struct {
 	// SchemaDriftPolicy is what the connector does on schema drift (halt by
 	// default). Validated via ParseSchemaDriftPolicy in Config.Validate.
 	SchemaDriftPolicy SchemaDriftPolicy
+	// Heartbeat configures the DBZ-3 B2 heartbeat (disabled by default).
+	Heartbeat HeartbeatConfig
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -55,6 +57,13 @@ type CDCIterator struct {
 	config  CDCConfig
 	sub     *internal.Subscription
 	handler *CDCHandler
+
+	// heartbeat is nil when heartbeats are disabled. heartbeatStop and
+	// heartbeatDone are set by StartSubscriber when the writer goroutine is
+	// started, and used by Teardown to stop it and wait for it.
+	heartbeat     *heartbeatWriter
+	heartbeatStop context.CancelFunc
+	heartbeatDone chan struct{}
 
 	// batchesCh is a channel shared between this iterator and a CDCHandler,
 	// to which the CDCHandler is sending batches of records.
@@ -85,6 +94,14 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 
 		sdk.Logger(ctx).Warn().
 			Msgf("Publication %q already exists.", c.PublicationName)
+	}
+
+	if c.Heartbeat.Enabled {
+		// Also the upgrade path for a publication created before heartbeats
+		// existed (v0.14.x): setup adds the table to it if it is missing.
+		if err := setupHeartbeat(ctx, pool, c.Heartbeat, c.PublicationName); err != nil {
+			return nil, err
+		}
 	}
 
 	// Using a buffered channel here so that the handler can send a batch
@@ -119,12 +136,22 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		return nil, fmt.Errorf("failed to initialize subscription: %w", err)
 	}
 
-	return &CDCIterator{
+	it := &CDCIterator{
 		config:    c,
 		batchesCh: batchesCh,
 		sub:       sub,
 		handler:   handler,
-	}, nil
+	}
+
+	if c.Heartbeat.Enabled {
+		// Both run before the subscription goroutine starts (StartSubscriber),
+		// which is the handler's and subscription's no-locking contract.
+		handler.enableHeartbeat(c.Heartbeat.Schema, c.Heartbeat.Table)
+		sub.HeartbeatLSN = handler.lastHeartbeatLSN
+		it.heartbeat = newHeartbeatWriter(pool, c.Heartbeat, c.SlotName, handler.lastHeartbeatObserved)
+	}
+
+	return it, nil
 }
 
 // StartSubscriber starts the logical replication service in the background.
@@ -150,7 +177,39 @@ func (i *CDCIterator) StartSubscriber(ctx context.Context) error {
 		Str("publication", i.config.PublicationName).
 		Msg("Logical replication started")
 
+	// Heartbeats start only once CDC streaming is active, never during the
+	// snapshot (design doc, Decision 2), and stop when the subscription ends.
+	if i.heartbeat != nil {
+		hctx, cancel := context.WithCancel(ctx)
+		i.heartbeatStop = cancel
+		i.heartbeatDone = make(chan struct{})
+		go func() {
+			defer close(i.heartbeatDone)
+			i.heartbeat.run(hctx, i.sub.Done())
+		}()
+		sdk.Logger(ctx).Info().
+			Str("heartbeat_table", i.config.Heartbeat.qualifiedName()).
+			Dur("interval", i.config.Heartbeat.Interval).
+			Msg("heartbeat started")
+	}
+
 	return nil
+}
+
+// HeartbeatStatus returns the heartbeat's current write and delivery state
+// (DBZ-3 B2). Safe to call from any goroutine. Enabled is false when
+// heartbeats are off.
+func (i *CDCIterator) HeartbeatStatus() HeartbeatStatus {
+	if i.heartbeat == nil {
+		return HeartbeatStatus{}
+	}
+	return HeartbeatStatus{
+		Enabled:                  true,
+		LastWriteOK:              unixNanoTime(i.heartbeat.lastWriteOK.Load()),
+		ConsecutiveWriteFailures: i.heartbeat.consecutiveFailures.Load(),
+		LastObserved:             i.handler.lastHeartbeatObserved(),
+		LastObservedLSN:          i.handler.lastHeartbeatLSN().String(),
+	}
 }
 
 // NextN returns up to n records from the internal channel with records.
@@ -364,11 +423,25 @@ func (i *CDCIterator) Ack(_ context.Context, sdkPos opencdc.Position) error {
 // or the context gets canceled. If the subscription stopped with an unexpected
 // error, the error is returned.
 func (i *CDCIterator) Teardown(ctx context.Context) error {
-	if i.sub != nil {
-		return i.sub.Teardown(ctx)
+	// Stop the heartbeat writer first and wait for it, so no write is in
+	// flight while the subscription sends its final status update. A write
+	// that does not finish in time is abandoned (its context is already
+	// cancelled), and the subscription is torn down regardless.
+	var hbErr error
+	if i.heartbeatStop != nil {
+		i.heartbeatStop()
+		select {
+		case <-i.heartbeatDone:
+		case <-ctx.Done():
+			hbErr = fmt.Errorf("waiting for heartbeat writer to stop: %w", ctx.Err())
+		}
 	}
 
-	return nil
+	if i.sub != nil {
+		return errors.Join(hbErr, i.sub.Teardown(ctx))
+	}
+
+	return hbErr
 }
 
 // subscriberReady returns true when the subscriber is running.

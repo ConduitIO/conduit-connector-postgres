@@ -138,6 +138,13 @@ func runRealChild() {
 		"logrepl.withAvroSchema": "false",
 		"sdk.batch.size":         strconv.Itoa(batchSize),
 	}
+	if hbTable := os.Getenv(envHeartbeatTable); hbTable != "" {
+		// DBZ-3 B2: heartbeats on, at a short interval so a scenario sees
+		// several of them within one standby status period (10s).
+		cfg["logrepl.heartbeat.enabled"] = strconv.FormatBool(true)
+		cfg["logrepl.heartbeat.table"] = hbTable
+		cfg["logrepl.heartbeat.interval"] = "250ms"
+	}
 	if batchSize > 0 {
 		// Required whenever sdk.batch.size > 0 - see
 		// SourceWithBatch's own warning in conduit-connector-sdk - and
@@ -230,6 +237,11 @@ func appendAndAck(ctx context.Context, src sdk.Source, ledger *Ledger, run int, 
 	if err != nil {
 		childFatalf("build ledger entry: %v", err)
 	}
+
+	// Every record: delivered, not yet durable, not acked. Parking the Nth
+	// reach holds that record in flight while the connector keeps running
+	// (the B2 heartbeat kill window).
+	chaospoint.Reach(chaospoint.RecordSeen)
 
 	// The FM2 kill window (design doc): the drift marker has been
 	// delivered by the connector (it is in the iterator's channel) but is

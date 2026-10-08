@@ -68,6 +68,19 @@ type Subscription struct {
 	walWritten   pglogrepl.LSN
 	walFlushed   pglogrepl.LSN
 	serverWALEnd pglogrepl.LSN
+
+	// HeartbeatLSN, when set, returns the LSN of the most recent heartbeat
+	// change the handler observed (DBZ-3 B2), or 0 if none. It is a second
+	// source the flush report may advance to, under the same gate as the
+	// keepalive echo (see reportedPositions). It is called only from
+	// sendStandbyStatusUpdate, on the goroutine running Run, which is also
+	// where the handler records heartbeats. Set it before Run.
+	HeartbeatLSN func() pglogrepl.LSN
+
+	// reportedFlush is the highest flush position sent to the server so far.
+	// The report never goes below it (see reportedPositions). Only touched on
+	// the goroutine running Run.
+	reportedFlush pglogrepl.LSN
 }
 
 type Handler func(context.Context, pglogrepl.Message, pglogrepl.LSN) (pglogrepl.LSN, error)
@@ -403,13 +416,20 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 		return fmt.Errorf("walWrite (%s) should be >= walFlush (%s)", s.walWritten, walFlushed)
 	}
 
-	// N.B. Manage replication slot lag, by responding with the last server LSN, when
-	//      all previous slot relevant msgs have been written and flushed
-	replyWithWALEnd := walFlushed == s.walWritten && walFlushed < s.serverWALEnd
+	serverWALEnd := pglogrepl.LSN(atomic.LoadUint64((*uint64)(&s.serverWALEnd)))
+	var heartbeatLSN pglogrepl.LSN
+	if s.HeartbeatLSN != nil {
+		heartbeatLSN = s.HeartbeatLSN()
+	}
+
+	// Manage replication slot lag: when every emitted record has been acked,
+	// report the server's WAL end or the last observed heartbeat instead of
+	// the last acked record. The gate lives in reportedPositions.
+	write, flush := reportedPositions(s.walWritten, walFlushed, serverWALEnd, heartbeatLSN, s.reportedFlush)
 
 	// Invariant 1 / DBZ-3 B0 kill point (chaospoint.StandbyStatusUpdate):
-	// walFlushed is loaded and the reply decision is made, but neither wire
-	// send below has happened yet. A kill landing exactly here proves the
+	// walFlushed is loaded and the report is decided, but the wire send
+	// below has not happened yet. A kill landing exactly here proves the
 	// window between "the engine knows what it has durably acked" and "the
 	// server has been told" — if walFlushed < s.walWritten at this point,
 	// Postgres's view of confirmed_flush_lsn must not advance past
@@ -421,30 +441,73 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 	sdk.Logger(ctx).Trace().
 		Stringer("wal_write", s.walWritten).
 		Stringer("wal_flush", walFlushed).
-		Stringer("server_wal_end", s.serverWALEnd).
-		Bool("server_wal_end_sent", replyWithWALEnd).
+		Stringer("server_wal_end", serverWALEnd).
+		Stringer("heartbeat_lsn", heartbeatLSN).
+		Stringer("reported_write", write).
+		Stringer("reported_flush", flush).
 		Msg("sending standby status update")
 
-	if replyWithWALEnd {
-		if err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn.Conn().PgConn(), pglogrepl.StandbyStatusUpdate{
-			WALWritePosition: s.serverWALEnd,
-		}); err != nil {
-			return fmt.Errorf("failed to send standby status update with server end lsn: %w", err)
-		}
-
-		return nil
-	}
-
 	if err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn.Conn().PgConn(), pglogrepl.StandbyStatusUpdate{
-		WALWritePosition: s.walWritten,
-		WALFlushPosition: walFlushed,
-		WALApplyPosition: walFlushed,
+		WALWritePosition: write,
+		WALFlushPosition: flush,
+		WALApplyPosition: flush,
 		ReplyRequested:   false,
 	}); err != nil {
 		return fmt.Errorf("failed to send standby status update: %w", err)
 	}
 
+	s.reportedFlush = flush
 	return nil
+}
+
+// reportedPositions decides the write and flush positions a standby status
+// update reports. The server stores the flush position as the slot's
+// confirmed_flush_lsn, which decides the WAL Postgres may discard and the
+// transactions it will not send again after a restart.
+//
+// The rules (DBZ-3 B2 design doc, Decision 5):
+//
+//   - The baseline is walFlushed, the LSN of the last record the engine acked.
+//   - Only when walFlushed == walWritten, meaning every emitted record has
+//     been acked, may the report go beyond it: to serverWALEnd (the WAL end
+//     from the last keepalive) or heartbeatLSN (the last heartbeat change
+//     observed), whichever is higher.
+//   - The flush position never goes below lastReported. A flush position that
+//     was safe when reported stays safe: transactions arrive in commit order,
+//     anything that arrives later commits after it, and the server re-sends
+//     any transaction whose commit is past confirmed_flush_lsn.
+//   - write is at least flush.
+//
+// The equality test does not need LSNs to arrive in order (they do not, for
+// interleaved transactions). Acks are FIFO and every change has its own LSN,
+// so if the last emitted record is acked, every earlier one is too.
+func reportedPositions(
+	walWritten, walFlushed, serverWALEnd, heartbeatLSN, lastReported pglogrepl.LSN,
+) (write, flush pglogrepl.LSN) {
+	flush = walFlushed
+
+	// Invariant 1: report past walFlushed only when no emitted record is
+	// unacked. Reporting serverWALEnd or a heartbeat LSN while a record is in
+	// flight would let Postgres discard the WAL that record depends on, and a
+	// crash before the destination wrote it would lose it.
+	if walFlushed == walWritten {
+		flush = maxLSN(flush, serverWALEnd, heartbeatLSN)
+	}
+
+	// Invariant 2: the reported flush position never decreases.
+	flush = maxLSN(flush, lastReported)
+	write = maxLSN(walWritten, flush)
+	return write, flush
+}
+
+func maxLSN(first pglogrepl.LSN, rest ...pglogrepl.LSN) pglogrepl.LSN {
+	m := first
+	for _, l := range rest {
+		if l > m {
+			m = l
+		}
+	}
+	return m
 }
 
 // receiveMessage tries to receive a message from the replication stream. If the

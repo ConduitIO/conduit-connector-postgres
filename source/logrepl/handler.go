@@ -137,6 +137,20 @@ type CDCHandler struct {
 	driftHaltArmed      atomic.Bool
 	driftHaltErr        error
 	driftHaltCh         chan struct{}
+
+	// Heartbeat recognition (DBZ-3 B2, design doc Decision 4). heartbeatSchema
+	// and heartbeatTable are empty when heartbeats are disabled; they are set
+	// once, before the subscription starts (enableHeartbeat). heartbeatRelID is
+	// the heartbeat table's relation ID, learned from its RelationMessage; it
+	// is read and written only on the subscription goroutine (Handle).
+	// heartbeatLSN and heartbeatObservedAt are written on the subscription
+	// goroutine and read by the status update (same goroutine) and by the
+	// heartbeat writer and HeartbeatStatus (other goroutines), hence atomics.
+	heartbeatSchema     string
+	heartbeatTable      string
+	heartbeatRelID      uint32
+	heartbeatLSN        atomic.Uint64
+	heartbeatObservedAt atomic.Int64
 }
 
 func NewCDCHandler(
@@ -213,6 +227,12 @@ func (h *CDCHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogr
 		Str("lsn", lsn.String()).
 		Str("messageType", m.Type().String()).
 		Msg("handler received pglogrepl.Message")
+
+	// DBZ-3 B2: heartbeat changes are recognized first and never reach the
+	// record path, drift detection, or schema history (design doc, Decision 4).
+	if h.handleHeartbeat(ctx, m, lsn) {
+		return 0, nil
+	}
 
 	switch m := m.(type) {
 	case *pglogrepl.RelationMessage:
@@ -517,6 +537,79 @@ func (h *CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 // must be re-applied before CDC positions are built).
 func (h *CDCHandler) setBasePositionLowWatermark(lsn string) {
 	h.basePosition.SnapshotLowWatermarkLSN = lsn
+}
+
+// enableHeartbeat turns on heartbeat recognition for schema.table. Like
+// setBasePositionLowWatermark it must be called before the subscription
+// goroutine starts, which is what makes the plain field writes race-free.
+func (h *CDCHandler) enableHeartbeat(schema, table string) {
+	h.heartbeatSchema = schema
+	h.heartbeatTable = table
+}
+
+// handleHeartbeat consumes m if it belongs to the heartbeat table and reports
+// whether it did. A heartbeat RelationMessage only teaches the handler the
+// table's relation ID: it is never passed to handleRelation, so the heartbeat
+// table has no schema history and cannot trigger a drift halt. A heartbeat
+// Insert/Update/Delete records its LSN as the heartbeat-observed LSN and
+// emits nothing. Handle then returns 0, so walWritten does not move: a
+// heartbeat is never an emitted record, and the flush report may use its LSN
+// only through the gate in internal.reportedPositions.
+func (h *CDCHandler) handleHeartbeat(ctx context.Context, m pglogrepl.Message, lsn pglogrepl.LSN) bool {
+	if h.heartbeatTable == "" {
+		return false
+	}
+
+	var relID uint32
+	switch m := m.(type) {
+	case *pglogrepl.RelationMessage:
+		if m.Namespace != h.heartbeatSchema || m.RelationName != h.heartbeatTable {
+			return false
+		}
+		// A recreated table arrives under a new relation ID with the same
+		// name; the latest one wins.
+		h.heartbeatRelID = m.RelationID
+		return true
+	case *pglogrepl.InsertMessage:
+		relID = m.RelationID
+	case *pglogrepl.UpdateMessage:
+		relID = m.RelationID
+	case *pglogrepl.DeleteMessage:
+		relID = m.RelationID
+	default:
+		return false
+	}
+	if h.heartbeatRelID == 0 || relID != h.heartbeatRelID {
+		return false
+	}
+
+	// Invariant 1: this LSN is only a candidate. It is reported as flushed
+	// only while walFlushed == walWritten (internal.reportedPositions), never
+	// just because the heartbeat was observed.
+	h.heartbeatLSN.Store(uint64(lsn))
+	h.heartbeatObservedAt.Store(time.Now().UnixNano())
+
+	sdk.Logger(ctx).Trace().
+		Str("lsn", lsn.String()).
+		Msg("observed heartbeat")
+
+	// B2 kill point: a heartbeat has been observed (and is a flush
+	// candidate) while records before it may still be unacked. No-op outside
+	// the conduitchaos build.
+	chaospoint.Reach(chaospoint.HeartbeatObserved)
+	return true
+}
+
+// lastHeartbeatLSN returns the LSN of the last heartbeat change observed, or
+// 0. Read by the subscription's status update (internal.Subscription.HeartbeatLSN).
+func (h *CDCHandler) lastHeartbeatLSN() pglogrepl.LSN {
+	return pglogrepl.LSN(h.heartbeatLSN.Load())
+}
+
+// lastHeartbeatObserved returns when a heartbeat change was last observed, or
+// the zero time.
+func (h *CDCHandler) lastHeartbeatObserved() time.Time {
+	return unixNanoTime(h.heartbeatObservedAt.Load())
 }
 
 // driftKind classifies what a RelationMessage means relative to everything
