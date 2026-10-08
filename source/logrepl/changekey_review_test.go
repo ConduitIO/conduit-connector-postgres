@@ -63,6 +63,9 @@ func r2Raw(t *testing.T, p opencdc.Position) map[string]any {
 
 // Tests contributed in the #333 review (round 2).
 
+// The name is kept short: test.RandomIdentifier derives table names from
+// it, and Postgres truncates identifiers at 63 bytes, so long names collide.
+//
 // Determinism of tx_seq across re-send with:
 //   - a published-but-unconfigured second table (changes + TRUNCATE in tx)
 //   - an unpublished table (never sent)
@@ -72,7 +75,7 @@ func r2Raw(t *testing.T, p opencdc.Position) map[string]any {
 //   - COPY inside the tx (shared LSN)
 //
 // Checkpoint after every prefix, restart, expect exactly the suffix.
-func TestChangeKey_DeterministicAcrossResendEveryPrefix(t *testing.T) {
+func TestChangeKey_ResendEveryPrefix(t *testing.T) {
 	for k := 1; k <= 8; k++ {
 		t.Run(fmt.Sprint(k), func(t *testing.T) {
 			ctx := test.Context(t)
