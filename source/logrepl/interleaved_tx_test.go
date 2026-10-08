@@ -56,6 +56,11 @@ func interleave(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table str
 
 func column1(t *testing.T, rec opencdc.Record) string {
 	t.Helper()
+	if rec.Metadata[MetadataSchemaDrift] == "true" {
+		t.Fatalf("unexpected schema-drift marker: table %s, lsn %s, diff %q",
+			rec.Metadata[MetadataSchemaDriftTable], rec.Metadata[MetadataSchemaDriftLSN],
+			rec.Metadata[MetadataSchemaDriftDiff])
+	}
 	after, ok := rec.Payload.After.(opencdc.StructuredData)
 	if !ok {
 		t.Fatalf("unexpected payload %T", rec.Payload.After)
@@ -115,16 +120,24 @@ func expectNoMore(ctx context.Context, t *testing.T, it interface {
 
 func newInterleaveCombined(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string, pos opencdc.Position) *CombinedIterator {
 	t.Helper()
+	return newInterleaveCombinedPolicy(ctx, t, pool, table, pos, SchemaDriftPolicyHalt)
+}
+
+// newInterleaveCombinedPolicy is newInterleaveCombined with an explicit
+// schema-drift policy.
+func newInterleaveCombinedPolicy(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string, pos opencdc.Position, policy SchemaDriftPolicy) *CombinedIterator {
+	t.Helper()
 	is := is.New(t)
 	it, err := NewCombinedIterator(ctx, pool, Config{
-		Position:        pos,
-		SlotName:        table,
-		PublicationName: table,
-		Tables:          []string{table},
-		TableKeys:       map[string]string{table: "id"},
-		WithSnapshot:    false,
-		WithAvroSchema:  false,
-		BatchSize:       1,
+		Position:          pos,
+		SlotName:          table,
+		PublicationName:   table,
+		Tables:            []string{table},
+		TableKeys:         map[string]string{table: "id"},
+		WithSnapshot:      false,
+		WithAvroSchema:    false,
+		BatchSize:         1,
+		SchemaDriftPolicy: policy,
 	})
 	is.NoErr(err)
 	return it

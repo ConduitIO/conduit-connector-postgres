@@ -894,8 +894,9 @@ func TestB1_AC9_StackedDDLBetweenSightingAndAck(t *testing.T) {
 //     subscription goroutine keeps streaming the wire;
 //  2. then, after the test lands the second DDL and its DML, the
 //     connector's subscription goroutine at DriftVersionSkipped — the FM8
-//     guard inside handleRelation — which is reached only when the live
-//     connector processes the second shape's relation message. The second
+//     guard in skipAfterDriftMarker — which is reached only when the live
+//     connector processes a DML using the second shape (#335 moved the
+//     drift decision from the relation message to the DML). The second
 //     PARKED line is the liveness witness that the in-run processing
 //     actually happened: the second sighting was classified as drift and
 //     skipped by the FM8 guard before any commit — the version is
