@@ -108,7 +108,6 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 			WithAvroSchema:    s.config.WithAvroSchema,
 			BatchSize:         *s.config.BatchSize,
 			SchemaDriftPolicy: s.config.LogreplSchemaDriftPolicy,
-			Heartbeat:         s.config.Heartbeat(),
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create logical replication iterator: %w", err)
@@ -190,17 +189,11 @@ func (s *Source) getAllTables(ctx context.Context) ([]string, error) {
 	}
 	defer rows.Close()
 
-	heartbeat := s.config.Heartbeat()
 	var tables []string
 	for rows.Next() {
 		var tableName string
 		if err := rows.Scan(&tableName); err != nil {
 			return nil, fmt.Errorf("failed to scan table name: %w", err)
-		}
-		// The heartbeat table is reserved while heartbeats are enabled: its
-		// changes are never records (DBZ-3 B2 design doc, Decision 2).
-		if heartbeat.IsHeartbeatTable(tableName) {
-			continue
 		}
 		tables = append(tables, tableName)
 	}

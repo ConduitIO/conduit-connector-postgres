@@ -24,9 +24,9 @@ import (
 
 func TestReportedPositions(t *testing.T) {
 	tests := []struct {
-		name                                                  string
-		walWritten, walFlushed, serverWALEnd, heartbeat, last pglogrepl.LSN
-		wantWrite, wantFlush                                  pglogrepl.LSN
+		name                                       string
+		walWritten, walFlushed, serverWALEnd, last pglogrepl.LSN
+		wantWrite, wantFlush                       pglogrepl.LSN
 	}{
 		{
 			name:       "nothing outstanding, nothing newer: report the ack",
@@ -34,24 +34,9 @@ func TestReportedPositions(t *testing.T) {
 			wantWrite: 100, wantFlush: 100,
 		},
 		{
-			name:       "nothing outstanding: advance to the keepalive WAL end (the pre-B2 echo)",
+			name:       "nothing outstanding: advance to the keepalive WAL end",
 			walWritten: 100, walFlushed: 100, serverWALEnd: 500,
 			wantWrite: 500, wantFlush: 500,
-		},
-		{
-			name:       "nothing outstanding: advance to the heartbeat",
-			walWritten: 100, walFlushed: 100, heartbeat: 300,
-			wantWrite: 300, wantFlush: 300,
-		},
-		{
-			name:       "nothing outstanding: the higher of WAL end and heartbeat",
-			walWritten: 100, walFlushed: 100, serverWALEnd: 250, heartbeat: 300,
-			wantWrite: 300, wantFlush: 300,
-		},
-		{
-			name:       "record in flight: heartbeat past it is NOT reported (invariant 1)",
-			walWritten: 200, walFlushed: 100, heartbeat: 300,
-			wantWrite: 200, wantFlush: 100,
 		},
 		{
 			name:       "record in flight: WAL end past it is NOT reported (invariant 1)",
@@ -60,7 +45,7 @@ func TestReportedPositions(t *testing.T) {
 		},
 		{
 			name:       "record in flight: keep the earlier, safe high-water mark (monotonic)",
-			walWritten: 600, walFlushed: 100, heartbeat: 700, last: 500,
+			walWritten: 600, walFlushed: 100, serverWALEnd: 700, last: 500,
 			wantWrite: 600, wantFlush: 500,
 		},
 		{
@@ -69,9 +54,9 @@ func TestReportedPositions(t *testing.T) {
 			wantWrite: 100, wantFlush: 100,
 		},
 		{
-			// H2 in the design doc: a later-committing transaction delivers a
-			// lower change LSN. All acked (FIFO), so the gate is open, and the
-			// report never goes back below what was already reported.
+			// A later-committing transaction delivers a lower change LSN
+			// (#331). All acked (FIFO), so the gate is open, and the report
+			// never goes back below what was already reported.
 			name:       "interleaved LSNs, all acked: never report below the high-water mark",
 			walWritten: 0x868, walFlushed: 0x868, last: 0x958,
 			wantWrite: 0x958, wantFlush: 0x958,
@@ -81,7 +66,7 @@ func TestReportedPositions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			is := is.New(t)
-			gotWrite, gotFlush := reportedPositions(tt.walWritten, tt.walFlushed, tt.serverWALEnd, tt.heartbeat, tt.last)
+			gotWrite, gotFlush := reportedPositions(tt.walWritten, tt.walFlushed, tt.serverWALEnd, tt.last)
 			is.Equal(gotFlush, tt.wantFlush)
 			is.Equal(gotWrite, tt.wantWrite)
 		})
@@ -90,16 +75,16 @@ func TestReportedPositions(t *testing.T) {
 
 // TestReportedPositions_Model drives reportedPositions through random
 // sequences of the events a live subscription sees: a record is emitted, the
-// engine acks the oldest outstanding record (FIFO), a heartbeat comes back
-// through the stream, a keepalive brings a new WAL end, unrelated WAL is
-// written, and a status update is sent. LSNs increase in stream order (one
-// change per transaction; interleaving is covered by TestReportedPositions).
+// engine acks the oldest outstanding record (FIFO), a keepalive brings a new
+// WAL end, unrelated WAL is written, and a status update is sent. LSNs
+// increase in stream order (one change per transaction; interleaving is
+// covered by TestReportedPositions).
 //
-// At every status update it checks the B2 acceptance property (7.5): the
-// reported flush position is below every emitted-but-unacked record, so the
-// slot can never confirm past a record the engine has not durably handled.
-// It also checks that the report never decreases, that write >= flush, and
-// liveness: with nothing outstanding the report reaches the latest heartbeat.
+// At every status update it checks acceptance criterion 7.5: the reported
+// flush position is below every emitted-but-unacked record, so the slot can
+// never confirm past a record the engine has not durably handled. It also
+// checks that the report never decreases, that write >= flush, and liveness:
+// with nothing outstanding the report reaches the latest WAL end.
 //
 // Removing the walFlushed == walWritten gate in reportedPositions fails this
 // test within the first few sequences.
@@ -113,10 +98,10 @@ func TestReportedPositions_Model(t *testing.T) {
 
 	for seq := 0; seq < sequences; seq++ {
 		var (
-			next                                      pglogrepl.LSN = 0x1000
-			walWritten, walFlushed, walEnd, heartbeat pglogrepl.LSN
-			lastReported                              pglogrepl.LSN
-			outstanding                               []pglogrepl.LSN
+			next                           pglogrepl.LSN = 0x1000
+			walWritten, walFlushed, walEnd pglogrepl.LSN
+			lastReported                   pglogrepl.LSN
+			outstanding                    []pglogrepl.LSN
 		)
 		advance := func() pglogrepl.LSN {
 			next += pglogrepl.LSN(1 + rng.Uint64()%64)
@@ -127,7 +112,7 @@ func TestReportedPositions_Model(t *testing.T) {
 		walFlushed = walWritten
 
 		for step := 0; step < steps; step++ {
-			switch rng.Intn(6) {
+			switch rng.Intn(5) {
 			case 0: // a record is emitted
 				lsn := advance()
 				walWritten = lsn
@@ -137,19 +122,17 @@ func TestReportedPositions_Model(t *testing.T) {
 					walFlushed = outstanding[0]
 					outstanding = outstanding[1:]
 				}
-			case 2: // a heartbeat change comes back through the stream
-				heartbeat = advance()
-			case 3: // a keepalive: the walsender has sent everything up to here
+			case 2: // a keepalive: the walsender has sent everything up to here
 				walEnd = advance()
-			case 4: // WAL the publication filters out
+			case 3: // WAL the publication filters out
 				advance()
-			case 5: // standby status update
-				write, flush := reportedPositions(walWritten, walFlushed, walEnd, heartbeat, lastReported)
+			case 4: // standby status update
+				write, flush := reportedPositions(walWritten, walFlushed, walEnd, lastReported)
 
 				if len(outstanding) > 0 && flush >= outstanding[0] {
 					t.Fatalf("sequence %d step %d: reported flush %s at or past unacked record %s "+
-						"(walWritten=%s walFlushed=%s walEnd=%s heartbeat=%s)",
-						seq, step, flush, outstanding[0], walWritten, walFlushed, walEnd, heartbeat)
+						"(walWritten=%s walFlushed=%s walEnd=%s)",
+						seq, step, flush, outstanding[0], walWritten, walFlushed, walEnd)
 				}
 				if flush < lastReported {
 					t.Fatalf("sequence %d step %d: reported flush went backwards: %s after %s", seq, step, flush, lastReported)
@@ -157,8 +140,8 @@ func TestReportedPositions_Model(t *testing.T) {
 				if write < flush {
 					t.Fatalf("sequence %d step %d: write %s below flush %s", seq, step, write, flush)
 				}
-				if len(outstanding) == 0 && flush < heartbeat {
-					t.Fatalf("sequence %d step %d: nothing outstanding but flush %s below heartbeat %s", seq, step, flush, heartbeat)
+				if len(outstanding) == 0 && flush < walEnd {
+					t.Fatalf("sequence %d step %d: nothing outstanding but flush %s below WAL end %s", seq, step, flush, walEnd)
 				}
 				lastReported = flush
 			}

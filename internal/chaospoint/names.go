@@ -109,18 +109,10 @@ const (
 	// down-variant parks at DriftMarkerAppended instead).
 	DriftVersionSkipped = "logrepl.drift_version_skipped"
 
-	// HeartbeatObserved is reached in source/logrepl/handler.go's
-	// handleHeartbeat after a heartbeat change's LSN was recorded as the
-	// heartbeat-observed LSN (a flush candidate) and before Handle returns.
-	// It counts heartbeats delivered through the replication stream (DBZ-3
-	// B2); parking here freezes the subscription goroutine with a heartbeat
-	// observed and any earlier records possibly unacked.
-	HeartbeatObserved = "logrepl.heartbeat_observed"
-
 	// RecordSeen is reached in test/chaos/child.go's read loop for every
 	// record, after it was read from the connector and before it is appended
 	// to the ledger: delivered, not durable, not acked. Parking its Nth reach
 	// holds one specific record in flight while the connector keeps running
-	// (the DBZ-3 B2 kill scenario keeps heartbeats flowing past it).
+	// (the DBZ-3 B2 kill scenario writes unrelated WAL past it).
 	RecordSeen = "child.record_seen"
 )

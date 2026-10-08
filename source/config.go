@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -91,35 +90,6 @@ type Config struct {
 	//     changes still halt.
 	// "dlq" is reserved for a future version and rejected at validation.
 	LogreplSchemaDriftPolicy logrepl.SchemaDriftPolicy `json:"logrepl.schemaDrift.policy" default:"halt"`
-
-	// LogreplHeartbeatEnabled turns on the heartbeat (DBZ-3 B2): once CDC is
-	// streaming, the connector upserts a row for its replication slot into
-	// the heartbeat table every logrepl.heartbeat.interval. The table is added
-	// to the publication, so each write comes back through the replication
-	// stream and proves the stream is delivering. Heartbeat changes are never
-	// emitted as records. Requires CREATE on the heartbeat schema (or a
-	// pre-created table), INSERT/UPDATE/SELECT on the table, and ownership of
-	// the table and the publication unless the publication already contains
-	// the table.
-	LogreplHeartbeatEnabled bool `json:"logrepl.heartbeat.enabled" default:"false"`
-	// LogreplHeartbeatInterval is the time between heartbeat writes.
-	LogreplHeartbeatInterval time.Duration `json:"logrepl.heartbeat.interval" default:"30s"`
-	// LogreplHeartbeatSchema is the schema of the heartbeat table.
-	LogreplHeartbeatSchema string `json:"logrepl.heartbeat.schema" default:"public"`
-	// LogreplHeartbeatTable is the name of the heartbeat table. Must not be
-	// one of the source tables, and must not be another tool's heartbeat
-	// table (for example Debezium's).
-	LogreplHeartbeatTable string `json:"logrepl.heartbeat.table" default:"_conduit_heartbeat"`
-}
-
-// Heartbeat returns the logrepl heartbeat configuration.
-func (c *Config) Heartbeat() logrepl.HeartbeatConfig {
-	return logrepl.HeartbeatConfig{
-		Enabled:  c.LogreplHeartbeatEnabled,
-		Interval: c.LogreplHeartbeatInterval,
-		Schema:   c.LogreplHeartbeatSchema,
-		Table:    c.LogreplHeartbeatTable,
-	}
 }
 
 // Validate validates the provided config values.
@@ -138,10 +108,6 @@ func (c *Config) Validate(ctx context.Context) error {
 	// (postgres.schema_drift.policy.unsupported); the SDK default fills in
 	// "halt" when the param is absent.
 	if _, err := logrepl.ParseSchemaDriftPolicy(string(c.LogreplSchemaDriftPolicy)); err != nil {
-		errs = append(errs, err)
-	}
-
-	if err := c.Heartbeat().Validate(c.Tables); err != nil {
 		errs = append(errs, err)
 	}
 

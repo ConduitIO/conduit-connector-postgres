@@ -61,8 +61,6 @@ type Config struct {
 	WithAvroSchema    bool
 	BatchSize         int
 	SchemaDriftPolicy SchemaDriftPolicy
-	// Heartbeat configures the DBZ-3 B2 heartbeat (disabled by default).
-	Heartbeat HeartbeatConfig
 }
 
 // Validate performs validation tasks on the config.
@@ -76,10 +74,6 @@ func (c Config) Validate() error {
 	}
 
 	if _, err := ParseSchemaDriftPolicy(string(c.SchemaDriftPolicy)); err != nil {
-		errs = append(errs, err)
-	}
-
-	if err := c.Heartbeat.Validate(c.Tables); err != nil {
 		errs = append(errs, err)
 	}
 
@@ -225,7 +219,6 @@ func (c *CombinedIterator) initCDCIterator(ctx context.Context, pos position.Pos
 		// and every subsequent CDC restart.
 		StartPosition:     pos,
 		SchemaDriftPolicy: c.conf.SchemaDriftPolicy,
-		Heartbeat:         c.conf.Heartbeat,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create CDC iterator: %w", err)

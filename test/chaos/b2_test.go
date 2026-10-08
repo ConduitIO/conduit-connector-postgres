@@ -14,7 +14,7 @@
 
 //go:build conduitchaos
 
-// DBZ-3 B2 (heartbeats) on the B0 kill harness. See
+// DBZ-3 B2 (the flush gate) on the B0 kill harness. See
 // docs/design-documents/20261007-dbz3-b2-heartbeats.md.
 
 package chaos
@@ -28,68 +28,61 @@ import (
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/internal/chaospoint"
+	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
 )
 
-// TestB2_KillBetweenHeartbeatAndAck: SIGKILL while a CDC record has been
-// delivered but not acked and heartbeats written after it have come back
-// through the stream. The flush position the connector reports must never
-// reach the record (the walFlushed == walWritten gate), so after the kill the
-// slot still holds it, and the restart delivers it: no gap.
+// TestB2_KillWithWALEndPastUnackedRecord: SIGKILL while a CDC record has
+// been delivered but not acked and the walsender has sent unrelated WAL past
+// it, so the keepalive WAL end is beyond the record. The flush position the
+// connector reports must never reach the record (the walFlushed ==
+// walWritten gate), so after the kill the slot still holds it, and the
+// restart delivers it: no gap.
 //
 // The window is built deterministically. The child's read loop parks at
 // RecordSeen for the first CDC record (snapshot rows are 1-4), which holds
-// that record in flight while the rest of the connector keeps running:
-// heartbeats are written, observed, and status updates go out. The parent
-// waits until the walsender has sent WAL past several heartbeats written
-// after the record, then for two status replies from the child after that,
-// and only then checks the slot and kills.
+// that record in flight while the rest of the connector keeps running and
+// sending status updates. The parent writes unrelated WAL until the
+// walsender has sent past it, waits for two status replies from the child
+// after that, and only then checks the slot and kills.
 //
-// Perturbation proof: removing the gate for heartbeats in
-// internal.reportedPositions makes the slot confirm a heartbeat LSN past the
-// record's commit, and this test fails on the confirmed_flush_lsn check
-// before the kill.
-func TestB2_KillBetweenHeartbeatAndAck(t *testing.T) {
+// Perturbation proof: removing the gate in internal.reportedPositions makes
+// the slot confirm the WAL end past the record's commit, and this test fails
+// on the confirmed_flush_lsn check before the kill; with that check skipped,
+// the restart never delivers the record.
+func TestB2_KillWithWALEndPastUnackedRecord(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 
 	replPool, regPool, table, slot, pub, ledgerPath := b1Setup(t)
-	hbTable, err := randChaosName()
+	unrelated, err := randChaosName()
 	is.NoErr(err)
-	t.Cleanup(func() {
-		_, _ = replPool.Exec(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %q", hbTable))
-	})
+	test.SetupEmptyTestTableWithName(ctx, t, regPool, unrelated) // not in the publication
 
 	const firstCDCRecord = 5 // 4 seeded snapshot rows, then the in-flight insert
 	cp := b2SpawnChild(t, b2ChildSpec{
-		run: 1, total: firstCDCRecord, hbTable: hbTable,
+		run: 1, total: firstCDCRecord,
 		park:       fmt.Sprintf("%s:%d", chaospoint.RecordSeen, firstCDCRecord),
 		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
 	})
 	cp.waitForMarker(t, "OPENED", 30*time.Second)
 	cp.waitForCount(t, "ACKED ", 4, 60*time.Second)
 
-	// CDC is streaming once heartbeats land; with nothing in flight the gate
-	// is open.
-	b2WaitBeats(t, cp, replPool, hbTable, slot, 2, 30*time.Second)
-
 	var id int64
-	err = regPool.QueryRow(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('hb-inflight') RETURNING id`, table)).Scan(&id)
+	err = regPool.QueryRow(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('in-flight') RETURNING id`, table)).Scan(&id)
 	is.NoErr(err)
 	committedBy := b2CurrentWAL(t, regPool) // at or past the insert's commit record
 
 	cp.waitForMarker(t, "PARKED", 60*time.Second) // the record is delivered, not durable, not acked
 
-	// Heartbeats after the record, sent by the walsender, and two status
+	// Unrelated WAL past the record, sent by the walsender, and two status
 	// replies from the child after that: the connector has had the chance to
-	// report a heartbeat LSN past the record, twice.
-	beats := b2Beat(t, replPool, hbTable, slot)
-	b2WaitBeats(t, cp, replPool, hbTable, slot, beats+3, 30*time.Second)
-	afterBeats := b2CurrentWAL(t, regPool)
-	pollUntil(t, 30*time.Second, func() string { return "walsender to send past the heartbeats" }, func() bool {
-		return b2SentLSN(t, replPool, slot) >= afterBeats
+	// confirm a WAL end past the record, twice.
+	pollUntil(t, 30*time.Second, func() string { return "walsender to send past the in-flight record" }, func() bool {
+		b2WriteUnrelated(t, regPool, unrelated)
+		return b2SentLSN(t, replPool, slot) > committedBy
 	})
 	b2WaitReplies(t, replPool, slot, 2, 45*time.Second)
 
@@ -104,7 +97,7 @@ func TestB2_KillBetweenHeartbeatAndAck(t *testing.T) {
 	// Run 2: resumes from the last snapshot checkpoint and delivers the
 	// in-flight record.
 	cp2 := b2SpawnChild(t, b2ChildSpec{
-		run: 2, total: 1, hbTable: hbTable,
+		run: 2, total: 1,
 		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
 	})
 	cp2.waitForMarker(t, "RESUME ", 30*time.Second)
@@ -124,7 +117,6 @@ func TestB2_KillBetweenHeartbeatAndAck(t *testing.T) {
 type b2ChildSpec struct {
 	run        int
 	total      int
-	hbTable    string
 	park       string
 	ledgerPath string
 	table      string
@@ -144,7 +136,6 @@ func b2SpawnChild(t *testing.T, s b2ChildSpec) *childProcess {
 		envTotal + "=" + strconv.Itoa(s.total),
 		envBatchSize + "=3",
 		envRun + "=" + strconv.Itoa(s.run),
-		envHeartbeatTable + "=" + s.hbTable,
 	}
 	if s.park != "" {
 		env = append(env, "PGCHAOS_PARK="+s.park)
@@ -152,24 +143,11 @@ func b2SpawnChild(t *testing.T, s b2ChildSpec) *childProcess {
 	return spawnChildWithEnv(t, env)
 }
 
-// b2Beat returns the slot's heartbeat counter, 0 if no row exists yet.
-func b2Beat(t *testing.T, pool *pgxpool.Pool, hbTable, slot string) int64 {
+func b2WriteUnrelated(t *testing.T, pool *pgxpool.Pool, table string) {
 	t.Helper()
-	var beat int64
-	err := pool.QueryRow(context.Background(),
-		fmt.Sprintf(`SELECT coalesce((SELECT beat FROM %q WHERE slot_name = $1), 0)`, hbTable), slot).Scan(&beat)
-	if err != nil {
-		// The table appears only once the child has opened with heartbeats on.
-		return 0
+	if _, err := pool.Exec(context.Background(), fmt.Sprintf(`INSERT INTO %q (column1) SELECT 'x' FROM generate_series(1, 200)`, table)); err != nil {
+		t.Fatalf("unrelated insert: %v", err)
 	}
-	return beat
-}
-
-func b2WaitBeats(t *testing.T, cp *childProcess, pool *pgxpool.Pool, hbTable, slot string, n int64, timeout time.Duration) {
-	t.Helper()
-	pollUntil(t, timeout, func() string { return fmt.Sprintf("heartbeat counter %d for %s\n%s", n, slot, cp.diagnostics()) }, func() bool {
-		return b2Beat(t, pool, hbTable, slot) >= n
-	})
 }
 
 func b2CurrentWAL(t *testing.T, pool *pgxpool.Pool) pglogrepl.LSN {

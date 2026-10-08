@@ -70,40 +70,6 @@ func TestSource_Open(t *testing.T) {
 	}()
 }
 
-// TestSource_WildcardSkipsHeartbeatTable: with heartbeats enabled, `tables:
-// "*"` never picks up the heartbeat table (DBZ-3 B2), which would otherwise
-// be snapshotted and emitted as data. With heartbeats off it is an ordinary
-// table, as before.
-func TestSource_WildcardSkipsHeartbeatTable(t *testing.T) {
-	ctx := test.Context(t)
-	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
-	hbTable := strings.ReplaceAll(test.RandomIdentifier(t), "testsource_wildcardskipsheartbeattable", "hb")
-	test.SetupEmptyTestTableWithName(ctx, t, pool, hbTable)
-
-	for _, enabled := range []bool{true, false} {
-		t.Run(fmt.Sprintf("heartbeat enabled=%v", enabled), func(t *testing.T) {
-			is := is.New(t)
-			s := &Source{
-				pool: pool,
-				config: source.Config{
-					LogreplHeartbeatEnabled: enabled,
-					LogreplHeartbeatSchema:  logrepl.DefaultHeartbeatSchema,
-					LogreplHeartbeatTable:   hbTable,
-				},
-			}
-			tables, err := s.getAllTables(ctx)
-			is.NoErr(err)
-			found := false
-			for _, tbl := range tables {
-				if tbl == hbTable {
-					found = true
-				}
-			}
-			is.Equal(found, !enabled)
-		})
-	}
-}
-
 func TestSource_ParseConfig(t *testing.T) {
 	testCases := []struct {
 		name    string
