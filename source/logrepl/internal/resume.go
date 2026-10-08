@@ -16,54 +16,77 @@ package internal
 
 import "github.com/jackc/pglogrepl"
 
-// ResumePoint is the last change a restarted subscription may treat as
-// already delivered, taken from the checkpointed position (#331).
+// ChangeKey identifies one change in replication stream order (#331).
 //
-// Postgres re-sends every transaction whose commit LSN is at or past the
-// point it starts decoding from (the greater of the requested start LSN and
-// the slot's confirmed_flush_lsn). Transactions arrive in commit order, but
-// each change carries its own LSN, so a transaction that began before
-// another and committed after it delivers changes with lower LSNs than ones
-// already delivered. Comparing a change LSN against the checkpointed change
-// LSN therefore drops records. The comparison has to start from the
-// transaction's commit LSN.
-type ResumePoint struct {
-	// CommitLSN is the commit LSN of the checkpointed record's transaction.
-	// Zero means unknown: a position written before format version 2, or a
-	// subscription that does not resume from a CDC record.
+// Change LSNs cannot do this. They are not monotonic across transactions: a
+// transaction that began before another and committed after it delivers
+// lower change LSNs. They are not unique within one either: a multi-row
+// insert (COPY, heap_multi_insert) is one WAL record, and every row decoded
+// from it carries the same LSN. The key is therefore the transaction's commit
+// LSN plus the change's ordinal within the transaction, counted from its
+// BeginMessage. Postgres decodes transactions at commit, in commit order, and
+// re-sends a transaction identically, so the key is unique and strictly
+// increasing in stream order, and the same change gets the same key on every
+// delivery.
+type ChangeKey struct {
+	// CommitLSN is the transaction's commit LSN (BeginMessage.FinalLSN). Zero
+	// means unknown.
 	CommitLSN pglogrepl.LSN
-	// LSN is the checkpointed record's own change LSN.
+	// Seq is the 1-based ordinal of the change (Insert, Update, Delete,
+	// Truncate) within its transaction. Zero means unknown.
+	Seq uint64
+}
+
+// Known reports whether both parts of the key are set.
+func (k ChangeKey) Known() bool {
+	return k.CommitLSN != 0 && k.Seq != 0
+}
+
+// ResumePoint is the last change a restarted subscription may treat as
+// already delivered, taken from the checkpointed position (#331). Postgres
+// re-sends every transaction whose commit LSN is at or past the point it
+// starts decoding from: the greater of the requested start LSN and the slot's
+// confirmed_flush_lsn.
+type ResumePoint struct {
+	// Key is the checkpointed record's change key. When it is not Known (a
+	// position written before format version 2), the legacy rule applies.
+	Key ChangeKey
+	// LSN is the checkpointed record's own change LSN (the legacy rule's
+	// boundary) or, with no checkpoint at all, the subscription's start LSN.
 	LSN pglogrepl.LSN
 }
 
-// Delivered reports whether a change at changeLSN in the transaction that
-// commits at commitLSN was already delivered (and acked) before the restart,
-// so it must be skipped.
+// Delivered reports whether the change identified by k was delivered (and
+// acked) before the restart, so it must be skipped.
 //
-// With CommitLSN known the answer is exact. (commit LSN, change LSN) pairs
-// increase in stream order: commit LSNs increase from transaction to
-// transaction, and change LSNs increase within a transaction. So a change was
-// delivered exactly when its pair is at or below the checkpoint's.
+//   - A change whose commit LSN is unknown is always delivered again (never
+//     skipped): nothing proves it was acked.
+//   - Exact (the checkpoint's Key is Known): skip if k is at or below the
+//     checkpoint's key. Keys increase strictly in stream order, so this skips
+//     exactly what was delivered: no loss, no duplicate.
+//   - Legacy (a v0.14.2 position, only a change LSN): skip only transactions
+//     that committed before LSN. The checkpointed change belongs to a
+//     transaction that commits after LSN, and every transaction that
+//     committed before LSN was delivered ahead of it, so FIFO acks mean it
+//     was fully acked. Transactions that commit at or after LSN are delivered
+//     in full. Nothing is lost, but this can repeat records that were already
+//     acked: up to everything that committed while the checkpointed record's
+//     transaction was open, plus that transaction's acked prefix. That set is
+//     bounded by how long that transaction was open, not by a small count. It
+//     happens once, on the first restart after upgrading from a v0.14.2
+//     position.
 //
-// Without CommitLSN (the legacy point) only transactions that committed
-// before LSN are skipped. The checkpointed change belongs to a transaction
-// that commits after LSN, and every transaction that committed before LSN
-// was delivered ahead of that one, so FIFO acks mean it was fully acked. A
-// transaction committing at or after LSN is delivered in full. That loses
-// nothing, but it can repeat what was already acked: transactions that
-// committed while the checkpointed record's transaction was open, and that
-// transaction's own prefix (at-least-once). It happens once, on the first
-// restart after upgrading from a v0.14.2 position; the first record
-// delivered after it writes a version 2 position.
-//
-// Invariant 3: this is the only place a re-sent change is dropped on resume.
-// It never drops a change that has not been acked.
-func (r ResumePoint) Delivered(commitLSN, changeLSN pglogrepl.LSN) bool {
-	if r.CommitLSN == 0 {
-		return commitLSN < r.LSN
+// Invariant 3: this is the only place a re-sent change is dropped on resume,
+// and it never drops a change that was not acked.
+func (r ResumePoint) Delivered(k ChangeKey) bool {
+	if k.CommitLSN == 0 {
+		return false
 	}
-	if commitLSN != r.CommitLSN {
-		return commitLSN < r.CommitLSN
+	if !r.Key.Known() {
+		return k.CommitLSN < r.LSN
 	}
-	return changeLSN <= r.LSN
+	if k.CommitLSN != r.Key.CommitLSN {
+		return k.CommitLSN < r.Key.CommitLSN
+	}
+	return k.Seq != 0 && k.Seq <= r.Key.Seq
 }

@@ -24,6 +24,7 @@ import (
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/internal/chaospoint"
+	"github.com/jackc/pgx/v5"
 	"github.com/matryer/is"
 )
 
@@ -82,4 +83,53 @@ func TestInterleavedTx_KillBeforeLaterCommittedRecordAck(t *testing.T) {
 	is.Equal(len(entries), 6)
 	is.Equal(entries[5].Run, 2)
 	is.Equal(entries[5].Key, string(opencdc.StructuredData{"id": t1ID}.Bytes())) // T1's row, not lost
+}
+
+// TestCopy_KillAfterFirstRowAck is the same-LSN case on the kill harness:
+// COPY writes five rows with one WAL record, so all five share a change LSN.
+// The child acks row 1, parks on row 2 (delivered, not durable) and is
+// SIGKILLed. The restart must deliver rows 2-5, once each. Keyed on the
+// change LSN, rows 2-5 look "already delivered" and are lost.
+func TestCopy_KillAfterFirstRowAck(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+
+	_, regPool, table, slot, pub, ledgerPath := b1Setup(t)
+
+	const row2 = 6 // 4 seeded snapshot rows, COPY row 1, then COPY row 2
+	cp := b2SpawnChild(t, b2ChildSpec{
+		run: 1, total: row2,
+		park:       fmt.Sprintf("%s:%d", chaospoint.RecordSeen, row2),
+		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
+	})
+	cp.waitForMarker(t, "OPENED", 30*time.Second)
+	cp.waitForCount(t, "ACKED ", 4, 60*time.Second)
+
+	rows := [][]any{{"c1"}, {"c2"}, {"c3"}, {"c4"}, {"c5"}}
+	_, err := regPool.CopyFrom(ctx, pgx.Identifier{table}, []string{"column1"}, pgx.CopyFromRows(rows))
+	is.NoErr(err)
+
+	cp.waitForCount(t, "ACKED ", 5, 60*time.Second) // row 1 durable and acked
+	cp.waitForMarker(t, "PARKED", 60*time.Second)   // row 2 in flight
+	cp.sigkill(t)
+
+	entries := b1ReadLedger(t, ledgerPath)
+	is.Equal(len(entries), 5)
+	row1 := entries[4]
+
+	cp2 := b2SpawnChild(t, b2ChildSpec{
+		run: 2, total: 4,
+		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
+	})
+	cp2.waitForMarker(t, "RESUME ", 30*time.Second)
+	cp2.waitForMarker(t, "DONE", 30*time.Second)
+	cp2.waitExit(t, 30*time.Second)
+
+	entries = b1ReadLedger(t, ledgerPath)
+	b1AssertNoGaps(t, entries)
+	b1AssertNoUnexpectedDups(t, entries, &row1)
+	is.Equal(len(entries), 9) // rows 2-5 delivered once each
+	for _, e := range entries[5:] {
+		is.Equal(e.Run, 2)
+	}
 }

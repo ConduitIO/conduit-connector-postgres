@@ -194,12 +194,13 @@ func Test_ParseGoldenPositions(t *testing.T) {
 		file       string
 		wantLSN    string
 		wantCommit string
+		wantSeq    uint64
 		wantWM     string
 		hasHistory bool
 	}{
 		{file: "v0.14.2-cdc.json", wantLSN: "0/3EA20140"},
 		{file: "dbz3-v1-cdc.json", wantLSN: "0/3EA20140", wantWM: "0/3E000000", hasHistory: true},
-		{file: "v0.14.x-hotfix-cdc.json", wantLSN: "0/3EA20050", wantCommit: "0/3EA203D8"},
+		{file: "v0.14.x-hotfix-cdc.json", wantLSN: "0/3EA20050", wantCommit: "0/3EA203D8", wantSeq: 3},
 	}
 	for _, tt := range tests {
 		t.Run(tt.file, func(t *testing.T) {
@@ -211,6 +212,7 @@ func Test_ParseGoldenPositions(t *testing.T) {
 			is.Equal(p.Type, TypeCDC)
 			is.Equal(p.LastLSN, tt.wantLSN)
 			is.Equal(p.TxCommitLSN, tt.wantCommit)
+			is.Equal(p.TxSeq, tt.wantSeq)
 			is.Equal(p.SnapshotLowWatermarkLSN, tt.wantWM)
 			_, ok := p.LastSchemaVersion("public.users")
 			is.Equal(ok, tt.hasHistory)

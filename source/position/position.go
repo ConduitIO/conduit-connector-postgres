@@ -93,12 +93,20 @@ type Position struct {
 	// delivers transactions in commit order, but each change carries its own
 	// LSN, so a transaction that began before another and committed after it
 	// delivers LOWER change LSNs than ones already delivered (#331). Change
-	// LSNs alone cannot say what a restart has already delivered;
-	// (TxCommitLSN, LastLSN) ordered lexicographically can, because commit
-	// LSNs increase in stream order and change LSNs increase within one
-	// transaction. Empty on snapshot positions and on positions written
-	// before format version 2.
+	// LSNs alone cannot say what a restart has already delivered.
+	// (TxCommitLSN, TxSeq) can: commit LSNs increase in stream order, and
+	// TxSeq numbers the changes within one transaction (see
+	// logrepl/internal.ChangeKey). Empty on snapshot positions and on
+	// positions written before format version 2.
 	TxCommitLSN string `json:"tx_commit_lsn,omitempty"`
+
+	// TxSeq is the 1-based ordinal of the record's change within its
+	// transaction, counted from the BeginMessage. Together with TxCommitLSN it
+	// is the change's key in stream order. LastLSN cannot serve, because the
+	// rows of one multi-row insert (COPY) share one LSN. Zero on snapshot
+	// positions and on positions written before format version 2; a position
+	// with TxCommitLSN but no TxSeq is read as legacy.
+	TxSeq uint64 `json:"tx_seq,omitempty"`
 }
 
 type SnapshotPositions map[string]SnapshotPosition

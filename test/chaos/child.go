@@ -267,6 +267,9 @@ func appendAndAck(ctx context.Context, src sdk.Source, ledger *Ledger, run int, 
 	}
 }
 
+// ledgerOpCDC is LedgerEntry.Op for a CDC delivery.
+const ledgerOpCDC = "cdc"
+
 // buildLedgerEntry decodes rec's position to classify it as a snapshot or
 // CDC delivery and derive a DeliveryKey. It deliberately reads the DECODED
 // position - never rec.Key or rec.Metadata's collection name - for the
@@ -310,8 +313,14 @@ func buildLedgerEntry(run int, table string, rec opencdc.Record) (LedgerEntry, e
 		entry.Op = "snapshot"
 		entry.DeliveryKey = fmt.Sprintf("snapshot:%d", sp.LastRead)
 	case position.TypeCDC:
-		entry.Op = "cdc"
+		entry.Op = ledgerOpCDC
 		entry.DeliveryKey = fmt.Sprintf("cdc:%s", pos.LastLSN)
+		if pos.TxCommitLSN != "" && pos.TxSeq != 0 {
+			// The change key, not the LSN: rows of one multi-row insert
+			// (COPY) share an LSN, so an LSN identity would report distinct
+			// rows as duplicates (#331).
+			entry.DeliveryKey = fmt.Sprintf("cdc:%s/%d", pos.TxCommitLSN, pos.TxSeq)
+		}
 	default:
 		return LedgerEntry{}, fmt.Errorf("unexpected position type %q (raw position %q)", pos.Type, rec.Position)
 	}

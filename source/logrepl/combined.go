@@ -213,6 +213,7 @@ func (c *CombinedIterator) initCDCIterator(ctx context.Context, pos position.Pos
 	cdcIterator, err := NewCDCIterator(ctx, c.pool, CDCConfig{
 		LSN:             lsn,
 		TxCommitLSN:     commitLSN,
+		TxSeq:           pos.TxSeq,
 		SlotName:        c.conf.SlotName,
 		PublicationName: c.conf.PublicationName,
 		Tables:          c.conf.Tables,

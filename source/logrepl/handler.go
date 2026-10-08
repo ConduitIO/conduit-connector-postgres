@@ -137,6 +137,13 @@ type CDCHandler struct {
 	driftHaltArmed      atomic.Bool
 	driftHaltErr        error
 	driftHaltCh         chan struct{}
+
+	// changeKey returns the key of the change being handled (see
+	// internal.Subscription.CurrentChange). Set once before the subscription
+	// starts and called only from Handle, on the subscription goroutine. Nil
+	// in tests that drive the handler without a subscription; positions then
+	// carry no key and resume with the legacy rule.
+	changeKey func() internal.ChangeKey
 }
 
 func NewCDCHandler(
@@ -504,23 +511,40 @@ func (h *CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 		Type:                    position.TypeCDC,
 		LastLSN:                 lsn.String(),
 		TxCommitLSN:             h.txCommitLSN(),
+		TxSeq:                   h.txSeq(),
 		SnapshotLowWatermarkLSN: h.basePosition.SnapshotLowWatermarkLSN,
 		SchemaHistory:           h.basePosition.SchemaHistory,
 	}.ToSDKPosition()
 }
 
-// txCommitLSN returns the commit LSN of the transaction being handled (from
-// its BeginMessage), or "" before the first one. Every CDC position carries
-// it so a restart can tell which re-sent changes were already delivered
-// (#331; see internal.ResumePoint).
+// txCommitLSN and txSeq return the key of the change being handled (its
+// transaction's commit LSN and its ordinal within that transaction, from the
+// subscription), or zero values when unknown. Every CDC position carries the
+// key so a restart can tell which re-sent changes were already delivered
+// (#331; see internal.ChangeKey and internal.ResumePoint).
 //
-// Invariant 2: (TxCommitLSN, LastLSN) increases record by record in stream
-// order, even when LastLSN alone does not.
+// Invariant 2: (TxCommitLSN, TxSeq) increases strictly record by record in
+// stream order, even when LastLSN does not (interleaved transactions) or
+// repeats (rows of one multi-row insert).
 func (h *CDCHandler) txCommitLSN() string {
-	if h.lastTXLSN == 0 {
-		return ""
+	if k := h.currentChangeKey(); k.Known() {
+		return k.CommitLSN.String()
 	}
-	return h.lastTXLSN.String()
+	return ""
+}
+
+func (h *CDCHandler) txSeq() uint64 {
+	if k := h.currentChangeKey(); k.Known() {
+		return k.Seq
+	}
+	return 0
+}
+
+func (h *CDCHandler) currentChangeKey() internal.ChangeKey {
+	if h.changeKey == nil {
+		return internal.ChangeKey{}
+	}
+	return h.changeKey()
 }
 
 // setBasePositionLowWatermark re-seeds the SnapshotLowWatermarkLSN carried
@@ -910,6 +934,7 @@ func (h *CDCHandler) emitDriftMarker(
 			Type:                    position.TypeCDC,
 			LastLSN:                 lsn.String(),
 			TxCommitLSN:             h.txCommitLSN(),
+			TxSeq:                   h.txSeq(),
 			SnapshotLowWatermarkLSN: h.basePosition.SnapshotLowWatermarkLSN,
 			SchemaHistory:           history, // the staging-time snapshot, not live history (Blocker 1)
 		}.ToSDKPosition(),
