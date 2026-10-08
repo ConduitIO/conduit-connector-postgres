@@ -18,12 +18,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
 )
@@ -184,7 +186,7 @@ func TestSubscription_Ack(t *testing.T) {
 	is := is.New(t)
 
 	s := &Subscription{}
-	s.Ack(12345)
+	s.Ack(12345, ChangeKey{CommitLSN: 12400, Seq: 1})
 
 	is.Equal(s.walFlushed, pglogrepl.LSN(12345))
 }
@@ -306,5 +308,26 @@ func isNoMoreMessages(t *testing.T, messages <-chan pglogrepl.Message, timeout t
 			}
 			return
 		}
+	}
+}
+
+// TestSubscription_RefusesStreamedTransactions: change keys assume whole
+// transactions at commit, in commit order. Streamed in-progress
+// transactions break that, so the subscription fails loudly (#331).
+func TestSubscription_RefusesStreamedTransactions(t *testing.T) {
+	for _, typ := range []pglogrepl.MessageType{
+		pglogrepl.MessageTypeStreamStart, pglogrepl.MessageTypeStreamStop,
+		pglogrepl.MessageTypeStreamCommit, pglogrepl.MessageTypeStreamAbort,
+	} {
+		is := is.New(t)
+		data := append([]byte{pglogrepl.XLogDataByteID}, make([]byte, 24)...) // WALStart, ServerWALEnd, ServerTime
+		data = append(data, byte(typ), 0, 0, 0, 1)
+		s := &Subscription{Handler: func(context.Context, pglogrepl.Message, pglogrepl.LSN) (pglogrepl.LSN, error) {
+			t.Fatal("handler must not be called")
+			return 0, nil
+		}}
+		err := s.handleXLogData(context.Background(), &pgproto3.CopyData{Data: data})
+		is.True(err != nil)
+		is.True(strings.Contains(err.Error(), "streaming"))
 	}
 }

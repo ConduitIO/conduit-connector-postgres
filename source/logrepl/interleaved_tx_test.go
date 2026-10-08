@@ -21,12 +21,15 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
+	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
 )
@@ -266,4 +269,173 @@ func TestInterleavedTx_UpgradeFromV0142Position(t *testing.T) {
 	t.Logf("deliveries after resuming from the v0.14.2 position: %v", seen)
 	is.Equal(seen["t1-long"], 1) // not lost
 	is.True(seen["t2-short"] <= 1)
+}
+
+// drainColumn1 reads everything delivered within d and returns column1 of
+// each record, in order.
+func drainColumn1(ctx context.Context, t *testing.T, it interface {
+	NextN(context.Context, int) ([]opencdc.Record, error)
+}, d time.Duration,
+) []string {
+	t.Helper()
+	cctx, cancel := context.WithTimeout(ctx, d)
+	defer cancel()
+	out := []string{}
+	for {
+		recs, err := it.NextN(cctx, 10)
+		if err != nil {
+			return out
+		}
+		for _, r := range recs {
+			out = append(out, column1(t, r))
+		}
+	}
+}
+
+func copyRows(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table string, values ...string) {
+	t.Helper()
+	rows := make([][]any, 0, len(values))
+	for _, v := range values {
+		rows = append(rows, []any{v})
+	}
+	if _, err := pool.CopyFrom(ctx, pgx.Identifier{table}, []string{"column1"}, pgx.CopyFromRows(rows)); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+}
+
+// TestCopy_RestartAfterFirstRowDeliversTheRest: COPY writes its rows with
+// one heap_multi_insert WAL record, so every decoded row has the same change
+// LSN. Ack only the first row and restart: the other four must be delivered,
+// once. Keying resume on the change LSN loses them (all four are "<=" the
+// checkpoint's LSN).
+func TestCopy_RestartAfterFirstRowDeliversTheRest(t *testing.T) {
+	ctx := test.Context(t)
+	is := is.New(t)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupEmptyTestTable(ctx, t, pool)
+	cleanupSlot(t, pool, table)
+
+	run1 := newInterleaveCombined(ctx, t, pool, table, nil)
+	copyRows(ctx, t, pool, table, "c1", "c2", "c3", "c4", "c5")
+	recs := readN(ctx, t, run1, 5, 10*time.Second)
+	for _, r := range recs {
+		is.Equal(lsnOf(t, r), lsnOf(t, recs[0])) // the premise: one LSN for all rows
+	}
+	is.NoErr(run1.Ack(ctx, recs[0].Position))
+	_ = run1.Teardown(ctx)
+
+	run2 := newInterleaveCombined(ctx, t, pool, table, recs[0].Position)
+	defer func() { _ = run2.Teardown(ctx) }()
+	is.Equal(drainColumn1(ctx, t, run2, 4*time.Second), []string{"c2", "c3", "c4", "c5"})
+}
+
+// TestCopy_FlushGateHoldsWhileRowsUnacked: with the first COPY row acked and
+// the other four in flight, walFlushed == walWritten (same LSN) but records
+// are unacked. The slot's confirmed_flush_lsn must stay below the
+// transaction's commit through several status updates, or Postgres would not
+// re-send it after a crash (invariant 1).
+func TestCopy_FlushGateHoldsWhileRowsUnacked(t *testing.T) {
+	ctx := test.Context(t)
+	is := is.New(t)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupEmptyTestTable(ctx, t, pool)
+	unrelated := test.SetupEmptyTestTable(ctx, t, pool)
+
+	it, err := NewCDCIterator(ctx, pool, CDCConfig{
+		Tables: []string{table}, TableKeys: map[string]string{table: "id"},
+		PublicationName: table, SlotName: table, BatchSize: 1,
+	})
+	is.NoErr(err)
+	it.sub.StatusTimeout = 500 * time.Millisecond
+	is.NoErr(it.StartSubscriber(ctx))
+	t.Cleanup(func() {
+		_ = it.Teardown(ctx)
+		_ = Cleanup(ctx, CleanupConfig{URL: pool.Config().ConnString(), SlotName: table, PublicationName: table})
+	})
+
+	copyRows(ctx, t, pool, table, "c1", "c2", "c3", "c4", "c5")
+	recs := readN(ctx, t, it, 5, 10*time.Second)
+	pos, err := position.ParseSDKPosition(recs[0].Position)
+	is.NoErr(err)
+	commit, err := pos.TxCommit()
+	is.NoErr(err)
+	is.True(commit != 0)
+	is.NoErr(it.Ack(ctx, recs[0].Position)) // c2..c5 in flight
+
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		// unrelated WAL moves the keepalive WAL end past the commit
+		_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) SELECT 'x' FROM generate_series(1, 100)`, unrelated))
+		is.NoErr(err)
+		var cf string
+		is.NoErr(pool.QueryRow(ctx, `SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name=$1`, table).Scan(&cf))
+		flush, err := pglogrepl.ParseLSN(cf)
+		is.NoErr(err)
+		if flush >= commit {
+			t.Fatalf("confirmed_flush_lsn %s reached the commit %s of the COPY with 4 rows unacked: a crash now loses them", flush, commit)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// TestInterleavedTx_ThreeOverlappingEveryPrefix: three overlapping
+// transactions, a rolled-back savepoint, TOASTed values. Checkpoint after
+// every prefix k of the six delivered records, restart, and expect exactly
+// the remaining suffix: no loss, no duplicate.
+func TestInterleavedTx_ThreeOverlappingEveryPrefix(t *testing.T) {
+	big := strings.Repeat("x", 200000) // TOASTed
+	for k := 1; k <= 6; k++ {
+		t.Run(fmt.Sprint(k), func(t *testing.T) {
+			ctx := test.Context(t)
+			is := is.New(t)
+			pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+			table := test.SetupEmptyTestTable(ctx, t, pool)
+			cleanupSlot(t, pool, table)
+			run1 := newInterleaveCombined(ctx, t, pool, table, nil)
+
+			ins := func(tx pgx.Tx, v string) {
+				payload := "{}"
+				if len(v)%2 == 1 {
+					payload = fmt.Sprintf(`{"b":"%s"}`, big)
+				}
+				_, err := tx.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1, column6) VALUES ($1, $2)`, table), v, payload)
+				is.NoErr(err)
+			}
+			t1, err := pool.Begin(ctx)
+			is.NoErr(err)
+			t2, err := pool.Begin(ctx)
+			is.NoErr(err)
+			t3, err := pool.Begin(ctx)
+			is.NoErr(err)
+			ins(t1, "a1")
+			_, err = t1.Exec(ctx, "SAVEPOINT s")
+			is.NoErr(err)
+			ins(t1, "a-rolledback")
+			_, err = t1.Exec(ctx, "ROLLBACK TO SAVEPOINT s")
+			is.NoErr(err)
+			ins(t2, "b1")
+			ins(t3, "c1")
+			ins(t1, "a2x")
+			is.NoErr(t3.Commit(ctx))
+			ins(t2, "b2x")
+			is.NoErr(t2.Commit(ctx))
+			ins(t1, "a3")
+			is.NoErr(t1.Commit(ctx))
+
+			recs := readN(ctx, t, run1, 6, 15*time.Second)
+			all := make([]string, 0, len(recs))
+			for _, r := range recs {
+				all = append(all, column1(t, r))
+			}
+			is.Equal(all, []string{"c1", "b1", "b2x", "a1", "a2x", "a3"})
+			for i := 0; i < k; i++ {
+				is.NoErr(run1.Ack(ctx, recs[i].Position))
+			}
+			_ = run1.Teardown(ctx)
+
+			run2 := newInterleaveCombined(ctx, t, pool, table, recs[k-1].Position)
+			defer func() { _ = run2.Teardown(ctx) }()
+			is.Equal(drainColumn1(ctx, t, run2, 4*time.Second), all[k:])
+		})
+	}
 }

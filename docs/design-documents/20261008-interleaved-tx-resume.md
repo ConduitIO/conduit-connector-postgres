@@ -1,109 +1,153 @@
-# Resume by transaction commit LSN (#331)
+# Resume by change key (#331)
 
 ## Summary
 
-A CDC restart can drop records from a transaction that began before the
-checkpointed record and committed after it. The fix records the transaction's
-commit LSN in every CDC position (position format version 2) and decides what a
-restart skips by comparing (commit LSN, change LSN) pairs, not change LSNs. A
-position written by v0.14.2, which has no commit LSN, resumes with a rule that
-loses nothing and may repeat a bounded set of records once. The
-`walFlushed > walWritten` status-update error, which the same interleaving
-triggers, is removed. In its place the flush report goes through one gated,
-non-decreasing function.
+A CDC restart can drop records. It also has an ack path that can confirm the
+slot past records not yet acked. Both happen because the connector treats a
+change's LSN as its identity in stream order, and it is not one:
+
+- **Not monotonic.** A transaction that began before another and committed after
+  it delivers lower change LSNs than ones already delivered.
+- **Not unique.** A multi-row insert (COPY, `heap_multi_insert`) is one WAL
+  record. Every row decoded from it carries the same LSN.
+
+The fix gives every change a **change key**: the transaction's commit LSN, plus
+the change's ordinal within the transaction, counted from its `BeginMessage`.
+Every CDC position carries the key (position format version 2). A restart skips
+exactly the changes whose key is at or below the checkpoint's. The flush report
+goes past acked records only when the last emitted key equals the last acked key.
+It never decreases. The `walFlushed > walWritten` error, a normal state under
+interleaving, is gone. A position written by v0.14.2 has no key; it resumes with
+a rule that loses nothing but can repeat records once (see Decision).
 
 ## Problem
 
-pgoutput sends each change with `XLogData.WALStart` set to that change's own LSN.
-Transactions arrive in commit order. So when T1 inserts at `0/…868`, T2 inserts
-at `0/…958` and commits, and then T1 commits, the stream delivers T2's row at
-`…958` and then T1's at `…868`.
+Measured on PG 17.5:
 
-1. **Lost records.** The engine checkpoints T2's position (`last_lsn: …958`)
-   and the process stops before T1's record is acked. On restart, Postgres
-   re-sends T1, because its commit is past the start point. The subscription
-   guard then drops it (`WALStart <= StartLSN`, skip). Reproduced on v0.14.2: T1's
-   row is never delivered again.
-2. **Killed subscription.** After T2's record is acked while T1's is in flight,
-   `walFlushed (…958) > walWritten (…868)`. The next standby status update
-   returned `walWrite (…) should be >= walFlush (…)`, and the subscription died.
+1. **Interleaving loses records on restart.** T1 inserts at `…868`. T2 inserts at
+   `…958` and commits. T1 commits. The stream delivers T2's row, then T1's. The
+   engine checkpoints T2's record and the process stops before T1's is acked.
+   Postgres re-sends T1, because its commit is past the start point. The old
+   guard (`WALStart <= StartLSN`, skip) then drops it.
+2. **Interleaving kills the subscription.** After T2's record is acked while T1's
+   is in flight, `walFlushed > walWritten`. The next standby status update
+   returned `walWrite (…) should be >= walFlush (…)`.
+3. **COPY loses records on restart.** COPY 5 rows: every row has
+   `lsn=0/42E05B8`, and the transaction commits at `0/42E0818`. Ack only row 1
+   and restart from it. The old guard, and the first revision of this fix
+   (which keyed on `(commit LSN, change LSN)`), both drop rows 2–5.
+4. **COPY confirms past unacked rows.** With row 1 acked and rows 2–5 in flight,
+   `walFlushed == walWritten`, because the rows share an LSN. The gate opened and
+   reported the keepalive WAL end, so `confirmed_flush_lsn` moved past the
+   commit. After a crash the server would not re-send the transaction
+   (invariant 1).
+
+v0.14.2 has problems 1–3. Problem 4 is in the gate as written in this fix's
+first revision and in #332. `main`'s pre-B2 inline echo had the same
+LSN-equality test.
 
 ## Constraints
 
 - Invariant 3 (at-least-once): no resume rule may drop an unacked change.
+- Invariant 1: never confirm WAL past a record that has not been acked.
 - Invariant 2: a position format change needs a versioned migration that reads
   every v0.14.2 position, plus an upgrade test.
 - Main carries the unreleased DBZ-3 position format (version 1). The version
-  numbers must not collide when a v0.14.x pipeline later upgrades to it.
+  numbers must not collide.
 
 ## Decision
 
-- **Position format version 2.** Every CDC position now carries
-  `tx_commit_lsn`: the `BeginMessage.FinalLSN` of the record's transaction.
-  `ToSDKPosition` stamps `version: 2`. Version 1 is reserved for main's DBZ-3
-  format, which v0.14.x never writes. Readers rely on whether `tx_commit_lsn`
-  is present, not on the version number.
-- **Resume point** (`internal.ResumePoint`). The subscription tracks the
-  current transaction's commit LSN from its `BeginMessage` and skips a
-  re-sent change only if `Delivered(commit, change)`:
-  - **Exact** (version 2 position): skip if the (commit, change) pair is at or
-    below the checkpoint's. Commit LSNs increase in stream order and change
-    LSNs increase within a transaction, so this skips exactly what was
-    delivered. There are no duplicates and no loss.
-  - **Legacy** (v0.14.2 position, no commit LSN): skip only transactions whose
-    commit LSN is below the checkpointed change LSN. Every such transaction
-    was delivered ahead of the checkpointed record's transaction, so it was
-    fully acked. Nothing is lost. Records that may repeat: transactions that
-    committed while the checkpointed record's transaction was open, and that
-    transaction's own acked prefix. This happens once, on the first restart
-    after the upgrade. The first record delivered after it writes a version 2
-    position.
-- **Flush report** (`reportedPositions`). The report is the last acked
-  record's LSN, extended to the keepalive WAL end only while
-  `walFlushed == walWritten`, and never lower than what was already reported.
-  Reporting an acked record's change LSN is safe even when an unacked record
-  has a lower LSN: that record's transaction commits after it, so Postgres
-  re-sends it. The `walFlushed > walWritten` error is gone, because that is
-  a normal state under interleaving.
+- **Change key** (`internal.ChangeKey`): `(commit LSN, seq)`. The subscription
+  sets the commit LSN from each `BeginMessage.FinalLSN`. It increments `seq` on
+  every Insert, Update, Delete and Truncate, before deciding whether to skip, so
+  a re-sent transaction gets identical keys. Postgres decodes transactions at
+  commit, in commit order, and re-sends them identically, so keys are unique and
+  strictly increasing in stream order.
+- **Position format version 2.** CDC positions carry `tx_commit_lsn` and
+  `tx_seq`. `ToSDKPosition` stamps `version: 2`. Version history: 0 is v0.14.2;
+  1 is `main`'s DBZ-3 format, never written by v0.14.x; 2 is this change.
+  Version 2 has never shipped, so it is defined here with both fields. Readers
+  rely on the fields being present, not on the number. A position that lacks
+  either field is read as legacy.
+- **Resume point** (`internal.ResumePoint.Delivered`):
+  - A change whose commit LSN is unknown is never skipped.
+  - **Exact** (the position has a key): skip if the change's key is at or below
+    the checkpoint's. There is no loss and no duplicate.
+  - **Legacy** (a v0.14.2 position: a change LSN only): skip only transactions
+    whose commit LSN is below the checkpointed change LSN. Every such
+    transaction was delivered ahead of the checkpointed record's transaction,
+    so it was fully acked, and nothing is lost. **What may repeat:** up to
+    everything that committed while the checkpointed record's transaction was
+    open, plus that transaction's acked prefix. That is bounded by how long
+    that transaction was open, not by a small count. A long-running
+    transaction can mean many repeated records. This happens once, on the
+    first restart after the upgrade. The first record delivered after it
+    writes a version 2 position. **Sinks or processors that are not
+    idempotent will see these duplicates.**
+- **Flush gate** (`reportedPositions`, with `Subscription.allAcked`):
+  - The baseline report is the last acked record's change LSN. That is safe
+    even when a record in flight has a lower or equal LSN: that record's
+    transaction commits after it, so the server re-sends it.
+  - The report goes further, to the keepalive WAL end, only when the last
+    emitted record's key equals the last acked one. Keys are unique and acks
+    are FIFO, so that means everything emitted is acked. LSN equality cannot
+    prove that (problem 4).
+  - The report never decreases.
+- **Streamed transactions are refused.** pgoutput's `streaming` option sends
+  in-progress transactions in chunks, which breaks "whole transactions at
+  commit, in commit order". The connector does not enable it. If such
+  messages ever arrive, the subscription fails with an explicit error rather
+  than mis-keying records.
+- **Messages that are not changes are never skipped on resume:** Relation,
+  Type, Origin, Begin and Commit. The old guard skipped any message with a
+  non-zero `WALStart <= StartLSN`, which in principle included those. On
+  PG 17.5 Relation messages arrive with `WALStart` 0 (measured), so it did not
+  skip them there.
 
 ## Alternatives considered
 
+- **Key on (commit LSN, change LSN).** This was the first revision of this
+  fix. It is wrong for COPY, where rows share a change LSN (problem 3).
 - **Resume by commit LSN alone** (skip whole transactions up to the
   checkpoint's commit). That loses the rest of a transaction checkpointed
-  part-way through. The pair is needed.
-- **Drop the client-side guard and rely on Postgres's start point.** No
-  format change, and no loss. But every restart then re-delivers whole
-  transactions, not just the first one after an upgrade. Rejected, because the
+  part-way through.
+- **Drop the client-side guard and rely on Postgres's start point.** Every
+  restart would then re-deliver whole transactions. Rejected, because the
   exact rule is cheap.
-- **Buffer each transaction and checkpoint only at commit.** It changes
-  batching and memory for large transactions. Out of scale for a hotfix.
+- **Gate on emitted and acked counts.** Equivalent while acks are exactly
+  once and FIFO, but a duplicate ack would skew it permanently. The key
+  comparison is idempotent.
 
 ## Failure modes
 
 | Failure | Behavior | Invariant |
 | --- | --- | --- |
-| Crash with a later-committing, lower-LSN record in flight | The restart delivers it: its (commit, change) pair is above the checkpoint | 3 |
-| Crash mid-transaction | The rest of the transaction is delivered. The acked prefix is skipped (exact) or may repeat once (legacy) | 3 |
+| Crash with a later-committing, lower-LSN record in flight | The restart delivers it: its key is above the checkpoint | 3 |
+| Crash part-way through a COPY | The remaining rows are delivered: same LSN, higher seq | 3 |
+| COPY rows in flight after the first is acked | The gate stays closed and the flush stays below the commit | 1 |
 | Ack of a higher-LSN record while a lower one is in flight | The subscription keeps running. The report stays at the safe high-water mark | 1, 2 |
-| Resume from a v0.14.2 position | Legacy rule: no loss, bounded duplicates once | 2, 3 |
-| Rollback to v0.14.2 with a version 2 position | The old binary ignores `version` and `tx_commit_lsn` and resumes with the old rule, so the original bug comes back. No crash. | — |
-| A position from a newer format (version 1 or higher) | Read, not rejected. Unknown fields are ignored. Without `tx_commit_lsn`, the legacy rule applies | 2 |
+| Resume from a v0.14.2 position | Legacy rule: no loss. Duplicates up to everything committed while the checkpointed transaction was open, once | 2, 3 |
+| Commit LSN unknown for a change (defensive) | Delivered, never skipped | 3 |
+| Streamed-transaction messages | The subscription fails with an explicit error | 3 |
+| Rollback to v0.14.2 with version 2 positions | The old binary ignores `version`, `tx_commit_lsn` and `tx_seq` and resumes with the old guard. That **re-exposes #331**: record loss with interleaved transactions or COPY on restart, and the subscription kill when acks of interleaved records arrive. It does not crash, but it is not safe. | 1–3 |
+| A position from a newer format (version 1 or higher) | Read, not rejected. Without the key, the legacy rule applies | 2 |
 
 ## Upgrade and rollback
 
 - **Upgrade from v0.14.2.** No step needed. The golden v0.14.2 positions in
-  `source/position/testdata/` are decoded by `Test_ParseV0142GoldenPositions`.
+  `source/position/testdata/` decode (`Test_ParseV0142GoldenPositions`).
   `TestInterleavedTx_UpgradeFromV0142Position` resumes from a v0.14.2-layout
-  position and asserts no loss.
-- **Rollback.** Pin v0.14.2. Positions stay readable. Interleaved transactions
-  are exposed to #331 again.
+  position with no loss. Expect the one-time duplicates described above.
+- **Rollback.** Pin v0.14.2. Positions stay readable. Rollback re-exposes the
+  loss and the subscription kill described in the failure-mode table, so treat
+  it as a temporary measure.
 
 ## Observability
 
-Skipped re-sent changes are logged at trace level with their commit LSN and
-change LSN. No new metrics.
+Skipped re-sent changes are logged at trace level with their commit LSN, seq
+and change LSN. No new metrics.
 
 ## Related
 
 - ConduitIO/conduit-connector-postgres#331.
-- Forward-port to main, on top of the DBZ-3 position format (its version 1).
+- Forward-port to `main`, on top of the DBZ-3 position format (its version 1).

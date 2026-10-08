@@ -50,6 +50,13 @@ type CDCHandler struct {
 	withAvroSchema bool
 	keySchemas     map[string]cschema.Schema
 	payloadSchemas map[string]cschema.Schema
+
+	// changeKey returns the key of the change being handled (see
+	// internal.Subscription.CurrentChange). Set once before the subscription
+	// starts and called only from Handle, on the subscription goroutine. Nil
+	// in tests that drive the handler without a subscription; positions then
+	// carry no key and resume with the legacy rule.
+	changeKey func() internal.ChangeKey
 }
 
 func NewCDCHandler(
@@ -310,19 +317,24 @@ func (h *CDCHandler) buildRecordPayload(values map[string]any) opencdc.Data {
 }
 
 // buildPosition builds the position of the CDC record at lsn. It carries
-// the commit LSN of the record's transaction (from its BeginMessage), which
-// is what lets a restart tell which re-sent changes were already delivered
-// (#331; see internal.ResumePoint).
+// the record's change key (its transaction's commit LSN and its ordinal
+// within that transaction, from the subscription), which is what lets a
+// restart tell which re-sent changes were already delivered (#331; see
+// internal.ChangeKey and internal.ResumePoint).
 //
-// Invariant 2: (TxCommitLSN, LastLSN) increases record by record in stream
-// order, even when LastLSN alone does not.
+// Invariant 2: (TxCommitLSN, TxSeq) increases strictly record by record in
+// stream order, even when LastLSN does not (interleaved transactions) or
+// repeats (rows of one multi-row insert).
 func (h *CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 	p := position.Position{
 		Type:    position.TypeCDC,
 		LastLSN: lsn.String(),
 	}
-	if h.lastTXLSN != 0 {
-		p.TxCommitLSN = h.lastTXLSN.String()
+	if h.changeKey != nil {
+		if k := h.changeKey(); k.Known() {
+			p.TxCommitLSN = k.CommitLSN.String()
+			p.TxSeq = k.Seq
+		}
 	}
 	return p.ToSDKPosition()
 }
