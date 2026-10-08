@@ -52,9 +52,25 @@ type Subscription struct {
 	done    chan struct{}
 	doneErr error
 
+	// Resume is what this subscription treats as already delivered (#331).
+	// CreateSubscription sets the legacy point {LSN: StartLSN}; the CDC
+	// iterator replaces it with the exact point when the checkpointed
+	// position carries a commit LSN. Set before Run.
+	Resume ResumePoint
+
 	walWritten   pglogrepl.LSN
 	walFlushed   pglogrepl.LSN
 	serverWALEnd pglogrepl.LSN
+
+	// txCommitLSN is the commit LSN of the transaction whose messages are
+	// being received (from its BeginMessage). Only touched on the goroutine
+	// running Run.
+	txCommitLSN pglogrepl.LSN
+
+	// reportedFlush is the highest flush position sent to the server so far.
+	// The report never goes below it (see reportedPositions). Only touched on
+	// the goroutine running Run.
+	reportedFlush pglogrepl.LSN
 }
 
 type Handler func(context.Context, pglogrepl.Message, pglogrepl.LSN) (pglogrepl.LSN, error)
@@ -132,6 +148,7 @@ func CreateSubscription(
 		Handler:       h,
 		StatusTimeout: 10 * time.Second,
 		TXSnapshotID:  result.SnapshotName,
+		Resume:        ResumePoint{LSN: startLSN},
 
 		conn: conn,
 		pool: pool,
@@ -243,14 +260,26 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 		return fmt.Errorf("failed to parse xlog data: %w", err)
 	}
 
-	if xld.WALStart > 0 && xld.WALStart <= s.StartLSN {
-		// skip stuff that's in the past
-		return nil
-	}
-
 	logicalMsg, err := pglogrepl.Parse(xld.WALData)
 	if err != nil {
 		return fmt.Errorf("invalid message: %w", err)
+	}
+
+	// Invariant 3 (#331): skip only changes the resume point proves were
+	// delivered before the restart. The decision uses the transaction's commit
+	// LSN, not the change's own LSN (WALStart), because a transaction that
+	// committed after the checkpoint can carry changes with lower LSNs.
+	switch m := logicalMsg.(type) {
+	case *pglogrepl.BeginMessage:
+		s.txCommitLSN = m.FinalLSN
+	case *pglogrepl.InsertMessage, *pglogrepl.UpdateMessage, *pglogrepl.DeleteMessage, *pglogrepl.TruncateMessage:
+		if s.Resume.Delivered(s.txCommitLSN, xld.WALStart) {
+			sdk.Logger(ctx).Trace().
+				Stringer("commit_lsn", s.txCommitLSN).
+				Stringer("lsn", xld.WALStart).
+				Msg("skipping change delivered before the restart")
+			return nil
+		}
 	}
 
 	writtenLSN, err := s.Handler(ctx, logicalMsg, xld.WALStart)
@@ -384,42 +413,82 @@ func (s *Subscription) sendStandbyCopyDone(ctx context.Context) error {
 func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 	// load with atomic to prevent race condition with ack
 	walFlushed := pglogrepl.LSN(atomic.LoadUint64((*uint64)(&s.walFlushed)))
+	serverWALEnd := pglogrepl.LSN(atomic.LoadUint64((*uint64)(&s.serverWALEnd)))
 
-	if walFlushed > s.walWritten {
-		return fmt.Errorf("walWrite (%s) should be >= walFlush (%s)", s.walWritten, walFlushed)
-	}
-
-	// N.B. Manage replication slot lag, by responding with the last server LSN, when
-	//      all previous slot relevant msgs have been written and flushed
-	replyWithWALEnd := walFlushed == s.walWritten && walFlushed < s.serverWALEnd
+	// There is deliberately no "walFlushed > walWritten is an error" check
+	// (#331): with interleaved transactions a record with a lower LSN can be
+	// emitted after one with a higher LSN was acked, so walFlushed > walWritten
+	// is a normal state, and failing on it killed the subscription.
+	write, flush := reportedPositions(s.walWritten, walFlushed, serverWALEnd, s.reportedFlush)
 
 	sdk.Logger(ctx).Trace().
 		Stringer("wal_write", s.walWritten).
 		Stringer("wal_flush", walFlushed).
-		Stringer("server_wal_end", s.serverWALEnd).
-		Bool("server_wal_end_sent", replyWithWALEnd).
+		Stringer("server_wal_end", serverWALEnd).
+		Stringer("reported_write", write).
+		Stringer("reported_flush", flush).
 		Msg("sending standby status update")
 
-	if replyWithWALEnd {
-		if err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn.Conn().PgConn(), pglogrepl.StandbyStatusUpdate{
-			WALWritePosition: s.serverWALEnd,
-		}); err != nil {
-			return fmt.Errorf("failed to send standby status update with server end lsn: %w", err)
-		}
-
-		return nil
-	}
-
 	if err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn.Conn().PgConn(), pglogrepl.StandbyStatusUpdate{
-		WALWritePosition: s.walWritten,
-		WALFlushPosition: walFlushed,
-		WALApplyPosition: walFlushed,
+		WALWritePosition: write,
+		WALFlushPosition: flush,
+		WALApplyPosition: flush,
 		ReplyRequested:   false,
 	}); err != nil {
 		return fmt.Errorf("failed to send standby status update: %w", err)
 	}
 
+	s.reportedFlush = flush
 	return nil
+}
+
+// reportedPositions decides the write and flush positions a standby status
+// update reports. The server stores the flush position as the slot's
+// confirmed_flush_lsn, which decides the WAL Postgres may discard and the
+// transactions it will not send again after a restart.
+//
+//   - The baseline is walFlushed, the change LSN of the last record the engine
+//     acked. Reporting it is safe even when interleaving makes it higher than
+//     a record still in flight: that record's transaction commits after the
+//     acked one's change, so the server would re-send it.
+//   - Only when walFlushed == walWritten, meaning every emitted record has
+//     been acked, may the report go further, to serverWALEnd (the WAL end
+//     from the last keepalive).
+//   - The flush position never goes below lastReported. A flush position that
+//     was safe when reported stays safe: transactions arrive in commit order,
+//     anything that arrives later commits after it, and the server re-sends
+//     any transaction whose commit is past confirmed_flush_lsn. Without this,
+//     acking T1's lower-LSN record after T2's would report a lower flush.
+//   - write is at least flush.
+//
+// The equality test does not need LSNs to arrive in order. Acks are FIFO and
+// every change has its own LSN, so if the last emitted record is acked, every
+// earlier one is too.
+func reportedPositions(walWritten, walFlushed, serverWALEnd, lastReported pglogrepl.LSN) (write, flush pglogrepl.LSN) {
+	flush = walFlushed
+
+	// Invariant 1: report past the acked records only when no emitted record
+	// is unacked. Reporting serverWALEnd while a record is in flight would let
+	// Postgres discard the WAL that record depends on, and a crash before the
+	// destination wrote it would lose it.
+	if walFlushed == walWritten {
+		flush = maxLSN(flush, serverWALEnd)
+	}
+
+	// Invariant 2: the reported flush position never decreases.
+	flush = maxLSN(flush, lastReported)
+	write = maxLSN(walWritten, flush)
+	return write, flush
+}
+
+func maxLSN(first pglogrepl.LSN, rest ...pglogrepl.LSN) pglogrepl.LSN {
+	m := first
+	for _, l := range rest {
+		if l > m {
+			m = l
+		}
+	}
+	return m
 }
 
 // receiveMessage tries to receive a message from the replication stream. If the

@@ -309,12 +309,22 @@ func (h *CDCHandler) buildRecordPayload(values map[string]any) opencdc.Data {
 	return opencdc.StructuredData(values)
 }
 
-// buildPosition stores the LSN in position and converts it to bytes.
-func (*CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
-	return position.Position{
+// buildPosition builds the position of the CDC record at lsn. It carries
+// the commit LSN of the record's transaction (from its BeginMessage), which
+// is what lets a restart tell which re-sent changes were already delivered
+// (#331; see internal.ResumePoint).
+//
+// Invariant 2: (TxCommitLSN, LastLSN) increases record by record in stream
+// order, even when LastLSN alone does not.
+func (h *CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
+	p := position.Position{
 		Type:    position.TypeCDC,
 		LastLSN: lsn.String(),
-	}.ToSDKPosition()
+	}
+	if h.lastTXLSN != 0 {
+		p.TxCommitLSN = h.lastTXLSN.String()
+	}
+	return p.ToSDKPosition()
 }
 
 // updateAvroSchema generates and stores avro schema based on the relation's row
