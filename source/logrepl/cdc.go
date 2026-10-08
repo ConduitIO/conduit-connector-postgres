@@ -30,7 +30,11 @@ import (
 
 // CDCConfig holds configuration values for CDCIterator.
 type CDCConfig struct {
-	LSN             pglogrepl.LSN
+	LSN pglogrepl.LSN
+	// TxCommitLSN is the commit LSN of the checkpointed record's transaction,
+	// 0 when the position does not carry one. With it, a restart skips
+	// exactly what was delivered (#331).
+	TxCommitLSN     pglogrepl.LSN
 	SlotName        string
 	PublicationName string
 	Tables          []string
@@ -117,6 +121,13 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize subscription: %w", err)
+	}
+
+	if c.TxCommitLSN != 0 {
+		// Exact resume point from a position that carries its transaction's
+		// commit LSN (format version 2). Without one, CreateSubscription's
+		// legacy point applies (see internal.ResumePoint). Set before Run.
+		sub.Resume = internal.ResumePoint{CommitLSN: c.TxCommitLSN, LSN: c.LSN}
 	}
 
 	return &CDCIterator{

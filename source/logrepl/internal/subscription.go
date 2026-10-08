@@ -69,6 +69,17 @@ type Subscription struct {
 	walFlushed   pglogrepl.LSN
 	serverWALEnd pglogrepl.LSN
 
+	// Resume is what this subscription treats as already delivered (#331).
+	// CreateSubscription sets the legacy point {LSN: StartLSN}; the CDC
+	// iterator replaces it with the exact point when the checkpointed
+	// position carries a commit LSN. Set before Run.
+	Resume ResumePoint
+
+	// txCommitLSN is the commit LSN of the transaction whose messages are
+	// being received (from its BeginMessage). Only touched on the goroutine
+	// running Run.
+	txCommitLSN pglogrepl.LSN
+
 	// reportedFlush is the highest flush position sent to the server so far.
 	// The report never goes below it (see reportedPositions). Only touched on
 	// the goroutine running Run.
@@ -150,6 +161,7 @@ func CreateSubscription(
 		Handler:       h,
 		StatusTimeout: 10 * time.Second,
 		TXSnapshotID:  result.SnapshotName,
+		Resume:        ResumePoint{LSN: startLSN},
 		RestartLSN:    slotInfo.RestartLSN,
 
 		conn: conn,
@@ -262,14 +274,26 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 		return fmt.Errorf("failed to parse xlog data: %w", err)
 	}
 
-	if xld.WALStart > 0 && xld.WALStart <= s.StartLSN {
-		// skip stuff that's in the past
-		return nil
-	}
-
 	logicalMsg, err := pglogrepl.Parse(xld.WALData)
 	if err != nil {
 		return fmt.Errorf("invalid message: %w", err)
+	}
+
+	// Invariant 3 (#331): skip only changes the resume point proves were
+	// delivered before the restart. The decision uses the transaction's commit
+	// LSN, not the change's own LSN (WALStart), because a transaction that
+	// committed after the checkpoint can carry changes with lower LSNs.
+	switch m := logicalMsg.(type) {
+	case *pglogrepl.BeginMessage:
+		s.txCommitLSN = m.FinalLSN
+	case *pglogrepl.InsertMessage, *pglogrepl.UpdateMessage, *pglogrepl.DeleteMessage, *pglogrepl.TruncateMessage:
+		if s.Resume.Delivered(s.txCommitLSN, xld.WALStart) {
+			sdk.Logger(ctx).Trace().
+				Stringer("commit_lsn", s.txCommitLSN).
+				Stringer("lsn", xld.WALStart).
+				Msg("skipping change delivered before the restart")
+			return nil
+		}
 	}
 
 	writtenLSN, err := s.Handler(ctx, logicalMsg, xld.WALStart)
@@ -404,10 +428,10 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 	// load with atomic to prevent race condition with ack
 	walFlushed := pglogrepl.LSN(atomic.LoadUint64((*uint64)(&s.walFlushed)))
 
-	if walFlushed > s.walWritten {
-		return fmt.Errorf("walWrite (%s) should be >= walFlush (%s)", s.walWritten, walFlushed)
-	}
-
+	// There is deliberately no "walFlushed > walWritten is an error" check
+	// (#331): with interleaved transactions a record with a lower LSN can be
+	// emitted after one with a higher LSN was acked, so walFlushed > walWritten
+	// is a normal state, and failing on it killed the subscription.
 	serverWALEnd := pglogrepl.LSN(atomic.LoadUint64((*uint64)(&s.serverWALEnd)))
 
 	// Manage replication slot lag: when every emitted record has been acked,
@@ -453,7 +477,10 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 //
 // The rules (DBZ-3 B2 design doc, Decision 5):
 //
-//   - The baseline is walFlushed, the LSN of the last record the engine acked.
+//   - The baseline is walFlushed, the change LSN of the last record the engine
+//     acked. Reporting it is safe even when interleaving makes it higher than
+//     a record still in flight: that record's transaction commits after the
+//     acked one's change, so the server would re-send it (#331).
 //   - Only when walFlushed == walWritten, meaning every emitted record has
 //     been acked, may the report go beyond it, to serverWALEnd (the WAL end
 //     from the last keepalive).

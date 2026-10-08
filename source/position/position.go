@@ -33,25 +33,31 @@ const (
 )
 
 // CurrentPositionVersion is the format version this connector build writes into
-// every position it serializes (see ToSDKPosition). It exists so that code can
-// distinguish a position written by a DBZ-3-aware connector (Version >= 1, may
-// carry SnapshotLowWatermarkLSN and future DBZ-3 fields) from a legacy v0.14
-// position (Version == 0, guaranteed to carry none of them).
+// every position it serializes (see ToSDKPosition). Version history, shared with
+// the release/v0.14.x branch so a position means the same thing on both:
+//
+//   - 0 (no "version" key): v0.14.2 and earlier. CDC positions carry only
+//     LastLSN, the LSN of the record's own change.
+//   - 1: DBZ-3 (this branch before #331): may carry SnapshotLowWatermarkLSN
+//     and SchemaHistory.
+//   - 2: CDC positions also carry TxCommitLSN, the commit LSN of the record's
+//     transaction (#331). Written by this build and by the v0.14.x hotfix
+//     (which has no DBZ-3 fields).
 //
 // Backward/forward compatibility contract (see the DBZ-3 design doc,
 // docs/design-documents/20260724-dbz3-postgres-cdc-parity.md, "Upgrade / rollback"):
-//   - A legacy v0.14 position has no "version" key, so it deserializes with
-//     Version == 0. Version == 0 MUST be treated as "no low watermark recorded,
-//     no schema history — behave exactly as v0.14 did" until a later event
-//     naturally populates the new fields.
-//   - All new fields are additive and omitempty, so a position written by this
-//     version is still readable by an older connector (it ignores unknown keys)
-//     and by a newer one. We deliberately do NOT reject a position whose Version
-//     is greater than CurrentPositionVersion: the format is additive-only, so a
-//     newer position stays structurally readable, and rejecting it would break
-//     the "readable by N+1 versions" rule. A newer position read here simply
-//     degrades to the fields this build understands.
-const CurrentPositionVersion = 1
+//   - The format is additive only: every field is omitempty, an older connector
+//     ignores unknown keys, and a position whose Version is greater than
+//     CurrentPositionVersion is read, not rejected (the "readable by N+1
+//     versions" rule). A newer position degrades to the fields this build
+//     understands.
+//   - Code must key on a field's presence, never on the version number: a
+//     version 2 position written by the v0.14.x hotfix has TxCommitLSN but no
+//     DBZ-3 fields, and a version 1 position has DBZ-3 fields but no
+//     TxCommitLSN. An absent SnapshotLowWatermarkLSN/SchemaHistory means
+//     "behave as v0.14 did"; an absent TxCommitLSN means the legacy resume
+//     point (logrepl/internal.ResumePoint).
+const CurrentPositionVersion = 2
 
 type Position struct {
 	// Version identifies the position format. See CurrentPositionVersion for the
@@ -81,6 +87,18 @@ type Position struct {
 	// this rides in the position payload, which is checkpointed constantly.
 	// Empty on a legacy (Version == 0) position.
 	SchemaHistory SchemaHistories `json:"schema_history,omitempty"`
+
+	// TxCommitLSN is the commit LSN (BeginMessage.FinalLSN) of the
+	// transaction the CDC record at LastLSN belongs to. Logical replication
+	// delivers transactions in commit order, but each change carries its own
+	// LSN, so a transaction that began before another and committed after it
+	// delivers LOWER change LSNs than ones already delivered (#331). Change
+	// LSNs alone cannot say what a restart has already delivered;
+	// (TxCommitLSN, LastLSN) ordered lexicographically can, because commit
+	// LSNs increase in stream order and change LSNs increase within one
+	// transaction. Empty on snapshot positions and on positions written
+	// before format version 2.
+	TxCommitLSN string `json:"tx_commit_lsn,omitempty"`
 }
 
 type SnapshotPositions map[string]SnapshotPosition
@@ -131,5 +149,19 @@ func (p Position) LSN() (pglogrepl.LSN, error) {
 		return 0, err
 	}
 
+	return lsn, nil
+}
+
+// TxCommit returns the commit LSN of the position's transaction, or 0 when
+// the position does not carry one (a snapshot position, or a CDC position
+// written before format version 2).
+func (p Position) TxCommit() (pglogrepl.LSN, error) {
+	if p.TxCommitLSN == "" {
+		return 0, nil
+	}
+	lsn, err := pglogrepl.ParseLSN(p.TxCommitLSN)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse tx commit LSN: %w", err)
+	}
 	return lsn, nil
 }

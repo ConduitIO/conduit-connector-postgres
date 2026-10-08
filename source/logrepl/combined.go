@@ -205,9 +205,14 @@ func (c *CombinedIterator) initCDCIterator(ctx context.Context, pos position.Pos
 	if err != nil {
 		return fmt.Errorf("failed to parse LSN in position: %w", err)
 	}
+	commitLSN, err := pos.TxCommit()
+	if err != nil {
+		return fmt.Errorf("failed to parse commit LSN in position: %w", err)
+	}
 
 	cdcIterator, err := NewCDCIterator(ctx, c.pool, CDCConfig{
 		LSN:             lsn,
+		TxCommitLSN:     commitLSN,
 		SlotName:        c.conf.SlotName,
 		PublicationName: c.conf.PublicationName,
 		Tables:          c.conf.Tables,

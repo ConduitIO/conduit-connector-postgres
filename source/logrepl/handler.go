@@ -503,9 +503,24 @@ func (h *CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 	return position.Position{
 		Type:                    position.TypeCDC,
 		LastLSN:                 lsn.String(),
+		TxCommitLSN:             h.txCommitLSN(),
 		SnapshotLowWatermarkLSN: h.basePosition.SnapshotLowWatermarkLSN,
 		SchemaHistory:           h.basePosition.SchemaHistory,
 	}.ToSDKPosition()
+}
+
+// txCommitLSN returns the commit LSN of the transaction being handled (from
+// its BeginMessage), or "" before the first one. Every CDC position carries
+// it so a restart can tell which re-sent changes were already delivered
+// (#331; see internal.ResumePoint).
+//
+// Invariant 2: (TxCommitLSN, LastLSN) increases record by record in stream
+// order, even when LastLSN alone does not.
+func (h *CDCHandler) txCommitLSN() string {
+	if h.lastTXLSN == 0 {
+		return ""
+	}
+	return h.lastTXLSN.String()
 }
 
 // setBasePositionLowWatermark re-seeds the SnapshotLowWatermarkLSN carried
@@ -894,6 +909,7 @@ func (h *CDCHandler) emitDriftMarker(
 		position.Position{
 			Type:                    position.TypeCDC,
 			LastLSN:                 lsn.String(),
+			TxCommitLSN:             h.txCommitLSN(),
 			SnapshotLowWatermarkLSN: h.basePosition.SnapshotLowWatermarkLSN,
 			SchemaHistory:           history, // the staging-time snapshot, not live history (Blocker 1)
 		}.ToSDKPosition(),
