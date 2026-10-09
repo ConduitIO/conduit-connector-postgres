@@ -478,6 +478,68 @@ func TestB1_AC3_FM1_ApprovalByCrash(t *testing.T) {
 	b1AssertBoundaryDeliveredOnce(t, regPool, table, entries, 2) // #338: the crash-before-ack restart delivers it too
 }
 
+// TestB1_338_KillAfterMarkerAck is the #338 kill window: SIGKILL after the
+// marker is durable and acked (the halt armed, nothing torn down, no final
+// standby status), before the restart. The restart is the approval and must
+// deliver the row that decided the drift exactly once, with no second halt.
+// The slot must not have moved past the deciding change, or Postgres would
+// not re-send its transaction.
+//
+// Perturbation proof: with the marker carrying the deciding change's own key
+// (the pre-#338 rule), run 2 never delivers the 'drift-trigger' row and
+// b1AssertBoundaryDeliveredOnce fails (or run 2 never reaches DONE).
+func TestB1_338_KillAfterMarkerAck(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+
+	replPool, regPool, table, slot, pub, ledgerPath := b1Setup(t)
+
+	cp := b1SpawnChild(t, b1ChildSpec{
+		run: 1, total: 7, haltExpected: false,
+		park:       fmt.Sprintf("%s:%d", chaospoint.DriftMarkerAcked, 1),
+		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
+	})
+	b1Baseline(t, cp, regPool, table)
+	b1DriftTrigger(t, regPool, table, b1DriftColumn, `ALTER TABLE %q ADD COLUMN %s timestamp`)
+
+	cp.waitForMarker(t, "PARKED", 60*time.Second)
+	cp.sigkill(t)
+
+	entries := b1ReadLedger(t, ledgerPath)
+	drift := b1DriftEntries(t, entries)
+	is.Equal(len(drift), 1)
+	marker := drift[0]
+
+	// The slot is still at or below the marker's LSN: the connector never
+	// reached a state that let it report past the deciding change.
+	markerLSN, err := b1MarkerLSN(t, marker)
+	is.NoErr(err)
+	state, err := ReadSlotState(ctx, replPool, slot)
+	is.NoErr(err)
+	cf, err := pglogrepl.ParseLSN(state.ConfirmedFlushLSN)
+	is.NoErr(err)
+	is.True(cf <= markerLSN)
+
+	cp2 := b1SpawnChild(t, b1ChildSpec{
+		run: 2, total: 2, haltExpected: false,
+		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
+	})
+	cp2.waitForMarker(t, "RESUME ", 30*time.Second)
+	cp2.waitForMarker(t, "OPENED", 30*time.Second)
+	_, err = regPool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('post-approval')`, table))
+	is.NoErr(err)
+	cp2.waitForCount(t, "ACKED ", 2, 60*time.Second)
+	cp2.waitForMarker(t, "DONE", 60*time.Second)
+	cp2.waitExit(t, 30*time.Second)
+	b1AssertNoHalt(t, cp2)
+
+	entries = b1ReadLedger(t, ledgerPath)
+	b1AssertNoGaps(t, entries)
+	b1AssertNoUnexpectedDups(t, entries, &marker)
+	is.Equal(len(b1DriftEntries(t, entries)), 1)
+	b1AssertBoundaryDeliveredOnce(t, regPool, table, entries, 2)
+}
+
 // TestB1_AC3_FM2_CrashBeforeMarkerDurable is AC3's FM2 window: SIGKILL after
 // the marker was delivered to the child (it is in the iterator's channel) but
 // before it was appended to the ledger. Nothing about the marker is durable,

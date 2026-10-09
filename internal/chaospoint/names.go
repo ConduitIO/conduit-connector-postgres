@@ -99,6 +99,14 @@ const (
 	// IS the operator's approval.
 	DriftMarkerAppended = "child.drift_marker_appended"
 
+	// DriftMarkerAcked is reached in test/chaos/child.go's read loop right
+	// after the engine-side Ack of a drift marker returned: the halt is armed
+	// but not yet surfaced, and nothing has been torn down (no final standby
+	// status update). A SIGKILL here is the #338 window "kill between the
+	// marker's ack and the restart": the restart must still deliver the row
+	// that decided the drift.
+	DriftMarkerAcked = "child.drift_marker_acked"
+
 	// DriftVersionSkipped is reached in source/logrepl/handler.go's FM8 guard
 	// (skipAfterDriftMarker): a change delivered with a second, undecided
 	// shape while a drift marker is pending (emitted but unacked). Parking

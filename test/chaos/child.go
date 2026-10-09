@@ -265,6 +265,14 @@ func appendAndAck(ctx context.Context, src sdk.Source, ledger *Ledger, run int, 
 	if err := src.Ack(ctx, rec.Position); err != nil {
 		childFatalf("ack: %v", err)
 	}
+
+	if entry.Drift {
+		// The #338 kill window: the marker is durable AND acked, the halt is
+		// armed but not yet surfaced, and no teardown has run. The restart
+		// after a kill here is the approval, and must deliver the row that
+		// decided the drift.
+		chaospoint.Reach(chaospoint.DriftMarkerAcked)
+	}
 }
 
 // ledgerOpCDC is LedgerEntry.Op for a CDC delivery.
