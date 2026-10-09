@@ -74,7 +74,10 @@ change replaces that test with the key comparison.
   key, so it gets the legacy resume rule.
 - **The schema-drift marker (B1) carries the key too.** Its checkpoint resumes
   exactly: the boundary DML at the marker's key is skipped, as before (B1's D5
-  disclosure).
+  disclosure). The halt arms when an ack's key is at or past the marker's key,
+  not when its LSN is: a change delivered before the marker can carry a higher
+  LSN (its transaction committed first), and an LSN comparison armed the halt
+  on that ack, before the marker was delivered.
 - **Resume point** (`internal.ResumePoint.Delivered`):
   - A change whose commit LSN is unknown is never skipped.
   - **Exact** (the position has a key): skip if the change's key is at or below
@@ -143,6 +146,8 @@ change replaces that test with the key comparison.
 | COPY rows in flight after the first is acked | The gate stays closed and the flush stays below the commit | 1 |
 | Ack of a higher-LSN record while a lower one is in flight | The subscription keeps running. The report stays at the safe high-water mark | 1, 2 |
 | Resume from a v0.14.2 position | Legacy rule: no loss. Duplicates up to everything committed while the checkpointed transaction was open, once | 2, 3 |
+| Ack of a higher-LSN, earlier-keyed record while a drift marker is pending | The halt does not arm. It arms only on an ack whose key is at or past the marker's key (`TestDriftHalt_InterleavedAckDoesNotArmBeforeMarker`) | 1 |
+| Changes skipped after a drift marker (D4) | They still advance the emitted key, so the gate stays closed after the marker's ack and the slot does not move past them | 1, 3 |
 | Commit LSN unknown for a change (defensive) | Delivered, never skipped | 3 |
 | Streamed-transaction messages | The subscription fails with an explicit error | 3 |
 | Rollback to v0.14.2 with version 2 positions | The old binary ignores `version`, `tx_commit_lsn` and `tx_seq` and resumes with the old guard. That **re-exposes #331**: record loss with interleaved transactions or COPY on restart, and the subscription kill when acks of interleaved records arrive. It does not crash, but it is not safe. | 1–3 |
@@ -157,6 +162,9 @@ change replaces that test with the key comparison.
   `Test_ParseGoldenPositions` also decodes a DBZ-3 version 1 position and a
   hotfix version 2 position. The kill-harness case
   `TestInterleavedTx_KillBeforeLaterCommittedRecordAck` covers the crash.
+  `TestInterleavedTx_ResumeFromHotfixShapedPosition` resumes a v0.14.3-shaped
+  position (version 2 with the key, no DBZ-3 fields) across interleaved
+  transactions and expects exactly the remaining rows, with no marker.
 - **Rollback.** Pin v0.14.2. Positions stay readable. Rollback re-exposes the
   loss and the subscription kill described in the failure-mode table, so treat
   it as a temporary measure.
