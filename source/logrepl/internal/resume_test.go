@@ -136,6 +136,22 @@ func TestChangeKey_Predecessor(t *testing.T) {
 	}
 }
 
+// TestChangeKey_PredecessorOfCommitLSN1: the first change of a transaction that
+// committed at LSN 1 has predecessor (0, MaxUint64), whose commit LSN is the
+// "unknown" value, so it is not Known and carries no key. A marker built from
+// it resumes by the legacy rule, which re-delivers the transaction and so
+// still delivers the deciding change. Real commit LSNs are far above 1; this
+// pins the degenerate edge so it stays safe (no loss) rather than undefined.
+func TestChangeKey_PredecessorOfCommitLSN1(t *testing.T) {
+	is := is.New(t)
+	pred := ChangeKey{CommitLSN: 1, Seq: 1}.Predecessor()
+	is.Equal(pred, ChangeKey{CommitLSN: 0, Seq: math.MaxUint64})
+	is.True(!pred.Known())
+	legacy := ResumePoint{Key: pred, LSN: 1}                    // a change LSN cannot exceed its commit LSN
+	is.True(!legacy.Delivered(ChangeKey{CommitLSN: 1, Seq: 1})) // the deciding change is delivered
+	is.True(!legacy.Delivered(ChangeKey{CommitLSN: 1, Seq: 2}))
+}
+
 // TestResumePoint_ResumeAtInclusive is the #338 property. A checkpoint that
 // carries the predecessor of change i (and i's own LSN, as the marker does)
 // makes a restart deliver exactly changes i.., never i-1 or earlier. Postgres

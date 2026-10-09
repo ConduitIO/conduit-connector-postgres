@@ -75,18 +75,24 @@ The same happens under `evolve` for a narrowing change.
    the deciding change's LSN, below its commit LSN, so Postgres re-sends the
    transaction (the existing argument in `20261008-interleaved-tx-resume.md`).
 
-3. **The halt arms on the marker's position bytes.** The predecessor key is
+3. **The halt arms on the marker's position content.** The predecessor key is
    also the key of the record delivered just before the marker whenever the
    deciding change is not the first of its transaction (p1 in the example), so
    an ack's key cannot tell the two apart; arming on `key >= predecessor` would
    let p1's ack surface the halt before the marker was delivered, which is the
-   #334 bug again. The handler records the marker's serialized position and
-   `maybeArmDriftHalt` arms when the acked position is byte-equal to it. The
-   engine acks the position it was given, so the match is exact. The previous
-   rule (ack key at or past the deciding change's key, LSN fallback when keys
-   are unknown) stays as a second condition. Nothing is emitted after the
-   marker (D4), so in practice the byte match is what arms.
-
+   #334 bug again. The handler keeps the marker's parsed position, and
+   `maybeArmDriftHalt` arms when the acked position's Type, LastLSN,
+   TxCommitLSN, TxSeq and SchemaHistory all equal it. SchemaHistory is what
+   separates the marker (it records the new shape) from the previous record
+   (older history), including when COPY rows share an LSN. The comparison is
+   semantic, not byte-exact: a first version compared bytes, and a re-marshaled
+   copy of the marker position (indented, keys reordered) never armed. Nothing
+   is emitted after the marker (D4), so no later ack can arm instead, and the
+   pipeline waited silently with the slot held. The previous rule (ack key at or
+   past the deciding change's key, LSN fallback when keys are unknown) stays as a
+   second condition. As a backstop, a marker still unacked after 30 seconds logs
+   one warning that names the table and marker LSN and says the position must be
+   acked unchanged.
 4. **The halt message drops the disclosure sentence** (`haltDisclosure`). The
    error code and the revert-trap sentence are unchanged.
 
@@ -154,8 +160,10 @@ The same happens under `evolve` for a narrowing change.
   boundary row.
 - **Marker written by this build, read by an older build** (rollback): the key
   is a plain exact key, so an older build with the #331 resume delivers the
-  deciding change too. A build without it (v0.14.2) reads the LSN only and
-  re-delivers the transaction from the start, a documented duplicate-only case.
+  deciding change too. A build without it (v0.14.2) reads the LSN only and its
+  subscription skips `WALStart <= StartLSN`, so it drops the deciding change
+  exactly as before (measured: `[b1, MARKER, p3]`); the same loss as a pre-#338
+  marker, not a new one.
 - **DBZ-3 version 1 positions** (no change key) and **v0.14.3 hotfix
   positions** never carry a marker with this encoding. Their resume rules and
   the #337 failure-mode rows are unchanged.
@@ -183,6 +191,16 @@ of markers in the kill harness is `drift:<commit>/<seq>`.
   the slot is not past the marker.
 - `TestDrift338_CrashBeforeAck`, `TestDrift338_Upgrade`,
   `TestDrift338_PositionFormat`.
+- Arming: `Test_MaybeArmDriftHalt_SemanticMarkerMatch` (a re-marshaled marker
+  position arms; the previous record's, same key and LSN, does not),
+  `TestDrift338_ReformattedMarkerAck` (end to end),
+  `Test_DriftMarker_WarnsWhenUnacked`.
+- `TestDrift338_InterleavedBoundary`: another transaction open across the
+  deciding change, both commit orders; `[a1]` and `[a1, b1]`.
+- `TestDrift338_RedeliveredIfUnackedAfterApproval`: the boundary row is
+  delivered again, once, if the process stops before its ack.
+- `TestChangeKey_PredecessorOfCommitLSN1`: predecessor `{0, Max}` is not
+  `Known()`, so the marker carries no key and resumes by the legacy rule.
 - Kill harness: `TestB1_AC1_AC2_AC8_HaltAndWedgeRegression` and
   `TestB1_AC3_FM1_ApprovalByCrash` assert the boundary row is delivered once
   by the approving run (`b1AssertBoundaryDeliveredOnce`) and, in the first, that

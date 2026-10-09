@@ -15,9 +15,9 @@
 package logrepl
 
 import (
-	"bytes"
 	"context"
 	"fmt"
+	"reflect"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -133,11 +133,11 @@ type CDCHandler struct {
 	//     never on the LSN: see maybeArmDriftHalt. It is the deciding change's
 	//     key, not the key in the marker's position, which is the predecessor
 	//     (#338).
-	//   - driftMarkerPos is the marker's serialized position, written next to
+	//   - driftMarkerPos is the marker's parsed position, written next to
 	//     driftMarkerKey under the same ordering. The marker's position key is
 	//     the deciding change's predecessor, which the previous record's
-	//     position can share, so an ack is recognized as the marker's by these
-	//     bytes (see maybeArmDriftHalt).
+	//     position can share, so an ack is recognized as the marker's by the
+	//     position's content, not its key (see maybeArmDriftHalt).
 	//   - driftHaltArmed is written on the engine goroutine (Ack ->
 	//     maybeArmDriftHalt) and read on the engine goroutine (NextN). It gates
 	//     surfacing the error.
@@ -153,7 +153,7 @@ type CDCHandler struct {
 	// No locks (D8): the atomics above order every read after its write.
 	driftMarkerLSN atomic.Uint64
 	driftMarkerKey internal.ChangeKey
-	driftMarkerPos opencdc.Position
+	driftMarkerPos position.Position
 	driftHaltArmed atomic.Bool
 	driftHaltErr   error
 	driftHaltCh    chan struct{}
@@ -911,8 +911,11 @@ func (h *CDCHandler) emitDriftMarker(
 	// driftHaltArmed or driftHaltCh (see the field comment).
 	h.driftHaltErr = haltErr
 	h.driftMarkerKey = markerKey // before the atomic store below
-	h.driftMarkerPos = rec.Position
+	if mp, err := position.ParseSDKPosition(rec.Position); err == nil {
+		h.driftMarkerPos = mp
+	}
 	h.driftMarkerLSN.Store(uint64(lsn))
+	h.warnIfMarkerStaysUnacked(ctx, key)
 }
 
 // driftMarkerPending reports whether a drift marker has been emitted but not
@@ -947,19 +950,23 @@ func (h *CDCHandler) driftMarkerPending() bool {
 // #338: the marker's position carries the key one below the deciding change,
 // which is also the key of the record delivered just before the marker (when
 // the deciding change is not the first of its transaction). An ack's key
-// therefore cannot tell the marker's ack from that record's. The marker's
-// position bytes can: the engine acks the position it was given, and the
-// marker is the only record with those bytes. An ack with a key at or past the
-// deciding change's key still arms, as before, but nothing is emitted after
-// the marker (D4), so in practice the byte match is what arms.
-func (h *CDCHandler) maybeArmDriftHalt(lsn pglogrepl.LSN, key internal.ChangeKey, pos opencdc.Position) {
+// therefore cannot tell the marker's ack from that record's. The position's
+// content can: the marker's position records the new schema shape in its
+// SchemaHistory, which the previous record's does not. An ack matches when its
+// parsed Type, LastLSN, TxCommitLSN, TxSeq and SchemaHistory equal the
+// marker's. The comparison is semantic, not byte-exact, so an engine or
+// middleware that re-marshals the position (key order, whitespace) still
+// arms; a byte comparison turned that into a silent stall, because D4 emits
+// nothing after the marker and no later ack can arm instead. An ack with a key
+// at or past the deciding change's key still arms, as before.
+func (h *CDCHandler) maybeArmDriftHalt(lsn pglogrepl.LSN, key internal.ChangeKey, pos position.Position) {
 	markerLSN := pglogrepl.LSN(h.driftMarkerLSN.Load())
 	if markerLSN == 0 {
 		return
 	}
 	// driftMarkerKey and driftMarkerPos are safe to read: the atomic load
 	// above observed the store that followed their writes.
-	if isMarker := len(pos) > 0 && bytes.Equal(pos, h.driftMarkerPos); !isMarker {
+	if !samePosition(pos, h.driftMarkerPos) {
 		if markerKey := h.driftMarkerKey; markerKey.Known() && key.Known() {
 			if key.Before(markerKey) {
 				return
@@ -971,6 +978,46 @@ func (h *CDCHandler) maybeArmDriftHalt(lsn pglogrepl.LSN, key internal.ChangeKey
 	if h.driftHaltArmed.CompareAndSwap(false, true) {
 		close(h.driftHaltCh)
 	}
+}
+
+// samePosition reports whether two CDC positions are semantically equal on
+// the fields that identify a marker: type, LSN, change key and schema history
+// (nil and empty histories are equal). A zero Position matches nothing real.
+func samePosition(a, b position.Position) bool {
+	if a.Type != position.TypeCDC || b.Type != position.TypeCDC {
+		return false
+	}
+	if a.LastLSN != b.LastLSN || a.TxCommitLSN != b.TxCommitLSN || a.TxSeq != b.TxSeq {
+		return false
+	}
+	if len(a.SchemaHistory) == 0 && len(b.SchemaHistory) == 0 {
+		return true
+	}
+	return reflect.DeepEqual(a.SchemaHistory, b.SchemaHistory)
+}
+
+// driftMarkerWarnAfter is how long a drift marker may stay unacked before the
+// connector says so. A variable so tests can shorten it.
+var driftMarkerWarnAfter = 30 * time.Second
+
+// warnIfMarkerStaysUnacked logs once if the halt has not armed
+// driftMarkerWarnAfter after the marker was emitted. Until the marker is
+// acked nothing else is emitted (D4) and the slot is held, so a pipeline that
+// never acks the marker (for example because the position it returns is not
+// the one the marker carried) waits silently while WAL accumulates.
+func (h *CDCHandler) warnIfMarkerStaysUnacked(ctx context.Context, key string) {
+	after := driftMarkerWarnAfter
+	time.AfterFunc(after, func() {
+		if h.driftHaltArmed.Load() {
+			return
+		}
+		sdk.Logger(ctx).Warn().
+			Str("table", key).
+			Stringer("marker_lsn", pglogrepl.LSN(h.driftMarkerLSN.Load())).
+			Dur("after", after).
+			Msg("schema drift marker has not been acked; the halt cannot surface and the slot is held. " +
+				"The marker's position must be acked unchanged (type, LSN, change key, schema history)")
+	})
 }
 
 // driftHaltError returns the terminal D5 error once the halt is armed, nil

@@ -15,8 +15,11 @@
 package logrepl
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +28,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/jackc/pglogrepl"
 	"github.com/matryer/is"
+	"github.com/rs/zerolog"
 )
 
 // newHandlerWithOut is newHandlerWithPosition plus the send side of the output
@@ -146,7 +150,7 @@ func Test_HandleRelation_HaltEmitsMarker(t *testing.T) {
 	// D3: acked-gated — the error is stored, but not surfaced until the ack.
 	is.True(!h.driftHaltArmed.Load())
 	is.Equal(h.driftHaltError(), nil)
-	h.maybeArmDriftHalt(lsn, internal.ChangeKey{}, nil)
+	h.maybeArmDriftHalt(lsn, internal.ChangeKey{}, position.Position{})
 	is.True(h.driftHaltArmed.Load())
 	is.True(strings.HasPrefix(h.driftHaltError().Error(), ErrorCodeSchemaDriftHalt))
 	is.True(strings.Contains(h.driftHaltError().Error(), haltRevertTrap))
@@ -240,7 +244,7 @@ func Test_HaltError_AcrossRestartMessage(t *testing.T) {
 
 	_, _ = h2.Handle(ctx, relMsg(shapeV2...), 0)
 	_ = h2.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 1}, 210)
-	h2.maybeArmDriftHalt(210, internal.ChangeKey{}, nil)
+	h2.maybeArmDriftHalt(210, internal.ChangeKey{}, position.Position{})
 
 	msg := h2.driftHaltError().Error()
 	is.True(strings.HasPrefix(msg, ErrorCodeSchemaDriftHalt+": "))
@@ -452,11 +456,11 @@ func Test_MaybeArmDriftHalt_AckGating(t *testing.T) {
 	// The first DML emits the marker at LSN 200.
 	_ = h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 1}, 200)
 
-	h.maybeArmDriftHalt(150, internal.ChangeKey{}, nil) // below the marker: must not arm
+	h.maybeArmDriftHalt(150, internal.ChangeKey{}, position.Position{}) // below the marker: must not arm
 	is.True(!h.driftHaltArmed.Load())
 
 	ch := h.driftHaltCh
-	h.maybeArmDriftHalt(200, internal.ChangeKey{}, nil) // the marker's own ack
+	h.maybeArmDriftHalt(200, internal.ChangeKey{}, position.Position{}) // the marker's own ack
 	is.True(h.driftHaltArmed.Load())
 	select {
 	case <-ch:
@@ -466,7 +470,7 @@ func Test_MaybeArmDriftHalt_AckGating(t *testing.T) {
 
 	// Second arming is a no-op: the channel is closed exactly once, the error
 	// is stable.
-	h.maybeArmDriftHalt(999, internal.ChangeKey{}, nil)
+	h.maybeArmDriftHalt(999, internal.ChangeKey{}, position.Position{})
 	msg := h.driftHaltError().Error()
 	is.True(strings.HasPrefix(msg, ErrorCodeSchemaDriftHalt+": "))
 }
@@ -493,11 +497,131 @@ func Test_MaybeArmDriftHalt_ArmsOnKeyNotLSN(t *testing.T) {
 	is.True(h.driftMarkerPending())
 
 	// An earlier-committed transaction's change: higher LSN, lower key.
-	h.maybeArmDriftHalt(900, internal.ChangeKey{CommitLSN: 0x400, Seq: 3}, nil)
+	h.maybeArmDriftHalt(900, internal.ChangeKey{CommitLSN: 0x400, Seq: 3}, position.Position{})
 	is.True(!h.driftHaltArmed.Load())
 
 	// The marker's own ack arms, although its LSN (200) is below the LSN of
 	// the change acked before it (900).
-	h.maybeArmDriftHalt(200, internal.ChangeKey{CommitLSN: 0x500, Seq: 1}, nil)
+	h.maybeArmDriftHalt(200, internal.ChangeKey{CommitLSN: 0x500, Seq: 1}, position.Position{})
 	is.True(h.driftHaltArmed.Load())
+}
+
+// syncBuffer is a goroutine-safe log sink.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// markerWithPredecessor drives a handler to emit a marker for a deciding
+// change at key (0x500, 2) after a delivered record at (0x500, 1). It returns
+// the handler, the previous record's position and the marker's position. The
+// marker's position carries the previous record's key (#338).
+func markerWithPredecessor(ctx context.Context, t *testing.T) (h *CDCHandler, prev, marker position.Position) {
+	t.Helper()
+	h, out := newHandlerWithOut(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
+	cur := internal.ChangeKey{CommitLSN: 0x500, Seq: 1}
+	h.changeKey = func() internal.ChangeKey { return cur }
+
+	_, _ = relate(ctx, t, h, relMsg(shapeV1...), 100)
+	if _, err := h.Handle(ctx, usersRow(2), 200); err != nil { // a delivered record, same LSN as the deciding one (COPY rows share an LSN)
+		t.Fatal(err)
+	}
+	cur = internal.ChangeKey{CommitLSN: 0x500, Seq: 2}
+	_, _ = h.Handle(ctx, relMsg(shapeV2...), 0)
+	if _, err := h.Handle(ctx, usersRow(3), 200); err != nil { // the deciding change
+		t.Fatal(err)
+	}
+	recs := drainBatches(out)
+	if len(recs) != 2 {
+		t.Fatalf("want a record and a marker, got %d records", len(recs))
+	}
+	var err error
+	if prev, err = position.ParseSDKPosition(recs[0].Position); err != nil {
+		t.Fatal(err)
+	}
+	if marker, err = position.ParseSDKPosition(recs[1].Position); err != nil {
+		t.Fatal(err)
+	}
+	return h, prev, marker
+}
+
+// Test_MaybeArmDriftHalt_SemanticMarkerMatch pins the #338 arming rule: the
+// marker shares its key with the record before it, so the ack is recognized by
+// the position's content. A re-marshaled copy of the marker's position (same
+// meaning, different bytes) must arm; the previous record's position, which has
+// the same key and an older schema history, must not.
+func Test_MaybeArmDriftHalt_SemanticMarkerMatch(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+	h, prev, marker := markerWithPredecessor(ctx, t)
+
+	is.Equal(prev.TxCommitLSN, marker.TxCommitLSN) // same key...
+	is.Equal(prev.TxSeq, marker.TxSeq)             // ...as the record before it
+
+	prevKey := internal.ChangeKey{CommitLSN: 0x500, Seq: 1}
+	h.maybeArmDriftHalt(200, prevKey, prev)
+	is.True(!h.driftHaltArmed.Load()) // the previous record's ack does not arm
+
+	// The same position, re-marshaled: indented, keys sorted, via a generic map.
+	raw := marker.ToSDKPosition()
+	var m map[string]json.RawMessage
+	is.NoErr(json.Unmarshal(raw, &m))
+	reformatted, err := json.MarshalIndent(m, "", "  ")
+	is.NoErr(err)
+	is.True(!bytes.Equal(raw, reformatted))
+	reparsed, err := position.ParseSDKPosition(reformatted)
+	is.NoErr(err)
+
+	h.maybeArmDriftHalt(200, prevKey, reparsed)
+	is.True(h.driftHaltArmed.Load()) // the marker's ack arms
+}
+
+// Test_MaybeArmDriftHalt_ZeroPositionMatchesNothing: an empty position never
+// counts as the marker, so the key and LSN rules alone decide.
+func Test_MaybeArmDriftHalt_ZeroPositionMatchesNothing(t *testing.T) {
+	is := is.New(t)
+	h, _, _ := markerWithPredecessor(context.Background(), t)
+	h.maybeArmDriftHalt(200, internal.ChangeKey{CommitLSN: 0x500, Seq: 1}, position.Position{})
+	is.True(!h.driftHaltArmed.Load())
+}
+
+// Test_DriftMarker_WarnsWhenUnacked: a marker that stays unacked past the
+// threshold is reported once, so a pipeline waiting on an ack that never
+// matches is not silent. An armed halt stays quiet.
+func Test_DriftMarker_WarnsWhenUnacked(t *testing.T) {
+	old := driftMarkerWarnAfter
+	driftMarkerWarnAfter = 50 * time.Millisecond
+	t.Cleanup(func() { driftMarkerWarnAfter = old })
+
+	var logs syncBuffer
+	ctx := zerolog.New(&logs).WithContext(context.Background())
+	h, _, marker := markerWithPredecessor(ctx, t)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(logs.String(), "has not been acked") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	is.New(t).True(strings.Contains(logs.String(), "has not been acked"))
+
+	// Acked in time: no warning.
+	var quiet syncBuffer
+	ctx2 := zerolog.New(&quiet).WithContext(context.Background())
+	driftMarkerWarnAfter = 300 * time.Millisecond
+	h2, _, marker2 := markerWithPredecessor(ctx2, t)
+	h2.maybeArmDriftHalt(200, internal.ChangeKey{CommitLSN: 0x500, Seq: 1}, marker2)
+	time.Sleep(600 * time.Millisecond)
+	is.New(t).True(!strings.Contains(quiet.String(), "has not been acked"))
+	_, _ = h, marker
 }

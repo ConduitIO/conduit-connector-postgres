@@ -16,6 +16,7 @@ package logrepl
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
@@ -25,7 +26,9 @@ import (
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
+	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
 )
 
@@ -46,6 +49,9 @@ type boundaryCase struct {
 	// boundary and after are what the approving restart must deliver: the
 	// deciding change first, then the rest of the stream.
 	want []string
+	// reformatAck acks the marker as a semantically equal but re-marshaled
+	// position (indented, keys sorted), as an engine or middleware might.
+	reformatAck bool
 }
 
 func boundaryCases() []boundaryCase {
@@ -156,18 +162,34 @@ func boundaryRun1(ctx context.Context, t *testing.T, tc boundaryCase, table stri
 	cancel()
 	is.True(err != nil && !strings.Contains(err.Error(), ErrorCodeSchemaDriftHalt)) // blocked, not halted
 
-	is.NoErr(run1.Ack(ctx, marker.Position))
-	_, err = run1.NextN(ctx, 1)
-	is.True(err != nil && strings.Contains(err.Error(), ErrorCodeSchemaDriftHalt))
+	ackPos := marker.Position
+	if tc.reformatAck {
+		ackPos = reformatPosition(t, marker.Position)
+		is.True(string(ackPos) != string(marker.Position))
+	}
+	is.NoErr(run1.Ack(ctx, ackPos))
+	// Bounded, so a halt that fails to arm is an assertion, not a timeout.
+	haltCtx, haltCancel := context.WithTimeout(ctx, 15*time.Second)
+	_, err = run1.NextN(haltCtx, 1)
+	haltCancel()
+	is.True(err != nil && strings.Contains(err.Error(), ErrorCodeSchemaDriftHalt)) // the halt armed on the marker's ack
 	_ = run1.Teardown(ctx)
 
 	// Invariant 1: the slot must not move past the deciding change, or
-	// Postgres would not re-send its transaction on the restart.
-	time.Sleep(time.Second)
+	// Postgres would not re-send its transaction on the restart. Teardown
+	// sends the final standby status; wait for the server to apply it (the
+	// slot reaches the marker's LSN) and check it did not go further.
 	mp := posOf(t, marker)
 	mlsn, err := mp.LSN()
 	is.NoErr(err)
-	is.True(r2CF(ctx, t, pool, table) <= mlsn)
+	var cf pglogrepl.LSN
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		cf = r2CF(ctx, t, pool, table)
+		if cf >= mlsn || time.Now().After(deadline) {
+			break
+		}
+	}
+	is.True(cf == mlsn) // reached the marker's LSN, and not past it
 
 	return marker, recs[len(pre)-1]
 }
@@ -324,5 +346,175 @@ func TestDrift338_PositionFormat(t *testing.T) {
 		default:
 			t.Fatalf("marker position carries an unexpected field %q", k)
 		}
+	}
+}
+
+// reformatPosition returns the same position re-marshaled: indented, keys in
+// sorted order. Semantically equal, byte-different.
+func reformatPosition(t *testing.T, p opencdc.Position) opencdc.Position {
+	t.Helper()
+	m := map[string]json.RawMessage{} // RawMessage keeps tx_seq's 64-bit value exact
+	if err := json.Unmarshal(p, &m); err != nil {
+		t.Fatal(err)
+	}
+	out, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// TestDrift338_ReformattedMarkerAck: the engine (or middleware) acks a
+// semantically equal but re-marshaled marker position. The halt must still
+// surface. Arming on the position's bytes turned this into a silent stall:
+// NextN blocked, nothing was logged, and the slot was held.
+func TestDrift338_ReformattedMarkerAck(t *testing.T) {
+	for _, tc := range boundaryCases()[:2] { // mid-transaction and seq-1 markers
+		tc.reformatAck = true
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := test.Context(t)
+			is := is.New(t)
+			pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+			table := test.SetupEmptyTestTable(ctx, t, pool)
+			cleanupSlot(t, pool, table)
+
+			marker, _ := boundaryRun1(ctx, t, tc, table) // asserts the halt armed
+			run2 := newInterleaveCombinedPolicy(ctx, t, pool, table, marker.Position, tc.policy)
+			defer func() { _ = run2.Teardown(ctx) }()
+			is.Equal(drainColumn1(ctx, t, run2, 4*time.Second), tc.want)
+		})
+	}
+}
+
+// newCombinedTables is newInterleaveCombinedPolicy for several tables in one
+// publication.
+func newCombinedTables(ctx context.Context, t *testing.T, pool *pgxpool.Pool, slot string, tables []string, pos opencdc.Position) *CombinedIterator {
+	t.Helper()
+	keys := map[string]string{}
+	for _, tb := range tables {
+		keys[tb] = "id"
+	}
+	it, err := NewCombinedIterator(ctx, pool, Config{
+		Position:          pos,
+		SlotName:          slot,
+		PublicationName:   slot,
+		Tables:            tables,
+		TableKeys:         keys,
+		BatchSize:         1,
+		SchemaDriftPolicy: SchemaDriftPolicyHalt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return it
+}
+
+// TestDrift338_InterleavedBoundary: the deciding change is the first change of
+// its transaction (A: ALTER, INSERT a1) while another transaction (B, another
+// table) is open across it. B inserts before A's insert and commits after it,
+// in both commit orders.
+//
+//   - B commits first: B's row is delivered before the marker and acked, so the
+//     approving restart must deliver exactly [a1].
+//   - A commits first: B's row is in the stream after the marker, so run 1
+//     skips it (D4) and the restart must deliver [a1, b1].
+//
+// The first-change predecessor is what keeps B's row out of the first case and
+// A's row in. The legacy rule (no key, B's commit is past a1's LSN) re-delivers
+// b1; a predecessor of Seq 1 drops a1.
+func TestDrift338_InterleavedBoundary(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		bFirst  bool
+		want    []string
+		beforeM []string
+	}{
+		{name: "b_first", bFirst: true, want: []string{"a1"}, beforeM: []string{"base", "b1"}},
+		{name: "a_first", bFirst: false, want: []string{"a1", "b1"}, beforeM: []string{"base"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := test.Context(t)
+			is := is.New(t)
+			pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+			tableA := test.SetupEmptyTestTable(ctx, t, pool)
+			tableB := tableA + "_b"
+			test.SetupEmptyTestTableWithName(ctx, t, pool, tableB)
+			cleanupSlot(t, pool, tableA)
+			tables := []string{tableA, tableB}
+
+			run1 := newCombinedTables(ctx, t, pool, tableA, tables, nil)
+			_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('base')`, tableA))
+			is.NoErr(err)
+			base := readN(ctx, t, run1, 1, 15*time.Second)
+			is.Equal(column1(t, base[0]), "base")
+			is.NoErr(run1.Ack(ctx, base[0].Position))
+
+			txB, err := pool.Begin(ctx)
+			is.NoErr(err)
+			_, err = txB.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('b1')`, tableB))
+			is.NoErr(err)
+			txA, err := pool.Begin(ctx)
+			is.NoErr(err)
+			_, err = txA.Exec(ctx, fmt.Sprintf(`ALTER TABLE %q ADD COLUMN extra int`, tableA))
+			is.NoErr(err)
+			_, err = txA.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('a1')`, tableA))
+			is.NoErr(err)
+			if tt.bFirst {
+				is.NoErr(txB.Commit(ctx))
+				is.NoErr(txA.Commit(ctx))
+			} else {
+				is.NoErr(txA.Commit(ctx))
+				is.NoErr(txB.Commit(ctx))
+			}
+
+			pre := tt.beforeM[1:] // "base" was read above
+			recs := readN(ctx, t, run1, len(pre)+1, 15*time.Second)
+			for i, w := range pre {
+				is.Equal(column1(t, recs[i]), w)
+			}
+			marker := recs[len(pre)]
+			is.Equal(marker.Metadata[MetadataSchemaDrift], "true")
+			for _, r := range recs {
+				is.NoErr(run1.Ack(ctx, r.Position))
+			}
+			haltCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			_, err = run1.NextN(haltCtx, 1)
+			cancel()
+			is.True(err != nil && strings.Contains(err.Error(), ErrorCodeSchemaDriftHalt))
+			_ = run1.Teardown(ctx)
+
+			run2 := newCombinedTables(ctx, t, pool, tableA, tables, marker.Position)
+			defer func() { _ = run2.Teardown(ctx) }()
+			is.Equal(drainColumn1(ctx, t, run2, 4*time.Second), tt.want)
+		})
+	}
+}
+
+// TestDrift338_RedeliveredIfUnackedAfterApproval: the approving restart
+// delivers the deciding row but the process stops before the engine acks it.
+// The checkpoint is still the marker, so the next restart delivers the row
+// again, exactly once, followed by the rest of the stream. This is
+// at-least-once for the one record that was in flight, not a loss and not a
+// repeat beyond that record.
+func TestDrift338_RedeliveredIfUnackedAfterApproval(t *testing.T) {
+	for _, tc := range boundaryCases()[:2] {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := test.Context(t)
+			is := is.New(t)
+			pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+			table := test.SetupEmptyTestTable(ctx, t, pool)
+			cleanupSlot(t, pool, table)
+
+			marker, _ := boundaryRun1(ctx, t, tc, table)
+
+			run2 := newInterleaveCombinedPolicy(ctx, t, pool, table, marker.Position, tc.policy)
+			first := readN(ctx, t, run2, 1, 15*time.Second)
+			is.Equal(column1(t, first[0]), tc.want[0]) // the deciding row
+			_ = run2.Teardown(ctx)                     // never acked
+
+			run3 := newInterleaveCombinedPolicy(ctx, t, pool, table, marker.Position, tc.policy)
+			defer func() { _ = run3.Teardown(ctx) }()
+			is.Equal(drainColumn1(ctx, t, run3, 4*time.Second), tc.want) // once, then the rest
+		})
 	}
 }
