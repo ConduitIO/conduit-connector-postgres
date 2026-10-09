@@ -380,7 +380,7 @@ func (i *CDCIterator) Ack(_ context.Context, sdkPos opencdc.Position) error {
 	// is the boundary the escape hatch depends on: the ack moves the slot's
 	// confirmed_flush_lsn to exactly the point the connector has seen and no
 	// further, and the engine's persisted position is the operator's approval.
-	i.handler.maybeArmDriftHalt(lsn, key)
+	i.handler.maybeArmDriftHalt(lsn, key, pos)
 
 	return nil
 }
@@ -389,6 +389,9 @@ func (i *CDCIterator) Ack(_ context.Context, sdkPos opencdc.Position) error {
 // or the context gets canceled. If the subscription stopped with an unexpected
 // error, the error is returned.
 func (i *CDCIterator) Teardown(ctx context.Context) error {
+	if i.handler != nil {
+		i.handler.stopMarkerWarning()
+	}
 	if i.sub != nil {
 		return i.sub.Teardown(ctx)
 	}

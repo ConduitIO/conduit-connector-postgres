@@ -265,6 +265,14 @@ func appendAndAck(ctx context.Context, src sdk.Source, ledger *Ledger, run int, 
 	if err := src.Ack(ctx, rec.Position); err != nil {
 		childFatalf("ack: %v", err)
 	}
+
+	if entry.Drift {
+		// The #338 kill window: the marker is durable AND acked, the halt is
+		// armed but not yet surfaced, and no teardown has run. The restart
+		// after a kill here is the approval, and must deliver the row that
+		// decided the drift.
+		chaospoint.Reach(chaospoint.DriftMarkerAcked)
+	}
 }
 
 // ledgerOpCDC is LedgerEntry.Op for a CDC delivery.
@@ -320,6 +328,14 @@ func buildLedgerEntry(run int, table string, rec opencdc.Record) (LedgerEntry, e
 			// (COPY) share an LSN, so an LSN identity would report distinct
 			// rows as duplicates (#331).
 			entry.DeliveryKey = fmt.Sprintf("cdc:%s/%d", pos.TxCommitLSN, pos.TxSeq)
+		}
+		if entry.Drift {
+			// A drift marker's position carries the key one below the
+			// change that decided the drift (#338), which is the key of the
+			// record delivered just before it. It is not a delivery of that
+			// change, so give it its own identity: otherwise the ledger
+			// reports it as a duplicate of the previous record.
+			entry.DeliveryKey = "drift:" + entry.DeliveryKey
 		}
 	default:
 		return LedgerEntry{}, fmt.Errorf("unexpected position type %q (raw position %q)", pos.Type, rec.Position)

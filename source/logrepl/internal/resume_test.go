@@ -15,6 +15,7 @@
 package internal
 
 import (
+	"math"
 	"math/rand"
 	"sort"
 	"testing"
@@ -100,6 +101,82 @@ func TestResumePoint_Model(t *testing.T) {
 						t.Fatalf("seq %d legacy: duplicate of a transaction committed after the checkpointed one (commit %s > %s)",
 							seq, c.commit, cp.commit)
 					}
+				}
+			}
+		}
+	}
+}
+
+// TestChangeKey_Predecessor pins the key a drift marker carries so the
+// approving restart resumes AT the deciding change (#338).
+func TestChangeKey_Predecessor(t *testing.T) {
+	tests := []struct {
+		name string
+		in   ChangeKey
+		want ChangeKey
+	}{
+		{"mid-transaction change: the previous change", ChangeKey{0x9F0, 5}, ChangeKey{0x9F0, 4}},
+		{"second change", ChangeKey{0x9F0, 2}, ChangeKey{0x9F0, 1}},
+		{"first change: the end of everything that committed before", ChangeKey{0x9F0, 1}, ChangeKey{0x9EF, math.MaxUint64}},
+		{"unknown commit LSN stays unknown", ChangeKey{0, 3}, ChangeKey{}},
+		{"unknown seq stays unknown", ChangeKey{0x9F0, 0}, ChangeKey{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := is.New(t)
+			got := tt.in.Predecessor()
+			is.Equal(got, tt.want)
+			if tt.in.Known() {
+				is.True(got.Known())          // readable by every build with the change-key resume
+				is.True(got.Before(tt.in))    // strictly below
+				is.True(!tt.in.Before(got))   // and not equal
+				is.True(!tt.in.Before(tt.in)) // sanity
+			}
+		})
+	}
+}
+
+// TestChangeKey_PredecessorOfCommitLSN1: the first change of a transaction that
+// committed at LSN 1 has predecessor (0, MaxUint64), whose commit LSN is the
+// "unknown" value, so it is not Known and carries no key. A marker built from
+// it resumes by the legacy rule, which re-delivers the transaction and so
+// still delivers the deciding change. Real commit LSNs are far above 1; this
+// pins the degenerate edge so it stays safe (no loss) rather than undefined.
+func TestChangeKey_PredecessorOfCommitLSN1(t *testing.T) {
+	is := is.New(t)
+	pred := ChangeKey{CommitLSN: 1, Seq: 1}.Predecessor()
+	is.Equal(pred, ChangeKey{CommitLSN: 0, Seq: math.MaxUint64})
+	is.True(!pred.Known())
+	legacy := ResumePoint{Key: pred, LSN: 1}                    // a change LSN cannot exceed its commit LSN
+	is.True(!legacy.Delivered(ChangeKey{CommitLSN: 1, Seq: 1})) // the deciding change is delivered
+	is.True(!legacy.Delivered(ChangeKey{CommitLSN: 1, Seq: 2}))
+}
+
+// TestResumePoint_ResumeAtInclusive is the #338 property. A checkpoint that
+// carries the predecessor of change i (and i's own LSN, as the marker does)
+// makes a restart deliver exactly changes i.., never i-1 or earlier. Postgres
+// re-sends every transaction whose commit is at or past the checkpoint's
+// change LSN, as in TestResumePoint_Model. Includes multi-row inserts whose
+// rows share an LSN, and i being the first change of its transaction.
+func TestResumePoint_ResumeAtInclusive(t *testing.T) {
+	rng := rand.New(rand.NewSource(338)) //nolint:gosec // deterministic test input
+
+	for run := 0; run < 1500; run++ {
+		stream := interleavedStream(rng)
+		for at, target := range stream {
+			point := ResumePoint{Key: target.key().Predecessor(), LSN: target.lsn}
+			for i, c := range stream {
+				if c.commit < target.lsn {
+					continue // Postgres does not re-send it
+				}
+				delivered := point.Delivered(c.key())
+				switch {
+				case i < at && !delivered:
+					t.Fatalf("run %d: change %d (commit %s, seq %d) was acked before the marker but is re-delivered",
+						run, i, c.commit, c.seq)
+				case i >= at && delivered:
+					t.Fatalf("run %d: change %d (commit %s, seq %d) at or after the deciding change %d is skipped: LOST",
+						run, i, c.commit, c.seq, at)
 				}
 			}
 		}

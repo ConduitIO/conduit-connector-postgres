@@ -17,6 +17,7 @@ package logrepl
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -129,7 +130,14 @@ type CDCHandler struct {
 	//     driftMarkerLSN and read by maybeArmDriftHalt only after that atomic
 	//     is observed non-zero, so the store/load pair orders the write before
 	//     the read (same scheme as driftHaltErr). The halt arms on this key,
-	//     never on the LSN: see maybeArmDriftHalt.
+	//     never on the LSN: see maybeArmDriftHalt. It is the deciding change's
+	//     key, not the key in the marker's position, which is the predecessor
+	//     (#338).
+	//   - driftMarkerPos is the marker's parsed position, written next to
+	//     driftMarkerKey under the same ordering. The marker's position key is
+	//     the deciding change's predecessor, which the previous record's
+	//     position can share, so an ack is recognized as the marker's by the
+	//     position's content, not its key (see maybeArmDriftHalt).
 	//   - driftHaltArmed is written on the engine goroutine (Ack ->
 	//     maybeArmDriftHalt) and read on the engine goroutine (NextN). It gates
 	//     surfacing the error.
@@ -145,9 +153,20 @@ type CDCHandler struct {
 	// No locks (D8): the atomics above order every read after its write.
 	driftMarkerLSN atomic.Uint64
 	driftMarkerKey internal.ChangeKey
+	driftMarkerPos position.Position
 	driftHaltArmed atomic.Bool
 	driftHaltErr   error
 	driftHaltCh    chan struct{}
+
+	// driftWarn* back the "marker still unacked" warning. afterFunc is
+	// time.AfterFunc outside tests. The timer is created on the subscription
+	// goroutine and stopped from the engine goroutine (arming ack, Teardown),
+	// so it sits behind a mutex; driftWarnStopped also silences a callback that
+	// is already running when the timer is stopped.
+	afterFunc        func(d time.Duration, f func()) timerStopper
+	driftWarnMu      sync.Mutex
+	driftWarnTimer   timerStopper
+	driftWarnStopped atomic.Bool
 
 	// changeKey returns the key of the change being handled (see
 	// internal.Subscription.CurrentChange). Set once before the subscription
@@ -181,6 +200,9 @@ func NewCDCHandler(
 		basePosition:      startPosition,
 		schemaDriftPolicy: schemaDriftPolicy,
 		driftHaltCh:       make(chan struct{}),
+		afterFunc: func(d time.Duration, f func()) timerStopper {
+			return time.AfterFunc(d, f)
+		},
 
 		undecidedRelations: make(map[uint32]struct{}),
 		seenShapes:         make(map[uint32]map[string]*pglogrepl.RelationMessage),
@@ -494,39 +516,37 @@ func (h *CDCHandler) buildRecordPayload(values map[string]any) opencdc.Data {
 // legacy (Version 0 / Finding-1) behavior even on a connector that has run well
 // past its first snapshot — the intermittent regression the design doc calls out.
 func (h *CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
+	return h.buildPositionAt(lsn, h.currentChangeKey())
+}
+
+// buildPositionAt is buildPosition with an explicit change key. A key that is
+// not Known leaves the position without one (the legacy resume rule).
+func (h *CDCHandler) buildPositionAt(lsn pglogrepl.LSN, key internal.ChangeKey) opencdc.Position {
+	var commit string
+	var seq uint64
+	if key.Known() {
+		commit, seq = key.CommitLSN.String(), key.Seq
+	}
 	return position.Position{
 		Type:                    position.TypeCDC,
 		LastLSN:                 lsn.String(),
-		TxCommitLSN:             h.txCommitLSN(),
-		TxSeq:                   h.txSeq(),
+		TxCommitLSN:             commit,
+		TxSeq:                   seq,
 		SnapshotLowWatermarkLSN: h.basePosition.SnapshotLowWatermarkLSN,
 		SchemaHistory:           h.basePosition.SchemaHistory,
 	}.ToSDKPosition()
 }
 
-// txCommitLSN and txSeq return the key of the change being handled (its
+// currentChangeKey returns the key of the change being handled (its
 // transaction's commit LSN and its ordinal within that transaction, from the
-// subscription), or zero values when unknown. Every CDC position carries the
+// subscription), or the zero key when unknown. Every CDC position carries the
 // key so a restart can tell which re-sent changes were already delivered
 // (#331; see internal.ChangeKey and internal.ResumePoint).
 //
 // Invariant 2: (TxCommitLSN, TxSeq) increases strictly record by record in
 // stream order, even when LastLSN does not (interleaved transactions) or
-// repeats (rows of one multi-row insert).
-func (h *CDCHandler) txCommitLSN() string {
-	if k := h.currentChangeKey(); k.Known() {
-		return k.CommitLSN.String()
-	}
-	return ""
-}
-
-func (h *CDCHandler) txSeq() uint64 {
-	if k := h.currentChangeKey(); k.Known() {
-		return k.Seq
-	}
-	return 0
-}
-
+// repeats (rows of one multi-row insert). The drift marker is the one record
+// whose position carries a key below its own change's (#338).
 func (h *CDCHandler) currentChangeKey() internal.ChangeKey {
 	if h.changeKey == nil {
 		return internal.ChangeKey{}
@@ -818,7 +838,10 @@ func (h *CDCHandler) haltsOnDrift(kind driftKind, diff internal.SchemaDiff) bool
 //
 // It runs on the delivered change that decided the drift (see
 // decideDriftOnDelivery), so lsn and the change key are that change's: the
-// marker takes its place in the stream (D4 drops the change itself). pgoutput
+// marker takes its place in the stream (D4 drops the change itself in this
+// run). The marker's position carries the key one below that change (#338), so
+// the approving restart resumes at the change and delivers it, decoded against
+// the approved shape. pgoutput
 // delivers the RelationMessage with WALStart 0 (verified 2026-08-29), so the
 // relation message has no usable position of its own.
 //
@@ -876,7 +899,22 @@ func (h *CDCHandler) emitDriftMarker(
 		metadata[MetadataSchemaDriftDiff] = diff.String()
 	}
 
-	rec := sdk.Util.Source.NewRecordCreate(h.buildPosition(lsn), metadata, nil, nil)
+	// #338: the marker's position carries the key one below the deciding
+	// change, so the approving restart resumes AT that change instead of past
+	// it. Everything emitted before the marker has a key at or below the
+	// predecessor and was acked ahead of the marker (FIFO), so the exact resume
+	// skips precisely that and delivers the deciding change, now decoded
+	// against the approved shape. The LSN stays the deciding change's own: it
+	// is what the slot's confirmed_flush_lsn can reach, and it is below the
+	// transaction's commit LSN, so Postgres re-sends the transaction.
+	//
+	// Invariant 3: the deciding change is re-delivered, not dropped.
+	// Invariant 1: the flush gate compares the last emitted key (the deciding
+	// change, or a later D4-skipped one) with the last acked key (this
+	// predecessor), so it stays closed until the deciding change itself is
+	// delivered and acked after the restart.
+	markerKey := h.currentChangeKey()
+	rec := sdk.Util.Source.NewRecordCreate(h.buildPositionAt(lsn, markerKey.Predecessor()), metadata, nil, nil)
 	h.addToBatch(ctx, rec)
 
 	// Publish the pending-marker state AFTER the marker is queued, so a reader
@@ -885,8 +923,17 @@ func (h *CDCHandler) emitDriftMarker(
 	// write is ordered before the atomic store; readers observe it after
 	// driftHaltArmed or driftHaltCh (see the field comment).
 	h.driftHaltErr = haltErr
-	h.driftMarkerKey = h.currentChangeKey() // before the atomic store below
+	h.driftMarkerKey = markerKey // before the atomic store below
+	if mp, err := position.ParseSDKPosition(rec.Position); err != nil {
+		// Cannot happen for a position this handler just serialized. If it
+		// did, no ack could match the marker and the halt would never arm.
+		sdk.Logger(ctx).Error().Err(err).
+			Msg("failed to parse the drift marker's own position; the halt cannot arm")
+	} else {
+		h.driftMarkerPos = mp
+	}
 	h.driftMarkerLSN.Store(uint64(lsn))
+	h.warnIfMarkerStaysUnacked(ctx, key)
 }
 
 // driftMarkerPending reports whether a drift marker has been emitted but not
@@ -917,22 +964,99 @@ func (h *CDCHandler) driftMarkerPending() bool {
 // Invariant 1: arming is acked-gated, never sighting-gated: the engine
 // persists a position before acking it, so an acked marker is proof the
 // checkpoint is durable, which is exactly what makes the restart an approval.
-func (h *CDCHandler) maybeArmDriftHalt(lsn pglogrepl.LSN, key internal.ChangeKey) {
+//
+// #338: the marker's position carries the key one below the deciding change,
+// which is also the key of the record delivered just before the marker (when
+// the deciding change is not the first of its transaction). An ack's key
+// therefore cannot tell the marker's ack from that record's. The position's
+// content can: the marker's position records the new schema shape in its
+// SchemaHistory, which the previous record's does not. An ack matches when its
+// parsed Type, LastLSN, TxCommitLSN, TxSeq and SchemaHistory equal the
+// marker's. The comparison is semantic, not byte-exact, so an engine or
+// middleware that re-marshals the position (key order, whitespace) still
+// arms; a byte comparison turned that into a silent stall, because D4 emits
+// nothing after the marker and no later ack can arm instead. An ack with a key
+// at or past the deciding change's key still arms, as before.
+func (h *CDCHandler) maybeArmDriftHalt(lsn pglogrepl.LSN, key internal.ChangeKey, pos position.Position) {
 	markerLSN := pglogrepl.LSN(h.driftMarkerLSN.Load())
 	if markerLSN == 0 {
 		return
 	}
-	// driftMarkerKey is safe to read: the atomic load above observed the
-	// store that followed its write.
-	if markerKey := h.driftMarkerKey; markerKey.Known() && key.Known() {
-		if key.Before(markerKey) {
+	// driftMarkerKey and driftMarkerPos are safe to read: the atomic load
+	// above observed the store that followed their writes.
+	if !samePosition(pos, h.driftMarkerPos) {
+		if markerKey := h.driftMarkerKey; markerKey.Known() && key.Known() {
+			if key.Before(markerKey) {
+				return
+			}
+		} else if lsn < markerLSN {
 			return
 		}
-	} else if lsn < markerLSN {
-		return
 	}
 	if h.driftHaltArmed.CompareAndSwap(false, true) {
+		h.stopMarkerWarning()
 		close(h.driftHaltCh)
+	}
+}
+
+// samePosition reports whether two CDC positions are semantically equal on
+// the fields that identify a marker: type, LSN, change key and schema history
+// (nil and empty histories are equal). A zero Position matches nothing real.
+func samePosition(a, b position.Position) bool {
+	if a.Type != position.TypeCDC || b.Type != position.TypeCDC {
+		return false
+	}
+	if a.LastLSN != b.LastLSN || a.TxCommitLSN != b.TxCommitLSN || a.TxSeq != b.TxSeq {
+		return false
+	}
+	if len(a.SchemaHistory) == 0 && len(b.SchemaHistory) == 0 {
+		return true
+	}
+	return reflect.DeepEqual(a.SchemaHistory, b.SchemaHistory)
+}
+
+// driftMarkerWarnAfter is how long a drift marker may stay unacked before the
+// connector says so.
+const driftMarkerWarnAfter = 30 * time.Second
+
+// timerStopper is the part of *time.Timer the warning needs, so tests can
+// replace the clock.
+type timerStopper interface{ Stop() bool }
+
+// warnIfMarkerStaysUnacked logs once if the halt has not armed
+// driftMarkerWarnAfter after the marker was emitted. Until the marker is
+// acked nothing else is emitted (D4) and the slot is held, so a pipeline that
+// never acks the marker (for example because the position it returns is not
+// the one the marker carried) waits silently while WAL accumulates. The timer
+// is stopped by the arming ack and by Teardown (stopMarkerWarning), so it
+// neither outlives the iterator nor fires for an acked marker.
+func (h *CDCHandler) warnIfMarkerStaysUnacked(ctx context.Context, key string) {
+	t := h.afterFunc(driftMarkerWarnAfter, func() {
+		if h.driftHaltArmed.Load() || h.driftWarnStopped.Load() {
+			return
+		}
+		sdk.Logger(ctx).Warn().
+			Str("table", key).
+			Stringer("marker_lsn", pglogrepl.LSN(h.driftMarkerLSN.Load())).
+			Dur("after", driftMarkerWarnAfter).
+			Msg("schema drift marker has not been acked; the halt cannot surface and the slot is held. " +
+				"The marker's position must be acked unchanged (type, LSN, change key, schema history)")
+	})
+	h.driftWarnMu.Lock()
+	h.driftWarnTimer = t
+	h.driftWarnMu.Unlock()
+}
+
+// stopMarkerWarning cancels the pending "marker still unacked" warning, if
+// any. Safe to call repeatedly and before any marker exists.
+func (h *CDCHandler) stopMarkerWarning() {
+	h.driftWarnStopped.Store(true)
+	h.driftWarnMu.Lock()
+	t := h.driftWarnTimer
+	h.driftWarnTimer = nil
+	h.driftWarnMu.Unlock()
+	if t != nil {
+		t.Stop()
 	}
 }
 

@@ -15,8 +15,11 @@
 package logrepl
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +28,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/jackc/pglogrepl"
 	"github.com/matryer/is"
+	"github.com/rs/zerolog"
 )
 
 // newHandlerWithOut is newHandlerWithPosition plus the send side of the output
@@ -146,11 +150,13 @@ func Test_HandleRelation_HaltEmitsMarker(t *testing.T) {
 	// D3: acked-gated — the error is stored, but not surfaced until the ack.
 	is.True(!h.driftHaltArmed.Load())
 	is.Equal(h.driftHaltError(), nil)
-	h.maybeArmDriftHalt(lsn, internal.ChangeKey{})
+	h.maybeArmDriftHalt(lsn, internal.ChangeKey{}, position.Position{})
 	is.True(h.driftHaltArmed.Load())
 	is.True(strings.HasPrefix(h.driftHaltError().Error(), ErrorCodeSchemaDriftHalt))
 	is.True(strings.Contains(h.driftHaltError().Error(), haltRevertTrap))
-	is.True(strings.Contains(h.driftHaltError().Error(), haltDisclosure))
+	// #338: the boundary row is delivered after the restart, so the message
+	// no longer discloses a dropped record.
+	is.True(!strings.Contains(h.driftHaltError().Error(), "not delivered"))
 }
 
 // Test_HandleRelation_EvolveAcceptsAdditive pins that evolve admits a purely
@@ -238,7 +244,7 @@ func Test_HaltError_AcrossRestartMessage(t *testing.T) {
 
 	_, _ = h2.Handle(ctx, relMsg(shapeV2...), 0)
 	_ = h2.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 1}, 210)
-	h2.maybeArmDriftHalt(210, internal.ChangeKey{})
+	h2.maybeArmDriftHalt(210, internal.ChangeKey{}, position.Position{})
 
 	msg := h2.driftHaltError().Error()
 	is.True(strings.HasPrefix(msg, ErrorCodeSchemaDriftHalt+": "))
@@ -246,8 +252,8 @@ func Test_HaltError_AcrossRestartMessage(t *testing.T) {
 	is.True(strings.Contains(msg, "schema hash "))
 	is.True(strings.Contains(msg, "0/64")) // prev.FirstSeenLSN
 	is.True(strings.Contains(msg, haltRevertTrap))
-	is.True(strings.Contains(msg, haltDisclosure)) // Blocker 2: disclose the dropped boundary record
-	is.True(!strings.Contains(msg, "age"))         // AC7: never fabricates a column diff
+	is.True(!strings.Contains(msg, "not delivered")) // #338: no dropped boundary record to disclose
+	is.True(!strings.Contains(msg, "age"))           // AC7: never fabricates a column diff
 }
 
 // Test_HandleRelation_StackedDDL_OneMarker pins FM8/AC9: a second DDL while a
@@ -450,11 +456,11 @@ func Test_MaybeArmDriftHalt_AckGating(t *testing.T) {
 	// The first DML emits the marker at LSN 200.
 	_ = h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 1}, 200)
 
-	h.maybeArmDriftHalt(150, internal.ChangeKey{}) // below the marker: must not arm
+	h.maybeArmDriftHalt(150, internal.ChangeKey{}, position.Position{}) // below the marker: must not arm
 	is.True(!h.driftHaltArmed.Load())
 
 	ch := h.driftHaltCh
-	h.maybeArmDriftHalt(200, internal.ChangeKey{}) // the marker's own ack
+	h.maybeArmDriftHalt(200, internal.ChangeKey{}, position.Position{}) // the marker's own ack
 	is.True(h.driftHaltArmed.Load())
 	select {
 	case <-ch:
@@ -464,7 +470,7 @@ func Test_MaybeArmDriftHalt_AckGating(t *testing.T) {
 
 	// Second arming is a no-op: the channel is closed exactly once, the error
 	// is stable.
-	h.maybeArmDriftHalt(999, internal.ChangeKey{})
+	h.maybeArmDriftHalt(999, internal.ChangeKey{}, position.Position{})
 	msg := h.driftHaltError().Error()
 	is.True(strings.HasPrefix(msg, ErrorCodeSchemaDriftHalt+": "))
 }
@@ -491,11 +497,227 @@ func Test_MaybeArmDriftHalt_ArmsOnKeyNotLSN(t *testing.T) {
 	is.True(h.driftMarkerPending())
 
 	// An earlier-committed transaction's change: higher LSN, lower key.
-	h.maybeArmDriftHalt(900, internal.ChangeKey{CommitLSN: 0x400, Seq: 3})
+	h.maybeArmDriftHalt(900, internal.ChangeKey{CommitLSN: 0x400, Seq: 3}, position.Position{})
 	is.True(!h.driftHaltArmed.Load())
 
 	// The marker's own ack arms, although its LSN (200) is below the LSN of
 	// the change acked before it (900).
-	h.maybeArmDriftHalt(200, internal.ChangeKey{CommitLSN: 0x500, Seq: 1})
+	h.maybeArmDriftHalt(200, internal.ChangeKey{CommitLSN: 0x500, Seq: 1}, position.Position{})
 	is.True(h.driftHaltArmed.Load())
+}
+
+// syncBuffer is a goroutine-safe log sink.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// markerWithPredecessor drives a handler to emit a marker for a deciding
+// change at key (0x500, 2) after a delivered record at (0x500, 1). It returns
+// the handler, the previous record's position and the marker's position. The
+// marker's position carries the previous record's key (#338).
+func markerWithPredecessor(ctx context.Context, t *testing.T, setup ...func(*CDCHandler)) (h *CDCHandler, prev, marker position.Position) {
+	t.Helper()
+	h, out := newHandlerWithOut(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
+	for _, f := range setup {
+		f(h)
+	}
+	cur := internal.ChangeKey{CommitLSN: 0x500, Seq: 1}
+	h.changeKey = func() internal.ChangeKey { return cur }
+
+	_, _ = relate(ctx, t, h, relMsg(shapeV1...), 100)
+	if _, err := h.Handle(ctx, usersRow(2), 200); err != nil { // a delivered record, same LSN as the deciding one (COPY rows share an LSN)
+		t.Fatal(err)
+	}
+	cur = internal.ChangeKey{CommitLSN: 0x500, Seq: 2}
+	_, _ = h.Handle(ctx, relMsg(shapeV2...), 0)
+	if _, err := h.Handle(ctx, usersRow(3), 200); err != nil { // the deciding change
+		t.Fatal(err)
+	}
+	recs := drainBatches(out)
+	if len(recs) != 2 {
+		t.Fatalf("want a record and a marker, got %d records", len(recs))
+	}
+	var err error
+	if prev, err = position.ParseSDKPosition(recs[0].Position); err != nil {
+		t.Fatal(err)
+	}
+	if marker, err = position.ParseSDKPosition(recs[1].Position); err != nil {
+		t.Fatal(err)
+	}
+	return h, prev, marker
+}
+
+// Test_MaybeArmDriftHalt_SemanticMarkerMatch pins the #338 arming rule: the
+// marker shares its key with the record before it, so the ack is recognized by
+// the position's content. A re-marshaled copy of the marker's position (same
+// meaning, different bytes) must arm; the previous record's position, which has
+// the same key and an older schema history, must not.
+func Test_MaybeArmDriftHalt_SemanticMarkerMatch(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+	h, prev, marker := markerWithPredecessor(ctx, t)
+
+	is.Equal(prev.TxCommitLSN, marker.TxCommitLSN) // same key...
+	is.Equal(prev.TxSeq, marker.TxSeq)             // ...as the record before it
+
+	prevKey := internal.ChangeKey{CommitLSN: 0x500, Seq: 1}
+	h.maybeArmDriftHalt(200, prevKey, prev)
+	is.True(!h.driftHaltArmed.Load()) // the previous record's ack does not arm
+
+	// The same position, re-marshaled: indented, keys sorted, via a generic map.
+	raw := marker.ToSDKPosition()
+	var m map[string]json.RawMessage
+	is.NoErr(json.Unmarshal(raw, &m))
+	reformatted, err := json.MarshalIndent(m, "", "  ")
+	is.NoErr(err)
+	is.True(!bytes.Equal(raw, reformatted))
+	reparsed, err := position.ParseSDKPosition(reformatted)
+	is.NoErr(err)
+
+	h.maybeArmDriftHalt(200, prevKey, reparsed)
+	is.True(h.driftHaltArmed.Load()) // the marker's ack arms
+}
+
+// Test_MaybeArmDriftHalt_ZeroPositionMatchesNothing: an empty position never
+// counts as the marker, so the key and LSN rules alone decide.
+func Test_MaybeArmDriftHalt_ZeroPositionMatchesNothing(t *testing.T) {
+	is := is.New(t)
+	h, _, _ := markerWithPredecessor(context.Background(), t)
+	h.maybeArmDriftHalt(200, internal.ChangeKey{CommitLSN: 0x500, Seq: 1}, position.Position{})
+	is.True(!h.driftHaltArmed.Load())
+}
+
+// fakeClock replaces the handler's timer so the warning tests need no sleeps.
+type fakeClock struct {
+	mu      sync.Mutex
+	after   time.Duration
+	fn      func()
+	stopped bool
+}
+
+func (c *fakeClock) afterFunc(d time.Duration, f func()) timerStopper {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.after, c.fn = d, f
+	return c
+}
+
+func (c *fakeClock) Stop() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	was := !c.stopped
+	c.stopped = true
+	return was
+}
+
+// fire runs the scheduled callback as the timer would, even if it was stopped
+// (a callback already running when Stop is called).
+func (c *fakeClock) fire(t *testing.T) {
+	t.Helper()
+	c.mu.Lock()
+	f := c.fn
+	c.mu.Unlock()
+	if f == nil {
+		t.Fatal("no timer was scheduled")
+	}
+	f()
+}
+
+const unackedWarning = "has not been acked"
+
+func markerWithClock(t *testing.T) (*CDCHandler, *fakeClock, *syncBuffer, position.Position) {
+	t.Helper()
+	clk := &fakeClock{}
+	logs := &syncBuffer{}
+	ctx := zerolog.New(logs).WithContext(context.Background())
+	h, _, marker := markerWithPredecessor(ctx, t, func(h *CDCHandler) { h.afterFunc = clk.afterFunc })
+	return h, clk, logs, marker
+}
+
+// Test_DriftMarker_WarnsWhenUnacked: a marker that stays unacked until the
+// timer fires is reported once, so a pipeline waiting on an ack that never
+// matches is not silent.
+func Test_DriftMarker_WarnsWhenUnacked(t *testing.T) {
+	is := is.New(t)
+	_, clk, logs, _ := markerWithClock(t)
+	is.Equal(clk.after, driftMarkerWarnAfter)
+	is.True(!strings.Contains(logs.String(), unackedWarning)) // not before it fires
+	clk.fire(t)
+	is.True(strings.Contains(logs.String(), unackedWarning))
+}
+
+// Test_DriftMarker_AckedNeverWarns: the arming ack stops the timer, and a
+// callback that was already running stays silent.
+func Test_DriftMarker_AckedNeverWarns(t *testing.T) {
+	is := is.New(t)
+	h, clk, logs, marker := markerWithClock(t)
+	h.maybeArmDriftHalt(200, internal.ChangeKey{CommitLSN: 0x500, Seq: 1}, marker)
+	is.True(h.driftHaltArmed.Load())
+	is.True(clk.stopped) // the timer was stopped
+	clk.fire(t)
+	is.True(!strings.Contains(logs.String(), unackedWarning))
+}
+
+// Test_DriftMarker_TeardownStopsWarning: tearing the iterator down before the
+// threshold stops the timer, and nothing is logged afterwards.
+func Test_DriftMarker_TeardownStopsWarning(t *testing.T) {
+	is := is.New(t)
+	h, clk, logs, _ := markerWithClock(t)
+	is.NoErr((&CDCIterator{handler: h}).Teardown(context.Background()))
+	is.True(clk.stopped)
+	clk.fire(t)
+	is.True(!strings.Contains(logs.String(), unackedWarning))
+}
+
+// Test_SamePosition pins what identifies a marker. Every compared field must
+// matter: a position equal in all but one field is a different record (the
+// previous record shares the marker's key and, for COPY rows, its LSN).
+func Test_SamePosition(t *testing.T) {
+	hist := position.SchemaHistories{"public.users": {{ColumnSetHash: "h2", FirstSeenLSN: "0/C8"}}}
+	base := position.Position{
+		Type: position.TypeCDC, LastLSN: "0/C8", TxCommitLSN: "0/500", TxSeq: 1, SchemaHistory: hist,
+	}
+	with := func(f func(*position.Position)) position.Position {
+		p := base
+		f(&p)
+		return p
+	}
+	tests := []struct {
+		name string
+		a, b position.Position
+		want bool
+	}{
+		{"identical", base, base, true},
+		{"nil and empty history are equal", with(func(p *position.Position) { p.SchemaHistory = nil }),
+			with(func(p *position.Position) { p.SchemaHistory = position.SchemaHistories{} }), true},
+		{"different TxSeq", base, with(func(p *position.Position) { p.TxSeq = 2 }), false},
+		{"different LastLSN", base, with(func(p *position.Position) { p.LastLSN = "0/C9" }), false},
+		{"different TxCommitLSN", base, with(func(p *position.Position) { p.TxCommitLSN = "0/501" }), false},
+		{"different history", base, with(func(p *position.Position) {
+			p.SchemaHistory = position.SchemaHistories{"public.users": {{ColumnSetHash: "h1", FirstSeenLSN: "0/64"}}}
+		}), false},
+		{"history vs none", base, with(func(p *position.Position) { p.SchemaHistory = nil }), false},
+		{"snapshot type never matches", with(func(p *position.Position) { p.Type = position.TypeSnapshot }),
+			with(func(p *position.Position) { p.Type = position.TypeSnapshot }), false},
+		{"zero position matches nothing", position.Position{}, base, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is.New(t).Equal(samePosition(tt.a, tt.b), tt.want)
+			is.New(t).Equal(samePosition(tt.b, tt.a), tt.want) // symmetric
+		})
+	}
 }

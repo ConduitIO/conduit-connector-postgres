@@ -26,16 +26,18 @@
 // marker's durability, injected with the child-side chaospoint reaches; FM3
 // is injected with the production-side reach inside emitDriftMarker.
 //
-// A note on the resume boundary: START_REPLICATION resumes FROM the
-// checkpoint LSN, and the subscription guard (subscription.go) skips the
-// message at exactly that LSN, so a normal restart never redelivers the
-// boundary record — the record at the checkpoint was already acked before
-// the restart. b1AssertNoUnexpectedDups allows a duplicate only for a record
-// that was in flight at a kill boundary (the parent cannot know whether the
-// child's ack reached the slot before the kill); anything else fails. The
-// drift marker is the one deliberate deviation from this: its boundary DML
-// is skipped on the wire, never re-read, so a B1 restart delivers the
-// marker's shape, never the dropped DML (D4).
+// A note on the resume boundary: a normal restart resumes at the checkpoint's
+// change key (transaction commit LSN, ordinal) and the subscription guard
+// (subscription.go) skips every change at or below it, so the record at the
+// checkpoint, already acked before the restart, is never redelivered.
+// b1AssertNoUnexpectedDups allows a duplicate only for a record that was in
+// flight at a kill boundary (the parent cannot know whether the child's ack
+// reached the slot before the kill); anything else fails. The drift marker is
+// the one deliberate deviation (#338): its position carries the key one below
+// the change that decided the drift, so the approving restart resumes AT that
+// change and delivers it once (b1AssertBoundaryDeliveredOnce). The marker's
+// ledger identity is "drift:"-prefixed because that key is also the previous
+// record's.
 
 package chaos
 
@@ -49,6 +51,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/internal/chaospoint"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
@@ -163,6 +166,42 @@ func b1DriftTrigger(t *testing.T, regPool *pgxpool.Pool, table, column, ddl stri
 	is.NoErr(err)
 }
 
+// b1AssertBoundaryDeliveredOnce asserts the #338 contract on a ledger whose
+// run `run` was the approving restart: the row that decided the drift (the
+// 'drift-trigger' insert, which the marker replaced in run 1) is delivered by
+// that run, exactly once, as the first record after the marker. It also asserts
+// the ledger has no duplicate delivery at all.
+func b1AssertBoundaryDeliveredOnce(t *testing.T, regPool *pgxpool.Pool, table string, entries []LedgerEntry, run int) {
+	t.Helper()
+	is := is.New(t)
+	var id int64
+	is.NoErr(regPool.QueryRow(context.Background(),
+		fmt.Sprintf(`SELECT id FROM %q WHERE column1 = 'drift-trigger'`, table)).Scan(&id))
+	want := string(opencdc.StructuredData{"id": id}.Bytes())
+
+	markerAt := -1
+	for i, e := range entries {
+		if e.Drift {
+			markerAt = i
+			break
+		}
+	}
+	is.True(markerAt >= 0)
+	is.True(markerAt+1 < len(entries))
+	boundary := entries[markerAt+1]
+	is.Equal(boundary.Run, run)     // delivered by the approving restart
+	is.Equal(boundary.Key, want)    // and it is the row the marker replaced
+	is.Equal(boundary.Drift, false) // as a normal record, decoded against the approved shape
+	n := 0
+	for _, e := range entries {
+		if e.Key == want && !e.Drift {
+			n++
+		}
+	}
+	is.Equal(n, 1)                            // exactly once
+	is.Equal(len(FindDuplicates(entries)), 0) // nothing else twice
+}
+
 func b1ReadLedger(t *testing.T, path string) []LedgerEntry {
 	t.Helper()
 	entries, bad, err := ReadLedger(path)
@@ -219,9 +258,9 @@ func b1AssertNoGaps(t *testing.T, entries []LedgerEntry) {
 // for a record that was in flight at a kill boundary (the parent cannot know
 // whether the child's ack of the final record reached the slot before the
 // kill), so the scenario explicitly blesses it. In B1 scenarios prevLast is
-// the marker, whose delivery identity is the change key (commit LSN/ordinal)
-// of the skipped boundary DML; per D4 that DML is re-read-but-skipped on every
-// restart, never delivered, so the allowance is defensive in the B1 suite.
+// the marker, whose ledger identity is "drift:" plus its position key (one
+// below the deciding change, #338). No later delivery has that identity, so the
+// allowance is defensive in the B1 suite.
 func b1AssertNoUnexpectedDups(t *testing.T, entries []LedgerEntry, prevLast *LedgerEntry) {
 	t.Helper()
 	dups := FindDuplicates(entries)
@@ -333,39 +372,50 @@ func TestB1_AC1_AC2_AC8_HaltAndWedgeRegression(t *testing.T) {
 		is.NoErr(err)
 	}
 
+	// #338, invariant 1: the slot stops AT the marker's LSN, not past it. The
+	// marker is the last change of the stream (the trigger was a one-statement
+	// transaction), so a flush gate that treated the marker's ack as "all
+	// emitted records acked" would report the server's WAL end here, and
+	// Postgres would never re-send the deciding change on the restart.
+	finalSlot, err := ReadSlotState(ctx, replPool, slot)
+	is.NoErr(err)
+	finalCF, err := pglogrepl.ParseLSN(finalSlot.ConfirmedFlushLSN)
+	is.NoErr(err)
+	is.True(finalCF <= markerLSN)
+
 	// The halt message: D5 coded error with the revert-trap sentence.
 	stderr := cp.stderr.String()
 	is.True(strings.Contains(stderr, logrepl.ErrorCodeSchemaDriftHalt))
 	is.True(strings.Contains(stderr, b1HaltTrap))
 
 	// Run 2 (AC2): the restart after the halt must NOT halt again. It resumes
-	// from the marker's position; the first relation message (same shape,
-	// deduped) is a no-op, the boundary DML at the marker's LSN is re-read
-	// from WAL and skipped again by the subscription guard (design doc D4 —
-	// it was replaced by the marker, it is never emitted as a row), and the
-	// insert made after the approval flows. Exactly one record is delivered:
-	// the post-approval insert.
+	// from the marker's position, which is the key one below the deciding
+	// change (#338); the first relation message (same shape, deduped) is a
+	// no-op, the deciding DML is re-read from WAL and delivered as a normal
+	// record (the marker replaced it in run 1, D4), and the insert made after
+	// the approval flows. Exactly two records are delivered: the deciding
+	// DML, then the post-approval insert.
 	cp2 := b1SpawnChild(t, b1ChildSpec{
-		run: 2, total: 1, haltExpected: false,
+		run: 2, total: 2, haltExpected: false,
 		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
 	})
 	cp2.waitForMarker(t, "RESUME ", 30*time.Second)
 	cp2.waitForMarker(t, "OPENED", 30*time.Second)
 	_, err = regPool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('post-approval')`, table))
 	is.NoErr(err)
-	cp2.waitForCount(t, "ACKED ", 1, 60*time.Second)
+	cp2.waitForCount(t, "ACKED ", 2, 60*time.Second)
 	cp2.waitForMarker(t, "DONE", 60*time.Second)
 	cp2.waitExit(t, 30*time.Second)
 	b1AssertNoHalt(t, cp2)
 
 	entries = b1ReadLedger(t, ledgerPath)
 	b1AssertNoGaps(t, entries)
-	// The marker's delivery identity (the skipped boundary DML's change key)
-	// can never recur — the boundary is re-read-but-skipped on every restart
-	// (D4) — so the allowance below is defensive; the real assertion is that
+	// The marker's ledger identity ("drift:" plus its position key) never
+	// recurs, so the allowance below is defensive; the real assertion is that
 	// nothing ELSE duplicated.
 	b1AssertNoUnexpectedDups(t, entries, &marker)
-	is.Equal(len(b1DriftEntries(t, entries)), 1) // still exactly one marker: no second marker on the wedge regression
+	is.Equal(len(b1DriftEntries(t, entries)), 1)                 // still exactly one marker: no second marker on the wedge regression
+	b1AssertBoundaryDeliveredOnce(t, regPool, table, entries, 2) // #338
 }
 
 // TestB1_AC3_FM1_ApprovalByCrash is AC3's FM1 window: SIGKILL between the
@@ -409,14 +459,14 @@ func TestB1_AC3_FM1_ApprovalByCrash(t *testing.T) {
 	// Run 2: the crash-before-ack restart IS the approval. Resumes from the
 	// marker, dedupes the shape, and delivers — no halt.
 	cp2 := b1SpawnChild(t, b1ChildSpec{
-		run: 2, total: 1, haltExpected: false,
+		run: 2, total: 2, haltExpected: false,
 		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
 	})
 	cp2.waitForMarker(t, "RESUME ", 30*time.Second)
 	cp2.waitForMarker(t, "OPENED", 30*time.Second)
 	_, err := regPool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('post-approval')`, table))
 	is.NoErr(err)
-	cp2.waitForCount(t, "ACKED ", 1, 60*time.Second)
+	cp2.waitForCount(t, "ACKED ", 2, 60*time.Second)
 	cp2.waitForMarker(t, "DONE", 60*time.Second)
 	cp2.waitExit(t, 30*time.Second)
 	b1AssertNoHalt(t, cp2)
@@ -424,7 +474,70 @@ func TestB1_AC3_FM1_ApprovalByCrash(t *testing.T) {
 	entries = b1ReadLedger(t, ledgerPath)
 	b1AssertNoGaps(t, entries)
 	b1AssertNoUnexpectedDups(t, entries, &marker)
-	is.Equal(len(b1DriftEntries(t, entries)), 1) // no second marker: the approval was durable
+	is.Equal(len(b1DriftEntries(t, entries)), 1)                 // no second marker: the approval was durable
+	b1AssertBoundaryDeliveredOnce(t, regPool, table, entries, 2) // #338: the crash-before-ack restart delivers it too
+}
+
+// TestB1_338_KillAfterMarkerAck is the #338 kill window: SIGKILL after the
+// marker is durable and acked (the halt armed, nothing torn down, no final
+// standby status), before the restart. The restart is the approval and must
+// deliver the row that decided the drift exactly once, with no second halt.
+// The slot must not have moved past the deciding change, or Postgres would
+// not re-send its transaction.
+//
+// Perturbation proof: with the marker carrying the deciding change's own key
+// (the pre-#338 rule), run 2 never delivers the 'drift-trigger' row and
+// b1AssertBoundaryDeliveredOnce fails (or run 2 never reaches DONE).
+func TestB1_338_KillAfterMarkerAck(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+
+	replPool, regPool, table, slot, pub, ledgerPath := b1Setup(t)
+
+	cp := b1SpawnChild(t, b1ChildSpec{
+		run: 1, total: 7, haltExpected: false,
+		park:       fmt.Sprintf("%s:%d", chaospoint.DriftMarkerAcked, 1),
+		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
+	})
+	b1Baseline(t, cp, regPool, table)
+	b1DriftTrigger(t, regPool, table, b1DriftColumn, `ALTER TABLE %q ADD COLUMN %s timestamp`)
+
+	cp.waitForMarker(t, "PARKED", 60*time.Second)
+	cp.sigkill(t)
+
+	entries := b1ReadLedger(t, ledgerPath)
+	drift := b1DriftEntries(t, entries)
+	is.Equal(len(drift), 1)
+	marker := drift[0]
+
+	// The slot is still at or below the marker's LSN: the connector never
+	// reached a state that let it report past the deciding change.
+	markerLSN, err := b1MarkerLSN(t, marker)
+	is.NoErr(err)
+	state, err := ReadSlotState(ctx, replPool, slot)
+	is.NoErr(err)
+	cf, err := pglogrepl.ParseLSN(state.ConfirmedFlushLSN)
+	is.NoErr(err)
+	is.True(cf <= markerLSN)
+
+	cp2 := b1SpawnChild(t, b1ChildSpec{
+		run: 2, total: 2, haltExpected: false,
+		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
+	})
+	cp2.waitForMarker(t, "RESUME ", 30*time.Second)
+	cp2.waitForMarker(t, "OPENED", 30*time.Second)
+	_, err = regPool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('post-approval')`, table))
+	is.NoErr(err)
+	cp2.waitForCount(t, "ACKED ", 2, 60*time.Second)
+	cp2.waitForMarker(t, "DONE", 60*time.Second)
+	cp2.waitExit(t, 30*time.Second)
+	b1AssertNoHalt(t, cp2)
+
+	entries = b1ReadLedger(t, ledgerPath)
+	b1AssertNoGaps(t, entries)
+	b1AssertNoUnexpectedDups(t, entries, &marker)
+	is.Equal(len(b1DriftEntries(t, entries)), 1)
+	b1AssertBoundaryDeliveredOnce(t, regPool, table, entries, 2)
 }
 
 // TestB1_AC3_FM2_CrashBeforeMarkerDurable is AC3's FM2 window: SIGKILL after
@@ -485,14 +598,14 @@ func TestB1_AC3_FM2_CrashBeforeMarkerDurable(t *testing.T) {
 
 	// Run 3: the restart is the approval — clean resume.
 	cp3 := b1SpawnChild(t, b1ChildSpec{
-		run: 3, total: 1, haltExpected: false,
+		run: 3, total: 2, haltExpected: false,
 		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
 	})
 	cp3.waitForMarker(t, "RESUME ", 30*time.Second)
 	cp3.waitForMarker(t, "OPENED", 30*time.Second)
 	_, err = regPool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('post-approval')`, table))
 	is.NoErr(err)
-	cp3.waitForCount(t, "ACKED ", 1, 60*time.Second)
+	cp3.waitForCount(t, "ACKED ", 2, 60*time.Second)
 	cp3.waitForMarker(t, "DONE", 60*time.Second)
 	cp3.waitExit(t, 30*time.Second)
 	b1AssertNoHalt(t, cp3)
@@ -563,14 +676,14 @@ func TestB1_AC3_FM3_CrashInHandlerBeforeMarkerEmission(t *testing.T) {
 
 	// Run 3: the restart is the approval — clean resume.
 	cp3 := b1SpawnChild(t, b1ChildSpec{
-		run: 3, total: 1, haltExpected: false,
+		run: 3, total: 2, haltExpected: false,
 		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
 	})
 	cp3.waitForMarker(t, "RESUME ", 30*time.Second)
 	cp3.waitForMarker(t, "OPENED", 30*time.Second)
 	_, err = regPool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('post-approval')`, table))
 	is.NoErr(err)
-	cp3.waitForCount(t, "ACKED ", 1, 60*time.Second)
+	cp3.waitForCount(t, "ACKED ", 2, 60*time.Second)
 	cp3.waitForMarker(t, "DONE", 60*time.Second)
 	cp3.waitExit(t, 30*time.Second)
 	b1AssertNoHalt(t, cp3)
@@ -643,14 +756,14 @@ func TestB1_AC5_RevertAfterApproval(t *testing.T) {
 
 	// Run 3: restart (approval of the reverted shape) resumes cleanly.
 	cp3 := b1SpawnChild(t, b1ChildSpec{
-		run: 3, total: 1, haltExpected: false,
+		run: 3, total: 2, haltExpected: false,
 		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
 	})
 	cp3.waitForMarker(t, "RESUME ", 30*time.Second)
 	cp3.waitForMarker(t, "OPENED", 30*time.Second)
 	_, err := regPool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('post-approval')`, table))
 	is.NoErr(err)
-	cp3.waitForCount(t, "ACKED ", 1, 60*time.Second)
+	cp3.waitForCount(t, "ACKED ", 2, 60*time.Second)
 	cp3.waitForMarker(t, "DONE", 60*time.Second)
 	cp3.waitExit(t, 30*time.Second)
 	b1AssertNoHalt(t, cp3)
@@ -781,14 +894,14 @@ func TestB1_AC7_RestartHaltTruthfulMessage(t *testing.T) {
 
 	// Run 3: approval by restart — clean resume.
 	cp3 := b1SpawnChild(t, b1ChildSpec{
-		run: 3, total: 1, haltExpected: false,
+		run: 3, total: 2, haltExpected: false,
 		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
 	})
 	cp3.waitForMarker(t, "RESUME ", 30*time.Second)
 	cp3.waitForMarker(t, "OPENED", 30*time.Second)
 	_, err = regPool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('post-approval')`, table))
 	is.NoErr(err)
-	cp3.waitForCount(t, "ACKED ", 1, 60*time.Second)
+	cp3.waitForCount(t, "ACKED ", 2, 60*time.Second)
 	cp3.waitForMarker(t, "DONE", 60*time.Second)
 	cp3.waitExit(t, 30*time.Second)
 	b1AssertNoHalt(t, cp3)
@@ -863,14 +976,14 @@ func TestB1_AC9_StackedDDLBetweenSightingAndAck(t *testing.T) {
 
 	// Run 3: approval by restart — clean resume.
 	cp3 := b1SpawnChild(t, b1ChildSpec{
-		run: 3, total: 1, haltExpected: false,
+		run: 3, total: 2, haltExpected: false,
 		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
 	})
 	cp3.waitForMarker(t, "RESUME ", 30*time.Second)
 	cp3.waitForMarker(t, "OPENED", 30*time.Second)
 	_, err = regPool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('post-approval')`, table))
 	is.NoErr(err)
-	cp3.waitForCount(t, "ACKED ", 1, 60*time.Second)
+	cp3.waitForCount(t, "ACKED ", 2, 60*time.Second)
 	cp3.waitForMarker(t, "DONE", 60*time.Second)
 	cp3.waitExit(t, 30*time.Second)
 	b1AssertNoHalt(t, cp3)
@@ -1018,14 +1131,14 @@ func TestB1_AC9_StackedDDLInRun(t *testing.T) {
 
 	// Run 3: approval by restart — clean resume.
 	cp3 := b1SpawnChild(t, b1ChildSpec{
-		run: 3, total: 1, haltExpected: false,
+		run: 3, total: 2, haltExpected: false,
 		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
 	})
 	cp3.waitForMarker(t, "RESUME ", 30*time.Second)
 	cp3.waitForMarker(t, "OPENED", 30*time.Second)
 	_, err = regPool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('post-approval')`, table))
 	is.NoErr(err)
-	cp3.waitForCount(t, "ACKED ", 1, 60*time.Second)
+	cp3.waitForCount(t, "ACKED ", 2, 60*time.Second)
 	cp3.waitForMarker(t, "DONE", 60*time.Second)
 	cp3.waitExit(t, 30*time.Second)
 	b1AssertNoHalt(t, cp3)

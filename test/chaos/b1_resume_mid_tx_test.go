@@ -36,7 +36,8 @@ import (
 // Postgres re-send the transaction from its start, beginning with the
 // pre-ALTER Relation message ahead of p1, which the resume point skips.
 //
-// The restart must deliver exactly p3 and p4: no second marker, no halt. Before
+// The restart must deliver exactly p2, p3 and p4: p2 because the marker's
+// checkpoint is the key one below it (#338), and no second marker, no halt. Before
 // the fix, the replayed pre-ALTER shape was decided on arrival as a change
 // made while the connector was down, so run 2 emitted a second marker in p3's
 // place and halted; this test then fails waiting for DONE.
@@ -80,10 +81,10 @@ func TestB1_335_ApprovalByCrashMidTransaction(t *testing.T) {
 	is.Equal(entries[5].Key, string(opencdc.StructuredData{"id": ids["p1"]}.Bytes()))
 	markerPos, err := b1DecodePosition(t, marker.RawPosition)
 	is.NoErr(err)
-	is.True(markerPos.TxSeq > 1) // the checkpoint is inside the transaction, after p1
+	is.True(markerPos.TxSeq >= 1) // the checkpoint is inside the transaction: p1's key, one below p2 (#338)
 
 	cp2 := b1SpawnChild(t, b1ChildSpec{
-		run: 2, total: 2, haltExpected: false,
+		run: 2, total: 3, haltExpected: false,
 		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
 	})
 	cp2.waitForMarker(t, "RESUME ", 30*time.Second)
@@ -95,8 +96,9 @@ func TestB1_335_ApprovalByCrashMidTransaction(t *testing.T) {
 	b1AssertNoGaps(t, entries)
 	b1AssertNoUnexpectedDups(t, entries, &marker)
 	is.Equal(len(b1DriftEntries(t, entries)), 1) // decided once: no second marker
-	is.Equal(len(entries), 9)
+	is.Equal(len(entries), 10)
 	is.Equal(entries[7].Run, 2)
-	is.Equal(entries[7].Key, string(opencdc.StructuredData{"id": ids["p3"]}.Bytes()))
-	is.Equal(entries[8].Key, string(opencdc.StructuredData{"id": ids["p4"]}.Bytes()))
+	is.Equal(entries[7].Key, string(opencdc.StructuredData{"id": ids["p2"]}.Bytes())) // the deciding change (#338)
+	is.Equal(entries[8].Key, string(opencdc.StructuredData{"id": ids["p3"]}.Bytes()))
+	is.Equal(entries[9].Key, string(opencdc.StructuredData{"id": ids["p4"]}.Bytes()))
 }
