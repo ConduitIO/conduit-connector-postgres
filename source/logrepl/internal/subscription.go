@@ -333,6 +333,20 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 
 	if writtenLSN > 0 {
 		s.walWritten = writtenLSN
+		// Invariant 1 (slot advance): the handler returns a non-zero LSN for
+		// every change it was handed, including a change it deliberately
+		// drops without emitting a record (the D4 skip after a drift marker:
+		// "the marker, then nothing"). Those changes MUST still advance the
+		// emitted key. No record carries their key, so it is never acked and
+		// allAcked stays false. If a skipped change did not advance it, the
+		// marker would be the last emitted key, its ack would open the gate,
+		// and the next status update would report serverWALEnd: the slot would
+		// move past the rest of the marker's transaction (and past every
+		// transaction after it), whose changes were skipped, never delivered,
+		// and so would not be re-sent on the operator's approving restart.
+		// Rows lost. Pinned by TestDrift335_HaltApprovalMidTransaction (#337),
+		// which restarts mid-transaction after the marker's ack and expects the
+		// rest of the transaction.
 		s.emitted = s.change
 	}
 

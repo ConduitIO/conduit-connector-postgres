@@ -370,15 +370,17 @@ func (i *CDCIterator) Ack(_ context.Context, sdkPos opencdc.Position) error {
 	if err != nil {
 		return err
 	}
-	i.sub.Ack(lsn, internal.ChangeKey{CommitLSN: commit, Seq: pos.TxSeq})
+	key := internal.ChangeKey{CommitLSN: commit, Seq: pos.TxSeq}
+	i.sub.Ack(lsn, key)
 
 	// D3 step 3: arming is acked-gated, never sighting-gated — the halt
 	// surfaces only once the engine acked the marker (or anything past it),
-	// proving the checkpoint the marker carries is durable. This is the
-	// boundary the escape hatch depends on: the ack moves the slot's
+	// proving the checkpoint the marker carries is durable. The marker is
+	// recognized by its change key, not its LSN (see maybeArmDriftHalt). This
+	// is the boundary the escape hatch depends on: the ack moves the slot's
 	// confirmed_flush_lsn to exactly the point the connector has seen and no
 	// further, and the engine's persisted position is the operator's approval.
-	i.handler.maybeArmDriftHalt(lsn)
+	i.handler.maybeArmDriftHalt(lsn, key)
 
 	return nil
 }

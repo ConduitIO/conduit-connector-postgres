@@ -170,3 +170,22 @@ func interleavedStream(rng *rand.Rand) []modelChange {
 	})
 	return stream
 }
+
+func TestChangeKey_Before(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b ChangeKey
+		want bool
+	}{
+		{"lower commit LSN", ChangeKey{0x900, 9}, ChangeKey{0x9F0, 1}, true},
+		{"higher commit LSN", ChangeKey{0x9F0, 1}, ChangeKey{0x900, 9}, false},
+		{"same commit, lower seq", ChangeKey{0x9F0, 1}, ChangeKey{0x9F0, 2}, true},
+		{"same commit, higher seq", ChangeKey{0x9F0, 2}, ChangeKey{0x9F0, 1}, false},
+		{"equal", ChangeKey{0x9F0, 2}, ChangeKey{0x9F0, 2}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is.New(t).Equal(tt.a.Before(tt.b), tt.want)
+		})
+	}
+}

@@ -42,6 +42,16 @@ func (k ChangeKey) Known() bool {
 	return k.CommitLSN != 0 && k.Seq != 0
 }
 
+// Before reports whether k precedes o in stream order. Commit LSNs increase in
+// stream order and Seq increases within a transaction, so the order is
+// lexicographic on (CommitLSN, Seq). Only meaningful when both keys are Known.
+func (k ChangeKey) Before(o ChangeKey) bool {
+	if k.CommitLSN != o.CommitLSN {
+		return k.CommitLSN < o.CommitLSN
+	}
+	return k.Seq < o.Seq
+}
+
 // ResumePoint is the last change a restarted subscription may treat as
 // already delivered, taken from the checkpointed position (#331). Postgres
 // re-sends every transaction whose commit LSN is at or past the point it
