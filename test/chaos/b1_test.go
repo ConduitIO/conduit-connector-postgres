@@ -210,18 +210,18 @@ func b1AssertNoGaps(t *testing.T, entries []LedgerEntry) {
 }
 
 // b1AssertNoUnexpectedDups asserts the ledger has no duplicate deliveries.
-// The connector resumes AT the checkpoint LSN and the subscription guard
-// re-reads-but-skips the record at exactly that LSN, so a normal restart
-// never redelivers: a duplicate group with more than one member is always
-// unexpected. The one allowance is prevLast (nil when there was no prior
+// The connector resumes at the checkpoint's change key (transaction commit
+// LSN, ordinal) and the subscription guard re-reads-but-skips every change at
+// or below that key, so a normal restart never redelivers: a duplicate group
+// with more than one member is always unexpected. The one allowance is prevLast (nil when there was no prior
 // run): if the run before the resume's last ledgered record was delivered
 // twice — exactly twice — that is the harness's own at-least-once tolerance
 // for a record that was in flight at a kill boundary (the parent cannot know
 // whether the child's ack of the final record reached the slot before the
 // kill), so the scenario explicitly blesses it. In B1 scenarios prevLast is
-// the marker, whose delivery identity is the skipped boundary DML's LSN; per
-// D4 that DML is re-read-but-skipped on every restart, never delivered, so
-// the allowance is defensive in the B1 suite.
+// the marker, whose delivery identity is the change key (commit LSN/ordinal)
+// of the skipped boundary DML; per D4 that DML is re-read-but-skipped on every
+// restart, never delivered, so the allowance is defensive in the B1 suite.
 func b1AssertNoUnexpectedDups(t *testing.T, entries []LedgerEntry, prevLast *LedgerEntry) {
 	t.Helper()
 	dups := FindDuplicates(entries)
@@ -360,8 +360,8 @@ func TestB1_AC1_AC2_AC8_HaltAndWedgeRegression(t *testing.T) {
 
 	entries = b1ReadLedger(t, ledgerPath)
 	b1AssertNoGaps(t, entries)
-	// The marker's delivery identity (the skipped boundary DML's LSN) can
-	// never recur — the boundary is re-read-but-skipped on every restart
+	// The marker's delivery identity (the skipped boundary DML's change key)
+	// can never recur — the boundary is re-read-but-skipped on every restart
 	// (D4) — so the allowance below is defensive; the real assertion is that
 	// nothing ELSE duplicated.
 	b1AssertNoUnexpectedDups(t, entries, &marker)

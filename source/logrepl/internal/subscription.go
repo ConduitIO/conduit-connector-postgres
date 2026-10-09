@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -68,6 +69,29 @@ type Subscription struct {
 	walWritten   pglogrepl.LSN
 	walFlushed   pglogrepl.LSN
 	serverWALEnd pglogrepl.LSN
+
+	// Resume is what this subscription treats as already delivered (#331).
+	// CreateSubscription sets the legacy point {LSN: StartLSN}, using the
+	// start LSN after it was moved up to the slot's restart_lsn: with no
+	// change key to go on, that is the earliest point Postgres can re-send
+	// from anyway. The CDC iterator replaces it with the exact point, built
+	// from the position's own change key and raw LSN, when the checkpointed
+	// position carries a key. Set before Run.
+	Resume ResumePoint
+
+	// change is the key of the change being handled: the commit LSN of the
+	// transaction whose messages are being received (from its BeginMessage)
+	// and the ordinal of the current change within it. emitted is the key of
+	// the last change the handler emitted a record for. Both are only touched
+	// on the goroutine running Run (CurrentChange is called from the handler,
+	// on that goroutine).
+	change  ChangeKey
+	emitted ChangeKey
+
+	// acked is the key of the last record the engine acked (see Ack). Acks
+	// arrive on another goroutine, hence the mutex.
+	ackedMu sync.Mutex
+	acked   ChangeKey
 
 	// reportedFlush is the highest flush position sent to the server so far.
 	// The report never goes below it (see reportedPositions). Only touched on
@@ -150,6 +174,7 @@ func CreateSubscription(
 		Handler:       h,
 		StatusTimeout: 10 * time.Second,
 		TXSnapshotID:  result.SnapshotName,
+		Resume:        ResumePoint{LSN: startLSN},
 		RestartLSN:    slotInfo.RestartLSN,
 
 		conn: conn,
@@ -262,14 +287,43 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 		return fmt.Errorf("failed to parse xlog data: %w", err)
 	}
 
-	if xld.WALStart > 0 && xld.WALStart <= s.StartLSN {
-		// skip stuff that's in the past
-		return nil
+	if len(xld.WALData) > 0 {
+		switch pglogrepl.MessageType(xld.WALData[0]) {
+		case pglogrepl.MessageTypeStreamStart, pglogrepl.MessageTypeStreamStop,
+			pglogrepl.MessageTypeStreamCommit, pglogrepl.MessageTypeStreamAbort:
+			// The change keys below assume whole transactions arrive at
+			// commit, in commit order. Streamed in-progress transactions
+			// (pgoutput's "streaming" option) break that, so refuse loudly
+			// instead of mis-keying records (#331).
+			return fmt.Errorf("unsupported streamed-transaction message %q: this connector requires pgoutput streaming to be off",
+				string(xld.WALData[0]))
+		}
 	}
 
 	logicalMsg, err := pglogrepl.Parse(xld.WALData)
 	if err != nil {
 		return fmt.Errorf("invalid message: %w", err)
+	}
+
+	// Invariant 3 (#331): skip only changes the resume point proves were
+	// delivered before the restart. The decision uses the change key
+	// (transaction commit LSN, ordinal within it), never the change's own LSN
+	// (WALStart): a transaction that committed after the checkpoint can carry
+	// lower LSNs, and the rows of one multi-row insert share one LSN.
+	// Relation, Type, Origin, Begin and Commit messages are never skipped.
+	switch m := logicalMsg.(type) {
+	case *pglogrepl.BeginMessage:
+		s.change = ChangeKey{CommitLSN: m.FinalLSN}
+	case *pglogrepl.InsertMessage, *pglogrepl.UpdateMessage, *pglogrepl.DeleteMessage, *pglogrepl.TruncateMessage:
+		s.change.Seq++
+		if s.Resume.Delivered(s.change) {
+			sdk.Logger(ctx).Trace().
+				Stringer("commit_lsn", s.change.CommitLSN).
+				Uint64("seq", s.change.Seq).
+				Stringer("lsn", xld.WALStart).
+				Msg("skipping change delivered before the restart")
+			return nil
+		}
 	}
 
 	writtenLSN, err := s.Handler(ctx, logicalMsg, xld.WALStart)
@@ -279,16 +333,52 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 
 	if writtenLSN > 0 {
 		s.walWritten = writtenLSN
+		// Invariant 1 (slot advance): the handler returns a non-zero LSN for
+		// every change it was handed, including a change it deliberately
+		// drops without emitting a record (the D4 skip after a drift marker:
+		// "the marker, then nothing"). Those changes MUST still advance the
+		// emitted key. No record carries their key, so it is never acked and
+		// allAcked stays false. If a skipped change did not advance it, the
+		// marker would be the last emitted key, its ack would open the gate,
+		// and the next status update would report serverWALEnd: the slot would
+		// move past the rest of the marker's transaction (and past every
+		// transaction after it), whose changes were skipped, never delivered,
+		// and so would not be re-sent on the operator's approving restart.
+		// Rows lost. Pinned by TestDrift335_HaltApprovalMidTransaction (#337),
+		// which restarts mid-transaction after the marker's ack and expects the
+		// rest of the transaction.
+		s.emitted = s.change
 	}
 
 	return nil
 }
 
-// Ack stores the LSN as flushed. Next time WAL positions are flushed, Postgres
-// will know it can purge WAL logs up to this LSN.
-func (s *Subscription) Ack(lsn pglogrepl.LSN) {
+// CurrentChange returns the key of the change being handled. The handler
+// calls it, on the subscription goroutine, to put the key in the record's
+// position.
+func (s *Subscription) CurrentChange() ChangeKey {
+	return s.change
+}
+
+// Ack stores the LSN as flushed and key as the last acked change. Next time
+// WAL positions are flushed, Postgres will know it can purge WAL logs up to
+// this LSN. Acks must arrive in the order records were emitted (FIFO), which
+// the engine guarantees.
+func (s *Subscription) Ack(lsn pglogrepl.LSN, key ChangeKey) {
 	// store with atomic to prevent race conditions with sending status update
 	atomic.StoreUint64((*uint64)(&s.walFlushed), uint64(lsn))
+	s.ackedMu.Lock()
+	s.acked = key
+	s.ackedMu.Unlock()
+}
+
+// allAcked reports whether the last emitted record has been acked. Keys are
+// unique and acks are FIFO, so that means every emitted record has been
+// acked. Before anything is emitted both keys are zero.
+func (s *Subscription) allAcked() bool {
+	s.ackedMu.Lock()
+	defer s.ackedMu.Unlock()
+	return s.acked == s.emitted
 }
 
 // Stop signals to the subscription it should stop. Call Wait to block until the
@@ -404,15 +494,15 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 	// load with atomic to prevent race condition with ack
 	walFlushed := pglogrepl.LSN(atomic.LoadUint64((*uint64)(&s.walFlushed)))
 
-	if walFlushed > s.walWritten {
-		return fmt.Errorf("walWrite (%s) should be >= walFlush (%s)", s.walWritten, walFlushed)
-	}
-
+	// There is deliberately no "walFlushed > walWritten is an error" check
+	// (#331): with interleaved transactions a record with a lower LSN can be
+	// emitted after one with a higher LSN was acked, so walFlushed > walWritten
+	// is a normal state, and failing on it killed the subscription.
 	serverWALEnd := pglogrepl.LSN(atomic.LoadUint64((*uint64)(&s.serverWALEnd)))
 
 	// Manage replication slot lag: when every emitted record has been acked,
 	// report the server's WAL end instead of the last acked record. The gate lives in reportedPositions.
-	write, flush := reportedPositions(s.walWritten, walFlushed, serverWALEnd, s.reportedFlush)
+	write, flush := reportedPositions(s.walWritten, walFlushed, serverWALEnd, s.reportedFlush, s.allAcked())
 
 	// Invariant 1 / DBZ-3 B0 kill point (chaospoint.StandbyStatusUpdate):
 	// walFlushed is loaded and the report is decided, but the wire send
@@ -451,38 +541,29 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 // confirmed_flush_lsn, which decides the WAL Postgres may discard and the
 // transactions it will not send again after a restart.
 //
-// The rules (DBZ-3 B2 design doc, Decision 5):
-//
-//   - The baseline is walFlushed, the LSN of the last record the engine acked.
-//   - Only when walFlushed == walWritten, meaning every emitted record has
-//     been acked, may the report go beyond it, to serverWALEnd (the WAL end
-//     from the last keepalive).
+//   - The baseline is walFlushed, the change LSN of the last record the engine
+//     acked. Reporting it is safe even when a record still in flight has a
+//     lower or equal LSN (interleaved transactions, rows of one multi-row
+//     insert): that record's transaction commits after the acked change's
+//     LSN, so the server would re-send it.
+//   - Only when allAcked (the last emitted record's change key equals the last
+//     acked one) may the report go further, to serverWALEnd (the WAL end from
+//     the last keepalive). The test compares change keys, not LSNs: rows of a
+//     multi-row insert share an LSN, so "walFlushed == walWritten" would claim
+//     everything is acked after the first of them is.
 //   - The flush position never goes below lastReported. A flush position that
 //     was safe when reported stays safe: transactions arrive in commit order,
 //     anything that arrives later commits after it, and the server re-sends
 //     any transaction whose commit is past confirmed_flush_lsn.
 //   - write is at least flush.
-//
-// The equality test does not need LSNs to arrive in order (they do not, for
-// interleaved transactions). Acks are FIFO, so if the last emitted record is
-// acked, every earlier one is too.
-//
-// Correction (2026-10-09): an earlier version of this comment also claimed
-// "every change has its own LSN". That is false: the rows of one multi-row
-// insert or COPY share one LSN, so for COPY an LSN equality opens the gate
-// after the first row is acked. #334 compares change keys (commit LSN,
-// ordinal) instead; see docs/design-documents/20261008-interleaved-tx-resume.md
-// on that PR.
-func reportedPositions(
-	walWritten, walFlushed, serverWALEnd, lastReported pglogrepl.LSN,
-) (write, flush pglogrepl.LSN) {
+func reportedPositions(walWritten, walFlushed, serverWALEnd, lastReported pglogrepl.LSN, allAcked bool) (write, flush pglogrepl.LSN) {
 	flush = walFlushed
 
-	// Invariant 1: report past walFlushed only when no emitted record is
-	// unacked. Reporting serverWALEnd while a record is in
-	// flight would let Postgres discard the WAL that record depends on, and a
-	// crash before the destination wrote it would lose it.
-	if walFlushed == walWritten {
+	// Invariant 1: report past the acked records only when no emitted record
+	// is unacked. Reporting serverWALEnd while a record is in flight would let
+	// Postgres discard the WAL that record depends on, and a crash before the
+	// destination wrote it would lose it.
+	if allAcked {
 		flush = maxLSN(flush, serverWALEnd)
 	}
 

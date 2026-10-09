@@ -138,7 +138,7 @@ func Test_HandleRelation_HaltEmitsMarker(t *testing.T) {
 	// D3: acked-gated — the error is stored, but not surfaced until the ack.
 	is.True(!h.driftHaltArmed.Load())
 	is.Equal(h.driftHaltError(), nil)
-	h.maybeArmDriftHalt(lsn)
+	h.maybeArmDriftHalt(lsn, internal.ChangeKey{})
 	is.True(h.driftHaltArmed.Load())
 	is.True(strings.HasPrefix(h.driftHaltError().Error(), ErrorCodeSchemaDriftHalt))
 	is.True(strings.Contains(h.driftHaltError().Error(), haltRevertTrap))
@@ -237,7 +237,7 @@ func Test_HaltError_AcrossRestartMessage(t *testing.T) {
 
 	_, _ = h2.handleRelation(ctx, relMsg(shapeV2...), 200)
 	_ = h2.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 1}, 210)
-	h2.maybeArmDriftHalt(210)
+	h2.maybeArmDriftHalt(210, internal.ChangeKey{})
 
 	msg := h2.driftHaltError().Error()
 	is.True(strings.HasPrefix(msg, ErrorCodeSchemaDriftHalt+": "))
@@ -488,11 +488,11 @@ func Test_MaybeArmDriftHalt_AckGating(t *testing.T) {
 	// The first DML emits the marker at LSN 200.
 	_ = h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 1}, 200)
 
-	h.maybeArmDriftHalt(150) // below the marker: must not arm
+	h.maybeArmDriftHalt(150, internal.ChangeKey{}) // below the marker: must not arm
 	is.True(!h.driftHaltArmed.Load())
 
 	ch := h.driftHaltCh
-	h.maybeArmDriftHalt(200) // the marker's own ack
+	h.maybeArmDriftHalt(200, internal.ChangeKey{}) // the marker's own ack
 	is.True(h.driftHaltArmed.Load())
 	select {
 	case <-ch:
@@ -502,7 +502,38 @@ func Test_MaybeArmDriftHalt_AckGating(t *testing.T) {
 
 	// Second arming is a no-op: the channel is closed exactly once, the error
 	// is stable.
-	h.maybeArmDriftHalt(999)
+	h.maybeArmDriftHalt(999, internal.ChangeKey{})
 	msg := h.driftHaltError().Error()
 	is.True(strings.HasPrefix(msg, ErrorCodeSchemaDriftHalt+": "))
+}
+
+// Test_MaybeArmDriftHalt_ArmsOnKeyNotLSN pins the arming rule of #334's review
+// at the unit level. The marker rides a change with a LOW LSN (200) in a
+// transaction that commits late (commit 0x500). A change from a transaction
+// that committed earlier carries a HIGHER LSN (900): acking it must not arm.
+// The marker's own ack arms even though the LSN it carries is lower than the
+// one acked before.
+func Test_MaybeArmDriftHalt_ArmsOnKeyNotLSN(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+	h, _ := newHandlerWithOut(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
+
+	cur := internal.ChangeKey{CommitLSN: 0x400, Seq: 1}
+	h.changeKey = func() internal.ChangeKey { return cur }
+
+	_, _ = h.handleRelation(ctx, relMsg(shapeV1...), 100)
+	_, _ = h.handleRelation(ctx, relMsg(shapeV2...), 200)
+	cur = internal.ChangeKey{CommitLSN: 0x500, Seq: 1}
+	// The first DML with the new shape emits the marker at LSN 200.
+	_ = h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 1}, 200)
+	is.True(h.driftMarkerPending())
+
+	// An earlier-committed transaction's change: higher LSN, lower key.
+	h.maybeArmDriftHalt(900, internal.ChangeKey{CommitLSN: 0x400, Seq: 3})
+	is.True(!h.driftHaltArmed.Load())
+
+	// The marker's own ack arms, although its LSN (200) is below the LSN of
+	// the change acked before it (900).
+	h.maybeArmDriftHalt(200, internal.ChangeKey{CommitLSN: 0x500, Seq: 1})
+	is.True(h.driftHaltArmed.Load())
 }
