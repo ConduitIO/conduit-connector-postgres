@@ -464,8 +464,15 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 //   - write is at least flush.
 //
 // The equality test does not need LSNs to arrive in order (they do not, for
-// interleaved transactions). Acks are FIFO and every change has its own LSN,
-// so if the last emitted record is acked, every earlier one is too.
+// interleaved transactions). Acks are FIFO, so if the last emitted record is
+// acked, every earlier one is too.
+//
+// Correction (2026-10-09): an earlier version of this comment also claimed
+// "every change has its own LSN". That is false: the rows of one multi-row
+// insert or COPY share one LSN, so for COPY an LSN equality opens the gate
+// after the first row is acked. #334 compares change keys (commit LSN,
+// ordinal) instead; see docs/design-documents/20261008-interleaved-tx-resume.md
+// on that PR.
 func reportedPositions(
 	walWritten, walFlushed, serverWALEnd, lastReported pglogrepl.LSN,
 ) (write, flush pglogrepl.LSN) {

@@ -5,6 +5,19 @@ This note settles the parent design's Heartbeats section
 against `main` at `0a59c82` (B1 merged) and Postgres 17.5, the image `make test`
 uses.
 
+> **Correction (2026-10-09).** This note describes the gate as LSN equality
+> (`walFlushed == walWritten`) and says every change has a distinct LSN. The
+> second claim is wrong: the rows of one multi-row insert or COPY share a single
+> LSN (one `heap_multi_insert` WAL record). With a COPY of five rows, acking the
+> first row makes `walFlushed == walWritten` true while four rows are still
+> unacked, so the gate would open too early. #334 replaces the LSN comparison
+> with a comparison of change keys (transaction commit LSN, ordinal within the
+> transaction); see
+> `docs/design-documents/20261008-interleaved-tx-resume.md` on that PR
+> (ConduitIO/conduit-connector-postgres#334). Read every `walFlushed ==
+> walWritten` below as "the last emitted change's key equals the last acked
+> change's key". The rest of the decision stands.
+
 ## Summary
 
 - **The heartbeat writer is cut** (DeVaris, 2026-10-08). The problem it was meant
@@ -62,8 +75,9 @@ on restart. It is filed as ConduitIO/conduit-connector-postgres#331 and fixed
 separately (v0.14.x hotfix and forward-port). B2 does not touch it.
 
 What matters for B2: the gate stays sound under non-monotonic LSNs. Acks are FIFO
-and every change has a distinct LSN. So `walFlushed == walWritten` means the last
-emitted record was acked, which means every earlier one was too.
+and every change has a distinct LSN (wrong for COPY, see the correction at the
+top). So `walFlushed == walWritten` means the last emitted record was acked,
+which means every earlier one was too.
 
 ## Decision
 
@@ -135,7 +149,7 @@ WAL end (for example, a proxy or managed service that alters them).
 | Keepalive WAL end arrives past a record that is emitted but unacked | Gate closed. The reported flush stays at `max(walFlushed, previously reported)`, below the unacked record's commit. | 1, 2, 3 |
 | SIGKILL with a record in flight and the WAL end past it | The slot never confirmed past the record. The restart resumes from the last checkpoint and Postgres re-sends the record's transaction. No gap. | 1, 3 |
 | Monotonic high-water mark held while records are in flight | Safe (see Decision 1). Worst case, the slot advances later than it could. | 2 |
-| Records with interleaved LSNs (H2) | The gate stays sound (FIFO acks, distinct LSNs). The resume-guard loss is #331. | 1–3 |
+| Records with interleaved LSNs (H2) | The gate stays sound (FIFO acks; "distinct LSNs" is wrong for COPY, see the correction at the top). The resume-guard loss is #331. | 1–3 |
 | Teardown | The final standby update goes through the same function. B1's FM10 (`confirmed_flush_lsn >= marker LSN`) still holds. | 7 |
 
 ## Upgrade / rollback
