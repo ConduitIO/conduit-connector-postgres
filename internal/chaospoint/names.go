@@ -78,11 +78,10 @@ const (
 
 	// DriftVersionRecorded is reached as the first statement of
 	// source/logrepl/handler.go's emitDriftMarker, before the marker record
-	// exists. Parking here proves a kill after the new schema shape was
-	// durably recorded in the position's schema history (RecordSchemaVersion)
-	// but before any marker record was queued — the FM3 kill window of the B1
-	// design doc (restart must halt again via driftAcrossRestart, and never
-	// duplicate the marker).
+	// exists and before the new shape is committed to the history. Parking
+	// here proves a kill after the drift was decided but before any marker
+	// record was queued — the FM3 kill window of the B1 design doc (restart
+	// must halt again, and never duplicate the marker).
 	DriftVersionRecorded = "logrepl.drift_version_recorded"
 
 	// DriftMarkerSeen is reached in test/chaos/child.go's read loop after a
@@ -100,13 +99,13 @@ const (
 	// IS the operator's approval.
 	DriftMarkerAppended = "child.drift_marker_appended"
 
-	// DriftVersionSkipped is reached in source/logrepl/handler.go's FM8 guard:
-	// a second DDL recorded while a drift halt is already pending (marker
-	// emitted but unacked, or staged but not yet emitted), before the "no
-	// second marker" return. Parking here proves a kill AFTER the second
-	// shape was durably recorded and its DML skipped, while the first marker
-	// is still pending — the in-run half of the FM8/AC9 window (the
-	// down-variant parks at DriftMarkerAppended instead).
+	// DriftVersionSkipped is reached in source/logrepl/handler.go's FM8 guard
+	// (skipAfterDriftMarker): a change delivered with a second, undecided
+	// shape while a drift marker is pending (emitted but unacked). Parking
+	// here proves a kill after the second shape was seen in-run and its DML
+	// skipped without the shape being committed, while the first marker is
+	// still pending — the in-run half of the FM8/AC9 window (the down-variant
+	// parks at DriftMarkerAppended instead).
 	DriftVersionSkipped = "logrepl.drift_version_skipped"
 
 	// RecordSeen is reached in test/chaos/child.go's read loop for every

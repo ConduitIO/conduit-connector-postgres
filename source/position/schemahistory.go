@@ -117,23 +117,21 @@ func (p *Position) LastSchemaVersion(table string) (SchemaVersion, bool) {
 // recorded shape for a table with the LSN of the first DML that actually used
 // that shape, and reports whether it updated.
 //
-// RecordSchemaVersion is called from handleRelation, which only ever sees the
-// RelationMessage's WALStart of 0, so every recorded FirstSeenLSN starts as
+// Builds before #335 recorded shapes when the RelationMessage arrived, which
+// carries a WALStart of 0, so their positions can hold a FirstSeenLSN of
 // "0/0" — a meaningless value in the drift-halt message ("last durable shape
-// first seen at LSN 0/0" told an operator nothing). pgoutput always sends the
-// first DML using a relation's shape immediately after its RelationMessage, so
-// that DML's LSN is the true first-seen position, and the DML handlers backfill
-// it here before building the position. A shape that already carries a real
-// LSN is left untouched: the first DML backfills, later ones must not
-// clobber it with a later LSN.
+// first seen at LSN 0/0" told an operator nothing). The connector now records
+// a shape at the LSN of the first delivered change that uses it, and the DML
+// handlers still backfill here so a placeholder carried in from an older
+// position is repaired. A shape that already carries a real LSN is left
+// untouched: the first DML backfills, later ones must not clobber it with a
+// later LSN.
 func (p *Position) SetFirstSeenLSN(table, lsn string) bool {
 	return p.SchemaHistory.SetFirstSeenLSN(table, lsn)
 }
 
 // SetFirstSeenLSN is Position.SetFirstSeenLSN's standalone form for a
-// SchemaHistories value, so a copied history can be backfilled independently
-// of the live one (the B1 drift marker's staging snapshot needs the same
-// backfill as the live history; see CDCHandler.emitDriftMarker).
+// SchemaHistories value.
 func (h SchemaHistories) SetFirstSeenLSN(table, lsn string) bool {
 	versions := h[table]
 	if len(versions) == 0 {
@@ -145,25 +143,6 @@ func (h SchemaHistories) SetFirstSeenLSN(table, lsn string) bool {
 	}
 	last.FirstSeenLSN = lsn
 	return true
-}
-
-// Clone returns a deep copy of the histories: the map and every per-table
-// version slice. A position that must be fixed at a point in time — the B1
-// drift marker, which is staged when the drift is seen but emitted later —
-// must not share slices with the live history, which keeps recording versions
-// in between (adversarial-review Blocker 1 on the B1 drift policy: the marker
-// position must reflect the state the halt decision was made against, or a
-// DDL that lands between staging and emission gets checkpointed by the first
-// marker and silently admitted on the restart).
-func (h SchemaHistories) Clone() SchemaHistories {
-	if h == nil {
-		return nil
-	}
-	out := make(SchemaHistories, len(h))
-	for table, versions := range h {
-		out[table] = append([]SchemaVersion(nil), versions...)
-	}
-	return out
 }
 
 // RecordSchemaVersion appends a newly observed shape for a table and prunes the

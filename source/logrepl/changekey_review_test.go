@@ -70,11 +70,16 @@ func r2Raw(t *testing.T, p opencdc.Position) map[string]any {
 //   - a published-but-unconfigured second table (changes + TRUNCATE in tx)
 //   - an unpublished table (never sent)
 //   - a rolled-back savepoint
-//   - a Relation message that the restarted session sends but run1 did not
-//     (run1 saw the table earlier)
+//   - mid-tx ALTER TABLE (Relation re-sent) and a Relation message that the
+//     restarted session sends but run1 did not (run1 saw the table earlier)
 //   - COPY inside the tx (shared LSN)
 //
 // Checkpoint after every prefix, restart, expect exactly the suffix.
+//
+// Both runs use the evolve policy, which accepts the additive ALTER. A
+// restart from a checkpoint taken after p2 replays the pre-ALTER Relation
+// message ahead of changes it skips; the drift decision must not read that
+// replayed shape as a change made while the connector was down (#335).
 func TestChangeKey_ResendEveryPrefix(t *testing.T) {
 	for k := 1; k <= 8; k++ {
 		t.Run(fmt.Sprint(k), func(t *testing.T) {
@@ -88,7 +93,7 @@ func TestChangeKey_ResendEveryPrefix(t *testing.T) {
 			is.NoErr(err)
 			cleanupSlot(t, pool, table)
 
-			run1 := newInterleaveCombined(ctx, t, pool, table, nil)
+			run1 := newInterleaveCombinedPolicy(ctx, t, pool, table, nil, SchemaDriftPolicyEvolve)
 			// warm-up so run1 already has the Relation messages cached
 			_, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('warm')`, table))
 			is.NoErr(err)
@@ -113,14 +118,7 @@ func TestChangeKey_ResendEveryPrefix(t *testing.T) {
 			ex(`ROLLBACK TO SAVEPOINT a`)
 			ex(fmt.Sprintf(`TRUNCATE %q`, second)) // Truncate message, no record
 			ex(fmt.Sprintf(`UPDATE %q SET column1='u2'`, unpub))
-			// No mid-transaction ALTER here, unlike the release/v0.14.x
-			// version of this test: resuming after a checkpoint that already
-			// recorded the post-ALTER shape replays the pre-ALTER Relation
-			// message, and B1's drift detection reads that as an
-			// across-restart change and halts, even under evolve. That is a
-			// B1 issue independent of the change key (#335).
-			// The Relation-re-sent path is still covered: run 2 sees
-			// Relation messages run 1 had cached.
+			ex(fmt.Sprintf(`ALTER TABLE %q ADD COLUMN extra int`, table)) // Relation re-sent
 			ex(fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('p2')`, table))
 			_, err = tx.CopyFrom(ctx, pgx.Identifier{table}, []string{"column1"}, pgx.CopyFromRows([][]any{{"c1"}, {"c2"}, {"c3"}}))
 			is.NoErr(err)
@@ -142,7 +140,7 @@ func TestChangeKey_ResendEveryPrefix(t *testing.T) {
 			}
 			_ = run1.Teardown(ctx)
 
-			run2 := newInterleaveCombined(ctx, t, pool, table, recs[k-1].Position)
+			run2 := newInterleaveCombinedPolicy(ctx, t, pool, table, recs[k-1].Position, SchemaDriftPolicyEvolve)
 			defer func() { _ = run2.Teardown(ctx) }()
 			is.Equal(drainColumn1(ctx, t, run2, 4*time.Second), all[k:])
 		})

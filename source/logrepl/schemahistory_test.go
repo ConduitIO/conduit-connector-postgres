@@ -52,6 +52,21 @@ func newHandlerWithPosition(t *testing.T, p position.Position, policy SchemaDrif
 		out, false, 1, time.Hour, p, policy)
 }
 
+// relate feeds r to the handler as pgoutput does (a Relation message, which
+// decides nothing), then makes the drift decision the way the first delivered
+// change using r's shape does, at lsn. It returns the drift kind and whether a
+// drift marker was emitted in place of that change.
+//
+// It does not run the D4 skip; tests that continue after a marker drive
+// h.Handle with real change messages instead.
+func relate(ctx context.Context, t *testing.T, h *CDCHandler, r *pglogrepl.RelationMessage, lsn pglogrepl.LSN) (driftKind, bool) {
+	t.Helper()
+	if _, err := h.Handle(ctx, r, 0); err != nil {
+		t.Fatalf("handle relation message: %v", err)
+	}
+	return h.decideDriftOnDelivery(ctx, r.RelationID, lsn)
+}
+
 var (
 	shapeV1 = []*pglogrepl.RelationMessageColumn{relCol("id", 23, -1), relCol("email", 25, -1)}
 	shapeV2 = []*pglogrepl.RelationMessageColumn{relCol("id", 23, -1), relCol("email", 25, -1), relCol("age", 23, -1)}
@@ -65,7 +80,7 @@ func Test_HandleRelation_FirstSightIsNotDrift(t *testing.T) {
 	is := is.New(t)
 	h := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
 
-	kind, _ := h.handleRelation(context.Background(), relMsg(shapeV1...), 100)
+	kind, _ := relate(context.Background(), t, h, relMsg(shapeV1...), 100)
 	is.Equal(kind, driftInitial)
 
 	// The shape is now durable.
@@ -83,11 +98,11 @@ func Test_HandleRelation_RepeatIsSilent(t *testing.T) {
 	h := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
 	ctx := context.Background()
 
-	kind, _ := h.handleRelation(ctx, relMsg(shapeV1...), 100)
+	kind, _ := relate(ctx, t, h, relMsg(shapeV1...), 100)
 	is.Equal(kind, driftInitial)
-	kind, _ = h.handleRelation(ctx, relMsg(shapeV1...), 200)
+	kind, _ = relate(ctx, t, h, relMsg(shapeV1...), 200)
 	is.Equal(kind, driftNone)
-	kind, _ = h.handleRelation(ctx, relMsg(shapeV1...), 300)
+	kind, _ = relate(ctx, t, h, relMsg(shapeV1...), 300)
 	is.Equal(kind, driftNone)
 
 	// And no duplicate versions accumulated, which would eventually prune away
@@ -97,22 +112,26 @@ func Test_HandleRelation_RepeatIsSilent(t *testing.T) {
 
 // Test_HandleRelation_InProcessDrift pins the step-1 path still fires: a DDL
 // applied while the connector is running produces a fully described diff. It
-// also pins the re-review should-fix on the B1 drift policy: the staged shape
-// is held in the staging snapshot only, never committed to the live history at
-// the sighting — a sighting-time commit would leak the shape into unrelated
-// records' positions and dedupe the drift away on a restart before the drifted
-// table's own DML.
+// also pins that a Relation message alone decides nothing and commits nothing
+// (#335): the shape is decided, and under halt committed together with the
+// marker, only when a change using it is delivered.
 func Test_HandleRelation_InProcessDrift(t *testing.T) {
 	is := is.New(t)
 	h := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
 	ctx := context.Background()
 
-	kind, _ := h.handleRelation(ctx, relMsg(shapeV1...), 100)
+	kind, _ := relate(ctx, t, h, relMsg(shapeV1...), 100)
 	is.Equal(kind, driftInitial)
-	kind, _ = h.handleRelation(ctx, relMsg(shapeV2...), 200)
+
+	_, err := h.Handle(ctx, relMsg(shapeV2...), 0)
+	is.NoErr(err)
+	is.Equal(len(h.basePosition.SchemaHistory["public.users"]), 1) // undecided: live history stays [v1]
+	is.True(!h.driftMarkerPending())
+
+	kind, marker := h.decideDriftOnDelivery(ctx, 1, 200)
 	is.Equal(kind, driftInProcess)
-	is.Equal(len(h.basePosition.SchemaHistory["public.users"]), 1) // v2 not leaked: live history stays [v1]
-	is.Equal(len(h.driftPendingHistory["public.users"]), 2)        // the staged snapshot carries [v1, v2]
+	is.True(marker)
+	is.Equal(len(h.basePosition.SchemaHistory["public.users"]), 2) // committed with the marker
 }
 
 // Test_HandleRelation_DriftAcrossRestart is the whole point of this change.
@@ -130,7 +149,7 @@ func Test_HandleRelation_DriftAcrossRestart(t *testing.T) {
 
 	// Run 1: connector sees shapeV1 and checkpoints.
 	h1 := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
-	kind, _ := h1.handleRelation(ctx, relMsg(shapeV1...), 100)
+	kind, _ := relate(ctx, t, h1, relMsg(shapeV1...), 100)
 	is.Equal(kind, driftInitial)
 	checkpoint := h1.buildPosition(150)
 
@@ -141,7 +160,7 @@ func Test_HandleRelation_DriftAcrossRestart(t *testing.T) {
 	is.NoErr(err)
 	h2 := newHandlerWithPosition(t, resumed, SchemaDriftPolicyHalt)
 
-	kind, _ = h2.handleRelation(ctx, relMsg(shapeV2...), 200)
+	kind, _ = relate(ctx, t, h2, relMsg(shapeV2...), 200)
 	is.Equal(kind, driftAcrossRestart)
 }
 
@@ -154,14 +173,14 @@ func Test_HandleRelation_NoDriftAcrossCleanRestart(t *testing.T) {
 	ctx := context.Background()
 
 	h1 := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
-	_, _ = h1.handleRelation(ctx, relMsg(shapeV1...), 100)
+	_, _ = relate(ctx, t, h1, relMsg(shapeV1...), 100)
 	checkpoint := h1.buildPosition(150)
 
 	resumed, err := position.ParseSDKPosition(checkpoint)
 	is.NoErr(err)
 	h2 := newHandlerWithPosition(t, resumed, SchemaDriftPolicyHalt)
 
-	kind, _ := h2.handleRelation(ctx, relMsg(shapeV1...), 200)
+	kind, _ := relate(ctx, t, h2, relMsg(shapeV1...), 200)
 	is.Equal(kind, driftNone)
 }
 
@@ -177,7 +196,7 @@ func Test_HandleRelation_LegacyPositionSeedsWithoutDrift(t *testing.T) {
 	is.Equal(len(legacy.SchemaHistory), 0)
 
 	h := newHandlerWithPosition(t, legacy, SchemaDriftPolicyHalt)
-	kind, _ := h.handleRelation(context.Background(), relMsg(shapeV2...), 100)
+	kind, _ := relate(context.Background(), t, h, relMsg(shapeV2...), 100)
 	is.Equal(kind, driftInitial)
 }
 
@@ -197,7 +216,7 @@ func Test_BuildPosition_CarriesSchemaHistoryOnEveryRecord(t *testing.T) {
 	ctx := context.Background()
 
 	h := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
-	_, _ = h.handleRelation(ctx, relMsg(shapeV1...), 100)
+	_, _ = relate(ctx, t, h, relMsg(shapeV1...), 100)
 
 	for lsn := range pglogrepl.LSN(20) {
 		p, err := position.ParseSDKPosition(h.buildPosition(lsn + 101))
@@ -230,7 +249,7 @@ func Test_SchemaHistory_StaysBounded(t *testing.T) {
 	for range 50 {
 		cols := append([]*pglogrepl.RelationMessageColumn{relCol("id", 23, -1)},
 			relCol("churn", 23, typeMod))
-		_, _ = h.handleRelation(ctx, relMsg(cols...), lsn)
+		_, _ = relate(ctx, t, h, relMsg(cols...), lsn)
 		typeMod++
 		lsn++
 	}

@@ -143,7 +143,7 @@ func (d SchemaDiff) String() string {
 		d.Namespace, d.RelationNa, d.RelationID, strings.Join(parts, "; "))
 }
 
-// diffRelations compares two shapes of the same relation.
+// DiffRelations compares two shapes of the same relation.
 //
 // A rename is reported as drop+add. pgoutput's RelationMessage exposes no
 // column-OID or rename tracking, so a rename is genuinely indistinguishable
@@ -152,7 +152,7 @@ func (d SchemaDiff) String() string {
 // DeVaris confirmed on 2026-08-03 that guessing is not worth its complexity.
 // Reporting drop+add is correct and noisier; guessing would be quieter and
 // sometimes wrong.
-func diffRelations(before, after *pglogrepl.RelationMessage) SchemaDiff {
+func DiffRelations(before, after *pglogrepl.RelationMessage) SchemaDiff {
 	diff := SchemaDiff{
 		RelationID: after.RelationID,
 		Namespace:  after.Namespace,
@@ -218,5 +218,5 @@ func (rs *RelationSet) Update(r *pglogrepl.RelationMessage) SchemaDiff {
 		return SchemaDiff{RelationID: r.RelationID, Namespace: r.Namespace, RelationNa: r.RelationName}
 	}
 
-	return diffRelations(prev, r)
+	return DiffRelations(prev, r)
 }
