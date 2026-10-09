@@ -158,6 +158,16 @@ type CDCHandler struct {
 	driftHaltErr   error
 	driftHaltCh    chan struct{}
 
+	// driftWarn* back the "marker still unacked" warning. afterFunc is
+	// time.AfterFunc outside tests. The timer is created on the subscription
+	// goroutine and stopped from the engine goroutine (arming ack, Teardown),
+	// so it sits behind a mutex; driftWarnStopped also silences a callback that
+	// is already running when the timer is stopped.
+	afterFunc        func(d time.Duration, f func()) timerStopper
+	driftWarnMu      sync.Mutex
+	driftWarnTimer   timerStopper
+	driftWarnStopped atomic.Bool
+
 	// changeKey returns the key of the change being handled (see
 	// internal.Subscription.CurrentChange). Set once before the subscription
 	// starts and called only from Handle, on the subscription goroutine. Nil
@@ -190,6 +200,9 @@ func NewCDCHandler(
 		basePosition:      startPosition,
 		schemaDriftPolicy: schemaDriftPolicy,
 		driftHaltCh:       make(chan struct{}),
+		afterFunc: func(d time.Duration, f func()) timerStopper {
+			return time.AfterFunc(d, f)
+		},
 
 		undecidedRelations: make(map[uint32]struct{}),
 		seenShapes:         make(map[uint32]map[string]*pglogrepl.RelationMessage),
@@ -911,7 +924,12 @@ func (h *CDCHandler) emitDriftMarker(
 	// driftHaltArmed or driftHaltCh (see the field comment).
 	h.driftHaltErr = haltErr
 	h.driftMarkerKey = markerKey // before the atomic store below
-	if mp, err := position.ParseSDKPosition(rec.Position); err == nil {
+	if mp, err := position.ParseSDKPosition(rec.Position); err != nil {
+		// Cannot happen for a position this handler just serialized. If it
+		// did, no ack could match the marker and the halt would never arm.
+		sdk.Logger(ctx).Error().Err(err).
+			Msg("failed to parse the drift marker's own position; the halt cannot arm")
+	} else {
 		h.driftMarkerPos = mp
 	}
 	h.driftMarkerLSN.Store(uint64(lsn))
@@ -976,6 +994,7 @@ func (h *CDCHandler) maybeArmDriftHalt(lsn pglogrepl.LSN, key internal.ChangeKey
 		}
 	}
 	if h.driftHaltArmed.CompareAndSwap(false, true) {
+		h.stopMarkerWarning()
 		close(h.driftHaltCh)
 	}
 }
@@ -997,27 +1016,48 @@ func samePosition(a, b position.Position) bool {
 }
 
 // driftMarkerWarnAfter is how long a drift marker may stay unacked before the
-// connector says so. A variable so tests can shorten it.
-var driftMarkerWarnAfter = 30 * time.Second
+// connector says so.
+const driftMarkerWarnAfter = 30 * time.Second
+
+// timerStopper is the part of *time.Timer the warning needs, so tests can
+// replace the clock.
+type timerStopper interface{ Stop() bool }
 
 // warnIfMarkerStaysUnacked logs once if the halt has not armed
 // driftMarkerWarnAfter after the marker was emitted. Until the marker is
 // acked nothing else is emitted (D4) and the slot is held, so a pipeline that
 // never acks the marker (for example because the position it returns is not
-// the one the marker carried) waits silently while WAL accumulates.
+// the one the marker carried) waits silently while WAL accumulates. The timer
+// is stopped by the arming ack and by Teardown (stopMarkerWarning), so it
+// neither outlives the iterator nor fires for an acked marker.
 func (h *CDCHandler) warnIfMarkerStaysUnacked(ctx context.Context, key string) {
-	after := driftMarkerWarnAfter
-	time.AfterFunc(after, func() {
-		if h.driftHaltArmed.Load() {
+	t := h.afterFunc(driftMarkerWarnAfter, func() {
+		if h.driftHaltArmed.Load() || h.driftWarnStopped.Load() {
 			return
 		}
 		sdk.Logger(ctx).Warn().
 			Str("table", key).
 			Stringer("marker_lsn", pglogrepl.LSN(h.driftMarkerLSN.Load())).
-			Dur("after", after).
+			Dur("after", driftMarkerWarnAfter).
 			Msg("schema drift marker has not been acked; the halt cannot surface and the slot is held. " +
 				"The marker's position must be acked unchanged (type, LSN, change key, schema history)")
 	})
+	h.driftWarnMu.Lock()
+	h.driftWarnTimer = t
+	h.driftWarnMu.Unlock()
+}
+
+// stopMarkerWarning cancels the pending "marker still unacked" warning, if
+// any. Safe to call repeatedly and before any marker exists.
+func (h *CDCHandler) stopMarkerWarning() {
+	h.driftWarnStopped.Store(true)
+	h.driftWarnMu.Lock()
+	t := h.driftWarnTimer
+	h.driftWarnTimer = nil
+	h.driftWarnMu.Unlock()
+	if t != nil {
+		t.Stop()
+	}
 }
 
 // driftHaltError returns the terminal D5 error once the halt is armed, nil

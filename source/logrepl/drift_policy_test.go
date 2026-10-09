@@ -528,9 +528,12 @@ func (b *syncBuffer) String() string {
 // change at key (0x500, 2) after a delivered record at (0x500, 1). It returns
 // the handler, the previous record's position and the marker's position. The
 // marker's position carries the previous record's key (#338).
-func markerWithPredecessor(ctx context.Context, t *testing.T) (h *CDCHandler, prev, marker position.Position) {
+func markerWithPredecessor(ctx context.Context, t *testing.T, setup ...func(*CDCHandler)) (h *CDCHandler, prev, marker position.Position) {
 	t.Helper()
 	h, out := newHandlerWithOut(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
+	for _, f := range setup {
+		f(h)
+	}
 	cur := internal.ChangeKey{CommitLSN: 0x500, Seq: 1}
 	h.changeKey = func() internal.ChangeKey { return cur }
 
@@ -597,31 +600,124 @@ func Test_MaybeArmDriftHalt_ZeroPositionMatchesNothing(t *testing.T) {
 	is.True(!h.driftHaltArmed.Load())
 }
 
-// Test_DriftMarker_WarnsWhenUnacked: a marker that stays unacked past the
-// threshold is reported once, so a pipeline waiting on an ack that never
-// matches is not silent. An armed halt stays quiet.
-func Test_DriftMarker_WarnsWhenUnacked(t *testing.T) {
-	old := driftMarkerWarnAfter
-	driftMarkerWarnAfter = 50 * time.Millisecond
-	t.Cleanup(func() { driftMarkerWarnAfter = old })
+// fakeClock replaces the handler's timer so the warning tests need no sleeps.
+type fakeClock struct {
+	mu      sync.Mutex
+	after   time.Duration
+	fn      func()
+	stopped bool
+}
 
-	var logs syncBuffer
-	ctx := zerolog.New(&logs).WithContext(context.Background())
-	h, _, marker := markerWithPredecessor(ctx, t)
+func (c *fakeClock) afterFunc(d time.Duration, f func()) timerStopper {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.after, c.fn = d, f
+	return c
+}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for !strings.Contains(logs.String(), "has not been acked") && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+func (c *fakeClock) Stop() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	was := !c.stopped
+	c.stopped = true
+	return was
+}
+
+// fire runs the scheduled callback as the timer would, even if it was stopped
+// (a callback already running when Stop is called).
+func (c *fakeClock) fire(t *testing.T) {
+	t.Helper()
+	c.mu.Lock()
+	f := c.fn
+	c.mu.Unlock()
+	if f == nil {
+		t.Fatal("no timer was scheduled")
 	}
-	is.New(t).True(strings.Contains(logs.String(), "has not been acked"))
+	f()
+}
 
-	// Acked in time: no warning.
-	var quiet syncBuffer
-	ctx2 := zerolog.New(&quiet).WithContext(context.Background())
-	driftMarkerWarnAfter = 300 * time.Millisecond
-	h2, _, marker2 := markerWithPredecessor(ctx2, t)
-	h2.maybeArmDriftHalt(200, internal.ChangeKey{CommitLSN: 0x500, Seq: 1}, marker2)
-	time.Sleep(600 * time.Millisecond)
-	is.New(t).True(!strings.Contains(quiet.String(), "has not been acked"))
-	_, _ = h, marker
+const unackedWarning = "has not been acked"
+
+func markerWithClock(t *testing.T) (*CDCHandler, *fakeClock, *syncBuffer, position.Position) {
+	t.Helper()
+	clk := &fakeClock{}
+	logs := &syncBuffer{}
+	ctx := zerolog.New(logs).WithContext(context.Background())
+	h, _, marker := markerWithPredecessor(ctx, t, func(h *CDCHandler) { h.afterFunc = clk.afterFunc })
+	return h, clk, logs, marker
+}
+
+// Test_DriftMarker_WarnsWhenUnacked: a marker that stays unacked until the
+// timer fires is reported once, so a pipeline waiting on an ack that never
+// matches is not silent.
+func Test_DriftMarker_WarnsWhenUnacked(t *testing.T) {
+	is := is.New(t)
+	_, clk, logs, _ := markerWithClock(t)
+	is.Equal(clk.after, driftMarkerWarnAfter)
+	is.True(!strings.Contains(logs.String(), unackedWarning)) // not before it fires
+	clk.fire(t)
+	is.True(strings.Contains(logs.String(), unackedWarning))
+}
+
+// Test_DriftMarker_AckedNeverWarns: the arming ack stops the timer, and a
+// callback that was already running stays silent.
+func Test_DriftMarker_AckedNeverWarns(t *testing.T) {
+	is := is.New(t)
+	h, clk, logs, marker := markerWithClock(t)
+	h.maybeArmDriftHalt(200, internal.ChangeKey{CommitLSN: 0x500, Seq: 1}, marker)
+	is.True(h.driftHaltArmed.Load())
+	is.True(clk.stopped) // the timer was stopped
+	clk.fire(t)
+	is.True(!strings.Contains(logs.String(), unackedWarning))
+}
+
+// Test_DriftMarker_TeardownStopsWarning: tearing the iterator down before the
+// threshold stops the timer, and nothing is logged afterwards.
+func Test_DriftMarker_TeardownStopsWarning(t *testing.T) {
+	is := is.New(t)
+	h, clk, logs, _ := markerWithClock(t)
+	is.NoErr((&CDCIterator{handler: h}).Teardown(context.Background()))
+	is.True(clk.stopped)
+	clk.fire(t)
+	is.True(!strings.Contains(logs.String(), unackedWarning))
+}
+
+// Test_SamePosition pins what identifies a marker. Every compared field must
+// matter: a position equal in all but one field is a different record (the
+// previous record shares the marker's key and, for COPY rows, its LSN).
+func Test_SamePosition(t *testing.T) {
+	hist := position.SchemaHistories{"public.users": {{ColumnSetHash: "h2", FirstSeenLSN: "0/C8"}}}
+	base := position.Position{
+		Type: position.TypeCDC, LastLSN: "0/C8", TxCommitLSN: "0/500", TxSeq: 1, SchemaHistory: hist,
+	}
+	with := func(f func(*position.Position)) position.Position {
+		p := base
+		f(&p)
+		return p
+	}
+	tests := []struct {
+		name string
+		a, b position.Position
+		want bool
+	}{
+		{"identical", base, base, true},
+		{"nil and empty history are equal", with(func(p *position.Position) { p.SchemaHistory = nil }),
+			with(func(p *position.Position) { p.SchemaHistory = position.SchemaHistories{} }), true},
+		{"different TxSeq", base, with(func(p *position.Position) { p.TxSeq = 2 }), false},
+		{"different LastLSN", base, with(func(p *position.Position) { p.LastLSN = "0/C9" }), false},
+		{"different TxCommitLSN", base, with(func(p *position.Position) { p.TxCommitLSN = "0/501" }), false},
+		{"different history", base, with(func(p *position.Position) {
+			p.SchemaHistory = position.SchemaHistories{"public.users": {{ColumnSetHash: "h1", FirstSeenLSN: "0/64"}}}
+		}), false},
+		{"history vs none", base, with(func(p *position.Position) { p.SchemaHistory = nil }), false},
+		{"snapshot type never matches", with(func(p *position.Position) { p.Type = position.TypeSnapshot }),
+			with(func(p *position.Position) { p.Type = position.TypeSnapshot }), false},
+		{"zero position matches nothing", position.Position{}, base, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is.New(t).Equal(samePosition(tt.a, tt.b), tt.want)
+			is.New(t).Equal(samePosition(tt.b, tt.a), tt.want) // symmetric
+		})
+	}
 }
