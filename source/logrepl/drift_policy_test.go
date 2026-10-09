@@ -146,11 +146,13 @@ func Test_HandleRelation_HaltEmitsMarker(t *testing.T) {
 	// D3: acked-gated — the error is stored, but not surfaced until the ack.
 	is.True(!h.driftHaltArmed.Load())
 	is.Equal(h.driftHaltError(), nil)
-	h.maybeArmDriftHalt(lsn, internal.ChangeKey{})
+	h.maybeArmDriftHalt(lsn, internal.ChangeKey{}, nil)
 	is.True(h.driftHaltArmed.Load())
 	is.True(strings.HasPrefix(h.driftHaltError().Error(), ErrorCodeSchemaDriftHalt))
 	is.True(strings.Contains(h.driftHaltError().Error(), haltRevertTrap))
-	is.True(strings.Contains(h.driftHaltError().Error(), haltDisclosure))
+	// #338: the boundary row is delivered after the restart, so the message
+	// no longer discloses a dropped record.
+	is.True(!strings.Contains(h.driftHaltError().Error(), "not delivered"))
 }
 
 // Test_HandleRelation_EvolveAcceptsAdditive pins that evolve admits a purely
@@ -238,7 +240,7 @@ func Test_HaltError_AcrossRestartMessage(t *testing.T) {
 
 	_, _ = h2.Handle(ctx, relMsg(shapeV2...), 0)
 	_ = h2.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 1}, 210)
-	h2.maybeArmDriftHalt(210, internal.ChangeKey{})
+	h2.maybeArmDriftHalt(210, internal.ChangeKey{}, nil)
 
 	msg := h2.driftHaltError().Error()
 	is.True(strings.HasPrefix(msg, ErrorCodeSchemaDriftHalt+": "))
@@ -246,8 +248,8 @@ func Test_HaltError_AcrossRestartMessage(t *testing.T) {
 	is.True(strings.Contains(msg, "schema hash "))
 	is.True(strings.Contains(msg, "0/64")) // prev.FirstSeenLSN
 	is.True(strings.Contains(msg, haltRevertTrap))
-	is.True(strings.Contains(msg, haltDisclosure)) // Blocker 2: disclose the dropped boundary record
-	is.True(!strings.Contains(msg, "age"))         // AC7: never fabricates a column diff
+	is.True(!strings.Contains(msg, "not delivered")) // #338: no dropped boundary record to disclose
+	is.True(!strings.Contains(msg, "age"))           // AC7: never fabricates a column diff
 }
 
 // Test_HandleRelation_StackedDDL_OneMarker pins FM8/AC9: a second DDL while a
@@ -450,11 +452,11 @@ func Test_MaybeArmDriftHalt_AckGating(t *testing.T) {
 	// The first DML emits the marker at LSN 200.
 	_ = h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 1}, 200)
 
-	h.maybeArmDriftHalt(150, internal.ChangeKey{}) // below the marker: must not arm
+	h.maybeArmDriftHalt(150, internal.ChangeKey{}, nil) // below the marker: must not arm
 	is.True(!h.driftHaltArmed.Load())
 
 	ch := h.driftHaltCh
-	h.maybeArmDriftHalt(200, internal.ChangeKey{}) // the marker's own ack
+	h.maybeArmDriftHalt(200, internal.ChangeKey{}, nil) // the marker's own ack
 	is.True(h.driftHaltArmed.Load())
 	select {
 	case <-ch:
@@ -464,7 +466,7 @@ func Test_MaybeArmDriftHalt_AckGating(t *testing.T) {
 
 	// Second arming is a no-op: the channel is closed exactly once, the error
 	// is stable.
-	h.maybeArmDriftHalt(999, internal.ChangeKey{})
+	h.maybeArmDriftHalt(999, internal.ChangeKey{}, nil)
 	msg := h.driftHaltError().Error()
 	is.True(strings.HasPrefix(msg, ErrorCodeSchemaDriftHalt+": "))
 }
@@ -491,11 +493,11 @@ func Test_MaybeArmDriftHalt_ArmsOnKeyNotLSN(t *testing.T) {
 	is.True(h.driftMarkerPending())
 
 	// An earlier-committed transaction's change: higher LSN, lower key.
-	h.maybeArmDriftHalt(900, internal.ChangeKey{CommitLSN: 0x400, Seq: 3})
+	h.maybeArmDriftHalt(900, internal.ChangeKey{CommitLSN: 0x400, Seq: 3}, nil)
 	is.True(!h.driftHaltArmed.Load())
 
 	// The marker's own ack arms, although its LSN (200) is below the LSN of
 	// the change acked before it (900).
-	h.maybeArmDriftHalt(200, internal.ChangeKey{CommitLSN: 0x500, Seq: 1})
+	h.maybeArmDriftHalt(200, internal.ChangeKey{CommitLSN: 0x500, Seq: 1}, nil)
 	is.True(h.driftHaltArmed.Load())
 }

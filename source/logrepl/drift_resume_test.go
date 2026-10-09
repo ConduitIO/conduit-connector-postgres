@@ -287,8 +287,8 @@ func Test_Drift335_ShapesBeforeDeliveryDecideOnce(t *testing.T) {
 // drift, the marker is acked, and the restart (the operator's approval)
 // resumes from the marker, inside that transaction. Postgres re-sends the
 // transaction, starting with the pre-ALTER Relation message. The restart must
-// deliver exactly the rest of the transaction, with no second marker and no
-// second halt.
+// deliver the deciding change (p2, #338) and the rest of the transaction, with
+// no second marker and no second halt.
 //
 // Before the fix, run 2 read the replayed pre-ALTER shape as drift while down
 // and emitted a second marker instead of c1.
@@ -317,7 +317,7 @@ func TestDrift335_HaltApprovalMidTransaction(t *testing.T) {
 
 	recs := readN(ctx, t, run1, 2, 15*time.Second)
 	is.Equal(column1(t, recs[0]), "p1")
-	is.Equal(recs[1].Metadata[MetadataSchemaDrift], "true") // the marker replaces p2 (D4, D5 disclosure)
+	is.Equal(recs[1].Metadata[MetadataSchemaDrift], "true") // the marker replaces p2 (D4); the restart delivers it (#338)
 	is.NoErr(run1.Ack(ctx, recs[0].Position))
 	is.NoErr(run1.Ack(ctx, recs[1].Position))
 	_, err = run1.NextN(ctx, 1)
@@ -326,7 +326,7 @@ func TestDrift335_HaltApprovalMidTransaction(t *testing.T) {
 
 	run2 := newInterleaveCombinedPolicy(ctx, t, pool, table, recs[1].Position, SchemaDriftPolicyHalt)
 	defer func() { _ = run2.Teardown(ctx) }()
-	is.Equal(drainColumn1(ctx, t, run2, 4*time.Second), []string{"c1", "c2", "c3", "p3"})
+	is.Equal(drainColumn1(ctx, t, run2, 4*time.Second), []string{"p2", "c1", "c2", "c3", "p3"})
 }
 
 // TestDrift335_DriftWhileDownMidTransaction pins that a real schema change

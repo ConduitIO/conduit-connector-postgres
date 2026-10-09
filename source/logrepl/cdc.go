@@ -380,7 +380,7 @@ func (i *CDCIterator) Ack(_ context.Context, sdkPos opencdc.Position) error {
 	// is the boundary the escape hatch depends on: the ack moves the slot's
 	// confirmed_flush_lsn to exactly the point the connector has seen and no
 	// further, and the engine's persisted position is the operator's approval.
-	i.handler.maybeArmDriftHalt(lsn, key)
+	i.handler.maybeArmDriftHalt(lsn, key, sdkPos)
 
 	return nil
 }

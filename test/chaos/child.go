@@ -321,6 +321,14 @@ func buildLedgerEntry(run int, table string, rec opencdc.Record) (LedgerEntry, e
 			// rows as duplicates (#331).
 			entry.DeliveryKey = fmt.Sprintf("cdc:%s/%d", pos.TxCommitLSN, pos.TxSeq)
 		}
+		if entry.Drift {
+			// A drift marker's position carries the key one below the
+			// change that decided the drift (#338), which is the key of the
+			// record delivered just before it. It is not a delivery of that
+			// change, so give it its own identity: otherwise the ledger
+			// reports it as a duplicate of the previous record.
+			entry.DeliveryKey = "drift:" + entry.DeliveryKey
+		}
 	default:
 		return LedgerEntry{}, fmt.Errorf("unexpected position type %q (raw position %q)", pos.Type, rec.Position)
 	}

@@ -15,6 +15,7 @@
 package logrepl
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strconv"
@@ -129,7 +130,14 @@ type CDCHandler struct {
 	//     driftMarkerLSN and read by maybeArmDriftHalt only after that atomic
 	//     is observed non-zero, so the store/load pair orders the write before
 	//     the read (same scheme as driftHaltErr). The halt arms on this key,
-	//     never on the LSN: see maybeArmDriftHalt.
+	//     never on the LSN: see maybeArmDriftHalt. It is the deciding change's
+	//     key, not the key in the marker's position, which is the predecessor
+	//     (#338).
+	//   - driftMarkerPos is the marker's serialized position, written next to
+	//     driftMarkerKey under the same ordering. The marker's position key is
+	//     the deciding change's predecessor, which the previous record's
+	//     position can share, so an ack is recognized as the marker's by these
+	//     bytes (see maybeArmDriftHalt).
 	//   - driftHaltArmed is written on the engine goroutine (Ack ->
 	//     maybeArmDriftHalt) and read on the engine goroutine (NextN). It gates
 	//     surfacing the error.
@@ -145,6 +153,7 @@ type CDCHandler struct {
 	// No locks (D8): the atomics above order every read after its write.
 	driftMarkerLSN atomic.Uint64
 	driftMarkerKey internal.ChangeKey
+	driftMarkerPos opencdc.Position
 	driftHaltArmed atomic.Bool
 	driftHaltErr   error
 	driftHaltCh    chan struct{}
@@ -494,39 +503,37 @@ func (h *CDCHandler) buildRecordPayload(values map[string]any) opencdc.Data {
 // legacy (Version 0 / Finding-1) behavior even on a connector that has run well
 // past its first snapshot — the intermittent regression the design doc calls out.
 func (h *CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
+	return h.buildPositionAt(lsn, h.currentChangeKey())
+}
+
+// buildPositionAt is buildPosition with an explicit change key. A key that is
+// not Known leaves the position without one (the legacy resume rule).
+func (h *CDCHandler) buildPositionAt(lsn pglogrepl.LSN, key internal.ChangeKey) opencdc.Position {
+	var commit string
+	var seq uint64
+	if key.Known() {
+		commit, seq = key.CommitLSN.String(), key.Seq
+	}
 	return position.Position{
 		Type:                    position.TypeCDC,
 		LastLSN:                 lsn.String(),
-		TxCommitLSN:             h.txCommitLSN(),
-		TxSeq:                   h.txSeq(),
+		TxCommitLSN:             commit,
+		TxSeq:                   seq,
 		SnapshotLowWatermarkLSN: h.basePosition.SnapshotLowWatermarkLSN,
 		SchemaHistory:           h.basePosition.SchemaHistory,
 	}.ToSDKPosition()
 }
 
-// txCommitLSN and txSeq return the key of the change being handled (its
+// currentChangeKey returns the key of the change being handled (its
 // transaction's commit LSN and its ordinal within that transaction, from the
-// subscription), or zero values when unknown. Every CDC position carries the
+// subscription), or the zero key when unknown. Every CDC position carries the
 // key so a restart can tell which re-sent changes were already delivered
 // (#331; see internal.ChangeKey and internal.ResumePoint).
 //
 // Invariant 2: (TxCommitLSN, TxSeq) increases strictly record by record in
 // stream order, even when LastLSN does not (interleaved transactions) or
-// repeats (rows of one multi-row insert).
-func (h *CDCHandler) txCommitLSN() string {
-	if k := h.currentChangeKey(); k.Known() {
-		return k.CommitLSN.String()
-	}
-	return ""
-}
-
-func (h *CDCHandler) txSeq() uint64 {
-	if k := h.currentChangeKey(); k.Known() {
-		return k.Seq
-	}
-	return 0
-}
-
+// repeats (rows of one multi-row insert). The drift marker is the one record
+// whose position carries a key below its own change's (#338).
 func (h *CDCHandler) currentChangeKey() internal.ChangeKey {
 	if h.changeKey == nil {
 		return internal.ChangeKey{}
@@ -818,7 +825,10 @@ func (h *CDCHandler) haltsOnDrift(kind driftKind, diff internal.SchemaDiff) bool
 //
 // It runs on the delivered change that decided the drift (see
 // decideDriftOnDelivery), so lsn and the change key are that change's: the
-// marker takes its place in the stream (D4 drops the change itself). pgoutput
+// marker takes its place in the stream (D4 drops the change itself in this
+// run). The marker's position carries the key one below that change (#338), so
+// the approving restart resumes at the change and delivers it, decoded against
+// the approved shape. pgoutput
 // delivers the RelationMessage with WALStart 0 (verified 2026-08-29), so the
 // relation message has no usable position of its own.
 //
@@ -876,7 +886,22 @@ func (h *CDCHandler) emitDriftMarker(
 		metadata[MetadataSchemaDriftDiff] = diff.String()
 	}
 
-	rec := sdk.Util.Source.NewRecordCreate(h.buildPosition(lsn), metadata, nil, nil)
+	// #338: the marker's position carries the key one below the deciding
+	// change, so the approving restart resumes AT that change instead of past
+	// it. Everything emitted before the marker has a key at or below the
+	// predecessor and was acked ahead of the marker (FIFO), so the exact resume
+	// skips precisely that and delivers the deciding change, now decoded
+	// against the approved shape. The LSN stays the deciding change's own: it
+	// is what the slot's confirmed_flush_lsn can reach, and it is below the
+	// transaction's commit LSN, so Postgres re-sends the transaction.
+	//
+	// Invariant 3: the deciding change is re-delivered, not dropped.
+	// Invariant 1: the flush gate compares the last emitted key (the deciding
+	// change, or a later D4-skipped one) with the last acked key (this
+	// predecessor), so it stays closed until the deciding change itself is
+	// delivered and acked after the restart.
+	markerKey := h.currentChangeKey()
+	rec := sdk.Util.Source.NewRecordCreate(h.buildPositionAt(lsn, markerKey.Predecessor()), metadata, nil, nil)
 	h.addToBatch(ctx, rec)
 
 	// Publish the pending-marker state AFTER the marker is queued, so a reader
@@ -885,7 +910,8 @@ func (h *CDCHandler) emitDriftMarker(
 	// write is ordered before the atomic store; readers observe it after
 	// driftHaltArmed or driftHaltCh (see the field comment).
 	h.driftHaltErr = haltErr
-	h.driftMarkerKey = h.currentChangeKey() // before the atomic store below
+	h.driftMarkerKey = markerKey // before the atomic store below
+	h.driftMarkerPos = rec.Position
 	h.driftMarkerLSN.Store(uint64(lsn))
 }
 
@@ -917,19 +943,30 @@ func (h *CDCHandler) driftMarkerPending() bool {
 // Invariant 1: arming is acked-gated, never sighting-gated: the engine
 // persists a position before acking it, so an acked marker is proof the
 // checkpoint is durable, which is exactly what makes the restart an approval.
-func (h *CDCHandler) maybeArmDriftHalt(lsn pglogrepl.LSN, key internal.ChangeKey) {
+//
+// #338: the marker's position carries the key one below the deciding change,
+// which is also the key of the record delivered just before the marker (when
+// the deciding change is not the first of its transaction). An ack's key
+// therefore cannot tell the marker's ack from that record's. The marker's
+// position bytes can: the engine acks the position it was given, and the
+// marker is the only record with those bytes. An ack with a key at or past the
+// deciding change's key still arms, as before, but nothing is emitted after
+// the marker (D4), so in practice the byte match is what arms.
+func (h *CDCHandler) maybeArmDriftHalt(lsn pglogrepl.LSN, key internal.ChangeKey, pos opencdc.Position) {
 	markerLSN := pglogrepl.LSN(h.driftMarkerLSN.Load())
 	if markerLSN == 0 {
 		return
 	}
-	// driftMarkerKey is safe to read: the atomic load above observed the
-	// store that followed its write.
-	if markerKey := h.driftMarkerKey; markerKey.Known() && key.Known() {
-		if key.Before(markerKey) {
+	// driftMarkerKey and driftMarkerPos are safe to read: the atomic load
+	// above observed the store that followed their writes.
+	if isMarker := len(pos) > 0 && bytes.Equal(pos, h.driftMarkerPos); !isMarker {
+		if markerKey := h.driftMarkerKey; markerKey.Known() && key.Known() {
+			if key.Before(markerKey) {
+				return
+			}
+		} else if lsn < markerLSN {
 			return
 		}
-	} else if lsn < markerLSN {
-		return
 	}
 	if h.driftHaltArmed.CompareAndSwap(false, true) {
 		close(h.driftHaltCh)

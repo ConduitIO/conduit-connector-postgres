@@ -14,7 +14,11 @@
 
 package internal
 
-import "github.com/jackc/pglogrepl"
+import (
+	"math"
+
+	"github.com/jackc/pglogrepl"
+)
 
 // ChangeKey identifies one change in replication stream order (#331).
 //
@@ -50,6 +54,32 @@ func (k ChangeKey) Before(o ChangeKey) bool {
 		return k.CommitLSN < o.CommitLSN
 	}
 	return k.Seq < o.Seq
+}
+
+// Predecessor returns the key immediately below k in stream order, as a key
+// that ResumePoint.Delivered can use to mean "resume at k, inclusive" (#338).
+// It is the key of the previous change in k's transaction when there is one.
+// For the first change of a transaction it is the largest possible key of the
+// previous commit LSN: Delivered then skips every transaction that committed
+// before k's and none of k's own. That is exact, and needs no knowledge of the
+// previous transaction, which a restarted subscription has not seen. Commit
+// LSNs are distinct, so no real change can sit between (CommitLSN-1,
+// MaxUint64) and (CommitLSN, 1).
+//
+// The result is a key Known() accepts, so it needs no new position field and
+// no new reading rule: positions that carry it resume exactly on every build
+// that has the change-key resume (#331).
+//
+// It returns the zero (unknown) key when k is not Known.
+func (k ChangeKey) Predecessor() ChangeKey {
+	switch {
+	case !k.Known():
+		return ChangeKey{}
+	case k.Seq > 1:
+		return ChangeKey{CommitLSN: k.CommitLSN, Seq: k.Seq - 1}
+	default:
+		return ChangeKey{CommitLSN: k.CommitLSN - 1, Seq: math.MaxUint64}
+	}
 }
 
 // ResumePoint is the last change a restarted subscription may treat as
