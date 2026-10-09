@@ -188,6 +188,10 @@ of markers in the kill harness is `drift:<commit>/<seq>`.
   by the approving run (`b1AssertBoundaryDeliveredOnce`) and, in the first, that
   `confirmed_flush_lsn` stays at or below the marker's LSN.
   `TestB1_335_ApprovalByCrashMidTransaction` now expects p2, p3, p4.
+  `TestB1_338_KillAfterMarkerAck` SIGKILLs the child after the marker's ack
+  (new chaospoint `DriftMarkerAcked`), before the halt surfaces and before any
+  teardown, then asserts the slot is at or below the marker's LSN and the
+  restart delivers the boundary row once.
 
 ## Related
 
