@@ -231,6 +231,11 @@ func appendAndAck(ctx context.Context, src sdk.Source, ledger *Ledger, run int, 
 		childFatalf("build ledger entry: %v", err)
 	}
 
+	// Every record: delivered, not yet durable, not acked. Parking the Nth
+	// reach holds that record in flight while the connector keeps running
+	// (the B2 flush-gate kill window).
+	chaospoint.Reach(chaospoint.RecordSeen)
+
 	// The FM2 kill window (design doc): the drift marker has been
 	// delivered by the connector (it is in the iterator's channel) but is
 	// not yet durable. Parking here proves a kill whose restart must NOT
