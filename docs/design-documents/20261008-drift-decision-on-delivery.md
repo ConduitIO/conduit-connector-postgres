@@ -89,6 +89,24 @@ diff is exact, so under `evolve` an additive change is accepted and a
 narrowing one halts with the diff. A change made while down with no replay of
 the old shape is still `driftAcrossRestart` and halts under every policy.
 
+## Decisions (DeVaris, 2026-10-09)
+
+1. **Replayed shapes are a diff base: accepted.** Under `evolve`, an additive
+   change made while the connector was down is accepted when the restart
+   replays the old shape, and a narrowing one halts with the exact diff. This
+   is the behavior described above. The alternative (use only shapes decided
+   in this run) was rejected: it would halt the checkpoint-before-ALTER
+   resumes under `evolve`.
+2. **The one-time false halt on DBZ-3 version 1 positions: accepted as
+   documented.** The last row of the failure-mode table stands. Version 1 is a
+   nightly-only format, the halt fails closed, and it happens once per upgrade
+   from such a position, only inside a transaction with an ALTER. No
+   carve-out.
+
+Follow-up, not part of this change: the approving restart still drops the
+boundary row (the D5 disclosure). Stopping that needs the marker to carry the
+key one below the deciding change: ConduitIO/conduit-connector-postgres#338.
+
 ## Alternatives considered
 
 - **Skip Relation messages whose transaction is at or below the checkpoint.**
@@ -115,6 +133,7 @@ the old shape is still `driftAcrossRestart` and halts under every policy.
 | Crash after the decision, before the marker is queued (FM3) | Nothing durable claims the shape; restart decides it again and halts | 5 |
 | Crash after the marker is durable, before its ack (FM1) | Restart resumes from the marker inside the transaction, replays old shapes, delivers the rest: no second halt (the #335 kill case) | 1, 3 |
 | Second DDL while a marker is pending (FM8) | Change skipped by D4 before any decision; shape not committed; halts on restart | 6 |
+| Changes skipped by D4 after the marker | Each still advances the subscription's emitted key without producing a record, so the flush gate stays closed after the marker's ack and the slot cannot move past the rest of the transaction. The invariant is documented at the emitted-key assignment (`internal/subscription.go`) and pinned by `TestDrift335_HaltApprovalMidTransaction` | 1, 3 |
 | Change for an unknown relation | D4 skip and the undecided check do not need the relation; decoding reports the error as before | 3 |
 | Resume from a position with history but no change key (DBZ-3 version 1, nightly builds only) | The legacy resume rule re-delivers the checkpointed transaction's acked prefix. If that prefix used a shape older than the checkpointed one, its first re-delivered change is decided against the newer durable shape and halts as across-restart. Under `halt` the approval restart then meets the ALTER again and halts once more. Only on the first restart after upgrading from such a position, and only when it is inside a transaction with an ALTER. Not reachable from v0.14.2 positions (no history) or from version 2 positions (exact resume) | 6 (fails closed) |
 
