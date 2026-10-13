@@ -887,7 +887,7 @@ func (h *CDCHandler) emitDriftMarker(
 	// the arrow.
 	haltErr := newDriftHaltError(kind, key, diff, prev, hash, lsn)
 	metadata := map[string]string{
-		MetadataSchemaDrift:       "true",
+		MetadataSchemaDrift:       "true", //nolint:goconst // metadata values are plain strings; tests assert the same literal
 		MetadataSchemaDriftTable:  key,
 		MetadataSchemaDriftLSN:    lsn.String(),
 		MetadataSchemaDriftPolicy: string(h.schemaDriftPolicy),
