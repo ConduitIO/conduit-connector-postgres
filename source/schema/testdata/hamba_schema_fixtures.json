@@ -87,7 +87,11 @@
       ],
       "keyCols": null,
       "schema": "{\"name\":\"t_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"c_bool\",\"type\":\"boolean\"},{\"name\":\"c_bytea\",\"type\":\"bytes\"},{\"name\":\"c_date\",\"type\":{\"type\":\"int\",\"logicalType\":\"date\"}},{\"name\":\"c_float4\",\"type\":\"float\"},{\"name\":\"c_float8\",\"type\":\"double\"},{\"name\":\"c_int2\",\"type\":\"int\"},{\"name\":\"c_int4\",\"type\":\"int\"},{\"name\":\"c_int8\",\"type\":\"long\"},{\"name\":\"c_json\",\"type\":\"bytes\"},{\"name\":\"c_jsonb\",\"type\":\"bytes\"},{\"name\":\"c_numeric\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":8,\"scale\":2}},{\"name\":\"c_text\",\"type\":\"string\"},{\"name\":\"c_timestamp\",\"type\":{\"type\":\"long\",\"logicalType\":\"local-timestamp-micros\"}},{\"name\":\"c_timestamptz\",\"type\":{\"type\":\"long\",\"logicalType\":\"timestamp-micros\"}},{\"name\":\"c_uuid\",\"type\":{\"type\":\"string\",\"logicalType\":\"uuid\"}},{\"name\":\"c_varchar\",\"type\":\"string\"}]}",
-      "rowHex": "011a7b2261223a5b312c322c335d7df2a90200007841295c8fc2f5283040feffffff0ffeffffff0ffeffffffffffffffff011a7b2261223a5b312c322c335d7d1a7b2261223a5b312c322c335d7d02011c666f6f206261722062617a20c3a980e2b9b6a98aed0580d28597e58bed054862643934656530622d353634662d343038382d626634652d3864356536323663616636361c666f6f206261722062617a20c3a9"
+      "rowHex": {
+        "UTC": "011a7b2261223a5b312c322c335d7df2a90200007841295c8fc2f5283040feffffff0ffeffffff0ffeffffffffffffffff011a7b2261223a5b312c322c335d7d1a7b2261223a5b312c322c335d7d02011c666f6f206261722062617a20c3a980d28597e58bed0580d28597e58bed054862643934656530622d353634662d343038382d626634652d3864356536323663616636361c666f6f206261722062617a20c3a9",
+        "UTC+05:30": "011a7b2261223a5b312c322c335d7df2a90200007841295c8fc2f5283040feffffff0ffeffffff0ffeffffffffffffffff011a7b2261223a5b312c322c335d7d1a7b2261223a5b312c322c335d7d02011c666f6f206261722062617a20c3a980eae5d9f88ced0580d28597e58bed054862643934656530622d353634662d343038382d626634652d3864356536323663616636361c666f6f206261722062617a20c3a9",
+        "UTC-07": "011a7b2261223a5b312c322c335d7df2a90200007841295c8fc2f5283040feffffff0ffeffffff0ffeffffffffffffffff011a7b2261223a5b312c322c335d7d1a7b2261223a5b312c322c335d7d02011c666f6f206261722062617a20c3a980e2b9b6a98aed0580d28597e58bed054862643934656530622d353634662d343038382d626634652d3864356536323663616636361c666f6f206261722062617a20c3a9"
+      }
     },
     {
       "name": "key schema, single column",
@@ -178,7 +182,11 @@
         "c_int8"
       ],
       "schema": "{\"name\":\"t_key\",\"type\":\"record\",\"fields\":[{\"name\":\"c_int8\",\"type\":\"long\"}]}",
-      "rowHex": "feffffffffffffffff01"
+      "rowHex": {
+        "UTC": "feffffffffffffffff01",
+        "UTC+05:30": "feffffffffffffffff01",
+        "UTC-07": "feffffffffffffffff01"
+      }
     },
     {
       "name": "key schema, composite",
@@ -271,7 +279,11 @@
         "c_numeric"
       ],
       "schema": "{\"name\":\"t_key\",\"type\":\"record\",\"fields\":[{\"name\":\"c_numeric\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":8,\"scale\":2}},{\"name\":\"c_text\",\"type\":\"string\"},{\"name\":\"c_uuid\",\"type\":{\"type\":\"string\",\"logicalType\":\"uuid\"}}]}",
-      "rowHex": "02011c666f6f206261722062617a20c3a94862643934656530622d353634662d343038382d626634652d386435653632366361663636"
+      "rowHex": {
+        "UTC": "02011c666f6f206261722062617a20c3a94862643934656530622d353634662d343038382d626634652d386435653632366361663636",
+        "UTC+05:30": "02011c666f6f206261722062617a20c3a94862643934656530622d353634662d343038382d626634652d386435653632366361663636",
+        "UTC-07": "02011c666f6f206261722062617a20c3a94862643934656530622d353634662d343038382d626634652d386435653632366361663636"
+      }
     },
     {
       "name": "numeric unconstrained",
@@ -285,7 +297,11 @@
       ],
       "keyCols": null,
       "schema": "{\"name\":\"n_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"n\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":65535,\"scale\":65531}}]}",
-      "rowHex": "0200"
+      "rowHex": {
+        "UTC": "0200",
+        "UTC+05:30": "0200",
+        "UTC-07": "0200"
+      }
     },
     {
       "name": "numeric(1,0)",
@@ -299,7 +315,11 @@
       ],
       "keyCols": null,
       "schema": "{\"name\":\"n_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"n\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":1}}]}",
-      "rowHex": "0207"
+      "rowHex": {
+        "UTC": "0207",
+        "UTC+05:30": "0207",
+        "UTC-07": "0207"
+      }
     },
     {
       "name": "numeric(10,3)",
@@ -313,7 +333,11 @@
       ],
       "keyCols": null,
       "schema": "{\"name\":\"n_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"n\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":10,\"scale\":3}}]}",
-      "rowHex": "0201"
+      "rowHex": {
+        "UTC": "0201",
+        "UTC+05:30": "0201",
+        "UTC-07": "0201"
+      }
     },
     {
       "name": "numeric(18,18)",
@@ -327,7 +351,11 @@
       ],
       "keyCols": null,
       "schema": "{\"name\":\"n_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"n\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":18,\"scale\":18}}]}",
-      "rowHex": "0201"
+      "rowHex": {
+        "UTC": "0201",
+        "UTC+05:30": "0201",
+        "UTC-07": "0201"
+      }
     },
     {
       "name": "numeric(38,0)",
@@ -341,7 +369,11 @@
       ],
       "keyCols": null,
       "schema": "{\"name\":\"n_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"n\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":38}}]}",
-      "rowHex": "0207"
+      "rowHex": {
+        "UTC": "0207",
+        "UTC+05:30": "0207",
+        "UTC-07": "0207"
+      }
     },
     {
       "name": "numeric(38,20)",
@@ -355,7 +387,11 @@
       ],
       "keyCols": null,
       "schema": "{\"name\":\"n_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"n\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":38,\"scale\":20}}]}",
-      "rowHex": "0201"
+      "rowHex": {
+        "UTC": "0201",
+        "UTC+05:30": "0201",
+        "UTC-07": "0201"
+      }
     },
     {
       "name": "numeric(1000,500)",
@@ -369,7 +405,11 @@
       ],
       "keyCols": null,
       "schema": "{\"name\":\"n_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"n\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":1000,\"scale\":500}}]}",
-      "rowHex": "0201"
+      "rowHex": {
+        "UTC": "0201",
+        "UTC+05:30": "0201",
+        "UTC-07": "0201"
+      }
     }
   ],
   "typeChanges": [

@@ -85,8 +85,12 @@ type compatCase struct {
 type compatFixture struct {
 	compatCase
 	Schema string `json:"schema"`
-	// RowHex is the Avro binary encoding of rowFor(Cols) under Schema.
-	RowHex string `json:"rowHex"`
+	// RowHex is the Avro binary encoding of rowFor(Cols) under Schema, keyed
+	// by the zone time.Local was set to. local-timestamp-micros is encoded
+	// from the value's wall clock in time.Local, so the bytes depend on the
+	// host zone; both codecs must agree in every zone, and the fixtures must
+	// not depend on where they were generated or where CI runs.
+	RowHex map[string]string `json:"rowHex"`
 }
 
 type typeChangeCase struct {
@@ -161,6 +165,21 @@ func typeChangeCases() []typeChangeCase {
 		}
 	}
 	return out
+}
+
+// compatZones are the values time.Local is set to while encoding rows.
+var compatZones = map[string]*time.Location{
+	"UTC":       time.UTC,
+	"UTC-07":    time.FixedZone("UTC-07", -7*60*60),
+	"UTC+05:30": time.FixedZone("UTC+05:30", 5*60*60+30*60),
+}
+
+// withLocal sets time.Local for the duration of f.
+func withLocal(loc *time.Location, f func()) {
+	orig := time.Local
+	time.Local = loc
+	defer func() { time.Local = orig }()
+	f()
 }
 
 func compatFields(t *testing.T, cols []compatCol) []pgconn.FieldDescription {
@@ -273,19 +292,26 @@ func TestAvroExtract_HambaCompat(t *testing.T) {
 			// row encodes to identical bytes, with the current codec.
 			sch, err := avro.Parse(fx.Schema)
 			is.NoErr(err)
-			enc, err := avro.Marshal(sch, rowFor(c.Cols))
-			is.NoErr(err)
-			is.Equal(hex.EncodeToString(enc), fx.RowHex)
+			is.Equal(len(fx.RowHex), len(compatZones))
+			for zone, loc := range compatZones {
+				wantHex, ok := fx.RowHex[zone]
+				is.True(ok) // fixture has an encoding for every zone
+				withLocal(loc, func() {
+					enc, err := avro.Marshal(sch, rowFor(c.Cols))
+					is.NoErr(err)
+					is.Equal(hex.EncodeToString(enc), wantHex) // zone: ` + "`zone`" + `
 
-			old, err := hex.DecodeString(fx.RowHex)
-			is.NoErr(err)
-			decoded := map[string]any{}
-			is.NoErr(avro.Unmarshal(sch, old, &decoded))
-			wantFields := len(c.Cols)
-			if len(c.KeyCols) > 0 {
-				wantFields = len(c.KeyCols)
+					old, err := hex.DecodeString(wantHex)
+					is.NoErr(err)
+					decoded := map[string]any{}
+					is.NoErr(avro.Unmarshal(sch, old, &decoded))
+					wantFields := len(c.Cols)
+					if len(c.KeyCols) > 0 {
+						wantFields = len(c.KeyCols)
+					}
+					is.Equal(len(decoded), wantFields)
+				})
 			}
-			is.Equal(len(decoded), wantFields)
 		})
 	}
 
@@ -317,11 +343,17 @@ func generateHambaFixtures(t *testing.T, path string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		enc, err := avro.Marshal(sch, rowFor(c.Cols))
-		if err != nil {
-			t.Fatal(err)
+		rowHex := map[string]string{}
+		for zone, loc := range compatZones {
+			withLocal(loc, func() {
+				enc, err := avro.Marshal(sch, rowFor(c.Cols))
+				if err != nil {
+					t.Fatal(err)
+				}
+				rowHex[zone] = hex.EncodeToString(enc)
+			})
 		}
-		out.Schemas = append(out.Schemas, compatFixture{compatCase: c, Schema: s, RowHex: hex.EncodeToString(enc)})
+		out.Schemas = append(out.Schemas, compatFixture{compatCase: c, Schema: s, RowHex: rowHex})
 	}
 	m := pgtype.NewMap()
 	for _, c := range typeChangeCases() {
