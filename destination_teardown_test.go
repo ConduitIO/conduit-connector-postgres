@@ -36,7 +36,7 @@ func TestDestinationTeardownDuringWrite(t *testing.T) {
 	if _, err := conn.Exec(ctx, "CREATE TABLE "+table+" (id bigint primary key, name text)"); err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Exec(ctx, "DROP TABLE "+table)
+	defer func() { _, _ = conn.Exec(ctx, "DROP TABLE "+table) }()
 
 	dst := Connector.NewDestination()
 	err := sdk.Util.ParseConfig(ctx, map[string]string{
