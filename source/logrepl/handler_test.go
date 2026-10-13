@@ -15,7 +15,9 @@
 package logrepl
 
 import (
+	"bytes"
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +27,7 @@ import (
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/matryer/is"
+	"github.com/rs/zerolog"
 )
 
 func TestHandler_Batching_BatchSizeReached(t *testing.T) {
@@ -203,4 +206,34 @@ func newTestRecord(id int) opencdc.Record {
 			"id": id,
 		},
 	}
+}
+
+// TestHandler_Truncate_WarningIsRateLimited: a storm of TRUNCATEs on one table
+// must not flood the log, and the count must keep rising.
+func TestHandler_Truncate_WarningIsRateLimited(t *testing.T) {
+	is := is.New(t)
+	var buf bytes.Buffer
+	ctx := zerolog.New(&buf).WithContext(context.Background())
+
+	rs := internal.NewRelationSet()
+	rs.Add(&pglogrepl.RelationMessage{RelationID: 7, Namespace: "public", RelationName: "orders"})
+	now := time.Unix(1000, 0)
+	h := &CDCHandler{relationSet: rs, now: func() time.Time { return now }}
+
+	trunc := &pglogrepl.TruncateMessage{RelationIDs: []uint32{7}}
+	for i := 0; i < 50; i++ {
+		lsn, err := h.Handle(ctx, trunc, pglogrepl.LSN(100+i))
+		is.NoErr(err)
+		is.Equal(lsn, pglogrepl.LSN(0)) // logging only: nothing emitted, no LSN claimed
+	}
+	is.Equal(strings.Count(buf.String(), "TRUNCATE was NOT propagated"), 1)
+	is.Equal(h.truncates["public.orders"], uint64(50))
+
+	now = now.Add(truncateWarnInterval + time.Second)
+	_, err := h.Handle(ctx, trunc, pglogrepl.LSN(200))
+	is.NoErr(err)
+	out := buf.String()
+	is.Equal(strings.Count(out, "TRUNCATE was NOT propagated"), 2)
+	is.True(strings.Contains(out, `"truncates_total":51`))
+	is.True(strings.Contains(out, `"suppressed":49`))
 }
