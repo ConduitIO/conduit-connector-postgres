@@ -854,7 +854,7 @@ changing anything. Postgres access is `SELECT` on `pg_replication_slots`,
 | R6 | Debezium's live config passes S5 item 9 and `PUT /connector-plugins/{class}/config/validate`. | `rollback_check_config_unsafe`, with the S5 code as the cause |
 | R7 | Never two writers: Conduit's pipeline is stopped before Debezium runs. | `rollback_check_two_writers` |
 | R8 | After the restart, continuity holds (S15): the watch log covers the restart, the first `active` sighting is ≤ B, and every change of walsender passed the equality rule. | `rollback_check_continuity_unproven` |
-| R9 | Before the drop: Debezium's slot `confirmed_flush_lsn` ≥ F_c (skipped when Conduit's slot is missing), and the pipeline is still stopped at the position seen at R7. | `rollback_check_not_caught_up` (a `waiting` verdict, not a failure) |
+| R9 | Before the drop: Debezium's slot `confirmed_flush_lsn` ≥ F_c (skipped when Conduit's slot is missing), and the pipeline is still stopped at the position seen at R7, or deleted. | `rollback_check_not_caught_up` (a `waiting` verdict, not a failure) |
 
 All codes are `migrate.kafka_connect.*`.
 
@@ -2191,7 +2191,7 @@ exact count, and the harness asserts equality, not just the bound.
 | CLI killed mid-cutover, then re-run | The step-aware rules of S9, including `creating_slot`, `stopping` and `starting`. | 3, 5 |
 | Going back with Debezium's slot gone | `rollback_check_slot_lost`; the runbook keeps Conduit's slot (S12) | 3 |
 | Debezium restarted by hand, not yet streaming | `--check-rollback` reports `waiting`; the runbook keeps both slots (S12) | 3 |
-| Debezium's `lsn.flush.mode=manual` / `connector_and_driver`, or `flush.lsn.source=false` | Refused before the stop (`lsn_flush_mode_unsupported`), and again against the saved config at step 6 and before any restart (4th pass) | 3 |
+| Debezium's `lsn.flush.mode=manual` / `connector_and_driver`, or `flush.lsn.source=false` | Refused before the stop (`lsn_flush_mode_unsupported`), and again against the saved config at step 6; `--check-rollback` checks the live config before a manual restart (S12) | 3 |
 | Literal masks (`[hidden]`, `****`) in Debezium's config | Refused before the stop (`config_masked`) on workers older than Kafka 3.5, where the connector is deleted and the saved config must re-create it. Config-provider placeholders are saved as they are (S9) | — |
 | **(4th pass)** Debezium's slot recreated after the stop | `--check-rollback` sees `confirmed_flush_lsn` above max(Lc, F_stop) and reports `rollback_check_slot_moved`; the runbook keeps Conduit's slot (S12) | 3 |
 | **(4th pass)** A pipeline delete drops Conduit's slot through `LifecycleOnDeleted` | Cannot happen: the CLI writes `logrepl.autoCleanup: false` and drops the slot itself, last (S9) | 3 |
