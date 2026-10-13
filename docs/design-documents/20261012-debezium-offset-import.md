@@ -34,6 +34,346 @@ last committed offset, with no loss and with a stated bound on duplicates.
 
 This is Tier 1: it decides what a resumed pipeline skips (invariants 1–3).
 
+## Decisions (DeVaris, 2026-10-12)
+
+DeVaris resolved the open questions on 2026-10-12, taking each
+recommendation. This section was added after review began. The design text
+below is kept as written; where a decision changes it, a block marked
+**Amended 2026-10-12** follows the affected passage. If the two disagree, this
+section, the Review fixes section and the amendment blocks govern.
+
+| # | Decision | Effect on this design |
+| --- | --- | --- |
+| Q1 | **Ship the partial rule in v0.21.** | D4's in-memory partial rule is in scope for v0.21. |
+| Q2 | **No override for `postgres.import.slot_ahead`.** | D5 check 5 is a hard refusal. Remedies are re-snapshot, dual-run, or redoing the cutover. |
+| Q3 | **The CLI may write a logical marker message only behind an explicit opt-in flag.** | `--cutover` never writes to the source database by default. Without the flag, the runbook tells the user to write to a captured table; S5 corrects what that write must be. With `--emit-cutover-marker`, the CLI writes a non-transactional message, `pg_logical_emit_message(false, 'conduit.migrate.cutover', …)`. Debezium treats a non-transactional message as a commit and advances `lsn_commit` to the message's end (S1). Caveats: Debezium sees the message only if pgoutput's `messages` option is on and the prefix passes `message.prefix.include.list`/`message.prefix.exclude.list`. The offset that carries it is committed only through the message's own record or a heartbeat. That record lands in Debezium's `<topic.prefix>.message` topic, where downstream consumers see it. Where the marker does not move `lsn_commit` past C before the timeout, the CLI fails with `migrate.kafka_connect.cutover_marker_unsupported`. |
+| Q4 | **v0.21 ships the fresh-slot strategy only.** Reusing Debezium's slot moves to v0.22, gated per Debezium version on a passing rollback test. | The CLI flag is `--slot-mode`, and its only value in v0.21 is `new` (the default). It replaces `--slot-strategy fresh\|reuse` in D3 and D10. In v0.21, pointing `logrepl.slotName` at Debezium's slot is refused with `postgres.import.slot_reuse_unsupported`. The reuse-only parts are v0.22: D3 "Reuse", the reuse column of D9 (redesigned per S7), the `autocleanup_on_reused_slot` code, and the reuse test cases. The n-based skip in D4 is dropped outright (B2). |
+| Q5 | **Approved. The reviewer recommends deferral. Awaiting DeVaris.** | DeVaris approved the key. The Tier 1 review recommends deferring it, for two reasons: the first set this doc defined was wrong after a heartbeat or END record (S2), and a public metadata key is a contract. The Observability amendment designs both options. Until DeVaris decides, the implementation ships option A (an INFO log of the duplicate key range) and does not commit to the key. |
+| Q6 | **The setting name is `logrepl.import.debeziumOffset`.** | No change: the design already uses it. |
+| — | **`pgregory.net/rapid` is approved as a test-only dependency.** | It is used for the property tests (see the Tests amendment). |
+
+With Q4 and B2, the **v0.21 duplicate bound**, when the partial rule is
+armed, is the changes of T at Debezium's last change LSN L:
+
+- 1 for an ordinary row;
+- at most one multi-insert WAL record (≤ 1000 rows) for COPY;
+- one record per relation for a multi-table TRUNCATE.
+
+The corrected cases are in S2.
+
+## Review fixes (Tier 1 design review, 2026-10-12)
+
+A fresh-context Tier 1 review of this PR found three data-loss blockers
+(B1–B3) and ten more issues (S1–S10, plus nits). This section was added after
+review began. Each fix below governs over the text it amends, and an
+**Amended 2026-10-12** pointer marks every affected passage.
+
+### B1. Fresh mode on unpatched Postgres
+
+D3 argues that a new slot decodes in full every transaction committing after
+C. That holds only on Postgres builds with commit 2f3304ce, "Fix possibility
+of logical decoding partial transaction changes", from 2024-07-11.
+
+On older builds, a new slot can restore a serialized snapshot written by
+another slot, such as Debezium's. Creating it then jumps to CONSISTENT while
+still searching for its start point. The slot's `restart_lsn` and
+`confirmed_flush_lsn` can then sit in the middle of a transaction. A long
+transaction opened before the slot was created, and committed after Lc, is
+decoded without its head. Those changes are lost.
+
+The fix is in these releases, checked against the release notes and the
+branch history rather than the release cadence:
+
+| Major | First fixed release | Evidence |
+| --- | --- | --- |
+| 14 | 14.13 (2024-08-08) | Release notes: "Prevent incorrect initialization of logical replication slots". Absent from 14.12. Backpatch `f7d3caf9`. |
+| 15 | 15.8 (2024-08-08) | Same note. Absent from 15.7. Backpatch `aee8c2b9`. |
+| 16 | 16.4 (2024-08-08) | Same note. Absent from 16.3. `2f3304ce` is the REL_16_STABLE commit, and the REL_16_4 tag contains it. |
+| 17 | 17.0 | `068674f4` on REL_17_STABLE, 2024-07-11, before 17.0 (2024-09-26) |
+| 18 | all | — |
+
+- **Preflight.** Both the CLI, before it creates the slot, and the connector,
+  at `Open`, refuse fresh mode when `server_version_num` is below the fixed
+  release for its major. The code is `postgres.import.server_unpatched`, and
+  the fix is to upgrade to the listed minor or later. Majors below 14 are
+  refused with `postgres.import.server_unsupported`.
+- **Harness.** Images are pinned by digest at or above the fixed minors, and
+  PG 18 joins the matrix with the Debezium versions that support it. One
+  unpatched image (16.3) runs only the refusal test.
+- **New cut point.** A transaction opened before Conduit's slot is created,
+  committed after Lc, with Debezium stopped after that. The test asserts that
+  its head is delivered.
+
+### B2. Drop the `lsn_events_processed` branch
+
+Debezium counts one event per relation for a multi-table TRUNCATE. pgoutput
+sends that TRUNCATE as one message. Conduit's change key counts it once. So
+skipping "the first n changes at L" can skip the second table's truncate:
+that is a loss.
+
+- The n-based skip is removed from D4. It is not deferred to v0.22. Bringing
+  it back needs per-relation counting and its own design.
+- The partial rule is L-only: skip T's changes with change LSN < L. A TRUNCATE
+  at L is always delivered, at worst as a duplicate.
+- `lsn_events_processed` is still parsed and shown in the dry run, and it is
+  never used to skip anything.
+- **New cut point.** A multi-table TRUNCATE (`TRUNCATE a, b`), with an offset
+  that lands on the first relation's event. The test asserts that both tables'
+  truncates reach the union. The harness sets `skipped.operations=none` (S6).
+  The default `t` would hide truncates.
+
+### B3. `publication_mismatch` must not say "add the tables"
+
+pgoutput decides publication membership through the historic catalog of the
+WAL it is decoding. If a table is added to the publication after the slot's
+start, its earlier WAL is skipped silently, and nothing raises an error.
+
+The fix text is now: _"Repair the publication, then redo the cutover with a
+new fresh slot created after the repair (`conduit migrate kafka-connect
+--cutover` drops and recreates its own slot). Do not add tables to a
+publication that an existing slot will decode from."_
+
+The CLI orders the steps as: create or repair the publication, verify that it
+covers the pipeline's tables, then create the slot. In reuse mode (v0.22) the
+mismatch is a refusal with no remediation path except a fresh cutover.
+
+### S1. Non-transactional logical messages
+
+For a non-transactional `MESSAGE`, Debezium calls `commitMessage`. That sets
+`lsn_commit` to the message's LSN, which Postgres reports as the message's
+**end**. Non-transactional messages are output when their WAL record is
+decoded, not at a commit. So the stream is the WAL-ordered merge of commit
+records and non-transactional message records.
+
+**The base rule stays safe.**
+
+- A transaction U with `U.commit < Lc = msg.end` has its commit record before
+  the message record, because records do not overlap. U was output before the
+  message and processed by Debezium.
+- A transaction committing after the message has `U.commit ≥ msg.end = Lc`,
+  equality included (debezium/dbz#76), so it is not skipped.
+- A transaction open across the message is output at its commit, after the
+  message, and is delivered in full.
+
+**Harness.** A cut point where the last committed offset is a
+non-transactional message, written with `--emit-cutover-marker`, sitting
+between a transaction's first change and its commit. The test asserts zero
+loss and that the open transaction is delivered in full.
+
+### S2. The duplicate model after a heartbeat or END record
+
+When the offset comes from a heartbeat or a transaction-metadata END record
+(M = COMMIT), T is fully covered and the next transaction was never seen by
+Debezium. The old table merged this into "xid mismatch → T's prefix", which
+overstated the duplicates and would have tagged a transaction that is not a
+duplicate. The corrected table, which replaces the one in Duplicate bound:
+
+| Case | Duplicates |
+| --- | --- |
+| M = COMMIT (heartbeat, END record, non-transactional message per S1) | 0. T is fully covered by the base rule, and the partial rule is not armed. |
+| M = BEGIN | 0 |
+| M is DML, the first transaction ≥ Lc has xid X (partial rule armed) | T's changes at LSN L (see the v0.21 bound above) |
+| M is DML, the first transaction ≥ Lc has another xid | 0. T had no changes on this slot: it touched only tables outside the pipeline, or PG 15+ skipped it as empty. The first transaction ≥ Lc was never processed by Debezium. |
+| M = MESSAGE (transactional) or M absent | T's prefix that Debezium delivered, when T is identifiable by X; the partial rule is not armed |
+| Debezium stopped ungracefully | as before |
+
+### S3. Wrong-database offsets
+
+The setting gains three fields:
+
+- `database`: Debezium's `database.dbname`.
+- `systemIdentifier`: the CLI captures it with `IDENTIFY_SYSTEM` on the
+  replication connection, which needs no extra privilege.
+- `debeziumSlotName`: renamed from `slotName`, for clarity. The old name is
+  accepted, since no build has shipped with it.
+
+At `Open`, the connector refuses with `postgres.import.database_mismatch`
+unless all of these hold:
+
+- `database` equals `current_database()`;
+- `IDENTIFY_SYSTEM` returns the same `systemIdentifier`;
+- Debezium's slot exists in `pg_replication_slots` with
+  `database = current_database()`.
+
+In fresh mode Debezium's slot is kept through cutover for rollback, so
+requiring it costs nothing.
+
+### S4. Debezium's decoding plugin
+
+The setting gains `plugin` (Debezium's `plugin.name`; the CLI writes
+`decoderbufs` when the config leaves it unset). The partial rule assumes each
+change carries its own LSN.
+
+- `pgoutput` and `decoderbufs` are accepted.
+- `wal2json` and `wal2json_streaming` are refused with
+  `postgres.import.plugin_unsupported`. They stamp one LSN for the whole
+  transaction, and Debezium dropped them in 2.0.
+- An absent or unknown plugin is refused with the same code.
+
+### S5. Fix texts and check order
+
+- **Snapshot completed, no streaming offset.** The record of a single write
+  carries the `lsn_commit` of the commit **before** it. So a single write is
+  not enough. The fix text is now: _"Debezium needs a committed transaction
+  followed by a later record or heartbeat. Enable `heartbeat.interval.ms`, or
+  write two separate transactions to a captured table. Wait for an offset
+  flush (`offset.flush.interval.ms`), then retry."_
+- **The Q3 runbook step has the same correction.** "Write one row" becomes
+  "write two separate transactions to a captured table, or rely on
+  heartbeats".
+- **`offset_unsupported`.** The fix text drops the misleading "Debezium
+  ≥ 1.9" pointer. It now reads: _"This offset has no `lsn_commit`. Run the
+  connector on a Debezium version that writes it (every 2.x and 3.x release;
+  the fixture set lists the 1.x builds that do), let it commit an offset after
+  at least one transaction, then retry."_
+- **D5 check order.**
+  1. Parse.
+  2. Incremental snapshot keys (`incremental_snapshot_in_progress`).
+  3. `snapshot`, `last_snapshot_record`, `snapshot_completed`
+     (`snapshot_in_progress`).
+  4. `lsn_commit` present (`offset_unsupported`).
+  5. Plugin (S4).
+  6. Server version (B1).
+  7. Database identity (S3).
+  8. The slot checks, ending with F ≤ Lc.
+  9. Publication coverage.
+  10. The table subset.
+
+  A running incremental snapshot always gets its own code, even when the offset
+  also lacks `lsn_commit`.
+
+### S6. "Delivered" means "processed under Debezium's configuration"
+
+Goal 2 is restated. Every change in the pipeline's tables is either
+**processed by Debezium under its configuration**, meaning covered by O, or
+delivered by Conduit. Changes that Debezium's configuration dropped were never
+in Debezium's output, and the import does not recover them.
+
+The CLI warns about these settings in the compatibility report, with
+`migrate.kafka_connect.lossy_source_config`:
+
+- `errors.tolerance=all`;
+- Filter SMTs;
+- non-empty `skipped.operations` (including the 2.x default `t`);
+- `column.exclude.list`.
+
+The harness sets `skipped.operations=none`.
+
+### S7. Reuse rollback is an open v0.22 design item
+
+The write-back offset in D9 used only Conduit's last position. It must also
+use F, the slot's `confirmed_flush_lsn` at Conduit's stop. Debezium streams
+from max(its offset, F), and its locator looks for the stored LSNs in a stream
+that starts at F. This is recorded as an open design item for the v0.22 reuse
+work. It is not specified here.
+
+### S8. What the D6 cap retains, and when cutover is done
+
+While the cap holds, `confirmed_flush_lsn ≤ Lc`, so the slot pins two things:
+
+- **WAL:** from `restart_lsn` (≤ Lc) onward. The amount is roughly the WAL
+  rate × the time from cutover to the first ack.
+- **`catalog_xmin`:** vacuum cannot remove system-catalog rows newer than it,
+  so catalog bloat grows with DDL and temp-table churn.
+
+Both end at the first ack. That ack happens only after Conduit has durably
+persisted the position: `Source.Ack` in `conduit` `pkg/connector/source.go`
+defers the plugin ack until the persister has flushed, per
+`20260723-source-ack-persist-ordering-fix.md`.
+
+If nothing captured arrives, the cap holds with no limit. With
+`max_slot_wal_keep_size` set, the slot can then be invalidated: the running
+subscription fails, and the next start refuses with `slot_invalidated`.
+
+- `--cutover` starts the pipeline by default (S11) and waits for the import-complete signal before it reports
+  success. The CLI sees it as the pipeline's source position becoming
+  non-empty through the Conduit API (the INFO log line is the same event). It
+  then tells the user to remove the setting.
+- The runbook gains a scenario: "slot held at Lc after import". The symptom is
+  the WARN line and growing `pg_replication_slots` lag. Diagnosis: no captured
+  traffic since cutover. Remedy: write to a captured table. Escalation: the
+  `max_slot_wal_keep_size` → `slot_invalidated` path, whose only remedy is a
+  re-snapshot.
+
+### S9. Crash-safe CLI re-runs and slot creation
+
+- **Journal.** `--cutover` writes a journal next to the generated pipeline
+  (`<pipeline>.cutover.json`). It records:
+  - the slot name, C, and the publication;
+  - the saved Debezium config;
+  - the last completed step.
+
+  Each step is written before it starts and marked done after.
+- **Re-runs after a kill:**
+  - If the journal names a slot that exists, is `pgoutput` and is inactive, the
+    re-run reuses it and continues.
+  - If that slot's `confirmed_flush_lsn` is past the recorded C, something
+    consumed it. The re-run refuses with `migrate.kafka_connect.slot_advanced`;
+    the fix is `--reset`, which drops the slot and starts over.
+  - A slot with Conduit's name and no journal is refused with
+    `migrate.kafka_connect.slot_unowned`.
+- **Slot creation.** `CREATE_REPLICATION_SLOT` waits for every transaction
+  running at creation to finish. Prepared transactions block it until they
+  are resolved. `--slot-create-timeout` (default 5m) bounds the wait. On
+  timeout, the CLI cancels, drops any partial slot, and fails with
+  `migrate.kafka_connect.slot_create_blocked`. The diagnostic lists the oldest
+  `pg_stat_activity` transactions (pid, `xact_start`, query) and
+  `pg_prepared_xacts`.
+- **New cut point.** Debezium's graceful stop runs past
+  `task.shutdown.graceful.timeout.ms`, so the task is cancelled without its
+  final offset commit. Expected: a `slot_ahead` refusal, or an import with no
+  loss. Never loss.
+
+### S11. `--cutover` starts the pipeline (coordinator, 2026-10-12)
+
+`--cutover` **starts the imported pipeline by default**. It then waits for the
+import-complete signal: the first ack, which lifts the D6 cap (S8). Only then
+does it report success. Starting is the default for two reasons:
+
+- From Debezium's stop until the pipeline starts, both slots hold WAL.
+- An operator who forgets to start the pipeline leaves the cap in place with
+  no limit.
+
+`--no-start` writes the pipeline and stops after the import preflight. It is
+for operators who deploy the pipeline themselves. The CLI then prints that the
+pipeline must be started promptly, and why.
+
+**If the start fails** (preflight refusal at `Open`, a plugin error, or a
+timeout waiting for the first ack, set by `--start-timeout`, default 10m):
+
+- the pipeline config stays written;
+- Debezium stays stopped (the CLI never restarts it on its own);
+- the journal records the step;
+- the CLI prints `conduit migrate kafka-connect rollback --pipeline <name>`
+  as the way back, and a re-run of `--cutover` as the way forward (S9);
+- it exits with `migrate.kafka_connect.start_failed`. The connector's own
+  code, when there is one, is passed through as the cause.
+
+A first-ack timeout on an idle database is the same failure. The message adds
+the S5 step: write two transactions to a captured table, then re-run.
+
+### S10. CDC mode
+
+With an import set, `cdcMode` must be `logrepl`. `auto` is rejected with
+`postgres.import.cdc_mode_conflict`, because `auto` may fall back to long
+polling, which would ignore the slot and the resume point. The CLI writes
+`logrepl`.
+
+### Nits
+
+- **D5 check 6, fresh mode.** The check is now that Conduit's publication
+  (`logrepl.publicationName`) covers the **pipeline's** tables, and that those
+  are a subset of Debezium's resolved tables.
+- **Tables.** The CLI resolves Debezium's `table.include.list` and
+  `table.exclude.list` regexes (and `schema.*`) against the catalog to produce
+  `tables`, and shows the resolved list in the dry run.
+- **KIP-618 exactly-once.** The CLI reads both the worker's global offsets
+  topic and the connector's own `offsets.storage.topic`. When both hold an
+  offset, the per-connector one wins, as it does in Kafka Connect.
+- **Slot creation in import mode.** Import mode does not go through
+  `CreateSubscription`'s create-if-missing path at all. It uses a variant that
+  requires an existing slot and never issues `CREATE_REPLICATION_SLOT`.
+
 ## Context
 
 ### What exists (inventory, 2026-10-12)
@@ -57,9 +397,6 @@ This is Tier 1: it decides what a resumed pipeline skips (invariants 1–3).
   - deciding drift on delivery and the #339 boundary handling
     (`20261008-drift-decision-on-delivery.md`,
     `20261009-drift-approval-delivers-boundary-row.md`).
-- ROADMAP PR #2945 lists offset import under v0.22. The v0.21 plan, approved
-  later, moves the Postgres import into v0.21 (#3002). The roadmap text needs
-  that edit.
 
 ### The Debezium offset
 
@@ -251,6 +588,16 @@ publication. Requires `plugin = 'pgoutput'`. It saves a second slot and a
 second WAL retention during the rollback window. The cost is that rollback
 needs an offset written back to Debezium (D9).
 
+> **Amended 2026-10-12 (Q4).** v0.21 ships only the fresh strategy, selected with
+> `--slot-mode new`, which is the default and the only value. The reuse strategy
+> above is v0.22. It will ship per Debezium version, and only for versions where
+> the reuse rollback test passes. Until then, an import whose `logrepl.slotName`
+> equals the offset's `slotName` fails with `postgres.import.slot_reuse_unsupported`.
+>
+> **Amended 2026-10-12 (B1).** The gap-free argument above needs a patched
+> server: 14.13, 15.8, 16.4, 17.0 or later. Below those, a new slot can start
+> mid-transaction. Fresh mode is refused there; see B1.
+
 **Both consumers at once.** With reuse, Postgres refuses the second consumer
 (55006). The preflight also checks `active = false` and, through REST, that the
 connector is `STOPPED` or absent. `PAUSED` is not enough, because a paused task
@@ -279,6 +626,12 @@ equals X:
   publication and the same row filters), also skip the first n changes at
   LSN L;
 - deliver everything else.
+
+> **Amended 2026-10-12 (Q1, B2, S2, S4).** The partial rule ships in v0.21
+> (Q1), L-only. The second bullet, skipping the first n changes at L, is
+> **removed** (B2: a multi-table TRUNCATE counts once per relation in Debezium
+> but is one message here). The rule is armed only for `pgoutput` and
+> `decoderbufs` offsets (S4). The duplicate cases are corrected in S2.
 
 If the first such transaction's xid is not X, the partial rule is dropped,
 with a warning, and that transaction is delivered in full. This can happen
@@ -330,12 +683,20 @@ All checks must pass before replication starts. Each failure has a stable code
    that means Debezium flushed past its committed offset (an ungraceful stop).
    Under fresh it means the slot was created after O. Either way the import
    refuses (`postgres.import.slot_ahead`). There is no override in v0.21 (Q2).
+
+   > **Amended 2026-10-12 (Q2).** Decided: no override, in any version. The refusal is
+   > final for that offset.
 6. The publication exists and covers every table in `tables`
    (`pg_publication_tables`).
 7. The pipeline's tables are a subset of Debezium's `tables`. A table Debezium
    did not capture has no history in O and needs a snapshot. The CLI checks
    this against the Kafka Connect config, and the connector checks it again
    against `tables`.
+
+> **Amended 2026-10-12 (B3, S3, S4, S5, S10, nits).** The check order, the
+> new checks (plugin, server version, database identity), the publication
+> check in fresh mode, and the slot path that never creates a slot are in the
+> Review fixes section. With an import set, `cdcMode` must be `logrepl`.
 
 ### D6. The flush gate in import mode
 
@@ -365,6 +726,10 @@ still holds: `reportedFlush` starts at zero in each process, and check 5
 guarantees F ≤ Lc at start. A report below F is harmless, because Postgres
 never moves `confirmed_flush_lsn` backwards.
 
+> **Amended 2026-10-12 (S8).** What the cap retains (WAL and
+> `catalog_xmin`), the `max_slot_wal_keep_size` path, and the citation for
+> ack-after-persist are in S8.
+
 ### D7. Snapshot state is refused
 
 | Offset shape | Code | Suggested fix |
@@ -378,6 +743,9 @@ snapshot and its stream is Debezium-internal. How a transaction that committed
 around the snapshot's LSN was handled depends on the Debezium version and the
 snapshot mode. The streaming offset that follows one ordinary write removes the
 question.
+
+> **Amended 2026-10-12 (S5).** The fix text for "Snapshot completed but no
+> streaming offset yet" is replaced. One write is not enough; see S5.
 
 ### D8. Interaction with #339 and drift handling
 
@@ -423,6 +791,15 @@ rollback test is green. Elsewhere `rollback` refuses
 (`migrate.kafka_connect.rollback_unsupported`) and points to the fresh-slot
 strategy.
 
+> **Amended 2026-10-12 (Q4, S7).** v0.21 supports only the Fresh slot column of the table above.
+> The reuse write-back shown above is incomplete: it must also use F. It is an
+> open v0.22 design item (S7).
+>
+> `conduit migrate kafka-connect rollback` in v0.21 restarts the Debezium
+> connector, using the config the CLI saved at cutover, and drops Conduit's
+> slot. The reuse column and the offset write-back are v0.22, per Debezium
+> version.
+
 ### D10. How the user does it
 
 The import uses both a CLI flag and a connector setting, each for its own job.
@@ -447,6 +824,19 @@ conduit migrate kafka-connect --config dbz-orders.json \
 # Go back.
 conduit migrate kafka-connect rollback --pipeline orders --connect-url ...
 ```
+
+> **Amended 2026-10-12 (Q3, Q4).** The v0.21 flags are
+> `--cutover [--stop-connector] [--slot-mode new] [--emit-cutover-marker]`.
+> `--slot-mode` replaces `--slot-strategy`, and `new` is its only v0.21 value.
+> `--emit-cutover-marker` is the opt-in from Q3, and writes
+> `pg_logical_emit_message(false, …)`: without it, the CLI never writes to the
+> source database. `--cutover` also gains `--slot-create-timeout` and `--reset`
+> (S9). It starts the pipeline by default and waits for the import-complete
+> signal (S8, S11); `--no-start` opts out. If Debezium's committed offset is not past C
+> by the timeout, the CLI stops and prints the runbook step "write one row to
+> a captured table" (corrected by S5 to two transactions, or heartbeats). It
+> does not stop Debezium. In the dry-run JSON,
+> `slot.strategy` becomes `slot.mode` with the value `"new"`.
 
 `--stop-connector` is opt-in. Without it, the CLI checks that the connector is
 stopped and fails with a fix if it is not.
@@ -503,6 +893,27 @@ path and how to fix it, following the `postgres.schema_drift.*` style.
 | `postgres.import.publication_mismatch` | the publication is missing or does not cover the tables | Add the tables to the publication, or fix `logrepl.publicationName`. |
 | `postgres.import.tables_not_captured` | the pipeline has tables Debezium did not capture | Remove them and add them in a separate pipeline with a snapshot. |
 
+> **Amended 2026-10-12 (Q3, Q4).** In the table above, the fix "use
+> `--slot-strategy fresh`" now reads "use `--slot-mode new`", and
+> `autocleanup_on_reused_slot` is v0.22. New in v0.21:
+> `postgres.import.slot_reuse_unsupported` (the slot is Debezium's; fix: use
+> `--slot-mode new`, and reuse arrives in v0.22) and
+> `migrate.kafka_connect.cutover_marker_unsupported` (`--emit-cutover-marker`
+> on a PG or Debezium combination where the marker does not advance
+> `lsn_commit`; fix: write two transactions to a captured table).
+>
+> **Amended 2026-10-12 (review fixes).**
+>
+> - The `publication_mismatch` fix text is replaced (B3): repair the
+>   publication, then redo the cutover with a new fresh slot. Never add tables
+>   to a publication that an existing slot will decode from.
+> - The `offset_unsupported` and post-snapshot fix texts are replaced (S5).
+> - New connector codes: `server_unpatched` and `server_unsupported` (B1),
+>   `database_mismatch` (S3), `plugin_unsupported` (S4) and
+>   `cdc_mode_conflict` (S10).
+> - New CLI codes: `lossy_source_config` (a warning, S6), and `slot_advanced`,
+>   `slot_unowned` and `slot_create_blocked` (S9).
+
 CLI codes (`migrate.kafka_connect.*`, mapped to exit codes per the
 deterministic exit code ADR):
 
@@ -516,6 +927,11 @@ deterministic exit code ADR):
 The CLI also passes the connector's codes through as they are.
 
 ## Correctness
+
+> **Amended 2026-10-12 (S6, B2, S1).** Goal 2 is restated in S6. Changes
+> that Debezium's configuration dropped count as processed by Debezium. In case
+> 2 below, the clause about "the first n changes at L" is removed (B2). S1
+> extends case 1 to non-transactional messages.
 
 ### No loss
 
@@ -568,6 +984,9 @@ Conduit re-delivers a change that Debezium also delivered only in these cases:
 Every case is exercised by the harness. With `--peek`, the dry run predicts the
 exact count, and the harness asserts equality, not just the bound.
 
+> **Amended 2026-10-12 (S2).** The table above is replaced by the corrected
+> table in S2.
+
 ## Failure modes
 
 | Failure | Behavior | Invariant |
@@ -611,6 +1030,39 @@ exact count, and the harness asserts equality, not just the bound.
 - The connector has no metrics of its own today. Lane #3013 owns connector
   metrics, and an `import_pending` gauge is requested there.
 
+> **Amended 2026-10-12 (Q5: approved, the reviewer recommends deferral,
+> awaiting DeVaris).** The design has two options. Implementation slice 2
+> ships option A until DeVaris decides.
+>
+> **Option A (defer the key; the reviewer's recommendation).** Nothing is
+> added to records. At `Open`, an INFO line states the duplicate set in
+> change-key terms. When the partial rule is armed, that is "xid X, the first
+> transaction with commit LSN ≥ Lc, changes at LSN L". When T is delivered in
+> full, it is "xid X, every change". When the set is empty (S2), the line says
+> so. When the first record of the set is acked, a second INFO line gives the
+> actual key range, `(T.commit, firstSeq)`–`(T.commit, lastSeq)`, for operators
+> deduplicating downstream. It is not a public contract.
+>
+> **Option B (ship the key).** The key is `postgres.import.possibleDuplicate`.
+> The name follows the connector's pattern `postgres.<area>.<flag>`
+> (`postgres.snapshot.resumed`, `postgres.schema.drift`), with a
+> lowerCamelCase flag for a two-word name, as OpenCDC does (`opencdc.readAt`).
+>
+> - The value is `"true"`, and the key is absent otherwise, like
+>   `postgres.snapshot.resumed`.
+> - It is set only on the S2 duplicate set: T's changes at L when the partial
+>   rule is armed; all of T when M is a transactional MESSAGE or absent and T
+>   is identified by X; nothing when the set is empty (M = COMMIT or BEGIN,
+>   xid mismatch).
+> - If the set cannot be bounded (X absent and the partial rule not armed),
+>   every change of the first transaction ≥ Lc is tagged, so the contract
+>   "absent ⇒ not a cross-system duplicate" still holds.
+> - It is never set after the first ack.
+> - The constant is `logrepl.MetadataImportPossibleDuplicate`. It is documented
+>   in the README metadata section and on conduit.io. The harness checks that
+>   Conduit ∩ Debezium is a subset of the tagged records, and that no record
+>   is tagged in the S2 zero-duplicate cases.
+
 ## Tests
 
 ### Unit and property
@@ -628,6 +1080,15 @@ exact count, and the harness asserts equality, not just the bound.
   invariants are about sequences.
 - `reportedPositions` with a ceiling: the table cases, plus never-decrease.
 - Preflight against a real Postgres for each check.
+
+> **Amended 2026-10-12 (rapid approved).** `pgregory.net/rapid` is approved as a
+> test-only dependency. It appears only in `_test.go` files, never in the
+> connector binary. The reason: the properties here are about generated
+> sequences (interleaved transactions, LSNs shared by COPY rows, random cut
+> points), and rapid shrinks a failing sequence to a minimal one. Native Go
+> fuzzing cannot shrink structured sequences. CLAUDE.md also names
+> rapid/gopter for this kind of test. The implementation PR repeats this
+> justification.
 
 ### Integration harness: real Debezium (`test/debezium`)
 
@@ -678,6 +1139,44 @@ exact count, and the harness asserts equality, not just the bound.
   are the supported list for `rollback` under reuse.
 - **Refusal tests:** one per error code, each asserting the code and that the
   slot did not move.
+
+> **Amended 2026-10-12 (Q4).** For v0.21 the matrix is fresh slot only.
+>
+> - **Pull requests:** PG 17 × Debezium 3.x × pgoutput.
+> - **Nightly:** PG 14–17 × Debezium {2.7, 3.x} × {pgoutput, decoderbufs},
+>   plus Debezium 1.9 on PG 14 for the topic-only path.
+> - **Moves to v0.22:** reuse cases, the reuse rollback tests, and the
+>   n-based zero-duplicate case.
+> - **Added:**
+>   - a refusal test for `slot_reuse_unsupported`;
+>   - a test that `--cutover` without `--emit-cutover-marker` makes no write
+>     to the source database (checked through `pg_stat_database`
+>     `xact_commit` and the WAL position);
+>   - the Q3 harness check of `--emit-cutover-marker` for each PG and
+>     Debezium version;
+>   - a `postgres.import.possibleDuplicate` assertion: every record in
+>     Conduit ∩ Debezium carries the key.
+> - **Fresh-slot rollback tests** (before and after Conduit has run) stay in
+>   v0.21.
+>
+> **Amended 2026-10-12 (review fixes).**
+>
+> - **Images:** pinned by digest at or above 14.13, 15.8, 16.4 and 17.0, with
+>   PG 18 added (B1). An unpatched 16.3 image runs only the `server_unpatched`
+>   refusal test.
+> - **Debezium:** `skipped.operations=none` (S6).
+> - **New cut points:**
+>   - a transaction opened before slot creation and committed after Lc (B1);
+>   - a multi-table TRUNCATE (B2);
+>   - a non-transactional message as the last offset (S1);
+>   - a heartbeat or END record as the last offset, asserting 0 duplicates
+>     (S2);
+>   - Debezium's graceful stop exceeding `task.shutdown.graceful.timeout.ms`
+>     (S9);
+>   - a CLI kill at every journal step, then a re-run (S9);
+>   - a slot creation blocked by a prepared transaction (S9);
+>   - an offset from another database or cluster (S3).
+> - **Removed:** every assertion about the n-based skip (B2).
 
 ## Alternatives considered
 
@@ -739,6 +1238,10 @@ Each slice is its own PR. All are Tier 1 except slice 5.
 
 ## Open questions for DeVaris
 
+> **Resolved 2026-10-12, except Q5.** See Decisions. Q5 was approved, but
+> the reviewer recommends deferral, so it awaits DeVaris. The questions are
+> kept below as they were asked.
+
 - **Q1.** Ship the partial rule in v0.21, or only the base rule? The
   recommendation is to ship it (see Alternative 6).
 - **Q2.** Should `slot_ahead` have an override? The recommendation is no for
@@ -759,6 +1262,16 @@ Each slice is its own PR. All are Tier 1 except slice 5.
   be a new public metadata contract.
 - **Q6.** Setting name: `logrepl.import.debeziumOffset` (proposed, matching
   the `logrepl.*` prefix) or `cdc.importOffset` (the name in the lane brief)?
+
+> **Amended 2026-10-12 (Q4, Q5, review fixes).**
+>
+> - Slice 2 includes option A of Q5 (the INFO duplicate-range log), not the
+>   metadata key, until DeVaris decides Q5. It also includes the B1, S3, S4
+>   and S10 preflights and the `slot_reuse_unsupported` refusal.
+> - Slice 4 ships `--slot-mode new`, `--emit-cutover-marker`, the cutover
+>   journal (S9), and starting the pipeline by default (S11).
+> - Reuse (D3 "Reuse", the D9 write-back per S7) is a separate v0.22 slice,
+>   gated per Debezium version on its rollback test.
 
 ## Related
 
