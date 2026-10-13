@@ -240,6 +240,56 @@ specification:
     deleted, the record will be ignored.
 
     If there is no key, the record will be simply appended.
+
+    ### Numeric columns
+
+    Decimal values (`big.Rat`) are sent to Postgres as exact decimal strings, and
+    Postgres applies the column's precision and scale itself when it stores the
+    value. The destination never reads or caches a column's scale, so an
+    `ALTER TABLE ... ALTER COLUMN ... TYPE numeric(p,s)` takes effect on the next
+    write without restarting the pipeline, and the table is resolved through the
+    connection's `search_path` like the rest of the statement.
+
+    Postgres rounds half away from zero when a value has more fractional digits
+    than the column's scale, and rejects a value that exceeds the column's
+    precision (`numeric field overflow`). A rejected batch is not acknowledged.
+
+    A decimal that has no finite expansion, such as 1/3, is truncated toward zero
+    after 1001 fractional digits before it is sent. So is a decimal that terminates
+    but needs more than 16383 fractional digits, which Postgres rejects on every
+    numeric column. Postgres allows a column scale of at most 1000, so the
+    truncation never changes the result of the column's rounding. An unconstrained
+    `numeric` column stores all 1001 digits.
+
+    The destination no longer checks that the target column is numeric. The general
+    rule: any column whose text input accepts the decimal string stores it.
+    Postgres converts the string, and the examples below were checked on
+    Postgres 17.5:
+
+    - `integer`, `smallint`, `bigint`: stored if the value is whole. A fractional
+      value is rejected, except on a destination that was already running when the
+      column was changed to an integer type: the cached prepared statement still
+      types the parameter as `numeric`, so 5/2 is silently rounded to 3
+      (see #367).
+    - `real`, `float8`: stored as the nearest binary float.
+    - `money`: rounded to the locale's fraction digits (1/3 is stored as `$0.33`).
+    - `oid`: stored if the value is a whole number (7 is stored as `7`).
+    - `text`: stored as the decimal string. `varchar(n)` and `char(n)`: rejected
+      with 22001 if the string is longer than `n`.
+    - `boolean`: 1 is stored as `true` and 0 as `false`; other values are rejected.
+    - `date`: 20261012 is stored as `2026-10-12`.
+    - `timestamp`: 20261012 is stored as `2026-10-12 00:00:00`.
+    - `timestamptz`: 20261012 is stored as `2026-10-12 00:00:00+00` (session time
+      zone UTC).
+    - `interval`: 12345 is stored as `03:25:45`.
+    - `json`, `jsonb`: 1/4 is stored as the JSON number `0.25`.
+    - `bytea`: 5/2 is stored as `\x322e35`, the ASCII bytes of `2.5`.
+    - `bit(n)`: stored if the decimal string is exactly `n` binary digits (101 is
+      stored as `101` in a `bit(3)`).
+    - `time`, `inet`: rejected.
+
+    Every accepted conversion to a non-numeric type is a silent coercion if the
+    schema maps a numeric field to the wrong column, so check the mapping.
   version: v0.14.3
   author: Meroxa, Inc.
   source:
