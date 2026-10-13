@@ -17,11 +17,14 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"math/big"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/conduitio/conduit-commons/opencdc"
@@ -38,7 +41,25 @@ type Destination struct {
 	config       destination.Config
 	getTableName destination.TableFn
 
-	conn        *pgx.Conn
+	// connSem (capacity 1, created lazily by sem) serializes use of conn: a
+	// pgx connection must not be used from two goroutines. It is a channel
+	// rather than a sync.Mutex so that waiting for it can honor a context.
+	//
+	// Teardown can be called while a Write is still running (the SDK calls it
+	// without a prior Stop when a pipeline stops on an error,
+	// conduit-connector-sdk#400). Teardown must neither close the connection
+	// under that Write nor wait for it without bound (a Write blocked on a row
+	// lock can take arbitrarily long), so it cancels the in-flight Write first
+	// and then waits for the semaphore for as long as its own context allows.
+	connSem chan struct{}
+	semOnce sync.Once
+	conn    *pgx.Conn
+	// stateMu guards the fields below. It is only ever held for a few
+	// instructions, never across I/O, so taking it can't block Teardown.
+	stateMu     sync.Mutex
+	cancelWrite context.CancelFunc // cancels the in-flight Write, if any
+	closing     bool               // Teardown started: refuse and cancel Writes
+	abandoned   bool               // Teardown gave up waiting: the last Write closes conn
 	dbInfo      *internal.DbInfo
 	stmtBuilder sq.StatementBuilderType
 }
@@ -73,6 +94,52 @@ func (d *Destination) Open(ctx context.Context) error {
 // Write routes incoming records to their appropriate handler based on the
 // operation.
 func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, error) {
+	// Fail fast once Teardown has begun instead of queueing behind it.
+	if d.isClosing() {
+		return 0, errors.New("destination is closing")
+	}
+	if err := d.acquire(ctx); err != nil {
+		return 0, fmt.Errorf("waiting for the connection: %w", err)
+	}
+	// finishWrite releases the semaphore (and closes the connection if
+	// Teardown gave up waiting), on every path below.
+	defer d.finishWrite()
+	if d.conn == nil {
+		// Torn down: nothing was written, so nothing may be acked.
+		return 0, errors.New("destination is closed")
+	}
+
+	// Teardown cancels this context to stop a Write that would otherwise
+	// hold the connection (and Teardown) for as long as the database keeps
+	// it waiting. Canceling rolls the batch back and Write returns (0, err),
+	// so nothing is acked and the records are redelivered after a restart
+	// (invariant 3: at-least-once).
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if !d.beginWrite(cancel) {
+		return 0, errors.New("destination is closing")
+	}
+	// pgx must not watch this context. When a watched context ends in the
+	// middle of a batch, pgx leaves its context-watcher goroutine parked
+	// forever (it waits for an Unwatch that the failed batch never reaches),
+	// pinning the connection: one leaked goroutine per interrupted
+	// connection. So the database calls get a context that cannot be
+	// canceled, and the interruption is done here instead: when ctx ends,
+	// the connection's deadline is set to now, which fails the blocked read
+	// the same way pgx does. stopWatch always runs before Write returns.
+	stopWatch := interruptOnDone(ctx, d.conn)
+	defer func() {
+		// If the watcher fired, the connection carries a deadline in the
+		// past and is unusable: close it before Write returns so a later
+		// caller never sees a half-dead connection.
+		if stopWatch() {
+			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = d.closeConn(closeCtx)
+		}
+	}()
+	ctx = context.WithoutCancel(ctx)
+
 	b := &pgx.Batch{}
 	for _, rec := range recs {
 		var err error
@@ -119,11 +186,118 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 	return len(recs), nil
 }
 
+// Teardown stops an in-flight Write (which then returns an error and acks
+// nothing), waits for it to let go of the connection and closes the
+// connection. The wait is bounded by ctx: if ctx ends first, Teardown returns
+// ctx.Err() and leaves the connection to the Write, which closes it on its
+// way out, so the connection is never closed under a running Write.
 func (d *Destination) Teardown(ctx context.Context) error {
-	if d.conn != nil {
-		return d.conn.Close(ctx)
+	d.stateMu.Lock()
+	d.closing = true
+	if d.cancelWrite != nil {
+		d.cancelWrite()
 	}
-	return nil
+	d.stateMu.Unlock()
+
+	if err := d.acquire(ctx); err != nil {
+		d.stateMu.Lock()
+		// A writer releases the semaphore under stateMu (finishWrite), so
+		// trying once more here, under the same mutex, cannot miss a writer
+		// that just finished: either the semaphore is free and nobody can
+		// use the connection, or the writer is still inside and will see
+		// abandoned and close the connection itself.
+		select {
+		case d.sem() <- struct{}{}:
+			d.stateMu.Unlock()
+			defer d.release()
+			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			return d.closeConn(closeCtx)
+		default:
+		}
+		d.abandoned = true
+		d.stateMu.Unlock()
+		return fmt.Errorf("teardown gave up waiting for an in-flight write: %w", err)
+	}
+	defer d.release()
+	return d.closeConn(ctx)
+}
+
+// closeConn closes and forgets the connection. The caller holds the semaphore.
+func (d *Destination) closeConn(ctx context.Context) error {
+	if d.conn == nil {
+		return nil
+	}
+	conn := d.conn
+	d.conn = nil
+	return conn.Close(ctx)
+}
+
+func (d *Destination) sem() chan struct{} {
+	d.semOnce.Do(func() { d.connSem = make(chan struct{}, 1) })
+	return d.connSem
+}
+
+// acquire takes the connection semaphore, giving up when ctx ends. A free
+// semaphore is always taken, even with an already-ended ctx (select alone
+// would pick at random between the two ready cases).
+func (d *Destination) acquire(ctx context.Context) error {
+	select {
+	case d.sem() <- struct{}{}:
+		return nil
+	default:
+	}
+	select {
+	case d.sem() <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (d *Destination) release() {
+	<-d.sem()
+}
+
+func (d *Destination) isClosing() bool {
+	d.stateMu.Lock()
+	defer d.stateMu.Unlock()
+	return d.closing
+}
+
+// beginWrite registers cancel so Teardown can stop the Write. It reports false
+// if Teardown already started, in which case the Write must not touch conn.
+func (d *Destination) beginWrite(cancel context.CancelFunc) bool {
+	d.stateMu.Lock()
+	defer d.stateMu.Unlock()
+	if d.closing {
+		return false
+	}
+	d.cancelWrite = cancel
+	return true
+}
+
+// finishWrite ends a Write: it deregisters the cancel function and releases
+// the semaphore. If Teardown gave up waiting for this Write, the Write is the
+// last user of the connection and closes it first. The caller holds the
+// semaphore. The semaphore is released under stateMu, after reading abandoned,
+// so Teardown's last-chance acquire (also under stateMu) and this read cannot
+// interleave in a way that leaves the connection open.
+func (d *Destination) finishWrite() {
+	d.stateMu.Lock()
+	d.cancelWrite = nil
+	if !d.abandoned {
+		d.release()
+		d.stateMu.Unlock()
+		return
+	}
+	d.stateMu.Unlock()
+	// abandoned is only ever set while a writer holds the semaphore, so no
+	// one else is using the connection.
+	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = d.closeConn(closeCtx)
+	d.release()
 }
 
 // handleInsert adds a query to the batch that stores the record in the target
@@ -362,4 +536,42 @@ func (d *Destination) formatBigRat(ctx context.Context, table string, column str
 
 	//nolint:gosec // no risk of overflow, because the scale in Pg is always <= 16383
 	return decimal.NewFromBigRat(v, int32(scale)).String(), nil
+}
+
+// interruptOnDone makes a blocked read or write on conn fail once ctx is done,
+// by moving the connection's deadline to now. The connection is unusable
+// afterwards (pgx closes it on the resulting error), as it is after pgx's own
+// context cancellation. The returned stop function ends the watcher and waits
+// for it, and reports whether the deadline was moved (the connection is then
+// unusable and the caller closes it). Once it has returned, ctx ending no
+// longer touches conn, so a healthy connection never gets a stray deadline.
+func interruptOnDone(ctx context.Context, conn *pgx.Conn) (stop func() (fired bool)) {
+	var (
+		mu       sync.Mutex
+		finished bool
+		fired    bool
+		done     = make(chan struct{})
+		exited   = make(chan struct{})
+	)
+	go func() {
+		defer close(exited)
+		select {
+		case <-ctx.Done():
+			mu.Lock()
+			defer mu.Unlock()
+			if !finished {
+				fired = true
+				_ = conn.PgConn().Conn().SetDeadline(time.Now())
+			}
+		case <-done:
+		}
+	}()
+	return func() bool {
+		mu.Lock()
+		finished = true
+		mu.Unlock()
+		close(done)
+		<-exited
+		return fired // exited happens-before this read
+	}
 }
