@@ -33,7 +33,6 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
-	"github.com/shopspring/decimal"
 )
 
 type Destination struct {
@@ -61,7 +60,6 @@ type Destination struct {
 	cancelWrite context.CancelFunc // cancels the in-flight Write, if any
 	closing     bool               // Teardown started: refuse and cancel Writes
 	abandoned   bool               // Teardown gave up waiting: the last Write closes conn
-	dbInfo      *internal.DbInfo
 	stmtBuilder sq.StatementBuilderType
 }
 
@@ -88,7 +86,6 @@ func (d *Destination) Open(ctx context.Context) error {
 		return fmt.Errorf("invalid table name or table name function: %w", err)
 	}
 
-	d.dbInfo = internal.NewDbInfo(conn)
 	return nil
 }
 
@@ -352,7 +349,7 @@ func (d *Destination) upsert(ctx context.Context, r opencdc.Record, b *pgx.Batch
 		return fmt.Errorf("failed to get table name for upsert: %w", err)
 	}
 
-	query, args, err := d.formatUpsertQuery(ctx, key, payload, tableName)
+	query, args, err := d.formatUpsertQuery(key, payload, tableName)
 	if err != nil {
 		return fmt.Errorf("error formatting query: %w", err)
 	}
@@ -403,14 +400,10 @@ func (d *Destination) remove(ctx context.Context, r opencdc.Record, b *pgx.Batch
 // * If other schema constraints prevent a write, this won't upsert on
 // that conflict.
 func (d *Destination) formatUpsertQuery(
-	ctx context.Context,
 	key, payload opencdc.StructuredData,
 	tableName string,
 ) (string, []interface{}, error) {
-	colArgs, valArgs, err := d.formatColumnsAndValues(ctx, key, payload, tableName)
-	if err != nil {
-		return "", nil, fmt.Errorf("error formatting columns and values: %w", err)
-	}
+	colArgs, valArgs := d.formatColumnsAndValues(key, payload)
 
 	stmt := d.stmtBuilder.
 		Insert(internal.WrapSQLIdent(tableName)).
@@ -449,10 +442,8 @@ func (d *Destination) formatUpsertQuery(
 // formatColumnsAndValues turns the key and payload into a slice of ordered
 // columns and values for upserting into Postgres.
 func (d *Destination) formatColumnsAndValues(
-	ctx context.Context,
 	key, payload opencdc.StructuredData,
-	table string,
-) ([]string, []interface{}, error) {
+) ([]string, []interface{}) {
 	var colArgs []string
 	var valArgs []interface{}
 
@@ -460,24 +451,16 @@ func (d *Destination) formatColumnsAndValues(
 	// query for args and values in proper order
 	for key, val := range key {
 		colArgs = append(colArgs, internal.WrapSQLIdent(key))
-		formatted, err := d.formatValue(ctx, table, key, val)
-		if err != nil {
-			return nil, nil, fmt.Errorf("error formatting value: %w", err)
-		}
-		valArgs = append(valArgs, formatted)
+		valArgs = append(valArgs, d.formatValue(val))
 		delete(payload, key) // NB: Delete Key from payload arguments
 	}
 
 	for field, val := range payload {
 		colArgs = append(colArgs, internal.WrapSQLIdent(field))
-		formatted, err := d.formatValue(ctx, table, field, val)
-		if err != nil {
-			return nil, nil, fmt.Errorf("error formatting value: %w", err)
-		}
-		valArgs = append(valArgs, formatted)
+		valArgs = append(valArgs, d.formatValue(val))
 	}
 
-	return colArgs, valArgs, nil
+	return colArgs, valArgs
 }
 
 func (d *Destination) hasKey(e opencdc.Record) bool {
@@ -527,32 +510,26 @@ func (d *Destination) structuredDataFormatter(data opencdc.Data) (opencdc.Struct
 	}
 }
 
-func (d *Destination) formatValue(ctx context.Context, table string, column string, val interface{}) (interface{}, error) {
+func (d *Destination) formatValue(val interface{}) interface{} {
 	switch v := val.(type) {
 	case *big.Rat:
-		return d.formatBigRat(ctx, table, column, v)
+		return d.formatBigRat(v)
 	case big.Rat:
-		return d.formatBigRat(ctx, table, column, &v)
+		return d.formatBigRat(&v)
 	default:
-		return val, nil
+		return val
 	}
 }
 
-// formatBigRat formats a big.Rat into a string that can be written into a NUMERIC/DECIMAL column.
-func (d *Destination) formatBigRat(ctx context.Context, table string, column string, v *big.Rat) (string, error) {
+// formatBigRat formats a big.Rat into a string that can be written into a
+// NUMERIC/DECIMAL column. The column's scale is intentionally not applied
+// here, Postgres applies the live column definition on assignment (see
+// internal.RatToDecimalString).
+func (d *Destination) formatBigRat(v *big.Rat) string {
 	if v == nil {
-		return "", nil
+		return ""
 	}
-
-	// we need to get the scale of the column so we that we can properly
-	// round the result of dividing the input big.Rat's numerator and denominator.
-	scale, err := d.dbInfo.GetNumericColumnScale(ctx, table, column)
-	if err != nil {
-		return "", fmt.Errorf("failed getting scale of numeric column: %w", err)
-	}
-
-	//nolint:gosec // no risk of overflow, because the scale in Pg is always <= 16383
-	return decimal.NewFromBigRat(v, int32(scale)).String(), nil
+	return internal.RatToDecimalString(v)
 }
 
 // interruptOnDone makes a blocked read or write on conn fail once ctx is done,

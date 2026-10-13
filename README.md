@@ -73,6 +73,126 @@ The connector will automatically look up the primary key column for the specifie
 and use them as the key value. If that can't be determined, the connector will return
 an error.
 
+The table's `REPLICA IDENTITY` must carry the primary key in deletes. `DEFAULT` and
+`FULL` always do. `USING INDEX` does only if the index includes the primary-key
+column; otherwise Postgres sends deletes without the key, and they cannot be applied
+downstream. The source refuses to open on such a table with the error code
+`postgres.replica_identity.excludes_key`. Fix it with
+`ALTER TABLE <table> REPLICA IDENTITY FULL`, or use a unique index that includes the
+primary key.
+
+### Before Image of Updates and Deletes
+
+`Payload.Before` is set only when Postgres sends the whole old row, which it does
+under `REPLICA IDENTITY FULL`. Under `DEFAULT` and `USING INDEX`, Postgres sends only
+the identity columns of the old row, so deletes and key-changing updates carry no
+`Before`. The deleted row's key is in the record `Key`. A key-changing update carries
+the new key in `Key`; the old key is not carried. If you need the old row or the old
+key, set `REPLICA IDENTITY FULL` on the table.
+
+:warning: The Postgres destination does not delete the old row when a primary key
+changes. It upserts on the new key, so a primary-key-changing `UPDATE` leaves the row
+under its old key in the destination next to the new one. This happens with or without
+Avro and under `REPLICA IDENTITY FULL` as well. It is a known destination bug
+([#386](https://github.com/ConduitIO/conduit-connector-postgres/issues/386)). Until it
+is fixed, avoid changing primary keys on tables replicated to Postgres, or reconcile
+the old rows by hand.
+
+### Delete With a Missing Key
+
+**Symptom.** The pipeline fails and keeps failing after restarts with
+`postgres.replica_identity.excludes_key: delete on table "<table>" (WAL LSN <a>, in the
+transaction that commits at LSN <b>) arrived without a value for key column ...`.
+The replication slot retains WAL while it is stuck.
+
+**Diagnosis.** The table's `REPLICA IDENTITY` was changed while the pipeline was
+running, to `USING INDEX` on an index whose key columns do not include the primary key
+(columns in `INCLUDE` do not count), or the identity index was dropped. Postgres then
+sends the delete without the key. Check with
+`SELECT relreplident FROM pg_class WHERE oid = '<table>'::regclass` (`i` is
+`USING INDEX`).
+
+**Remediation.**
+
+1. Fix the identity so that new deletes carry the key:
+   `ALTER TABLE <table> REPLICA IDENTITY FULL`, or `REPLICA IDENTITY DEFAULT`, or
+   `REPLICA IDENTITY USING INDEX <index>` on a unique index that has the primary key
+   among its key columns. This does not repair the change already in the WAL. A restart
+   alone fails on it again.
+2. Stop the pipeline. Postgres refuses to read or advance a slot while a connection
+   uses it.
+3. Find the row. The error carries no row values, because they would end up in logs.
+   Read the stuck transaction from the slot instead, as a superuser or a role with
+   `REPLICATION`. Peeking does not consume anything. `<c>` is the commit LSN `<b>`
+   from the error with its low hex part incremented by one (`0/40C5318` becomes
+   `0/40C5319`); the error prints it:
+
+   ```sql
+   SELECT xid, lsn, encode(data, 'escape') AS message
+   FROM pg_logical_slot_peek_binary_changes(
+          '<slot name>', '<c>', NULL,
+          'proto_version', '1', 'publication_names', '<publication name>');
+   ```
+
+   Use the values of `logrepl.slotName` and `logrepl.publicationName` (defaults
+   `conduitslot` and `conduitpub`).
+   The output can start with earlier transactions that the pipeline already delivered
+   but Postgres has not yet been told about (the connector reports its position
+   periodically). They can contain the same value as the stuck delete, so do not read
+   them. Read only the transaction (`xid`) that contains the `D` row whose `lsn` is the
+   WAL LSN `<a>` in the error.
+   Each row is one pgoutput message. `B` and `C` begin and commit the transaction. `R`
+   names a table and its columns. `I`, `U` and `D` are the changes. A `K` tuple follows
+   the table's object id: a 2-byte column count, then one entry per column, `n` for NULL
+   or `t`, a 4-byte length and the text value. For this error the only non-null columns
+   are those of the identity index, so the readable text is the value to look for, for
+   example `222` in a `D` row that shows `K ... n t ... 222 n`. Postgres only accepts a
+   unique index as a replica identity, so that value identifies the row in the
+   destination. Only tables in the publication appear, which are the tables the pipeline
+   captures.
+4. Delete that row from the destination yourself. The change has no key, so the pipeline
+   cannot do it. Then work out what else step 5 would skip. It skips every change the
+   peek lists before the stuck one, and the other changes of the stuck transaction.
+   Postgres has not been told they are done, and the pipeline may have read them
+   without the destination writing them before it stopped. Get the source connector's
+   last acknowledged position from Conduit:
+   `GET /v1/connectors/<source connector id>`, field `sourceState.position`. It is
+   base64 of JSON, for example
+   `{"version":2,"type":2,"last_lsn":"0/40845E8","tx_commit_lsn":"0/40846E8","tx_seq":1}`
+   (decode it with `base64 -d`). Conduit sets it only when the destination acknowledges a
+   record, never when the source reads one, so `last_lsn` is the WAL LSN of the last
+   change the destination has confirmed. If Conduit was restarted since the pipeline
+   stopped, it reports the last position it saved, which can be slightly older; that errs
+   on the safe side. Find the peek row of kind `I`, `U` or `D` whose `lsn` equals
+   `last_lsn`. Ignore `B` and `C` rows: a `C` row can show the same number as the first
+   change after it. If several rows share that `lsn` (a `COPY` or another statement
+   that changes many rows can do that), use `tx_seq`. It numbers the transaction's
+   `I`, `U`, `D` and `T` (truncate) rows in the order listed, starting at 1 after its
+   `B` row. `R` (relation), `Y` (type) and `O` (origin) rows are not counted. The row
+   with that number is the one to match, and it is an `I`, `U` or `D` row. The matched row
+   itself and everything listed before it are in the destination. For each change
+   listed after it, up to the stuck one and including the rest of the stuck transaction,
+   check the destination for its rows and apply any that are missing by hand (`I` and
+   `U` carry the full new row; `D` carries the identity columns). If no row matches,
+   treat every listed change as unconfirmed. A position without `last_lsn` (a pipeline
+   still in its snapshot) matches nothing.
+5. Skip the transaction. Use the same `<c>` as in step 3. Writing it as a literal is
+   deliberate: `'<b>'::pg_lsn + 1` only works from Postgres 14.
+   - Postgres 11 or later:
+     `SELECT pg_replication_slot_advance('<slot name>', '<c>');`
+   - Postgres 10 has no such function. Consume the changes up to `<c>` instead. This
+     skips exactly the same changes and needs no new snapshot:
+     `SELECT count(*) FROM pg_logical_slot_get_binary_changes('<slot name>', '<c>', NULL, 'proto_version', '1', 'publication_names', '<publication name>');`
+
+   Advancing to `<c>` is what skips the transaction. Advancing to the change LSN
+   (`<a>`) or to the commit LSN `<b>` itself does not: Postgres replays the transaction
+   and the pipeline fails on the same delete.
+6. Start the pipeline.
+
+**Skipping the transaction skips that change, and it skips the whole transaction,
+including its other changes to captured tables.** Skipping data is your decision and the
+connector cannot check it for you.
+
 ### Unchanged TOASTed Columns
 
 Postgres stores large field values (`text`, `bytea`, `jsonb`, and other
@@ -98,6 +218,24 @@ What this means for your destination:
   row image carries every column, and this connector backfills unchanged TOASTed
   values from it so the payload is always complete.
 
+### Limitations
+
+- **`TRUNCATE` is not propagated.** OpenCDC has no truncate operation, so a
+  `TRUNCATE` on a published table produces no record: rows it removed remain in
+  the destination. If the publication publishes `truncate` (the one the
+  connector creates does by default), the connector logs a `WARN` ("TRUNCATE was NOT
+  propagated") naming the table and the LSN, at most once a minute per table.
+  A restricted or user-supplied publication (for example
+  `publish = 'insert, update, delete'`) never sends the message, so there is
+  no warning and no other signal. The `suppressed` field counts the TRUNCATEs
+  of that table the rate limit swallowed since the previous warning; when
+  another table's warning evicts an expired entry that still holds a count, a
+  one-line summary with that count is logged. Treat the log lines as a signal,
+  not a precise counter: a count still pending when the process exits is
+  lost. Inserts, updates and deletes around the `TRUNCATE` are delivered as
+  usual. A configurable policy for TRUNCATE is planned. Until then, treat the
+  warning as a signal to reconcile the destination by hand.
+
 ## Destination
 
 The Postgres Destination takes a Conduit record and stores it using a SQL statement.
@@ -117,6 +255,56 @@ If the target table does not contain a record with the same key as a record bein
 deleted, the record will be ignored.
 
 If there is no key, the record will be simply appended.
+
+### Numeric columns
+
+Decimal values (`big.Rat`) are sent to Postgres as exact decimal strings, and
+Postgres applies the column's precision and scale itself when it stores the
+value. The destination never reads or caches a column's scale, so an
+`ALTER TABLE ... ALTER COLUMN ... TYPE numeric(p,s)` takes effect on the next
+write without restarting the pipeline, and the table is resolved through the
+connection's `search_path` like the rest of the statement.
+
+Postgres rounds half away from zero when a value has more fractional digits
+than the column's scale, and rejects a value that exceeds the column's
+precision (`numeric field overflow`). A rejected batch is not acknowledged.
+
+A decimal that has no finite expansion, such as 1/3, is truncated toward zero
+after 1001 fractional digits before it is sent. So is a decimal that terminates
+but needs more than 16383 fractional digits, which Postgres rejects on every
+numeric column. Postgres allows a column scale of at most 1000, so the
+truncation never changes the result of the column's rounding. An unconstrained
+`numeric` column stores all 1001 digits.
+
+The destination no longer checks that the target column is numeric. The general
+rule: any column whose text input accepts the decimal string stores it.
+Postgres converts the string, and the examples below were checked on
+Postgres 17.5:
+
+- `integer`, `smallint`, `bigint`: stored if the value is whole. A fractional
+  value is rejected, except on a destination that was already running when the
+  column was changed to an integer type: the cached prepared statement still
+  types the parameter as `numeric`, so 5/2 is silently rounded to 3
+  (see #367).
+- `real`, `float8`: stored as the nearest binary float.
+- `money`: rounded to the locale's fraction digits (1/3 is stored as `$0.33`).
+- `oid`: stored if the value is a whole number (7 is stored as `7`).
+- `text`: stored as the decimal string. `varchar(n)` and `char(n)`: rejected
+  with 22001 if the string is longer than `n`.
+- `boolean`: 1 is stored as `true` and 0 as `false`; other values are rejected.
+- `date`: 20261012 is stored as `2026-10-12`.
+- `timestamp`: 20261012 is stored as `2026-10-12 00:00:00`.
+- `timestamptz`: 20261012 is stored as `2026-10-12 00:00:00+00` (session time
+  zone UTC).
+- `interval`: 12345 is stored as `03:25:45`.
+- `json`, `jsonb`: 1/4 is stored as the JSON number `0.25`.
+- `bytea`: 5/2 is stored as `\x322e35`, the ASCII bytes of `2.5`.
+- `bit(n)`: stored if the decimal string is exactly `n` binary digits (101 is
+  stored as `101` in a `bit(3)`).
+- `time`, `inet`: rejected.
+
+Every accepted conversion to a non-numeric type is a silent coercion if the
+schema maps a numeric field to the wrong column, so check the mapping.
 <!-- /readmegen:description -->
 
 ## Source Configuration Parameters

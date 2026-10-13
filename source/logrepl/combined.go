@@ -18,6 +18,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/internal/chaospoint"
@@ -37,7 +39,26 @@ type CombinedIterator struct {
 	conf Config
 	pool *pgxpool.Pool
 
-	cdcIterator      *CDCIterator
+	// runCtx is the context the iterator was opened with. The CDC subscription
+	// outlives any single NextN call, so it must run on this context and never
+	// on a NextN context: when the snapshot handoff happens inside NextN, using
+	// that call's context tied the subscription's lifetime to one ReadN
+	// deadline, and after it expired the subscription spun and could not be
+	// stopped (#347).
+	runCtx context.Context
+
+	// beforeHandoff is a test seam, nil in production. It runs at the top of
+	// useCDCIterator, before the snapshot iterator is taken out.
+	beforeHandoff func()
+
+	cdcIterator *CDCIterator
+
+	// iterMu guards snapshotIterator and activeIterator. NextN switches from
+	// the snapshot to the CDC iterator (useCDCIterator) while Teardown and Ack
+	// run on other goroutines (#352). The snapshot iterator is torn down by
+	// whoever takes it out under the lock, so exactly once.
+	iterMu           sync.Mutex
+	tornDown         bool // Teardown ran: a snapshot iterator is never put back
 	snapshotIterator *snapshot.Iterator
 	activeIterator   iterator
 
@@ -97,8 +118,9 @@ func NewCombinedIterator(ctx context.Context, pool *pgxpool.Pool, conf Config) (
 	}
 
 	c := &CombinedIterator{
-		conf: conf,
-		pool: pool,
+		conf:   conf,
+		pool:   pool,
+		runCtx: ctx,
 	}
 
 	// Initialize the CDC iterator. This creates (or, on a resume, reuses) the
@@ -124,22 +146,42 @@ func NewCombinedIterator(ctx context.Context, pool *pgxpool.Pool, conf Config) (
 	// Initialize the snapshot iterator when snapshotting is enabled and not completed.
 	// The CDC iterator must be initialized first when snapshotting is requested.
 	if err := c.initSnapshotIterator(ctx, pos); err != nil {
+		c.abortOpen(err)
 		return nil, err
 	}
 
 	switch {
 	case c.snapshotIterator != nil:
-		c.activeIterator = c.snapshotIterator
+		c.setActive(c.snapshotIterator)
 	default:
 		if err := c.cdcIterator.StartSubscriber(ctx); err != nil {
-			return nil, fmt.Errorf("failed to start CDC iterator: %w", err)
+			err = fmt.Errorf("failed to start CDC iterator: %w", err)
+			c.abortOpen(err)
+			return nil, err
 		}
 
-		c.activeIterator = c.cdcIterator
+		c.setActive(c.cdcIterator)
 	}
 
 	return c, nil
 }
+
+// abortOpen releases everything NewCombinedIterator created when it fails after
+// initCDCIterator. The caller never gets the iterator, so nobody else would
+// ever call Teardown: without this the subscription keeps its pooled
+// replication connection (a walsender on the server) for the life of the
+// process, and pool.Close blocks on it. The caller's context may already be
+// done, so teardown gets its own bounded context.
+func (c *CombinedIterator) abortOpen(cause error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.runCtx), abortOpenTimeout)
+	defer cancel()
+	if err := c.Teardown(ctx); err != nil {
+		sdk.Logger(ctx).Warn().Err(err).AnErr("cause", cause).Msg("failed to clean up after a failed open")
+	}
+}
+
+// abortOpenTimeout bounds the cleanup in abortOpen.
+const abortOpenTimeout = 10 * time.Second
 
 // NextN retrieves up to n records from the active iterator.
 // If the end of the snapshot is reached during this call, it will switch to the CDC iterator
@@ -149,7 +191,7 @@ func (c *CombinedIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, 
 		return nil, fmt.Errorf("n must be greater than 0, got %d", n)
 	}
 
-	records, err := c.activeIterator.NextN(ctx, n)
+	records, err := c.active().NextN(ctx, n)
 	if err != nil {
 		if !errors.Is(err, snapshot.ErrIteratorDone) {
 			return nil, fmt.Errorf("failed to fetch records in batch: %w", err)
@@ -168,12 +210,16 @@ func (c *CombinedIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, 
 }
 
 func (c *CombinedIterator) Ack(ctx context.Context, p opencdc.Position) error {
-	return c.activeIterator.Ack(ctx, p)
+	return c.active().Ack(ctx, p)
 }
 
 // Teardown will stop and teardown the CDC and Snapshot iterators.
 func (c *CombinedIterator) Teardown(ctx context.Context) error {
 	logger := sdk.Logger(ctx)
+
+	c.iterMu.Lock()
+	c.tornDown = true
+	c.iterMu.Unlock()
 
 	var errs []error
 
@@ -184,8 +230,8 @@ func (c *CombinedIterator) Teardown(ctx context.Context) error {
 		}
 	}
 
-	if c.snapshotIterator != nil {
-		if err := c.snapshotIterator.Teardown(ctx); err != nil {
+	if snap := c.takeSnapshotIterator(); snap != nil {
+		if err := snap.Teardown(ctx); err != nil {
 			logger.Warn().Err(err).Msg("Failed to tear down snapshot iterator")
 			errs = append(errs, fmt.Errorf("failed to teardown snapshot iterator: %w", err))
 		}
@@ -285,14 +331,23 @@ func (c *CombinedIterator) useCDCIterator(ctx context.Context) error {
 	// at RestartLSN, never mid-handoff. No-op outside the conduitchaos
 	// build (see internal/chaospoint).
 	chaospoint.Reach(chaospoint.PreStartSubscriber)
+	if c.beforeHandoff != nil {
+		c.beforeHandoff()
+	}
 
-	if c.snapshotIterator != nil {
-		if err := c.snapshotIterator.Teardown(ctx); err != nil {
+	if snap := c.takeSnapshotIterator(); snap != nil {
+		if err := snap.Teardown(ctx); err != nil {
+			// Keep the iterator so the next NextN retries the handoff instead
+			// of losing both the error and the iterator.
+			if !c.restoreSnapshotIterator(snap) {
+				// Teardown already ran and will not see this iterator again.
+				_ = snap.Teardown(ctx)
+			}
 			return fmt.Errorf("failed to teardown snapshot iterator during switch: %w", err)
 		}
 	}
 
-	c.activeIterator, c.snapshotIterator = c.cdcIterator, nil
+	c.setActive(c.cdcIterator)
 
 	// DBZ-3 Area 1 (load-bearing): re-seed the CDC handler's low watermark at the
 	// snapshot->CDC handoff, BEFORE StartSubscriber launches the subscription
@@ -314,9 +369,45 @@ func (c *CombinedIterator) useCDCIterator(ctx context.Context) error {
 	// ack or SendStandbyStatusUpdate path, so it cannot advance the slot early.
 	c.cdcIterator.SetSnapshotLowWatermarkLSN(c.snapshotLowWatermarkLSN)
 
-	if err := c.cdcIterator.StartSubscriber(ctx); err != nil {
+	if err := c.cdcIterator.StartSubscriber(c.runCtx); err != nil {
 		return fmt.Errorf("failed to start CDC iterator: %w", err)
 	}
 
 	return nil
+}
+
+func (c *CombinedIterator) active() iterator {
+	c.iterMu.Lock()
+	defer c.iterMu.Unlock()
+	return c.activeIterator
+}
+
+func (c *CombinedIterator) setActive(it iterator) {
+	c.iterMu.Lock()
+	defer c.iterMu.Unlock()
+	c.activeIterator = it
+}
+
+// takeSnapshotIterator removes and returns the snapshot iterator (nil if it
+// is already gone), so only one caller ever tears it down.
+func (c *CombinedIterator) takeSnapshotIterator() *snapshot.Iterator {
+	c.iterMu.Lock()
+	defer c.iterMu.Unlock()
+	snap := c.snapshotIterator
+	c.snapshotIterator = nil
+	return snap
+}
+
+// restoreSnapshotIterator puts snap back so the next handoff attempt retries
+// its teardown. It reports false, and does not store snap, if Teardown already
+// ran (nobody would ever tear the restored iterator down) or the slot was
+// refilled; the caller then tears snap down itself.
+func (c *CombinedIterator) restoreSnapshotIterator(snap *snapshot.Iterator) bool {
+	c.iterMu.Lock()
+	defer c.iterMu.Unlock()
+	if c.tornDown || c.snapshotIterator != nil {
+		return false
+	}
+	c.snapshotIterator = snap
+	return true
 }

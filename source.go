@@ -90,6 +90,11 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 		if err != nil {
 			return fmt.Errorf("failed to find primary key for table %s: %w", tableName, err)
 		}
+		// Invariant 3: refuse a replica identity that drops the key from
+		// deletes, before any change is read (#380).
+		if err := logrepl.CheckReplicaIdentity(ctx, s.pool, tableName, s.tableKeys[tableName]); err != nil {
+			return err
+		}
 	}
 
 	switch s.config.CDCMode {

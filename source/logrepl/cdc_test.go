@@ -279,20 +279,9 @@ func TestCDCIterator_Operation_NextN(t *testing.T) {
 					opencdc.MetadataPayloadSchemaVersion: "1",
 				},
 				Key: opencdc.StructuredData{"id": int64(4)},
-				Payload: opencdc.Change{
-					Before: opencdc.StructuredData{
-						"id":               int64(4),
-						"column1":          nil,
-						"column2":          nil,
-						"column3":          nil,
-						"column4":          nil,
-						"column5":          nil,
-						"column6":          nil,
-						"column7":          nil,
-						"key":              nil,
-						"UppercaseColumn1": nil,
-					},
-				},
+				// The DEFAULT identity sends a key-only old tuple: no Before.
+				// The key is in Key (#379).
+				Payload: opencdc.Change{Before: nil},
 			},
 		},
 		{
