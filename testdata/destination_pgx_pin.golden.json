@@ -1,0 +1,1435 @@
+{
+ "arr_bit": {
+  "results": [
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "arr_bool": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {t,f,NULL}",
+   "2: NULL"
+  ]
+ },
+ "arr_bpchar": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {\"a  \",\"bc \"}",
+   "2: NULL"
+  ]
+ },
+ "arr_bytea": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {\"\\\\x4150383d\",\"\\\\x3371303d\"}",
+   "2: NULL"
+  ]
+ },
+ "arr_cidr": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {192.168.100.128/25}",
+   "2: NULL"
+  ]
+ },
+ "arr_date": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {2022-03-14,infinity,NULL}",
+   "2: NULL"
+  ]
+ },
+ "arr_enum": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {sad,happy}",
+   "2: NULL"
+  ]
+ },
+ "arr_float4": {
+  "results": [
+   "input is not valid JSON",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "arr_float8": {
+  "results": [
+   "input is not valid JSON",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "arr_inet": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {192.168.0.17,::1}",
+   "2: NULL"
+  ]
+ },
+ "arr_int2": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {1,-2,32767}",
+   "2: NULL"
+  ]
+ },
+ "arr_int4": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {1,2,3}",
+   "2: {}",
+   "3: {NULL,1}",
+   "4: {1,2,3,4}",
+   "5: {1,2,3}",
+   "6: NULL"
+  ]
+ },
+ "arr_int4range": {
+  "results": [
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "arr_int8": {
+  "results": [
+   "skipped: integer beyond float64 precision",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "arr_interval": {
+  "results": [
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "arr_json": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {\"{\\\"a\\\":1}\",\"[1,2]\"}",
+   "2: NULL"
+  ]
+ },
+ "arr_jsonb": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {\"{\\\"a\\\": 1}\",\"[1, 2]\"}",
+   "2: NULL"
+  ]
+ },
+ "arr_macaddr": {
+  "results": [
+   "write error: ERROR: invalid input syntax for type macaddr: \"CAArAQIm\" (SQLSTATE 22P02)",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "arr_money": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {$1.00}",
+   "2: NULL"
+  ]
+ },
+ "arr_numeric": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {1.5,2,NULL}",
+   "2: NULL"
+  ]
+ },
+ "arr_oid": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {1,4294967295}",
+   "2: NULL"
+  ]
+ },
+ "arr_point": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {\"(1,2)\",\"(3,4)\"}",
+   "2: NULL"
+  ]
+ },
+ "arr_text": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {a,\"b c\",\"d\\\"e\",NULL,\"\"}",
+   "2: {}",
+   "3: NULL"
+  ]
+ },
+ "arr_time": {
+  "results": [
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "arr_timestamp": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {\"2022-03-14 15:16:17\",infinity,NULL}",
+   "2: NULL"
+  ]
+ },
+ "arr_timestamptz": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {\"2022-03-14 23:16:17+00\",\"2022-03-14 09:46:17.5+00\",-infinity}",
+   "2: NULL"
+  ]
+ },
+ "arr_tsquery": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {\"'a' \u0026 'b'\"}",
+   "2: NULL"
+  ]
+ },
+ "arr_tstzrange": {
+  "results": [
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "arr_tsvector": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {\"'a':1 'b':2\",'c'}",
+   "2: {NULL,'x'}",
+   "3: {{'a','b'},{'c','d'}}",
+   "4: [0:1]={'a','b'}",
+   "5: {}",
+   "6: NULL"
+  ]
+ },
+ "arr_uuid": {
+  "results": [
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "arr_varchar": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {a,b}",
+   "2: NULL"
+  ]
+ },
+ "arr_xml": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {\u003ca/\u003e}",
+   "2: NULL"
+  ]
+ },
+ "bit": {
+  "results": [
+   "write error: client-side error",
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "3: NULL"
+  ]
+ },
+ "bool": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: true",
+   "2: false",
+   "3: NULL"
+  ]
+ },
+ "box": {
+  "results": [
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "bpchar": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: a",
+   "2: abcde",
+   "3: NULL"
+  ]
+ },
+ "bytea": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: \\x",
+   "2: \\x41503851",
+   "3: \\x3371322b37773d3d",
+   "4: NULL"
+  ]
+ },
+ "cid": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 0",
+   "2: 12",
+   "3: NULL"
+  ]
+ },
+ "cidr": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 192.168.100.128/25",
+   "2: 2001:db8::/32",
+   "3: NULL"
+  ]
+ },
+ "circle": {
+  "results": [
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "citext": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: Hello",
+   "2: ",
+   "3: NULL"
+  ]
+ },
+ "composite": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: (1,\"x y\",)",
+   "2: (2,z,\"2022-03-14 23:16:17+00\")",
+   "3: NULL"
+  ]
+ },
+ "custom_range": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: [1.5,2.5)",
+   "2: NULL"
+  ]
+ },
+ "date": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "write error: ERROR: date/time field value out of range: \"0000-01-01T00:00:00Z\" (SQLSTATE 22008)",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 2022-03-14",
+   "2: 1970-01-01",
+   "3: 0001-01-01",
+   "5: 9999-12-31",
+   "6: infinity",
+   "7: -infinity",
+   "8: NULL"
+  ]
+ },
+ "date_far": {
+  "results": [
+   "input is not valid JSON",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "datemultirange": {
+  "results": [
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "daterange": {
+  "results": [
+   "write error: client-side error",
+   "write error: client-side error",
+   "write error: client-side error",
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "5: NULL"
+  ]
+ },
+ "domain_int": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 1",
+   "2: 2147483647",
+   "3: NULL"
+  ]
+ },
+ "domain_text": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: x",
+   "2: NULL"
+  ]
+ },
+ "enum": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: sad",
+   "2: happy",
+   "3: NULL"
+  ]
+ },
+ "float4": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "input is not valid JSON",
+   "input is not valid JSON",
+   "input is not valid JSON",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 0",
+   "2: -1.5",
+   "3: 3.4028235e+38",
+   "4: 1e-45",
+   "8: NULL"
+  ]
+ },
+ "float8": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "input is not valid JSON",
+   "input is not valid JSON",
+   "input is not valid JSON",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 0",
+   "2: -1.5",
+   "3: 1.7976931348623157e+308",
+   "4: 5e-324",
+   "8: -0",
+   "9: NULL"
+  ]
+ },
+ "hstore": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: \"a\"=\u003e\"1\", \"b\"=\u003eNULL",
+   "2: ",
+   "3: NULL"
+  ]
+ },
+ "inet": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 192.168.0.17/32",
+   "2: 192.168.0.17/24",
+   "3: ::1/128",
+   "4: 2001:db8::/32",
+   "5: NULL"
+  ]
+ },
+ "int2": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: -32768",
+   "2: 0",
+   "3: 32767",
+   "4: NULL"
+  ]
+ },
+ "int4": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: -2147483648",
+   "2: 0",
+   "3: 2147483647",
+   "4: NULL"
+  ]
+ },
+ "int4multirange": {
+  "results": [
+   "write error: client-side error",
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "3: NULL"
+  ]
+ },
+ "int4range": {
+  "results": [
+   "write error: client-side error",
+   "write error: client-side error",
+   "write error: client-side error",
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "5: NULL"
+  ]
+ },
+ "int8": {
+  "results": [
+   "skipped: integer beyond float64 precision",
+   "wrote 1",
+   "skipped: integer beyond float64 precision",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: 0",
+   "4: NULL"
+  ]
+ },
+ "int8range": {
+  "results": [
+   "skipped: integer beyond float64 precision",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "interval": {
+  "results": [
+   "write error: client-side error",
+   "write error: client-side error",
+   "write error: client-side error",
+   "write error: client-side error",
+   "write error: client-side error",
+   "write error: client-side error",
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "8: NULL"
+  ]
+ },
+ "json": {
+  "results": [
+   "write error: ERROR: invalid input syntax for type json (SQLSTATE 22P02)",
+   "write error: ERROR: invalid input syntax for type json (SQLSTATE 22P02)",
+   "write error: ERROR: invalid input syntax for type json (SQLSTATE 22P02)",
+   "write error: ERROR: invalid input syntax for type json (SQLSTATE 22P02)",
+   "write error: ERROR: invalid input syntax for type json (SQLSTATE 22P02)",
+   "wrote 1"
+  ],
+  "stored": [
+   "6: NULL"
+  ]
+ },
+ "jsonb": {
+  "results": [
+   "write error: ERROR: invalid input syntax for type json (SQLSTATE 22P02)",
+   "write error: ERROR: invalid input syntax for type json (SQLSTATE 22P02)",
+   "write error: ERROR: invalid input syntax for type json (SQLSTATE 22P02)",
+   "write error: ERROR: invalid input syntax for type json (SQLSTATE 22P02)",
+   "write error: ERROR: invalid input syntax for type json (SQLSTATE 22P02)",
+   "write error: ERROR: invalid input syntax for type json (SQLSTATE 22P02)",
+   "write error: ERROR: invalid input syntax for type json (SQLSTATE 22P02)",
+   "wrote 1"
+  ],
+  "stored": [
+   "8: NULL"
+  ]
+ },
+ "line": {
+  "results": [
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "lseg": {
+  "results": [
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "ltree": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: Top.Science.Astronomy",
+   "2: NULL"
+  ]
+ },
+ "macaddr": {
+  "results": [
+   "write error: ERROR: invalid input syntax for type macaddr: \"CAArAQIm\" (SQLSTATE 22P02)",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "macaddr8": {
+  "results": [
+   "write error: ERROR: invalid input syntax for type macaddr8: \"CAArAQIDBCc=\" (SQLSTATE 22P02)",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "money": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: $0.00",
+   "2: $1,234.56",
+   "3: -$0.01",
+   "4: NULL"
+  ]
+ },
+ "name": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: relname",
+   "2: NULL"
+  ]
+ },
+ "native/bigrat": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 1.50"
+  ]
+ },
+ "native/bigrat_int": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 42"
+  ]
+ },
+ "native/bigrat_nonterminating": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 0.3333"
+  ]
+ },
+ "native/bigrat_value": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: -0.875"
+  ]
+ },
+ "native/bool": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: true"
+  ]
+ },
+ "native/bytes": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: \\x0001ff"
+  ]
+ },
+ "native/bytes_jsonb": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {\"a\": 1}"
+  ]
+ },
+ "native/duration_interval": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 01:00:00"
+  ]
+ },
+ "native/float32": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 1.5"
+  ]
+ },
+ "native/float64": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 2.25"
+  ]
+ },
+ "native/float_to_numeric": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 1.5"
+  ]
+ },
+ "native/int": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 42"
+  ]
+ },
+ "native/int32": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: -5"
+  ]
+ },
+ "native/int64": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 4611686018427387904"
+  ]
+ },
+ "native/map_jsonb": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {\"a\": [1.5, \"x\"]}"
+  ]
+ },
+ "native/nil": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: NULL"
+  ]
+ },
+ "native/slice_int4": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {1,2}"
+  ]
+ },
+ "native/slice_text": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: {a,b}"
+  ]
+ },
+ "native/string": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: héllo"
+  ]
+ },
+ "native/string_inet": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 192.168.0.17/32"
+  ]
+ },
+ "native/string_interval": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 1 day"
+  ]
+ },
+ "native/string_timestamptz": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 2022-03-14 15:16:17+00"
+  ]
+ },
+ "native/string_to_int": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 42"
+  ]
+ },
+ "native/string_tsvector": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 'a':1 'b':2"
+  ]
+ },
+ "native/time_date": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 2022-03-14"
+  ]
+ },
+ "native/time_timestamp": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 2022-03-14 15:16:17.123456"
+  ]
+ },
+ "native/time_timestamptz": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 2022-03-14 23:16:17+00"
+  ]
+ },
+ "native/uuid_array16": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: bd94ee0b-564f-4088-bf4e-8d5e626caf66"
+  ]
+ },
+ "native/uuid_string": {
+  "results": [
+   "wrote 1"
+  ],
+  "stored": [
+   "1: bd94ee0b-564f-4088-bf4e-8d5e626caf66"
+  ]
+ },
+ "numeric": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "write error: ERROR: invalid input syntax for type numeric: \"-3/2\" (SQLSTATE 22P02)",
+   "write error: ERROR: invalid input syntax for type numeric: \"123456789012345678901234567890123456789/1000000000\" (SQLSTATE 22P02)",
+   "write error: ERROR: invalid input syntax for type numeric: \"1/1000000000000000000000\" (SQLSTATE 22P02)",
+   "wrote 1",
+   "wrote 1",
+   "write error: ERROR: invalid input syntax for type numeric: \"-1/10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\" (SQLSTATE 22P02)",
+   "write error: ERROR: invalid input syntax for type numeric: \"24691357802469135780246913578024691357802469/2000000000000000000000000\" (SQLSTATE 22P02)",
+   "wrote 1",
+   "wrote 1",
+   "write error: ERROR: invalid input syntax for type numeric: \"1/2\" (SQLSTATE 22P02)",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 0",
+   "2: 1",
+   "6: 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+   "7: 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+   "10: 10000",
+   "11: 100000",
+   "13: NULL"
+  ]
+ },
+ "numeric_10_2": {
+  "results": [
+   "wrote 1",
+   "write error: ERROR: invalid input syntax for type numeric: \"123456789/10\" (SQLSTATE 22P02)",
+   "write error: ERROR: invalid input syntax for type numeric: \"-1/100\" (SQLSTATE 22P02)",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 0.00",
+   "4: NULL"
+  ]
+ },
+ "numeric_inf": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: Infinity",
+   "2: NULL"
+  ]
+ },
+ "numeric_special": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: NaN",
+   "2: NULL"
+  ]
+ },
+ "nummultirange": {
+  "results": [
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "numrange": {
+  "results": [
+   "write error: client-side error",
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "3: NULL"
+  ]
+ },
+ "oid": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 0",
+   "2: 4294967295",
+   "3: NULL"
+  ]
+ },
+ "path": {
+  "results": [
+   "write error: client-side error",
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "3: NULL"
+  ]
+ },
+ "pg_lsn": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 0/0",
+   "2: 36/37",
+   "3: FFFFFFFF/FFFFFFFF",
+   "4: NULL"
+  ]
+ },
+ "pg_snapshot": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 10:20:10,14,15",
+   "2: 1:1:",
+   "3: NULL"
+  ]
+ },
+ "point": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: (38,39)",
+   "2: (-1.5,2.25)",
+   "3: NULL"
+  ]
+ },
+ "polygon": {
+  "results": [
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "qchar": {
+  "results": [
+   "write error: client-side error",
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "3: NULL"
+  ]
+ },
+ "regclass": {
+  "results": [
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: pg_class",
+   "2: NULL"
+  ]
+ },
+ "text": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: ",
+   "2: foo",
+   "3: multi\nline\ttab",
+   "4: héllo wörld ✓",
+   "5: quote's \"dq\" back\\slash",
+   "6: NULL"
+  ]
+ },
+ "tid": {
+  "results": [
+   "write error: client-side error",
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "3: NULL"
+  ]
+ },
+ "time": {
+  "results": [
+   "write error: client-side error",
+   "write error: client-side error",
+   "write error: client-side error",
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "5: NULL"
+  ]
+ },
+ "timestamp": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "input is not valid JSON",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 2022-03-14 15:16:17",
+   "2: 1970-01-01 00:00:00",
+   "3: 2022-03-14 15:16:17.123456",
+   "4: 2022-03-13 02:30:00",
+   "5: 0001-01-01 00:00:00",
+   "7: 9999-12-31 23:59:59.999999",
+   "8: infinity",
+   "9: -infinity",
+   "10: NULL"
+  ]
+ },
+ "timestamptz": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "input is not valid JSON",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 2022-03-14 23:16:17+00",
+   "2: 2022-03-14 09:46:17.123456+00",
+   "3: 1970-01-01 00:00:00+00",
+   "4: 0001-01-01 00:00:00+00",
+   "6: 9999-12-31 23:59:59.999999+00",
+   "7: infinity",
+   "8: -infinity",
+   "9: NULL"
+  ]
+ },
+ "timetz": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 04:05:06.789-08",
+   "2: 04:05:06+05:30",
+   "3: 00:00:00+00",
+   "4: NULL"
+  ]
+ },
+ "tsmultirange": {
+  "results": [
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "tsquery": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 'fat' \u0026 ( 'rat' | 'cat' )",
+   "2: 'a' \u003c-\u003e 'b' \u0026 !'c':*",
+   "3: NULL"
+  ]
+ },
+ "tsrange": {
+  "results": [
+   "write error: client-side error",
+   "write error: client-side error",
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "4: NULL"
+  ]
+ },
+ "tstzmultirange": {
+  "results": [
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "2: NULL"
+  ]
+ },
+ "tstzrange": {
+  "results": [
+   "write error: client-side error",
+   "write error: client-side error",
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "4: NULL"
+  ]
+ },
+ "tsvector": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 'a' 'and' 'ate' 'cat' 'fat' 'mat' 'on' 'rat' 'sat'",
+   "2: 'a':1A,2B,3C,4 'cat':3 'fat':2,11",
+   "3: 'back\\\\slash' 'it''s' 'x y'",
+   "4: ",
+   "5: 'só':1 'üñí':2 '日本語':3",
+   "6: 'a':16383 'b':1",
+   "7: NULL"
+  ]
+ },
+ "uuid": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 00000000-0000-0000-0000-000000000000",
+   "2: bd94ee0b-564f-4088-bf4e-8d5e626caf66",
+   "3: NULL"
+  ]
+ },
+ "varbit": {
+  "results": [
+   "write error: client-side error",
+   "write error: client-side error",
+   "write error: client-side error",
+   "wrote 1"
+  ],
+  "stored": [
+   "4: NULL"
+  ]
+ },
+ "varchar": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: ",
+   "2: abc",
+   "3: héllo",
+   "4: NULL"
+  ]
+ },
+ "xid": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 0",
+   "2: 4294967295",
+   "3: NULL"
+  ]
+ },
+ "xid8": {
+  "results": [
+   "wrote 1",
+   "skipped: integer beyond float64 precision",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: 0",
+   "3: NULL"
+  ]
+ },
+ "xml": {
+  "results": [
+   "wrote 1",
+   "wrote 1",
+   "wrote 1"
+  ],
+  "stored": [
+   "1: \u003cfoo\u003ebar\u003c/foo\u003e",
+   "2: \u003ca x=\"1\"\u003e\u003cb/\u003e\u003c/a\u003e",
+   "3: NULL"
+  ]
+ }
+}
