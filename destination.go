@@ -21,6 +21,7 @@ import (
 	"maps"
 	"math/big"
 	"slices"
+	"strconv"
 	"strings"
 
 	sq "github.com/Masterminds/squirrel"
@@ -156,7 +157,7 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 // hasDriftMetadata reports whether rec carries postgres.schema.drift=true.
 // It is necessary but not sufficient for a record to be a drift marker.
 func hasDriftMetadata(rec opencdc.Record) bool {
-	return rec.Metadata[logrepl.MetadataSchemaDrift] == "true"
+	return rec.Metadata[logrepl.MetadataSchemaDrift] == strconv.FormatBool(true)
 }
 
 // isDriftMarker reports whether rec is exactly what source/logrepl's
