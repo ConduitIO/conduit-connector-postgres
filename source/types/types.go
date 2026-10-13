@@ -68,6 +68,8 @@ func Format(oid uint32, v any) (any, error) {
 //   - tsvector is its canonical text form.
 //   - infinity and -infinity are the strings "infinity" and "-infinity"
 //     (EncodingNative) or an error (EncodingAvro, which cannot represent them).
+//   - the bounds of tsrange, tstzrange, daterange and their multiranges and
+//     arrays get the same treatment (always the native form).
 //   - arrays of the above are normalized element by element.
 //
 // Native values that time.Time cannot serialize to JSON (years before 0000 or
@@ -82,6 +84,12 @@ func FormatFor(enc Encoding, oid uint32, v any) (any, error) {
 	}
 	if kind, ok := temporalArrayKinds[oid]; ok {
 		return formatTemporalArray(enc, kind, v)
+	}
+	if kind, ok := rangeKinds[oid]; ok {
+		return formatRange(kind, v)
+	}
+	if kind, ok := rangeArrayKinds[oid]; ok {
+		return formatRangeArray(kind, v)
 	}
 	switch oid {
 	case pgtype.TSVectorOID:

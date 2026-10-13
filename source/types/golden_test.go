@@ -169,7 +169,7 @@ func TestGoldenAcrossHostZones(t *testing.T) {
 	}
 	for _, zone := range goldenZones {
 		t.Run(strings.ReplaceAll(zone, "/", "_"), func(t *testing.T) {
-			cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run", "^TestGolden(JSON|Avro|Format|TimestampOnly)$", "-test.count=1", "-test.v") //nolint:gosec // re-executes this test binary
+			cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run", "^TestGolden(JSON|Avro|Format|TimestampOnly|Ranges)$", "-test.count=1", "-test.v") //nolint:gosec // re-executes this test binary
 			cmd.Env = append(os.Environ(), "TZ="+zone, goldenChildEnv+"=1")
 			out, err := cmd.CombinedOutput()
 			if err != nil {

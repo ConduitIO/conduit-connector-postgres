@@ -217,6 +217,26 @@ specification:
       row image carries every column, and this connector backfills unchanged TOASTed
       values from it so the payload is always complete.
 
+    ### Value Representation
+
+    Values do not depend on the time zone of the machine running the connector or on the
+    version of the Postgres driver. The same row gives the same record everywhere, for
+    snapshot and CDC.
+
+    | Postgres type | Without an Avro schema | With an Avro schema (`logrepl.withAvroSchema`, the default) |
+    | --- | --- | --- |
+    | `timestamp` | The wall clock stored in Postgres, as a time with no offset information (`2024-01-02T03:04:05Z` for `2024-01-02 03:04:05`). | `local-timestamp-micros` of the same wall clock. |
+    | `timestamptz` | The instant, in UTC (`Z`). | `timestamp-micros`. |
+    | `date` | Midnight UTC of the date. | `date`. |
+    | `tsvector` | Postgres text form, `'a':1 'cat':3A,4B`. | `string`, same text. |
+    | `infinity`, `-infinity` | The strings `infinity` and `-infinity`. | The source halts with error code `postgres.source.temporal_not_representable`. |
+    | Years before 1 BC or after 9999 AD | Postgres text, for example `0044-03-15 12:00:00 BC`. | As above, up to what 64-bit microseconds hold; beyond that the same error. |
+    | Arrays, ranges, multiranges of these | Element and bound values as above. | Not supported by the Avro schema. |
+
+    If the source halts with `postgres.source.temporal_not_representable`, set
+    `logrepl.withAvroSchema` to `false`. Removing the row does not help a change that is
+    already in the WAL, because it is read again after every restart.
+
     ### Limitations
 
     - **`TRUNCATE` is not propagated.** OpenCDC has no truncate operation, so a

@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/matryer/is"
 )
 
@@ -38,6 +39,9 @@ const (
 	// TemporalExtremes are BC dates and years above 9999, which pgx reads but
 	// time.Time cannot serialize to JSON.
 	TemporalExtremes
+	// TemporalRanges are tsrange, tstzrange, daterange and a tstzmultirange,
+	// including an unbounded and an infinite bound. No Avro encoding either.
+	TemporalRanges
 	// TemporalInfinity are infinity and -infinity. They have no Avro encoding.
 	TemporalInfinity
 )
@@ -63,6 +67,8 @@ const (
 	typTimestamp   = "timestamp"
 	typTimestamptz = "timestamptz"
 	typDate        = "date"
+	typTstzrange   = "tstzrange"
+	textInfinity   = "infinity"
 )
 
 var (
@@ -95,6 +101,19 @@ var temporalColumns = []temporalColumn{
 	{"date_arr", "date[]", "ARRAY[date '2024-01-02', date '2024-12-31']", TemporalArrays, []any{date, dateEnd}, nil},
 
 	{"tsv_arr", "tsvector[]", "ARRAY[$q$'a':1 'b'$q$::tsvector, $q$'c':2A$q$::tsvector]", TemporalArrays, nil, nil},
+
+	{"ts_range", "tsrange", "'[2024-01-02 03:04:05.123456,2024-03-10 02:30:00)'", TemporalRanges,
+		pgtype.Range[any]{Lower: tsWall, Upper: tsGapLA, LowerType: pgtype.Inclusive, UpperType: pgtype.Exclusive, Valid: true}, nil},
+	{"tstz_range", typTstzrange, "'[2024-01-02 08:34:05.123456+05:30,2024-01-03 00:00:00+00)'", TemporalRanges,
+		pgtype.Range[any]{Lower: tstzWall, Upper: utc(2024, 1, 3, 0, 0, 0, 0), LowerType: pgtype.Inclusive, UpperType: pgtype.Exclusive, Valid: true}, nil},
+	{"tstz_range_open", typTstzrange, "'[2024-01-02 03:04:05.123456+00,)'", TemporalRanges,
+		pgtype.Range[any]{Lower: tstzWall, LowerType: pgtype.Inclusive, UpperType: pgtype.Unbounded, Valid: true}, nil},
+	{"tstz_range_inf", typTstzrange, "tstzrange('2024-01-02 03:04:05.123456+00', 'infinity')", TemporalRanges,
+		pgtype.Range[any]{Lower: tstzWall, Upper: textInfinity, LowerType: pgtype.Inclusive, UpperType: pgtype.Exclusive, Valid: true}, nil},
+	{"date_range", "daterange", "'[2024-01-02,2024-12-31)'", TemporalRanges,
+		pgtype.Range[any]{Lower: date, Upper: dateEnd, LowerType: pgtype.Inclusive, UpperType: pgtype.Exclusive, Valid: true}, nil},
+	{"tstz_multirange", "tstzmultirange", "'{[2024-01-02 08:34:05.123456+05:30,2024-01-03 00:00:00+00)}'", TemporalRanges,
+		pgtype.Multirange[pgtype.Range[any]]{{Lower: tstzWall, Upper: utc(2024, 1, 3, 0, 0, 0, 0), LowerType: pgtype.Inclusive, UpperType: pgtype.Exclusive, Valid: true}}, nil},
 
 	{"ts_bc", typTimestamp, "'0044-03-15 12:00:00 BC'", TemporalExtremes, "0044-03-15 12:00:00 BC", wallMicros(tsBC)},
 	{"ts_big", typTimestamp, "'12345-06-07 08:09:10.5'", TemporalExtremes, "12345-06-07 08:09:10.5", wallMicros(tsBig)},

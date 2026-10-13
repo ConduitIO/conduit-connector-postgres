@@ -400,6 +400,9 @@ func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values [
 		if fd.Name == f.conf.Key {
 			k, err := types.FormatFor(types.EncodingFor(f.conf.WithAvroSchema), fd.DataTypeOID, values[i])
 			if err != nil {
+				if located, ok := types.LocateTemporal(err, f.conf.Table, fd.Name); ok {
+					return key, payload, located
+				}
 				return key, payload, fmt.Errorf("failed to format key %q: %w", f.conf.Key, err)
 			}
 
@@ -408,6 +411,9 @@ func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values [
 
 		v, err := types.FormatFor(types.EncodingFor(f.conf.WithAvroSchema), fd.DataTypeOID, values[i])
 		if err != nil {
+			if located, ok := types.LocateTemporal(err, f.conf.Table, fd.Name); ok {
+				return key, payload, located
+			}
 			return key, payload, fmt.Errorf("failed to format payload field %q: %w", fd.Name, err)
 		}
 		payload[fd.Name] = v

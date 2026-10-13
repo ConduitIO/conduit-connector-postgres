@@ -15,6 +15,7 @@
 package types
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -22,6 +23,52 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+// ErrorCodeTemporalNotRepresentable prefixes the error returned when a date or
+// timestamp value (infinity, or a year beyond what Avro microseconds can hold)
+// has to be emitted under an Avro schema, whose logical types cannot hold it.
+// Like the other connector codes it is embedded at the start of the message.
+const ErrorCodeTemporalNotRepresentable = "postgres.source.temporal_not_representable"
+
+// TemporalNotRepresentableError reports a date, timestamp or timestamptz value
+// that the Avro schema cannot represent. Value is the Postgres text form.
+// Table and Column are filled in by the caller that knows them, see
+// LocateTemporal.
+type TemporalNotRepresentableError struct {
+	Table  string
+	Column string
+	Type   string
+	Value  string
+}
+
+func (e *TemporalNotRepresentableError) Error() string {
+	where := ""
+	switch {
+	case e.Table != "" && e.Column != "":
+		where = fmt.Sprintf(" in column %q of table %q", e.Column, e.Table)
+	case e.Column != "":
+		where = fmt.Sprintf(" in column %q", e.Column)
+	}
+	return fmt.Sprintf("%s: %s value %q%s cannot be encoded in an Avro schema, "+
+		"so the source halts instead of changing it. Fix: set logrepl.withAvroSchema to false "+
+		"to receive it as text. Removing the row does not help a change that is already in the "+
+		"WAL: it is read again after every restart",
+		ErrorCodeTemporalNotRepresentable, e.Type, e.Value, where)
+}
+
+// LocateTemporal returns a copy of err with its table and column set, and
+// true, when err is or wraps a *TemporalNotRepresentableError. The copy is
+// returned unwrapped so the error code stays at the start of the message. For
+// any other error it returns err and false.
+func LocateTemporal(err error, table, column string) (error, bool) { //nolint:revive // the error is the result, ok says whether it was located
+	var tne *TemporalNotRepresentableError
+	if !errors.As(err, &tne) {
+		return err, false
+	}
+	located := *tne
+	located.Table, located.Column = table, column
+	return &located, true
+}
 
 type temporalKind int
 
@@ -104,11 +151,10 @@ func formatInfinity(enc Encoding, kind temporalKind, m pgtype.InfinityModifier) 
 	if enc == EncodingAvro {
 		// Avro's date and timestamp logical types have no infinity. The Avro
 		// encoder rejects pgx's InfinityModifier with an error that offers no
-		// way out; fail here with one (the caller adds the column name)
-		// instead of inventing a sentinel value (Invariant 6: no silent coercion).
-		return nil, fmt.Errorf("%s %s cannot be represented in an Avro schema; "+
-			"set logrepl.withAvroSchema to false, or remove the value from the table",
-			kind, m)
+		// way out; fail here with one instead of inventing a sentinel value
+		// (Invariant 6: no silent coercion). Before this, date infinity under
+		// Avro was written as a day number (1970-01-02 / 1969-12-31).
+		return nil, &TemporalNotRepresentableError{Type: kind.String(), Value: m.String()}
 	}
 	switch m {
 	case pgtype.Infinity:
@@ -158,8 +204,7 @@ func wallClockMicros(t time.Time) (int64, error) {
 	const maxSec = math.MaxInt64/1_000_000 - 1
 	sec := t.Unix()
 	if sec > maxSec || sec < -maxSec {
-		return 0, fmt.Errorf("%s is outside of the range an Avro microsecond timestamp can hold",
-			pgText(kindTimestamp, t))
+		return 0, &TemporalNotRepresentableError{Type: "timestamp", Value: pgText(kindTimestamp, t)}
 	}
 	return sec*1e6 + int64(t.Nanosecond())/1e3, nil
 }
@@ -225,4 +270,74 @@ func mapArray(v any, name string, f func(any) (any, error)) (any, error) {
 	default:
 		return nil, unexpectedType(name, v)
 	}
+}
+
+// Range types over the temporal types. pgx decodes a range to
+// pgtype.Range[any] and a multirange to pgtype.Multirange[pgtype.Range[any]],
+// whose bounds are the same time.Time or InfinityModifier values as the
+// scalars, so they get the same host-zone dependence (tstzrange bounds in
+// time.Local since pgx 5.11 over CDC).
+var (
+	rangeKinds = map[uint32]temporalKind{
+		pgtype.TsrangeOID:        kindTimestamp,
+		pgtype.TstzrangeOID:      kindTimestamptz,
+		pgtype.DaterangeOID:      kindDate,
+		pgtype.TsmultirangeOID:   kindTimestamp,
+		pgtype.TstzmultirangeOID: kindTimestamptz,
+		pgtype.DatemultirangeOID: kindDate,
+	}
+	rangeArrayKinds = map[uint32]temporalKind{
+		pgtype.TsrangeArrayOID:        kindTimestamp,
+		pgtype.TstzrangeArrayOID:      kindTimestamptz,
+		pgtype.DaterangeArrayOID:      kindDate,
+		pgtype.TsmultirangeArrayOID:   kindTimestamp,
+		pgtype.TstzmultirangeArrayOID: kindTimestamptz,
+		pgtype.DatemultirangeArrayOID: kindDate,
+	}
+)
+
+// formatRange normalizes the bounds of a range or multirange. Ranges cannot be
+// Avro-encoded (the schema extractor has no range type), so the bounds always
+// get the native form. Unbounded and empty ranges carry no bound value and are
+// returned as they are.
+func formatRange(kind temporalKind, v any) (any, error) {
+	switch r := v.(type) {
+	case nil:
+		return nil, nil
+	case pgtype.Range[any]:
+		return formatRangeBounds(kind, r)
+	case pgtype.Multirange[pgtype.Range[any]]:
+		out := make(pgtype.Multirange[pgtype.Range[any]], len(r))
+		for i := range r {
+			b, err := formatRangeBounds(kind, r[i])
+			if err != nil {
+				return nil, fmt.Errorf("range %d: %w", i, err)
+			}
+			out[i] = b
+		}
+		return out, nil
+	default:
+		return nil, unexpectedType(kind.String()+" range", v)
+	}
+}
+
+func formatRangeBounds(kind temporalKind, r pgtype.Range[any]) (pgtype.Range[any], error) {
+	var err error
+	if r.Lower != nil {
+		if r.Lower, err = formatTemporal(EncodingNative, kind, r.Lower); err != nil {
+			return r, fmt.Errorf("lower bound: %w", err)
+		}
+	}
+	if r.Upper != nil {
+		if r.Upper, err = formatTemporal(EncodingNative, kind, r.Upper); err != nil {
+			return r, fmt.Errorf("upper bound: %w", err)
+		}
+	}
+	return r, nil
+}
+
+func formatRangeArray(kind temporalKind, v any) (any, error) {
+	return mapArray(v, kind.String()+" range[]", func(e any) (any, error) {
+		return formatRange(kind, e)
+	})
 }

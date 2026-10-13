@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/matryer/is"
 )
 
@@ -211,4 +212,34 @@ func Test_SchemaDiff_String_IsStable(t *testing.T) {
 	}
 	is.True(strings.Contains(first, "public.t"))
 	is.True(strings.Contains(first, "relation 9"))
+}
+
+// Test_SchemaDiff_TSVectorEvolve pins how the evolve policy treats a column
+// that becomes or stops being a tsvector. tsvector is emitted as its text form
+// and maps to the Avro string, the same as text and varchar, so changing
+// between them leaves the Avro schema as it was and evolve admits it. Any
+// change to a type with a different Avro shape still blocks.
+func Test_SchemaDiff_TSVectorEvolve(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		from, to     uint32
+		incompatible bool
+	}{
+		{"text to tsvector", pgtype.TextOID, pgtype.TSVectorOID, false},
+		{"varchar to tsvector", pgtype.VarcharOID, pgtype.TSVectorOID, false},
+		{"tsvector to text", pgtype.TSVectorOID, pgtype.TextOID, false},
+		{"tsvector to varchar", pgtype.TSVectorOID, pgtype.VarcharOID, false},
+		{"tsvector to int4", pgtype.TSVectorOID, pgtype.Int4OID, true},
+		{"int8 to tsvector", pgtype.Int8OID, pgtype.TSVectorOID, true},
+		{"tsvector to bytea", pgtype.TSVectorOID, pgtype.ByteaOID, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			rs := NewRelationSet()
+			rs.Update(rel(1, col("id", pgtype.Int8OID, -1), col("c", tc.from, -1)))
+			diff := rs.Update(rel(1, col("id", pgtype.Int8OID, -1), col("c", tc.to, -1)))
+			is.True(diff.HasDrift())
+			is.Equal(diff.IsIncompatible(), tc.incompatible)
+		})
+	}
 }

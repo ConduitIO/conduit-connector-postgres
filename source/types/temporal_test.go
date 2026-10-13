@@ -15,6 +15,7 @@
 package types_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -198,4 +199,78 @@ func mustLoc(t *testing.T, name string) *time.Location {
 		t.Fatal(err)
 	}
 	return loc
+}
+
+// TestGoldenRanges decodes ranges from the text the walsender prints (the CDC
+// path) and requires the bounds to be zone independent: tstzrange bounds are
+// UTC (pgx 5.11 decodes them in time.Local), tsrange and daterange bounds keep
+// their wall clock, infinite bounds are text.
+func TestGoldenRanges(t *testing.T) {
+	utcBound := func(y int, m time.Month, d, h, mi, s, ns int) time.Time {
+		return time.Date(y, m, d, h, mi, s, ns, time.UTC)
+	}
+	strictTime := cmp.Comparer(func(x, y time.Time) bool {
+		return x.Equal(y) && x.Location() == time.UTC && y.Location() == time.UTC
+	})
+	rng := func(lo, hi any, lt, ut pgtype.BoundType) pgtype.Range[any] {
+		return pgtype.Range[any]{Lower: lo, Upper: hi, LowerType: lt, UpperType: ut, Valid: true}
+	}
+
+	for _, tc := range []struct {
+		name string
+		oid  uint32
+		text string
+		want any
+	}{
+		{"tstzrange", pgtype.TstzrangeOID, `["2024-01-02 03:04:05.123456+00","2024-01-02 08:34:05+05:30")`,
+			rng(utcBound(2024, 1, 2, 3, 4, 5, 123456000), utcBound(2024, 1, 2, 3, 4, 5, 0), pgtype.Inclusive, pgtype.Exclusive)},
+		{"tstzrange infinite upper", pgtype.TstzrangeOID, `["2024-01-02 03:04:05+00",infinity)`,
+			rng(utcBound(2024, 1, 2, 3, 4, 5, 0), "infinity", pgtype.Inclusive, pgtype.Exclusive)},
+		{"tstzrange unbounded", pgtype.TstzrangeOID, `["2024-01-02 03:04:05+00",)`,
+			rng(utcBound(2024, 1, 2, 3, 4, 5, 0), nil, pgtype.Inclusive, pgtype.Unbounded)},
+		{"tsrange keeps the wall clock", pgtype.TsrangeOID, `["2024-03-10 02:30:00","2024-09-29 02:30:00")`,
+			rng(utcBound(2024, 3, 10, 2, 30, 0, 0), utcBound(2024, 9, 29, 2, 30, 0, 0), pgtype.Inclusive, pgtype.Exclusive)},
+		{"daterange", pgtype.DaterangeOID, `[2024-01-02,2024-12-31)`,
+			rng(utcBound(2024, 1, 2, 0, 0, 0, 0), utcBound(2024, 12, 31, 0, 0, 0, 0), pgtype.Inclusive, pgtype.Exclusive)},
+		{"tstzrange BC bound is text", pgtype.TstzrangeOID, `["0044-03-15 12:00:00+00 BC","2024-01-02 03:04:05+00")`,
+			rng("0044-03-15 12:00:00+00 BC", utcBound(2024, 1, 2, 3, 4, 5, 0), pgtype.Inclusive, pgtype.Exclusive)},
+		{"tstzmultirange", pgtype.TstzmultirangeOID, `{["2024-01-02 03:04:05+00","2024-01-03 00:00:00+00"),["2024-02-01 00:00:00+00",)}`,
+			pgtype.Multirange[pgtype.Range[any]]{
+				rng(utcBound(2024, 1, 2, 3, 4, 5, 0), utcBound(2024, 1, 3, 0, 0, 0, 0), pgtype.Inclusive, pgtype.Exclusive),
+				rng(utcBound(2024, 2, 1, 0, 0, 0, 0), nil, pgtype.Inclusive, pgtype.Unbounded),
+			}},
+		{"tstzrange[]", pgtype.TstzrangeArrayOID, `{"[\"2024-01-02 03:04:05+00\",\"2024-01-03 00:00:00+00\")"}`,
+			[]any{rng(utcBound(2024, 1, 2, 3, 4, 5, 0), utcBound(2024, 1, 3, 0, 0, 0, 0), pgtype.Inclusive, pgtype.Exclusive)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			got, err := types.Format(tc.oid, decodeText(t, tc.oid, tc.text))
+			is.NoErr(err)
+			is.Equal("", cmp.Diff(tc.want, got, strictTime))
+		})
+	}
+}
+
+func TestTemporalNotRepresentableError(t *testing.T) {
+	is := is.New(t)
+
+	_, err := types.FormatFor(types.EncodingAvro, pgtype.DateOID, pgtype.Infinity)
+	located, ok := types.LocateTemporal(err, "orders", "shipped_on")
+	is.True(ok)
+	msg := located.Error()
+	is.True(strings.HasPrefix(msg, types.ErrorCodeTemporalNotRepresentable+": "))
+	is.Equal(types.ErrorCodeTemporalNotRepresentable, "postgres.source.temporal_not_representable")
+	for _, want := range []string{`"shipped_on"`, `"orders"`, "infinity", "logrepl.withAvroSchema to false", "WAL"} {
+		is.True(strings.Contains(msg, want)) // msg: want
+	}
+	is.True(!strings.Contains(msg, "DLQ"))
+
+	// out-of-range microseconds carry the same code
+	_, err = types.FormatFor(types.EncodingAvro, pgtype.TimestampOID, time.Date(294276, 1, 1, 0, 0, 0, 0, time.UTC))
+	var tne *types.TemporalNotRepresentableError
+	is.True(errors.As(err, &tne))
+
+	// other errors are not touched
+	_, ok = types.LocateTemporal(errors.New("boom"), "t", "c")
+	is.True(!ok)
 }
