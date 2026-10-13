@@ -152,7 +152,7 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 	ctx = context.WithoutCancel(ctx)
 
 	b := &pgx.Batch{}
-	var skipped int
+	var skipped, strayDrift int
 	for _, rec := range recs {
 		// Schema-drift markers (postgres.schema.drift, source/logrepl) are
 		// keyless, payload-less OperationCreate records that carry the approval
@@ -162,12 +162,20 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 		// pins an explicit no-op: never a silent wrong row. The record is still
 		// acked (Write returns the full count), so the marker's position
 		// checkpoint flows end to end.
-		if rec.Metadata[logrepl.MetadataSchemaDrift] == "true" {
+		//
+		// Invariant 3: only a record shaped exactly like the source's marker
+		// may be skipped. The metadata key alone is not proof: it is plain,
+		// user-reachable metadata, and acking a keyed, payload-bearing record
+		// without writing it is silent data loss.
+		if isDriftMarker(rec) {
 			sdk.Logger(ctx).Debug().
 				Str("table", rec.Metadata[logrepl.MetadataSchemaDriftTable]).
 				Msg("skipping schema-drift marker record at the destination (FM6 no-op)")
 			skipped++
 			continue
+		}
+		if hasDriftMetadata(rec) {
+			strayDrift++
 		}
 		var err error
 		rec, err = d.ensureStructuredData(rec)
@@ -191,6 +199,15 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 		}
 	}
 
+	if strayDrift > 0 {
+		// Once per batch, not per record: a processor that stamps the key on
+		// every record would otherwise flood the log.
+		sdk.Logger(ctx).Warn().
+			Int("records", strayDrift).
+			Str("metadata_key", logrepl.MetadataSchemaDrift).
+			Msg("records carry the schema-drift metadata but are not drift markers (they have a key, a payload or a non-create operation); writing them as regular records")
+	}
+
 	br := d.conn.SendBatch(ctx, b)
 
 	for i := 0; i < len(recs)-skipped; i++ {
@@ -211,6 +228,40 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 		return 0, fmt.Errorf("failed to commit batch: %w", err)
 	}
 	return len(recs), nil
+}
+
+// hasDriftMetadata reports whether rec carries postgres.schema.drift=true.
+// It is necessary but not sufficient for a record to be a drift marker.
+func hasDriftMetadata(rec opencdc.Record) bool {
+	return rec.Metadata[logrepl.MetadataSchemaDrift] == "true"
+}
+
+// isDriftMarker reports whether rec is exactly what source/logrepl's
+// emitDriftMarker produces: an OperationCreate with the postgres.schema.drift
+// metadata set to "true", no key, and no payload. Anything else carrying the
+// metadata is a real record and must be written.
+func isDriftMarker(rec opencdc.Record) bool {
+	return hasDriftMetadata(rec) &&
+		rec.Operation == opencdc.OperationCreate &&
+		isEmptyData(rec.Key) &&
+		isEmptyData(rec.Payload.Before) &&
+		isEmptyData(rec.Payload.After)
+}
+
+// isEmptyData reports whether d carries no bytes. A nil interface, an empty
+// RawData and an empty StructuredData all count: the marker is built with nil,
+// but an intermediate hop may normalize nil to an empty value.
+func isEmptyData(d opencdc.Data) bool {
+	switch v := d.(type) {
+	case nil:
+		return true
+	case opencdc.RawData:
+		return len(v) == 0
+	case opencdc.StructuredData:
+		return len(v) == 0
+	default:
+		return false
+	}
 }
 
 // Teardown stops an in-flight Write (which then returns an error and acks
