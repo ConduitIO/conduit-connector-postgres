@@ -596,7 +596,7 @@ itself survives a crash. The file mode is 0600. It records:
 | 4 | `slot_created` | C |
 | 5 | `waiting` | Debezium's committed Lc ≥ C, and S13's proof |
 | 6 | `config_saved` | the saved Debezium config, re-validated (S5 item 9) |
-| 7 | `stopping` | before the stop call |
+| 7 | `stopping` | before the stop call; `debezium.stopMethod` (`stop` or `delete`) |
 | 8 | `stopped` | the final O, re-checked; F_stop and R_stop |
 | 9 | `pipeline_written` | — |
 | 10 | `starting` | before the start call |
@@ -607,7 +607,8 @@ itself survives a crash. The file mode is 0600. It records:
 or a timeout can leave the journal at step 7 whatever happened to Debezium. A
 re-run of `--cutover` finishes the observation first:
 
-- **Debezium is STOPPED or deleted:** read the committed O, and F_stop and
+- **Debezium is exactly `STOPPED`, or 404 with `debezium.stopMethod:
+  delete` (D11):** read the committed O, and F_stop and
   R_stop from Debezium's slot, and journal step 8; then apply the step 8
   rules, including S13's `identity_ahead` warning. If Debezium's slot is
   missing, the re-run stops with `identity_mismatch`.
@@ -932,7 +933,7 @@ fails closed with `rollback_check_state_unmapped`.
 | Conduit `GET /v1/pipelines/{id}` | `STATUS_STOPPED` with `stoppedReason` `STOPPED_REASON_USER` | stopped |
 | Conduit | 404 | absent |
 | Conduit | `STATUS_RUNNING` | running |
-| Conduit | `STATUS_DEGRADED` | stopped, **(round 3)** before the R7 snapshot: the lifecycle sets it only after a fatal error or a failed recovery (`pkg/lifecycle/service.go`, around L1471 and L1521), and nothing but a user Start runs the pipeline again; Stop on it returns `pipeline.not_running` |
+| Conduit | `STATUS_DEGRADED` | stopped **(round 3)**, before and after the R7 snapshot. The lifecycle sets it only after a fatal error or a failed recovery (`pkg/lifecycle/service.go`, around L1471 and L1521), and only a user Start runs the pipeline again; Stop on it returns `pipeline.not_running` |
 | Conduit | `STATUS_RECOVERING`, or `STATUS_STOPPED` with `STOPPED_REASON_SYSTEM` or `STOPPED_REASON_UNSPECIFIED` | `unsafe` (`rollback_check_pipeline_state`): the lifecycle restarts these by itself, so they are not stopped for R7 |
 | Conduit | unreachable, or any other answer | `unsafe` (`rollback_check_conduit_unreachable`) |
 
@@ -948,11 +949,11 @@ max(final Lc, F_stop).
 | R4 | Before Debezium is restarted: its slot has `confirmed_flush_lsn` ≤ B and `restart_lsn` ≤ B. A recreated or consumed slot has `confirmed_flush_lsn` past B; detection rests on that column, and `restart_lsn` alone proves nothing. **At step 7** B comes from the F_stop observed by the check itself, which would make R4 circular, so there the check requires F_stop ≤ Lc instead. A slot recreated after the stop starts strictly above the WAL position at its creation, which is past Lc, so it cannot pass; an ungraceful stop that flushed past Lc is refused too, and the operator goes forward. | `rollback_check_slot_moved` |
 | R5 | If F_stop > final Lc: Conduit's durable progress P ≥ F_stop. P is F_c, Conduit's slot's `confirmed_flush_lsn`; when Conduit's slot is missing (degraded), P is Kc, the commit LSN of the pipeline's persisted position (the checkpoint's LSN when it is keyless), taken from the R7 snapshot in the watch log once the pipeline is deleted. With Conduit's slot missing and no R7 snapshot, R5 fails closed. **Checked in every row that can lead to `ready_to_drop`, after the restart as well as before it.** | `rollback_check_conduit_behind` |
 | R6 | Before the restart only: Debezium's config passes S5 item 9 and `PUT /connector-plugins/{class}/config/validate`. On a Kafka 3.5+ worker this is the live config of the stopped connector; on an older worker, where the connector was deleted, it is the **saved** config from the journal. It is not run once Debezium is running: the validation's behaviour against a running connector holding its slot is unverified (pre-merge gate). | `rollback_check_config_unsafe`, with the S5 code as the cause |
-| R7 | Never two writers: Conduit's pipeline is stopped (`STATUS_STOPPED` with `STOPPED_REASON_USER`, or `STATUS_DEGRADED`) or absent before Debezium runs. When the watch first sees the pipeline stopped, it records the R7 snapshot in its log: pipeline id, position K, Kc and F_c. **(Round 3)** After the snapshot, two things are terminal `two_writers` whatever the API says: any pipeline state other than stopped or absent (only a user Start leaves those), and, as a backstop that does not depend on the Conduit API, Conduit's slot becoming `active` or its `confirmed_flush_lsn` changing from the snapshot's F_c. | `rollback_check_two_writers` |
+| R7 | Never two writers: Conduit's pipeline is stopped (`STATUS_STOPPED` with `STOPPED_REASON_USER`, or `STATUS_DEGRADED`) or absent before Debezium runs. When the watch first sees it so, it records the **R7 snapshot**: always the **baseline** (Conduit's slot's `confirmed_flush_lsn` F_c and `active = false`, or "slot missing"), and, when the pipeline exists, its id, position K and Kc. **(Round 3)** After the snapshot, two things are terminal `two_writers` whatever the API says: any pipeline state other than stopped or absent (only a user Start leaves those), and, as a backstop that does not depend on the Conduit API, Conduit's slot becoming `active` or its `confirmed_flush_lsn` changing from the baseline. The baseline exists even with no pipeline, so the backstop always has a reference. | `rollback_check_two_writers` |
 | R8 | After the restart, continuity holds (S15): the watch log covers the restart, the first `active` sighting is ≤ B, every sighting is a `walsender`, and every change of walsender passed the equality rule or the same-walsender rule. | `rollback_check_continuity_unproven` |
 | R9 | Before the drop: Debezium's slot `confirmed_flush_lsn` ≥ F_c (skipped when Conduit's slot is missing), and the pipeline is **absent**. While it still exists (stopped), the verdict is `ready_to_delete_pipeline`; the slot drop is never offered before the delete (S16). **(Round 3)** Both `ready_to_delete_pipeline` and `ready_to_drop` also require that the latest sighting of the journalled Debezium slot is `active` under an accepted walsender (R8): a slot Debezium has stopped reading cannot prove it is still Debezium's. | `rollback_check_not_caught_up` (a `waiting` verdict, not a failure) |
 | R10 | Once the watch log shows Debezium running after the stop, Debezium must not be stopped again, and **(round 3)** on a worker where the cutover only stopped the connector (journalled `debezium.stopMethod: stop`), a 404 after the restart means it was deleted. A restart followed by a new stop or a delete ends the attempt: going back cannot be resumed from there. | `rollback_check_restart_interrupted` |
-| R11 | **(Round 3)** After the restart, on every poll, Debezium's live config (`GET /connectors/{name}/config`) still names the journalled slot (`slot.name`), publication (`publication.name`), database (`database.dbname`) and plugin (`plugin.name`). A config change that points Debezium at another slot would leave the journalled slot inactive while R9 still held, and the drop would lose data. | `rollback_check_slot_moved` |
+| R11 | **(Round 3; before the restart too since the confirmation review)** On every check before the restart and on every poll after it, Debezium's config (`GET /connectors/{name}/config`) still names the journalled slot (`slot.name`), publication (`publication.name`), database (`database.dbname`) and plugin (`plugin.name`). Before the restart that is the stopped connector's live config on a Kafka 3.5+ worker, so an edit made while it is stopped is caught before the irreversible restart; on an older worker, where the cutover deleted the connector, it is the journal's `debeziumConfig`, and the runbook re-creates the connector from it unmodified, after which R11 checks the live config. After the restart, a config change that points Debezium at another slot would leave the journalled slot inactive while R9 still held, and the drop would lose data. | `rollback_check_slot_moved` |
 
 All codes are `migrate.kafka_connect.*`.
 
@@ -970,6 +971,13 @@ own transaction, at Kc ≥ F_stop, is not skipped by Debezium. A keyless
 checkpoint's LSN m bounds the same way (#3033: every transaction committing
 before m was delivered before the message).
 
+**What "recorded" means.** At step 7, `ready_to_restart_debezium` from a
+running watch means its log holds the stopped sighting (with F_stop and
+R_stop) and the R7 snapshot. At step 8 or later the stopped values come from
+the journal, so it means the log holds the R7 snapshot: the baseline, plus
+the pipeline's id, K and Kc when a pipeline exists. A one-shot check never
+records anything; the restart is gated on the running watch's own verdict.
+
 **Verdicts.** The check works out the state from the journal, the watch
 log, Kafka Connect, Conduit and Postgres. Each row lists the checks it runs;
 any failed check makes the verdict `unsafe` with that check's code, and any
@@ -980,19 +988,20 @@ combination not in the table is `unsafe` (`rollback_check_state_unmapped`).
 | step ≤ 6 | running | absent (it is written only at step 9) | R1–R3 | `ready_to_drop`: drop Conduit's slot and publication (reset before the stop) |
 | step ≤ 6 | stopped or 404 | any | — | `unsafe` (`state_unmapped`): the cutover never stopped Debezium, so someone else did; restart it deliberately and check again |
 | step 7, no stopped sighting logged | running | absent | R1 | `unsafe` (`stop_incomplete`): finish the stop |
-| step 7, no stopped sighting logged | stopped | absent | R1–R4 (at-step-7 form), R5, R6 | `ready_to_restart_debezium`; the watch records F_stop, R_stop and the stopped sighting when it starts |
+| step 7, no stopped sighting logged | stopped | absent | R1–R4 (at-step-7 form), R5–R7, R11 | `ready_to_restart_debezium`; the watch records F_stop, R_stop, the stopped sighting and the R7 baseline when it starts |
+| step 7, stopped sighting logged, no restart logged | stopped | absent | R1–R7, R11 | `ready_to_restart_debezium` |
 | step 7, stopped sighting logged | running | absent | R1–R5, R7–R11 | as "step ≥ 8, running": Debezium was restarted, not left mid-stop |
 | step 7 or ≥ 8, restart logged | stopped | any | R10 | `unsafe` (`restart_interrupted`): go forward (below) |
-| step ≥ 8, no restart logged | stopped | running | R1–R6 | `ready_to_stop_conduit` |
-| step ≥ 8, no restart logged | stopped | stopped or absent | R1–R7 | `ready_to_restart_debezium`: start `--watch`, then restart Debezium |
+| step ≥ 8, no restart logged | stopped | running | R1–R6, R11 | `ready_to_stop_conduit` |
+| step ≥ 8, no restart logged | stopped | stopped or absent | R1–R7, R11 | `ready_to_restart_debezium`: start `--watch`, then restart Debezium |
 | step ≥ 8 | running | stopped | R1–R5, R7–R11 | `waiting` until Debezium's slot passes F_c, then `ready_to_delete_pipeline` |
 | step ≥ 8 | running | absent | R1–R5, R7–R11 | `waiting` until R9 holds, then `ready_to_drop` |
 | step ≥ 8 | running | running | R7 | `unsafe` (`two_writers`) |
 | any | `UNASSIGNED` | any | — | `waiting` (`connector_state`) |
 | any | `PAUSED`, `FAILED`, `RESTARTING` or unknown | any | — | `unsafe` (`connector_state`) |
 | any, before the R7 snapshot | any | `RECOVERING`, or stopped by the system | — | `unsafe` (`pipeline_state`), transient |
-| any, after the R7 snapshot | any | anything but stopped (`STATUS_STOPPED` by the user, or `DEGRADED`) or absent | — | `unsafe` (`two_writers`), terminal: someone started it |
-| any | any | Conduit unreachable | — | `unsafe` (`conduit_unreachable`); inside `--watch`, `waiting` (transient) |
+| any, after the R7 snapshot | any | a pipeline state other than stopped (`STATUS_STOPPED` by the user, or `DEGRADED`) or absent | — | `unsafe` (`two_writers`), terminal: someone started it |
+| any | any | Conduit unreachable | — | `unsafe` (`conduit_unreachable`); inside `--watch`, `waiting` (transient). An unreachable API is not a pipeline state, so this row wins over the two above; the API-independent backstop (Conduit's slot against the baseline) still runs |
 
 Inside `--watch`, every transient finding in this table (`connector_state`,
 `pipeline_state`, `conduit_unreachable`, `privileges`, `offset_unreadable`)
@@ -1070,8 +1079,11 @@ only at `ready_to_drop`, a terminal `unsafe`, or its timeout. The watch:
 shell wrote. A one-shot check reads the verdict the watch recorded in its log
 **and** the current state, and returns `ready_to_drop` only when both say so:
 the watch's recorded verdict is `ready_to_drop`, no terminal finding is
-recorded, and a fresh sighting now passes the continuity rules against the
-log's last entry, with R5 and R9 re-checked. Before printing `ready_to_drop`
+recorded, and a fresh sighting now shows the **same identity tuple** as the
+log's last entry (the gap between the watch's exit and this check accepts
+nothing else), with R5, R9 and R11 re-checked. A Debezium reconnect in that
+window therefore ends the attempt; the operator runs the final check
+straight after the watch exits. Before printing `ready_to_drop`
 it also checks that the Conduit slot and publication it names equal the
 journal's `.slot.name` and `.publication.name`, and that neither equals
 Debezium's slot or publication; a mismatch is `state_unmapped`. The verdict
@@ -1080,10 +1092,11 @@ prints both names so the operator can compare them before the drop.
 **Resuming the watch is specified.** A watch that is killed, or that times
 out, leaves its log, including any terminal finding, which stays in force. A
 new `--watch` first re-checks R8 over the **whole** log (every recorded
-sighting, in order), then judges its own first sighting as a change of
-walsender against the log's last entry (S15: the same-walsender rule, else
-the equality rule), whether or not Debezium reconnected in between. A gap in
-observation is treated exactly like an inactive gap. A restart with no watch
+sighting, in order), then judges its own first sighting against the log's
+last entry under the gap rule (S15): it must show the same identity tuple.
+If Debezium reconnected while nobody watched, that is
+`continuity_unproven`. Before the restart there is no walsender yet, so a
+fresh watch simply starts from the baseline (R7). A restart with no watch
 log at all cannot be proven, and the verdict is `unsafe`
 (`rollback_check_continuity_unproven`, terminal). While the watch log exists,
 `--cutover` refuses with `migrate.kafka_connect.rollback_in_progress` (S9).
@@ -1125,16 +1138,16 @@ which still holds everything since F_c:
 1. **Stop Debezium again** (`PUT /connectors/{name}/stop`, or `DELETE` on an
    older worker) and wait for `STOPPED` or 404. This also ends the second
    writer.
-2. **`conduit migrate kafka-connect --check-rollback --abandon --reason
-   "<text>" [--json]`.** It is read-only apart from the watch log. It
-   requires Debezium exactly `STOPPED`, or 404 when the cutover deleted it
-   (`debezium.stopMethod: delete`); any other state, `UNASSIGNED` included,
-   is refused with `connector_running` (D11's single definition). It takes the log's lock and appends the reason, the
-   current F_c and both slots' retained WAL
+2. **`conduit migrate kafka-connect --check-rollback --abandon --reason "<text>"
+   [--json]`.** It is read-only apart from the watch log. It requires Debezium
+   exactly `STOPPED`, or 404 when the cutover deleted it (`debezium.stopMethod:
+   delete`); any other state, `UNASSIGNED` included, is refused with
+   `connector_running` (D11's single definition). It takes the log's lock and
+   appends the reason, the current F_c and both slots' retained WAL
    (`pg_current_wal_lsn() - restart_lsn`). Then it archives the log, with its
-   recorded verdict and findings, as
-   `<pipeline>.rollback-watch.abandoned.<UTC timestamp>.json` (fsync, rename, directory
-   fsync). That clears `rollback_in_progress`.
+   recorded verdict and findings, as `<pipeline>.rollback-watch.abandoned.<UTC
+   timestamp>.json` (fsync, rename, directory fsync). That clears
+   `rollback_in_progress`.
 3. **Re-run `--cutover`.** The journal is at step 8 or later, so S9's
    abandon table applies:
    - the pipeline exists with a position: the re-run first verifies its
@@ -1286,8 +1299,13 @@ runbook and asserting the verdict, then zero loss after the manual steps:
 - **(final verification)** the normal path on a busy database with a
   file-provisioned pipeline: the watch runs through the delete and its
   engine restart (well over `offset.flush.interval.ms`) and ends at
-  `ready_to_drop`; and a one-shot check after a watch gap accepts the same
-  walsender (same `active_pid` and `backend_start`);
+  `ready_to_drop`; a one-shot check after a watch gap accepts only the same
+  identity tuple (`active_pid`, `backend_start`, `query_start`), and a
+  Debezium reconnect inside the gap is `continuity_unproven`; a slot switch
+  A → X → A inside a gap is `continuity_unproven`; an edit of the stopped
+  connector's config before the restart is `slot_moved` (R11); the R7
+  baseline is recorded with no pipeline, and Conduit's slot turning active
+  then is `two_writers`;
 - **(final verification)** going forward after each failed post-restart
   verdict (`slot_moved`, `continuity_unproven`, `conduit_behind` with
   Debezium running, `restart_interrupted`): stop Debezium, `--abandon`,
@@ -1373,7 +1391,7 @@ changing nothing:
 
 | Precondition | Refusal |
 | --- | --- |
-| Debezium is STOPPED or deleted (the journal is at step 8 or later) | `connector_running` |
+| Debezium is exactly `STOPPED`, or 404 with `debezium.stopMethod: delete` (D11), and the journal is at step 8 or later | `connector_running` |
 | Conduit's slot exists on `current_database()` | `postgres.logrepl.slot_missing` |
 | its `wal_status` is not `lost` and it has no `invalidation_reason` | `postgres.logrepl.slot_invalidated` |
 | its plugin is `pgoutput` | `postgres.logrepl.slot_plugin` |
@@ -1699,11 +1717,30 @@ position across pids:
   "Privileges").
 - **The first sighting** with `active = true` must show
   `confirmed_flush_lsn` ≤ B = max(final Lc, F_stop).
-- **A change of walsender** (a new `active_pid` or `backend_start`, an
-  inactive gap, or a gap in observation such as a restarted watch) is
-  accepted only when the new walsender's first sighting shows
-  `confirmed_flush_lsn` **equal** to F_last, the last value seen before the
-  change.
+- **Observation gaps (confirmation review, DeVaris decision).** An
+  observation gap is any interval between two sightings that one running
+  watch did not cover with consecutive polls: the watch was killed or timed
+  out and a new one started, a one-shot check runs after the watch exited,
+  or two of a watch's polls were more than 2 s apart (a stalled process).
+  **Across a gap, only the same-walsender rule (below) is accepted;** any
+  change of walsender inside a gap is `continuity_unproven`. The reason: a
+  slot switch and a switch back inside a gap (Debezium's config moved from
+  slot A to X and back to A, across an offset flush) would end on a
+  reattach to A that the equality rule accepts and R11 sees as A again,
+  while the changes Debezium read from X never reached A's history. The
+  cost: a killed watch can no longer resume across a Debezium reconnect. If
+  the watch dies before the restart, the operator starts a fresh `--watch`
+  before restarting; if it dies after the restart and Debezium reconnected
+  meanwhile, the attempt is over and the operator goes forward.
+- **A change of walsender seen by a running watch** (a new `active_pid`,
+  `backend_start` or `query_start`, or an inactive interval, between two
+  consecutive polls) is accepted only when the new walsender's first
+  sighting shows `confirmed_flush_lsn` **equal** to F_last, the last value
+  seen before the change. Within one poll interval (at most 1 s, and 50 to
+  100 ms around the restart) a switch to another slot and back would also
+  need a Kafka Connect config change, a task restart and an offset flush;
+  R11 checks the config on every poll, and that residual is listed with the
+  other residual risks.
 - **Why equality is a proof (decided, DeVaris, 2026-10-12).** A recreated
   slot starts at its consistent point, which is **strictly above** the WAL
   insert position at its creation: creating a logical slot writes its own
@@ -1715,10 +1752,10 @@ position across pids:
 - **The same-walsender rule (final review; corrected in verification
   round 2).** The identity of a sighting is the tuple (`active_pid`,
   `backend_start`, `query_start`), with both timestamps compared at their
-  full microsecond precision. Across a gap in observation (a restarted
-  watch, or a one-shot check after the watch), a sighting with the **same**
-  tuple as the last one, and `confirmed_flush_lsn` ≥ F_last, is continuity
-  whatever the value. Proof: `query_start` of a walsender is the start of its
+  full microsecond precision. Across an observation gap (above), a sighting
+  with the **same** tuple as the last one, and `confirmed_flush_lsn` ≥
+  F_last, is continuity whatever the value; it is the only thing a gap
+  accepts. Proof: `query_start` of a walsender is the start of its
   current replication command, so an unchanged tuple means the same
   `START_REPLICATION` command is still running in the same backend. A
   walsender holds the slot for the whole of that command, and a slot that is
@@ -1726,7 +1763,8 @@ position across pids:
   An earlier version of this rule claimed Debezium opens a new connection for
   every stream; that is false (`startStreaming` can retry on the same
   connection). A retry issues a new `START_REPLICATION`, which changes
-  `query_start`, so it is judged by the equality rule instead. That a retry
+  `query_start`, so it is a change of walsender: judged by the equality rule
+  when a running watch saw it, and `continuity_unproven` inside a gap. That a retry
   always changes `query_start` is pre-merge gate item 15.
 - **Anything else** (a first sighting above B, or a new walsender whose
   first sighting differs from F_last) is
@@ -1741,7 +1779,12 @@ position across pids:
 rule can exclude another actor dropping Debezium's slot between the last
 pre-restart check and Debezium's attach; the first-sighting rule catches it
 afterwards. The runbook says not to run other slot tooling against these two
-slots while going back.
+slots while going back. **(Confirmation review)** A second residual: within a
+single poll interval of a running watch (at most 1 s, 50 to 100 ms around the
+restart), a switch of Debezium to another slot and back, which needs a Kafka
+Connect config change, a task restart and an offset flush inside that
+interval, would not be seen. R11 checks the config on every poll, and the
+runbook says not to change Debezium's config while going back.
 
 **`--emit-cutover-marker`** is a `--cutover` flag only (Q3). Every pipeline
 the CLI writes excludes its prefix from the pipeline's messages (S16), so a
