@@ -17,6 +17,7 @@ package logrepl
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -346,4 +347,41 @@ func TestHandler_Truncate_StateIsBounded(t *testing.T) {
 	}
 	is.Equal(strings.Count(buf.String(), "TRUNCATE was NOT propagated"), 1000)
 	is.True(len(h.truncateWarns) <= 2) // not 1000
+}
+
+// TestHandler_Truncate_EvictionReportsPendingCount: a table whose window
+// expired with swallowed TRUNCATEs must not lose that count silently when
+// another table's warning evicts it.
+func TestHandler_Truncate_EvictionReportsPendingCount(t *testing.T) {
+	is := is.New(t)
+	var buf bytes.Buffer
+	ctx := zerolog.New(&buf).WithContext(context.Background())
+
+	rs := internal.NewRelationSet()
+	rs.Add(&pglogrepl.RelationMessage{RelationID: 1, Namespace: "public", RelationName: "orders"})
+	rs.Add(&pglogrepl.RelationMessage{RelationID: 2, Namespace: "public", RelationName: "users"})
+	now := time.Unix(1000, 0)
+	h := &CDCHandler{relationSet: rs, now: func() time.Time { return now }}
+
+	for i := uint64(0); i < 4; i++ { // 1 warning + 3 swallowed
+		_, err := h.Handle(ctx, &pglogrepl.TruncateMessage{RelationIDs: []uint32{1}}, pglogrepl.LSN(10+i))
+		is.NoErr(err)
+	}
+	now = now.Add(truncateWarnInterval + time.Second)
+	_, err := h.Handle(ctx, &pglogrepl.TruncateMessage{RelationIDs: []uint32{2}}, pglogrepl.LSN(50))
+	is.NoErr(err)
+
+	var summaries []map[string]any
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, "(summary)") {
+			var m map[string]any
+			is.NoErr(json.Unmarshal([]byte(line), &m))
+			summaries = append(summaries, m)
+		}
+	}
+	is.Equal(len(summaries), 1)
+	is.Equal(summaries[0]["table"], "public.orders")
+	is.Equal(summaries[0]["suppressed"], float64(3))
+	_, stillThere := h.truncateWarns["public.orders"]
+	is.True(!stillThere) // evicted
 }
