@@ -25,8 +25,13 @@ import (
 // can never matter to a column's rounding (see RatToDecimalString).
 const maxTruncationDigits = 1001
 
+// maxExactDigits is the most fractional digits Postgres accepts in a NUMERIC
+// input (NUMERIC_MAX_DISPLAY_SCALE). A terminating value that needs more is
+// rejected with 22003 on every column, constrained or not, so it is truncated
+// like a non-terminating one.
+const maxExactDigits = 16383
+
 var (
-	bigTwo  = big.NewInt(2)
 	bigFive = big.NewInt(5)
 	bigTen  = big.NewInt(10)
 
@@ -47,19 +52,21 @@ var (
 //
 // Invariant 6: no silent coercion. A rational whose denominator has only the
 // prime factors 2 and 5 has a terminating decimal expansion and is sent
-// exactly. Any other rational (1/3) is truncated toward zero at
-// maxTruncationDigits digits. That is equivalent to Postgres rounding the
-// exact value: a rounding boundary of a column with scale s is a decimal with
-// s+1 digits, the expansion is non-terminating so it never equals a boundary,
-// and truncation at more than s+1 digits keeps it on the same side of every
-// boundary.
+// exactly, up to maxExactDigits fractional digits. Any other rational (1/3), and
+// a terminating one that needs more than maxExactDigits (Postgres rejects it),
+// is truncated toward zero at maxTruncationDigits digits. That is equivalent to
+// Postgres rounding the exact value: a rounding boundary of a column with scale
+// s is a decimal with s+1 <= 1001 digits. The value never equals a boundary
+// (a non-terminating expansion has no finite form, and a terminating one with
+// more than maxExactDigits digits has more digits than any boundary), and
+// truncation at 1001 digits keeps it on the same side of every boundary.
 func RatToDecimalString(r *big.Rat) string {
 	if r.IsInt() {
 		return r.Num().String()
 	}
 
 	digits, terminates := terminatingDigits(r.Denom())
-	if terminates {
+	if terminates && digits <= maxExactDigits {
 		return r.FloatString(digits) // exact: no rounding occurs
 	}
 	return truncatedString(r, maxTruncationDigits)
@@ -69,15 +76,10 @@ func RatToDecimalString(r *big.Rat) string {
 // and, if so, how many fractional digits it needs.
 func terminatingDigits(den *big.Int) (int, bool) {
 	d := new(big.Int).Set(den)
-	var twos, fives int
+	twos := int(d.TrailingZeroBits())
+	d.Rsh(d, uint(twos))
+	var fives int
 	m := new(big.Int)
-	for {
-		q, rem := new(big.Int).QuoRem(d, bigTwo, m)
-		if rem.Sign() != 0 {
-			break
-		}
-		d, twos = q, twos+1
-	}
 	for {
 		q, rem := new(big.Int).QuoRem(d, bigFive, m)
 		if rem.Sign() != 0 {

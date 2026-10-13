@@ -38,6 +38,9 @@ func TestRatToDecimalString(t *testing.T) {
 		{"one third", big.NewRat(1, 3), ""},
 		{"negative two thirds", big.NewRat(-2, 3), ""},
 		{"one seventh", big.NewRat(1, 7), ""},
+		{"terminating at the Postgres limit", new(big.Rat).SetFrac(big.NewInt(1), pow2(maxExactDigits)), ""},
+		{"terminating beyond the Postgres limit", new(big.Rat).SetFrac(big.NewInt(1), pow2(20000)), ""},
+		{"terminating beyond the limit, negative", new(big.Rat).SetFrac(big.NewInt(-3), pow2(maxExactDigits+1)), ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -48,21 +51,24 @@ func TestRatToDecimalString(t *testing.T) {
 			}
 			back, ok := new(big.Rat).SetString(got)
 			is.True(ok) // the output must parse as a decimal
-			if tt.in.Denom().BitLen() > 0 {
-				if _, terminates := terminatingDigits(tt.in.Denom()); terminates {
-					is.Equal(back.Cmp(tt.in), 0) // terminating values are exact
-				} else {
-					// truncated toward zero, by less than 10^-maxTruncationDigits
-					diff := new(big.Rat).Sub(new(big.Rat).Abs(tt.in), new(big.Rat).Abs(back))
-					is.True(diff.Sign() > 0)
-					limit := new(big.Rat).SetFrac(big.NewInt(1), new(big.Int).Exp(bigTen, big.NewInt(maxTruncationDigits), nil))
-					is.True(diff.Cmp(limit) < 0)
-					is.Equal(len(got[strings.IndexByte(got, '.')+1:]), maxTruncationDigits)
-				}
+			digits, terminates := terminatingDigits(tt.in.Denom())
+			switch {
+			case terminates && digits <= maxExactDigits:
+				is.Equal(back.Cmp(tt.in), 0) // exact
+				is.True(len(got[strings.IndexByte(got, '.')+1:]) <= maxExactDigits)
+			default:
+				// truncated toward zero, by less than 10^-maxTruncationDigits
+				diff := new(big.Rat).Sub(new(big.Rat).Abs(tt.in), new(big.Rat).Abs(back))
+				is.True(diff.Sign() > 0)
+				limit := new(big.Rat).SetFrac(big.NewInt(1), new(big.Int).Exp(bigTen, big.NewInt(maxTruncationDigits), nil))
+				is.True(diff.Cmp(limit) < 0)
+				is.Equal(len(got[strings.IndexByte(got, '.')+1:]), maxTruncationDigits)
 			}
 		})
 	}
 }
+
+func pow2(n int) *big.Int { return new(big.Int).Lsh(big.NewInt(1), uint(n)) }
 
 // TestRatToDecimalString_RoundingEquivalence checks the property the connector
 // relies on: rounding RatToDecimalString's output to any column scale (what
@@ -97,6 +103,39 @@ func TestRatToDecimalString_RoundingEquivalence(t *testing.T) {
 			check(new(big.Rat).Neg(new(big.Rat).Add(boundary, off)))
 		}
 	}
+	// Digit 1001: the boundary of a scale-1000 column has its 5 in the 1001st
+	// fractional digit, the last digit kept by the truncation. Offsets sit on
+	// both sides of it, inside it (digit 1002+), and as terminating values with
+	// more than maxExactDigits digits.
+	pow10 := func(n int) *big.Int { return new(big.Int).Exp(bigTen, big.NewInt(int64(n)), nil) }
+	for _, s := range []int{0, 2, 6, 1000} {
+		boundary := new(big.Rat).SetFrac(big.NewInt(5), pow10(s+1))
+		for _, off := range []*big.Rat{
+			new(big.Rat).SetFrac(big.NewInt(1), pow10(1001)),                                  // 1 unit at digit 1001
+			new(big.Rat).SetFrac(big.NewInt(1), new(big.Int).Mul(big.NewInt(3), pow10(1001))), // non-terminating, below digit 1001
+			new(big.Rat).SetFrac(big.NewInt(1), pow10(1002)),                                  // first dropped digit
+			new(big.Rat).SetFrac(big.NewInt(1), pow2(20000)),                                  // terminating, > 16383 digits
+		} {
+			check(new(big.Rat).Add(boundary, off))
+			check(new(big.Rat).Sub(boundary, off))
+			check(new(big.Rat).Neg(new(big.Rat).Add(boundary, off)))
+			check(new(big.Rat).Neg(new(big.Rat).Sub(boundary, off)))
+		}
+	}
+
+	// Nines tail: just below a boundary, 0.4999...9 with 1100 nines and then a
+	// non-terminating tail, so the digits kept by the truncation are all nines.
+	// A rounding of the truncated string must still go down.
+	for _, s := range []int{0, 1, 6, 1000} {
+		boundary := new(big.Rat).SetFrac(big.NewInt(5), pow10(s+1))
+		tail := new(big.Rat).SetFrac(big.NewInt(1), new(big.Int).Mul(big.NewInt(3), pow10(1100+s)))
+		check(new(big.Rat).Sub(boundary, tail))
+		check(new(big.Rat).Neg(new(big.Rat).Sub(boundary, tail)))
+		// and the same just below an integer: 0.99999... rounds up to 1
+		one := new(big.Rat).SetInt64(1)
+		check(new(big.Rat).Sub(one, tail))
+	}
+
 	for i := 0; i < 3000; i++ {
 		num := rng.Int63n(1<<40) - 1<<39
 		den := rng.Int63n(1<<20) + 1

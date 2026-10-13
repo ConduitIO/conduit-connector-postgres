@@ -222,3 +222,54 @@ func TestDestination_NumericScale_PostgresIsTheOracle(t *testing.T) {
 		is.Equal(unc, v.lit) // unconstrained keeps the exact value
 	}
 }
+
+// TestDestination_NumericScale_TooManyDigits: a rational that terminates but
+// needs more than Postgres's 16383 fractional digits (1/2^20000) must not be
+// sent in full, because Postgres rejects it with 22003 on every numeric column.
+// The value is placed just above a rounding boundary so a wrong truncation
+// would round the other way. 1/2^16383 is the longest expansion Postgres
+// accepts and must still arrive exactly.
+func TestDestination_NumericScale_TooManyDigits(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+
+	table := strings.ToLower(test.RandomIdentifier(t))
+	_, err := conn.Exec(ctx, fmt.Sprintf(`CREATE TABLE %q (id int PRIMARY KEY, s6 numeric(12,6), unc numeric)`, table))
+	is.NoErr(err)
+	t.Cleanup(func() { _, _ = conn.Exec(ctx, fmt.Sprintf(`DROP TABLE %q`, table)) })
+
+	d := openNumericDestination(ctx, t, "")
+	write := func(id int, v *big.Rat) error {
+		_, err := d.Write(ctx, []opencdc.Record{{
+			Position:  opencdc.Position("p"),
+			Operation: opencdc.OperationCreate,
+			Metadata:  map[string]string{opencdc.MetadataCollection: table},
+			Key:       opencdc.StructuredData{"id": id},
+			Payload:   opencdc.Change{After: opencdc.StructuredData{"s6": v, "unc": v}},
+		}})
+		return err
+	}
+	pow2 := func(n uint) *big.Int { return new(big.Int).Lsh(big.NewInt(1), n) }
+
+	// 0.0000005 + 2^-20000: 20000 fractional digits, just above the numeric(12,6)
+	// rounding boundary, so Postgres must round it up to 0.000001.
+	above := new(big.Rat).Add(big.NewRat(5, 10000000), new(big.Rat).SetFrac(big.NewInt(1), pow2(20000)))
+	is.NoErr(write(1, above))
+	var s6, unc string
+	is.NoErr(conn.QueryRow(ctx, fmt.Sprintf(`SELECT s6::text, unc::text FROM %q WHERE id=1`, table)).Scan(&s6, &unc))
+	is.Equal(s6, "0.000001")
+	is.True(strings.HasPrefix(unc, "0.0000005000000")) // truncated, not rejected
+
+	// Just below the boundary: must round down.
+	below := new(big.Rat).Sub(big.NewRat(5, 10000000), new(big.Rat).SetFrac(big.NewInt(1), pow2(20000)))
+	is.NoErr(write(2, below))
+	is.NoErr(conn.QueryRow(ctx, fmt.Sprintf(`SELECT s6::text FROM %q WHERE id=2`, table)).Scan(&s6))
+	is.Equal(s6, "0.000000")
+
+	// The longest expansion Postgres accepts is stored exactly.
+	longest := new(big.Rat).SetFrac(big.NewInt(1), pow2(16383))
+	is.NoErr(write(3, longest))
+	is.NoErr(conn.QueryRow(ctx, fmt.Sprintf(`SELECT length(split_part(unc::text, '.', 2)) FROM %q WHERE id=3`, table)).Scan(&unc))
+	is.Equal(unc, "16383")
+}
