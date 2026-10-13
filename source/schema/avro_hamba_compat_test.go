@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -167,6 +168,17 @@ func typeChangeCases() []typeChangeCase {
 	return out
 }
 
+// compatCmpOpts compares decoded Avro values with the Go values that were
+// encoded: decimals by value, and times by instant or, for local timestamps
+// (which carry no zone on the wire), by wall clock.
+var compatCmpOpts = []cmp.Option{
+	cmp.Comparer(func(a, b *big.Rat) bool { return a.Cmp(b) == 0 }),
+	cmp.Comparer(func(a, b time.Time) bool {
+		const layout = "2006-01-02T15:04:05.000000"
+		return a.Equal(b) || a.Format(layout) == b.Format(layout)
+	}),
+}
+
 // compatZones are the values time.Local is set to while encoding rows.
 var compatZones = map[string]*time.Location{
 	"UTC":       time.UTC,
@@ -294,22 +306,33 @@ func TestAvroExtract_HambaCompat(t *testing.T) {
 			is.NoErr(err)
 			is.Equal(len(fx.RowHex), len(compatZones))
 			for zone, loc := range compatZones {
-				wantHex, ok := fx.RowHex[zone]
-				is.True(ok) // fixture has an encoding for every zone
-				withLocal(loc, func() {
-					enc, err := avro.Marshal(sch, rowFor(c.Cols))
-					is.NoErr(err)
-					is.Equal(hex.EncodeToString(enc), wantHex) // zone: ` + "`zone`" + `
+				t.Run("TZ="+zone, func(t *testing.T) {
+					is := is.New(t)
+					wantHex, ok := fx.RowHex[zone]
+					is.True(ok) // fixture has an encoding for every zone
+					withLocal(loc, func() {
+						enc, err := avro.Marshal(sch, rowFor(c.Cols))
+						is.NoErr(err)
+						is.Equal(hex.EncodeToString(enc), wantHex)
 
-					old, err := hex.DecodeString(wantHex)
-					is.NoErr(err)
-					decoded := map[string]any{}
-					is.NoErr(avro.Unmarshal(sch, old, &decoded))
-					wantFields := len(c.Cols)
-					if len(c.KeyCols) > 0 {
-						wantFields = len(c.KeyCols)
-					}
-					is.Equal(len(decoded), wantFields)
+						// The hamba-encoded bytes decode to the values that
+						// were encoded, not merely to the right field count.
+						old, err := hex.DecodeString(wantHex)
+						is.NoErr(err)
+						decoded := map[string]any{}
+						is.NoErr(avro.Unmarshal(sch, old, &decoded))
+						want := rowFor(c.Cols)
+						if len(c.KeyCols) > 0 {
+							for k := range want {
+								if !slices.Contains(c.KeyCols, k) {
+									delete(want, k)
+								}
+							}
+						}
+						if diff := cmp.Diff(want, decoded, compatCmpOpts...); diff != "" {
+							t.Fatalf("decoded values differ (-encoded +decoded):\n%s", diff)
+						}
+					})
 				})
 			}
 		})
