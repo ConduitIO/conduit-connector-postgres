@@ -147,7 +147,7 @@ func TestSubscription_StopBeforeRun(t *testing.T) {
 	select {
 	case err := <-errCh:
 		is.True(errors.Is(err, context.Canceled))
-	case <-time.After(10 * time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatal("Run ignored a Stop that arrived before it started")
 	}
 	tctx, cancel := context.WithTimeout(ctx, 10*time.Second)
