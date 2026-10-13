@@ -16,7 +16,9 @@ package logrepl
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
@@ -100,4 +102,69 @@ func Test_EmitDriftMarker_EarlierAckInsideQueueWindowDoesNotArm(t *testing.T) {
 	_, _ = h.Handle(ctx, relMsg(shapeV2...), 0)
 	is.NoErr(h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 1}, 200))
 	is.True(!h.driftHaltArmed.Load())
+}
+
+// Test_EmitDriftMarker_ConcurrentEngineAck is the cross-goroutine counterpart
+// of the seam tests above. A real engine goroutine receives the marker's batch
+// and acks it (CDCIterator.Ack's tail: parse, then maybeArmDriftHalt) while the
+// subscription goroutine is still inside emitDriftMarker. It exists for -race:
+// the handler claims "no locks" because the atomic driftMarkerLSN store orders
+// the plain driftHaltErr/driftMarkerKey/driftMarkerPos writes before the
+// engine's reads, and only concurrent execution can contradict that. Each
+// iteration must also arm the halt, whatever the interleaving.
+//
+// Limits: the window is a few instructions wide, so this does not reliably
+// fail on the old queue-then-publish order (the seam test above is the
+// deterministic guard for that), and the channel hand-off also orders the
+// plain writes before the engine's reads, so it would not catch every
+// reordering of the atomic store either. It is a -race tripwire for new
+// unsynchronized access to the marker state, not a mutation detector.
+func Test_EmitDriftMarker_ConcurrentEngineAck(t *testing.T) {
+	const iterations = 500
+	ctx := context.Background()
+
+	for i := 0; i < iterations; i++ {
+		h, out := newHandlerWithOut(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
+		cur := internal.ChangeKey{CommitLSN: 0x500, Seq: 1}
+		h.changeKey = func() internal.ChangeKey { return cur }
+		_, _ = relate(ctx, t, h, relMsg(shapeV1...), 100)
+		cur = internal.ChangeKey{CommitLSN: 0x500, Seq: 2}
+		_, _ = h.Handle(ctx, relMsg(shapeV2...), 0)
+
+		engineErr := make(chan error, 1)
+		go func() {
+			select {
+			case batch := <-out:
+				pos, err := position.ParseSDKPosition(batch[0].Position)
+				if err != nil {
+					engineErr <- err
+					return
+				}
+				lsn, _ := pos.LSN()
+				commit, _ := pos.TxCommit()
+				h.maybeArmDriftHalt(lsn, internal.ChangeKey{CommitLSN: commit, Seq: pos.TxSeq}, pos)
+				// What a blocked NextN does: wake on the halt channel, then
+				// read the error the subscription goroutine wrote.
+				select {
+				case <-h.driftHaltCh:
+					if h.driftHaltError() == nil {
+						engineErr <- fmt.Errorf("halt armed without an error")
+						return
+					}
+					engineErr <- nil
+				case <-time.After(10 * time.Second):
+					engineErr <- fmt.Errorf("halt never armed after the marker was acked")
+				}
+			case <-time.After(10 * time.Second):
+				engineErr <- fmt.Errorf("marker never delivered")
+			}
+		}()
+
+		if err := h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 1}, 200); err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+		if err := <-engineErr; err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+	}
 }
