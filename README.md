@@ -77,7 +77,7 @@ The table's `REPLICA IDENTITY` must carry the primary key in deletes. `DEFAULT` 
 `FULL` always do. `USING INDEX` does only if the index includes the primary-key
 column; otherwise Postgres sends deletes without the key, and they cannot be applied
 downstream. The source refuses to open on such a table with the error code
-`postgres.source.replica_identity_excludes_key`. Fix it with
+`postgres.replica_identity.excludes_key`. Fix it with
 `ALTER TABLE <table> REPLICA IDENTITY FULL`, or use a unique index that includes the
 primary key.
 
@@ -89,6 +89,51 @@ the identity columns of the old row, so deletes and key-changing updates carry n
 `Before`. The deleted row's key is in the record `Key`. A key-changing update carries
 the new key in `Key`; the old key is not carried. If you need the old row or the old
 key, set `REPLICA IDENTITY FULL` on the table.
+
+:warning: The Postgres destination does not delete the old row when a primary key
+changes. It upserts on the new key, so a primary-key-changing `UPDATE` leaves the row
+under its old key in the destination next to the new one. This happens with or without
+Avro and under `REPLICA IDENTITY FULL` as well. It is a known destination bug
+([#386](https://github.com/ConduitIO/conduit-connector-postgres/issues/386)). Until it
+is fixed, avoid changing primary keys on tables replicated to Postgres, or reconcile
+the old rows by hand.
+
+### Delete With a Missing Key
+
+**Symptom.** The pipeline fails and keeps failing after restarts with
+`postgres.replica_identity.excludes_key: delete on table "<table>" (WAL LSN <a>, in the
+transaction that commits at LSN <b>) arrived without a value for key column ...`.
+The replication slot retains WAL while it is stuck.
+
+**Diagnosis.** The table's `REPLICA IDENTITY` was changed while the pipeline was
+running, to `USING INDEX` on an index whose key columns do not include the primary key
+(columns in `INCLUDE` do not count), or the identity index was dropped. Postgres then
+sends the delete without the key. Check with
+`SELECT relreplident FROM pg_class WHERE oid = '<table>'::regclass` (`i` is
+`USING INDEX`).
+
+**Remediation.**
+
+1. Fix the identity so that new deletes carry the key:
+   `ALTER TABLE <table> REPLICA IDENTITY FULL`, or `REPLICA IDENTITY DEFAULT`, or
+   `REPLICA IDENTITY USING INDEX <index>` on a unique index that has the primary key
+   among its key columns. This does not repair the change already in the WAL. A restart
+   alone fails on it again.
+2. Stop the pipeline. A slot can only be advanced while no connection uses it.
+3. Delete the row from the destination yourself. The change has no key, so the pipeline
+   cannot do it.
+4. Advance the slot past the transaction named in the error, using the commit LSN
+   (`<b>`):
+   `SELECT pg_replication_slot_advance('<slot name>', '<b>'::pg_lsn + 1);`
+   The `+ 1` matters. Advancing to the change LSN (`<a>`) or to the commit LSN itself
+   does not skip the transaction: Postgres replays it and the pipeline fails on the same
+   delete.
+5. Start the pipeline.
+
+**Advancing the slot skips that change, and it skips the whole transaction, including
+its changes to other tables.** Skipping data is your decision and the connector cannot
+check it for you. If the transaction held other changes you need, apply them to the
+destination by hand before step 5.
 
 ## Destination
 

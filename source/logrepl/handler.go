@@ -262,7 +262,7 @@ func (h *CDCHandler) handleDelete(
 	// and acks), so the row would silently survive. Open refuses tables whose
 	// replica identity does not cover the key column; this catches the same
 	// condition if the identity is changed while the pipeline runs.
-	if err := h.requireDeleteKey(key, rel.RelationName); err != nil {
+	if err := h.requireDeleteKey(key, rel.RelationName, lsn); err != nil {
 		return err
 	}
 
@@ -354,7 +354,7 @@ func (h *CDCHandler) buildRecordBefore(oldTupleType uint8, oldValues map[string]
 // relation without one (for example a partition leaf, which pgoutput reports
 // under its own name) already gets an empty key on every operation; that is a
 // separate limitation and this check does not change it.
-func (h *CDCHandler) requireDeleteKey(key opencdc.Data, table string) error {
+func (h *CDCHandler) requireDeleteKey(key opencdc.Data, table string, lsn pglogrepl.LSN) error {
 	keyColumn, known := h.tableKeys[table]
 	if !known || keyColumn == "" {
 		return nil
@@ -364,13 +364,23 @@ func (h *CDCHandler) requireDeleteKey(key opencdc.Data, table string) error {
 			return nil
 		}
 	}
+	// The slot can only be moved past a whole transaction: advancing to an LSN
+	// inside it replays it from the start, and a commit LSN itself is not past
+	// the transaction (it is the start of the commit record), so the operator
+	// needs both the change LSN (to find the change) and the commit LSN (to
+	// skip it). See "Delete with a missing key" in the README.
+	where := fmt.Sprintf("WAL LSN %s", lsn)
+	if h.lastTXLSN != 0 {
+		where = fmt.Sprintf("WAL LSN %s, in the transaction that commits at LSN %s", lsn, h.lastTXLSN)
+	}
 	return fmt.Errorf(
-		"%s: delete on table %q arrived without a value for key column %q, so it cannot be applied downstream; "+
+		"%s: delete on table %q (%s) arrived without a value for key column %q, so it cannot be applied downstream; "+
 			"the table's REPLICA IDENTITY does not include the key column. "+
 			"Fix: ALTER TABLE %s REPLICA IDENTITY FULL (or DEFAULT, or USING INDEX on a unique index that includes %q). "+
-			"This change is already in the WAL without its key: after fixing the identity, advance the slot past it "+
-			"and reconcile the deleted row in the destination by hand",
-		ErrorCodeReplicaIdentityExcludesKey, table, keyColumn, table, keyColumn)
+			"This change is already in the WAL without its key: after fixing the identity, stop the pipeline, "+
+			"advance the slot past that transaction with pg_replication_slot_advance(<slot>, '<commit LSN>'::pg_lsn + 1) "+
+			"(this skips every change in the transaction, not only the delete), and reconcile the deleted row in the destination by hand",
+		ErrorCodeReplicaIdentityExcludesKey, table, where, keyColumn, table, keyColumn)
 }
 
 // buildRecordPayload takes the values from the message and extracts the payload

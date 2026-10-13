@@ -29,7 +29,7 @@ import (
 // destination cannot apply (conduit-connector-postgres#380). It is returned by
 // CheckReplicaIdentity at Open, and by the CDC handler if such a delete
 // arrives anyway (the identity was changed while the pipeline ran).
-const ErrorCodeReplicaIdentityExcludesKey = "postgres.source.replica_identity_excludes_key"
+const ErrorCodeReplicaIdentityExcludesKey = "postgres.replica_identity.excludes_key"
 
 // RowQuerier is the subset of pgx used by CheckReplicaIdentity. *pgxpool.Pool
 // and *pgx.Conn satisfy it.
@@ -43,8 +43,9 @@ type RowQuerier interface {
 //
 // DEFAULT (the primary key) and FULL always carry it; the connector keys on
 // the primary key, so DEFAULT covers it by construction. USING INDEX carries
-// only the index's columns, so the index must contain keyColumn. If the
-// identity index has been dropped, Postgres behaves as NOTHING and rejects
+// only the index's key columns (indnkeyatts), so the index must contain
+// keyColumn among them: an INCLUDE column is listed in indkey but is not sent
+// in the old tuple. If the identity index has been dropped, Postgres behaves as NOTHING and rejects
 // deletes on the published table itself; that is refused too, because the
 // identity does not carry the key either. NOTHING is left to Postgres, which
 // rejects UPDATE and DELETE on a table that publishes them.
@@ -53,7 +54,8 @@ func CheckReplicaIdentity(ctx context.Context, q RowQuerier, table, keyColumn st
 		COALESCE(i.indexrelid::regclass::text, ''),
 		COALESCE((SELECT bool_or(a.attname = $2)
 			FROM pg_attribute a
-			WHERE a.attrelid = c.oid AND a.attnum = ANY(i.indkey)), false)
+			WHERE a.attrelid = c.oid
+			AND a.attnum = ANY((i.indkey::int2[])[0:i.indnkeyatts-1])), false)
 	FROM pg_class c
 	LEFT JOIN pg_index i ON i.indrelid = c.oid AND i.indisreplident
 	WHERE c.oid = $1::regclass`

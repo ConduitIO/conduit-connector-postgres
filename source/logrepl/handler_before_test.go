@@ -184,14 +184,20 @@ func TestHandler_Delete_NullKeyHalts(t *testing.T) {
 			is := is.New(t)
 			h, ch, name := newBeforeTestHandler(ctx, t, withAvro)
 
+			// The operator needs the change LSN and the commit LSN of its
+			// transaction to find the change and to advance the slot past it.
+			h.lastTXLSN = pglogrepl.LSN(0x16B3A40)
 			err := h.handleDelete(ctx, &pglogrepl.DeleteMessage{
 				RelationID:   1,
 				OldTupleType: pglogrepl.DeleteMessageTupleTypeKey,
 				OldTuple:     tuple(null(), txt("10"), null()), // identity index on (i)
-			}, 1)
+			}, pglogrepl.LSN(0x16B3A10))
 			is.True(err != nil)
 			is.True(strings.HasPrefix(err.Error(), ErrorCodeReplicaIdentityExcludesKey+": "))
 			is.True(strings.Contains(err.Error(), fmt.Sprintf("%q", name)))
+			is.True(strings.Contains(err.Error(), "WAL LSN 0/16B3A10"))
+			is.True(strings.Contains(err.Error(), "commits at LSN 0/16B3A40"))
+			is.True(strings.Contains(err.Error(), "pg_replication_slot_advance"))
 			is.Equal(len(ch), 0) // nothing emitted
 		})
 	}
