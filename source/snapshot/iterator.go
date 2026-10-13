@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/conduitio/conduit-commons/csync"
 	"github.com/conduitio/conduit-commons/opencdc"
 	cschema "github.com/conduitio/conduit-commons/schema"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
@@ -62,7 +61,7 @@ type Iterator struct {
 
 	workersTomb *tomb.Tomb
 	workers     []*FetchWorker
-	acks        csync.WaitGroup
+	acks        ackBarrier
 
 	conf Config
 
