@@ -47,14 +47,21 @@ type Subscription struct {
 
 	pool *pgxpool.Pool
 
-	// connMu guards conn and tornDown. Every assignment and release of conn
-	// goes through setConn/releaseConn, which release a pooled connection at
-	// most once (a double release corrupts the pool). Run replaces the
-	// connection in startReplication while Teardown may release it from
-	// another goroutine (#352).
-	connMu   sync.Mutex
-	conn     *pgxpool.Conn
-	tornDown bool
+	// connMu guards conn, runActive and tornDown. conn is a pooled
+	// connection: it must be released exactly once, and never while anything
+	// still uses it, because the pool hands it to another owner (another
+	// pipeline) the moment it is released. Ownership therefore follows Run:
+	//
+	//   - while Run is active (runActive), Run is the only user and the only
+	//     one that releases conn: startReplication swaps it, endRun releases
+	//     it on exit once Teardown asked for it;
+	//   - Teardown releases conn only if Run is not active (never started, or
+	//     already finished). If Teardown's wait for Run times out, it leaves
+	//     the release to Run's exit instead of releasing under it (#352).
+	connMu    sync.Mutex
+	conn      *pgxpool.Conn
+	runActive bool // Run started and has not finished
+	tornDown  bool // Teardown was called: release conn once Run is done with it
 
 	// stopMu guards stop, stopped and running: Stop and Teardown are called
 	// from another goroutine, possibly before Run has created its context
@@ -64,6 +71,10 @@ type Subscription struct {
 	stop    context.CancelFunc
 	stopped bool // Stop was called, possibly before Run began
 	running bool // Run was called
+
+	// afterAcquire is a test seam, nil in production. It runs in
+	// startReplication right after the replication connection was stored.
+	afterAcquire func()
 
 	// beforeRelease is a test seam, nil in production. It runs at the top of
 	// startReplication, before the old connection is released.
@@ -203,7 +214,15 @@ func CreateSubscription(
 // Run the logical replication listener and block until it returns an error,
 // or the context is canceled.
 func (s *Subscription) Run(ctx context.Context) error {
+	// endRun is registered first so it runs last, after doneReplication has
+	// used the connection for the final status update.
+	started := s.beginRun()
+	defer s.endRun(started)
 	defer s.doneReplication()
+	if !started {
+		close(s.ready) // ready to fail.
+		return errors.New("subscription was torn down before it started")
+	}
 
 	// The cancel function is published before anything blocking happens, so a
 	// Stop that arrives while replication is still starting is honoured.
@@ -429,8 +448,13 @@ func (s *Subscription) Wait(ctx context.Context, timeout time.Duration) error {
 	}
 }
 
+// Teardown stops the subscription and waits for Run to finish, at most until
+// ctx ends. It releases the pooled replication connection only when Run no
+// longer uses it. If the wait ends before Run does (ctx expired), the
+// connection is NOT released here: Run releases it on its way out, so a
+// connection is never handed back to the pool under a live user.
 func (s *Subscription) Teardown(ctx context.Context) error {
-	defer s.releaseConn(true)
+	defer s.releaseIfIdle()
 
 	s.Stop()
 
@@ -473,7 +497,7 @@ func (s *Subscription) startReplication(ctx context.Context) error {
 	if s.beforeRelease != nil {
 		s.beforeRelease()
 	}
-	s.releaseConn(false) // nothing may touch the old connection from here on
+	s.releaseConn() // nothing may touch the old connection from here on
 	if s.beforeAcquire != nil {
 		s.beforeAcquire()
 	}
@@ -483,9 +507,9 @@ func (s *Subscription) startReplication(ctx context.Context) error {
 		return fmt.Errorf("could not establish replication connection: %w", err)
 	}
 
-	if !s.setConn(conn) {
-		// Teardown already ran and will not release this connection.
-		return errors.New("subscription was torn down while starting replication")
+	s.setConn(conn)
+	if s.afterAcquire != nil {
+		s.afterAcquire()
 	}
 
 	pluginArgs := []string{
@@ -669,28 +693,60 @@ func (s *Subscription) sentStandbyDone(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// setConn stores the connection Run acquired. It reports false, after releasing
-// conn, if Teardown already ran: nobody else would release it.
-func (s *Subscription) setConn(conn *pgxpool.Conn) bool {
+// beginRun marks Run active. It reports false if Teardown already ran: the
+// connection is gone and Run must not touch it.
+func (s *Subscription) beginRun() bool {
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
 	if s.tornDown {
-		conn.Release()
 		return false
 	}
-	s.conn = conn
+	s.runActive = true
 	return true
 }
 
-// releaseConn releases the pooled connection at most once and forgets it.
-// With final set it also marks the subscription torn down, so a connection
-// acquired later by a late Run is released by setConn instead of leaking.
-func (s *Subscription) releaseConn(final bool) {
+// endRun marks Run finished and, if Teardown was called while it was active,
+// releases the connection Teardown left to it.
+func (s *Subscription) endRun(started bool) {
+	if !started {
+		return
+	}
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
-	if final {
-		s.tornDown = true
+	s.runActive = false
+	if s.tornDown {
+		s.releaseConnLocked()
 	}
+}
+
+// releaseIfIdle is Teardown's release: it records that Teardown ran and
+// releases the connection unless Run is still active, in which case endRun
+// does it.
+func (s *Subscription) releaseIfIdle() {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	s.tornDown = true
+	if !s.runActive {
+		s.releaseConnLocked()
+	}
+}
+
+// setConn stores the connection Run acquired.
+func (s *Subscription) setConn(conn *pgxpool.Conn) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	s.conn = conn
+}
+
+// releaseConn releases the pooled connection at most once and forgets it. Only
+// Run calls it, while active.
+func (s *Subscription) releaseConn() {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	s.releaseConnLocked()
+}
+
+func (s *Subscription) releaseConnLocked() {
 	if s.conn != nil {
 		s.conn.Release()
 		s.conn = nil
@@ -703,8 +759,9 @@ func (s *Subscription) hasConn() bool {
 	return s.conn != nil
 }
 
-// pgConn returns the current connection's wire connection, or an error if it
-// was released (Teardown gave up waiting for Run).
+// pgConn returns the current connection's wire connection, or an error if
+// there is none. Only Run's goroutine calls it; the connection stays valid
+// while Run is active because nobody else releases it (see connMu).
 func (s *Subscription) pgConn() (*pgconn.PgConn, error) {
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
