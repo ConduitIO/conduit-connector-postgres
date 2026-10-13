@@ -41,6 +41,14 @@ type CDCHandler struct {
 	tableKeys   map[string]string
 	relationSet *internal.RelationSet
 
+	// truncates counts TRUNCATE messages seen per table and warnedAt limits the
+	// warning to one per table per truncateWarnInterval. Only touched on the
+	// subscription goroutine (Handle). now is replaceable in tests.
+	truncates map[string]uint64
+	warnedAt  map[string]time.Time
+	suppress  map[string]uint64
+	now       func() time.Time
+
 	// batchSize is the largest number of records this handler will send at once.
 	batchSize     int
 	flushInterval time.Duration
@@ -284,6 +292,11 @@ func (h *CDCHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogr
 			return 0, fmt.Errorf("logrepl handler delete: %w", err)
 		}
 		return lsn, nil
+	case *pglogrepl.TruncateMessage:
+		// Not propagated: OpenCDC has no truncate operation. Logging only, no
+		// change to what is emitted or acked (#344; policy planned for v0.21).
+		h.warnTruncate(ctx, m, lsn)
+		return 0, nil
 	case *pglogrepl.BeginMessage:
 		h.lastTXLSN = m.FinalLSN
 	case *pglogrepl.CommitMessage:
@@ -1215,4 +1228,49 @@ func (h *CDCHandler) attachSchemas(rec opencdc.Record, relationName string) {
 	}
 	cschema.AttachPayloadSchemaToRecord(rec, h.payloadSchemas[relationName])
 	cschema.AttachKeySchemaToRecord(rec, h.keySchemas[relationName])
+}
+
+// truncateWarnInterval is the minimum time between two warnings for the same
+// table, so a storm of TRUNCATEs cannot flood the log.
+const truncateWarnInterval = time.Minute
+
+// warnTruncate tells the operator that a TRUNCATE happened and was NOT
+// propagated: the rows it removed are still in the destination. Until a policy
+// exists (planned for v0.21: truncate.policy, default halt) this is the only
+// signal. The connector exposes no metrics, so the per-table count is a
+// structured log field (truncates_total) that can be counted from the logs;
+// suppressed says how many warnings the rate limit swallowed since the last one.
+func (h *CDCHandler) warnTruncate(ctx context.Context, m *pglogrepl.TruncateMessage, lsn pglogrepl.LSN) {
+	if h.truncates == nil {
+		h.truncates, h.warnedAt, h.suppress = map[string]uint64{}, map[string]time.Time{}, map[string]uint64{}
+	}
+	now := time.Now
+	if h.now != nil {
+		now = h.now
+	}
+
+	for _, id := range m.RelationIDs {
+		table := fmt.Sprintf("relation_id=%d", id)
+		if rel, err := h.relationSet.Get(id); err == nil {
+			table = rel.Namespace + "." + rel.RelationName
+		}
+		h.truncates[table]++
+
+		if last, ok := h.warnedAt[table]; ok && now().Sub(last) < truncateWarnInterval {
+			h.suppress[table]++
+			continue
+		}
+		h.warnedAt[table] = now()
+		sdk.Logger(ctx).Warn().
+			Str("table", table).
+			Stringer("lsn", lsn).
+			Bool("cascade", m.Option&pglogrepl.TruncateOptionCascade != 0).
+			Bool("restart_identity", m.Option&pglogrepl.TruncateOptionRestartIdentity != 0).
+			Uint64("truncates_total", h.truncates[table]).
+			Uint64("suppressed", h.suppress[table]).
+			Msg("TRUNCATE was NOT propagated: the rows it removed still exist downstream. " +
+				"No record is emitted for TRUNCATE; a truncate.policy setting (default: halt) is planned for v0.21. " +
+				"See the Limitations section of the connector README.")
+		h.suppress[table] = 0
+	}
 }
