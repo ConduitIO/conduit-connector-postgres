@@ -261,30 +261,103 @@ func TestDestinationTeardownAfterAckedWrite(t *testing.T) {
 	}
 }
 
-// TestDestinationTeardownContextExpires covers the path where the Write does
-// not let go in time: Teardown returns its context error without closing the
-// connection under the writer, and the writer closes it when it finishes.
+// TestDestinationTeardownContextExpires covers the path where a real Write
+// does not let go in time: Teardown returns its context error without closing
+// the connection under the writer, and the writer closes it when it finishes.
+// The Write is held inside the table-name function, which ignores contexts.
 func TestDestinationTeardownContextExpires(t *testing.T) {
 	ctx := context.Background()
 	table, _ := newTeardownTable(ctx, t)
 	dst := newRawDestination(ctx, t, table)
+	pgConn := dst.conn
 
-	dst.sem() <- struct{}{} // a Write that ignores cancellation
+	inWrite := make(chan struct{})
+	release := make(chan struct{})
+	getTable := dst.getTableName
+	dst.getTableName = func(r opencdc.Record) (string, error) {
+		close(inWrite)
+		<-release
+		return getTable(r)
+	}
+
+	type result struct {
+		n   int
+		err error
+	}
+	res := make(chan result, 1)
+	go func() {
+		n, err := dst.Write(ctx, []opencdc.Record{upsertRecord(1, "a")})
+		res <- result{n, err}
+	}()
+	<-inWrite
+
 	tctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
 	err := dst.Teardown(tctx)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Teardown returned %v, want context.DeadlineExceeded", err)
 	}
-	if dst.conn == nil {
+	if pgConn.IsClosed() {
 		t.Fatal("Teardown closed the connection under a running Write")
 	}
 
-	// The Write finishes: it is the last user of the connection and closes it.
-	dst.endWrite()
-	dst.release()
-	if dst.conn != nil {
+	close(release)
+	r := <-res
+	if r.err == nil || r.n != 0 {
+		t.Fatalf("Write returned n=%d err=%v, want n=0 and an error", r.n, r.err)
+	}
+	if !pgConn.IsClosed() {
 		t.Fatal("the abandoned connection was not closed when the Write finished")
+	}
+}
+
+// TestDestinationTeardownCanceledContextClosesConn: Teardown with an already
+// canceled context and no writer must still close the connection (Conduit's
+// force-stop cancels the connector context). acquire used to pick at random
+// between the free semaphore and ctx.Done(), leaking about half the time.
+func TestDestinationTeardownCanceledContextClosesConn(t *testing.T) {
+	ctx := context.Background()
+	table, _ := newTeardownTable(ctx, t)
+	for i := 0; i < 200; i++ {
+		dst := newRawDestination(ctx, t, table)
+		pgConn := dst.conn
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+		_ = dst.Teardown(cctx)
+		if !pgConn.IsClosed() {
+			t.Fatalf("iteration %d: connection left open after Teardown(canceled ctx) with no writer", i)
+		}
+	}
+}
+
+// TestDestinationTeardownExpiringContextRacingWriters: Teardown with a context
+// that expires within microseconds, racing writers. Whoever ends up last must
+// close the connection: after Teardown and every writer returned, it is closed.
+func TestDestinationTeardownExpiringContextRacingWriters(t *testing.T) {
+	ctx := context.Background()
+	table, _ := newTeardownTable(ctx, t)
+	for i := 0; i < 150; i++ {
+		dst := newRawDestination(ctx, t, table)
+		pgConn := dst.conn
+		var wg sync.WaitGroup
+		for w := 0; w < 4; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for j := 0; j < 5; j++ {
+					if _, err := dst.Write(ctx, []opencdc.Record{upsertRecord(int64(i*1000+w*10+j), "x")}); err != nil {
+						return
+					}
+				}
+			}()
+		}
+		tctx, cancel := context.WithTimeout(ctx, time.Duration(i%5)*100*time.Microsecond)
+		_ = dst.Teardown(tctx)
+		cancel()
+		wg.Wait()
+		if !pgConn.IsClosed() {
+			t.Fatalf("iteration %d: connection left open after Teardown and all writers returned", i)
+		}
 	}
 }
 
