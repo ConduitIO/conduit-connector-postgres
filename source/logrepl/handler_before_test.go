@@ -80,6 +80,10 @@ func null() *pglogrepl.TupleDataColumn {
 	return &pglogrepl.TupleDataColumn{DataType: pglogrepl.TupleDataTypeNull}
 }
 
+func unchangedToast() *pglogrepl.TupleDataColumn {
+	return &pglogrepl.TupleDataColumn{DataType: pglogrepl.TupleDataTypeToast}
+}
+
 // staticSource returns fixed records from ReadN, so a test can run them
 // through SDK middleware.
 type staticSource struct {
@@ -176,6 +180,32 @@ func TestHandler_Before_KeyOnlyOldTuple(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestHandler_Update_KeyOnlyOldTupleDoesNotBackfillToast pins that a
+// key-changing UPDATE under DEFAULT identity does not backfill an unchanged
+// TOASTed column from the key-only old tuple, where pgoutput sends it as
+// NULL. Backfilling would emit NULL for a column that was not changed
+// (invariant 6). The column stays omitted, as in any DEFAULT-identity update.
+func TestHandler_Update_KeyOnlyOldTupleDoesNotBackfillToast(t *testing.T) {
+	ctx := context.Background()
+	is := is.New(t)
+	h, ch, _ := newBeforeTestHandler(ctx, t, false)
+
+	is.NoErr(h.handleUpdate(ctx, &pglogrepl.UpdateMessage{
+		RelationID:   1,
+		OldTupleType: pglogrepl.UpdateMessageTupleTypeKey,
+		OldTuple:     tuple(txt("1"), null(), null()),
+		NewTuple:     tuple(txt("2"), txt("11"), unchangedToast()),
+	}, 1))
+	rec, err := receiveAndEncode(ctx, t, ch)
+	is.NoErr(err)
+
+	after := rec.Payload.After.(opencdc.StructuredData)
+	is.Equal(after["i"], int32(11))
+	_, present := after["t"]
+	is.True(!present) // omitted (unchanged), never NULL
+	is.Equal(rec.Payload.Before, nil)
 }
 
 // TestHandler_Delete_NullKeyHalts covers #380 at runtime: under REPLICA

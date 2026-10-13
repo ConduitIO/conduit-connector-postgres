@@ -50,6 +50,22 @@ func (rs *RelationSet) Get(id uint32) (*pglogrepl.RelationMessage, error) {
 	return msg, nil
 }
 
+// Values decodes a logical replication tuple into a map of column name to
+// value.
+//
+// Invariant 6 (schema handling never silently mangles data): a column whose
+// pglogrepl.TupleDataColumn.DataType is 'u' (TupleDataTypeToast) is an
+// unchanged, TOASTed value — Postgres omits the actual bytes from the WAL for
+// TOASTed columns that were not modified by the UPDATE, to avoid rewriting
+// large out-of-line values that didn't change. That is NOT the same as a NULL
+// ('n' / TupleDataTypeNull): there is no way to recover the real value from
+// this tuple alone. To avoid silently coercing "unchanged" into NULL (which
+// would let a downstream write overwrite real data with NULL), such columns
+// are intentionally omitted from the returned map instead of being set to
+// nil. Callers that also have the previous tuple available (e.g. with
+// REPLICA IDENTITY FULL, where UpdateMessage.OldTuple carries the full old
+// row) can backfill the omitted column from there; see
+// CDCHandler.handleUpdate.
 func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]any, error) {
 	if row == nil {
 		return nil, errors.New("no tuple data")
@@ -65,9 +81,20 @@ func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]a
 	// assert same number of row and rel columns
 	for i, tuple := range row.Columns {
 		col := rel.Columns[i]
+
+		switch tuple.DataType {
+		case pglogrepl.TupleDataTypeToast:
+			// Invariant 6: never emit an unchanged-TOAST column as NULL.
+			// Omit it entirely instead — see godoc above.
+			continue
+		case pglogrepl.TupleDataTypeNull:
+			values[col.Name] = nil
+			continue
+		}
+
 		v, decodeErr := rs.decodeValue(col, tuple.Data)
 		if decodeErr != nil {
-			return nil, fmt.Errorf("failed to decode value for column %q: %w", col.Name, err)
+			return nil, fmt.Errorf("failed to decode value for column %q: %w", col.Name, decodeErr)
 		}
 
 		values[col.Name] = v
