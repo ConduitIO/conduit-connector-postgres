@@ -30,7 +30,7 @@ import (
 	sdkschema "github.com/conduitio/conduit-connector-sdk/schema"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/hamba/avro/v2"
+	"github.com/iskorotkov/avro/v2"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
@@ -591,7 +591,6 @@ func TestCDCIterator_NextN(t *testing.T) {
 			change := r.Payload
 			data := change.After.(opencdc.StructuredData)
 			is.Equal(data["column1"], fmt.Sprintf("test-%d", j+1))
-			//nolint:gosec // no risk to overflow
 			is.Equal(data["column2"], (int32(j)+1)*100)
 		}
 	})
@@ -627,7 +626,6 @@ func TestCDCIterator_NextN(t *testing.T) {
 			change := r.Payload
 			data := change.After.(opencdc.StructuredData)
 			is.Equal(data["column1"], fmt.Sprintf("test-%d", j+1))
-			//nolint:gosec // no risk to overflow
 			is.Equal(data["column2"], (int32(j)+1)*100)
 		}
 	})

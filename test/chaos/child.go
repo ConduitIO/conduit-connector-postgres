@@ -94,7 +94,7 @@ func runRealChild() {
 			childFatalf("decode last ledger position: %v", err)
 		}
 		resumePosition = opencdc.Position(raw)
-		printMarker("RESUME %d", len(entries))
+		printMarkerf("RESUME %d", len(entries))
 	}
 
 	ledger, err := OpenLedger(ledgerPath)
@@ -153,7 +153,7 @@ func runRealChild() {
 	if err := src.Open(ctx, resumePosition); err != nil {
 		childFatalf("open: %v", err)
 	}
-	printMarker("OPENED")
+	printMarkerf("OPENED")
 
 	var acked uint64
 	for acked < total {
@@ -173,7 +173,7 @@ func runRealChild() {
 			appendAndAck(ctx, src, ledger, run, table, rec)
 
 			acked++
-			printMarker("ACKED %d", acked)
+			printMarkerf("ACKED %d", acked)
 
 			if acked >= total {
 				break
@@ -181,7 +181,7 @@ func runRealChild() {
 		}
 	}
 
-	printMarker("DONE")
+	printMarkerf("DONE")
 
 	if err := src.Teardown(ctx); err != nil {
 		childFatalf("teardown: %v", err)
@@ -210,7 +210,7 @@ func handleDriftHalt(ctx context.Context, src sdk.Source, err error, haltExpecte
 		return false
 	}
 	fmt.Fprintf(os.Stderr, "HALT_MSG: %s\n", err.Error())
-	printMarker("HALTED")
+	printMarkerf("HALTED")
 	if err := src.Teardown(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "HALT_TEARDOWN_ERR: %v\n", err)
 	}
@@ -259,7 +259,7 @@ func appendAndAck(ctx context.Context, src sdk.Source, ledger *Ledger, run int, 
 		// and never halts again. The marker's durability is asserted to be
 		// observable (the drift entry exists in the ledger), not prevented.
 		chaospoint.Reach(chaospoint.DriftMarkerAppended)
-		printMarker("DRIFT_PERSISTED")
+		printMarkerf("DRIFT_PERSISTED")
 	}
 
 	if err := src.Ack(ctx, rec.Position); err != nil {
@@ -318,7 +318,7 @@ func buildLedgerEntry(run int, table string, rec opencdc.Record) (LedgerEntry, e
 		if !ok {
 			return LedgerEntry{}, fmt.Errorf("snapshot position has no entry for table %q: %+v", table, pos.Snapshots)
 		}
-		entry.Op = "snapshot"
+		entry.Op = "snapshot" //nolint:goconst // the literal is a wire value shared with test assertions; a constant here would not make the call sites clearer
 		entry.DeliveryKey = fmt.Sprintf("snapshot:%d", sp.LastRead)
 	case position.TypeCDC:
 		entry.Op = ledgerOpCDC
@@ -359,21 +359,21 @@ func runEchoChild() {
 		n = 5
 	}
 
-	printMarker("OPENED")
+	printMarkerf("OPENED")
 	for i := 1; i <= n; i++ {
 		chaospoint.Reach(chaospoint.SnapshotFetchRow)
-		printMarker("REACHED %d", i)
+		printMarkerf("REACHED %d", i)
 	}
-	printMarker("DONE")
+	printMarkerf("DONE")
 
 	os.Exit(0)
 }
 
-// printMarker writes one line to stdout via a single fmt.Printf call
+// printMarkerf writes one line to stdout via a single fmt.Printf call
 // (fmt.Printf builds the complete formatted string before issuing one
 // Write), so the parent's line-scanner (harness.go) never observes a torn
 // partial marker.
-func printMarker(format string, args ...any) {
+func printMarkerf(format string, args ...any) {
 	fmt.Printf(format+"\n", args...)
 }
 

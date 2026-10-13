@@ -37,7 +37,7 @@ func New(ctx context.Context, conninfo string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("failed to parse pool config: %w", err)
 	}
 
-	config.BeforeAcquire = beforeAcquireHook
+	config.BeforeAcquire = beforeAcquireHook //nolint:staticcheck // pgx deprecated this in favor of PrepareConn, which takes precedence and has different semantics; migrating is a data-path change outside this toolchain PR
 	config.BeforeConnect = beforeConnectHook
 	config.AfterConnect = afterConnectHook
 	config.AfterRelease = afterReleaseHook

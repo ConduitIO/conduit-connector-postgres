@@ -1,0 +1,3217 @@
+{
+  "schemas": [
+    {
+      "name": "every mapped type",
+      "schemaName": "t_payload",
+      "cols": [
+        {
+          "name": "c_bool",
+          "pgType": "bool",
+          "typMod": -1
+        },
+        {
+          "name": "c_bytea",
+          "pgType": "bytea",
+          "typMod": -1
+        },
+        {
+          "name": "c_float4",
+          "pgType": "float4",
+          "typMod": -1
+        },
+        {
+          "name": "c_float8",
+          "pgType": "float8",
+          "typMod": -1
+        },
+        {
+          "name": "c_int2",
+          "pgType": "int2",
+          "typMod": -1
+        },
+        {
+          "name": "c_int4",
+          "pgType": "int4",
+          "typMod": -1
+        },
+        {
+          "name": "c_int8",
+          "pgType": "int8",
+          "typMod": -1
+        },
+        {
+          "name": "c_text",
+          "pgType": "text",
+          "typMod": -1
+        },
+        {
+          "name": "c_varchar",
+          "pgType": "varchar",
+          "typMod": 14
+        },
+        {
+          "name": "c_json",
+          "pgType": "json",
+          "typMod": -1
+        },
+        {
+          "name": "c_jsonb",
+          "pgType": "jsonb",
+          "typMod": -1
+        },
+        {
+          "name": "c_timestamptz",
+          "pgType": "timestamptz",
+          "typMod": -1
+        },
+        {
+          "name": "c_timestamp",
+          "pgType": "timestamp",
+          "typMod": -1
+        },
+        {
+          "name": "c_date",
+          "pgType": "date",
+          "typMod": -1
+        },
+        {
+          "name": "c_uuid",
+          "pgType": "uuid",
+          "typMod": -1
+        },
+        {
+          "name": "c_numeric",
+          "pgType": "numeric",
+          "typMod": 524294
+        }
+      ],
+      "keyCols": null,
+      "schema": "{\"name\":\"t_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"c_bool\",\"type\":\"boolean\"},{\"name\":\"c_bytea\",\"type\":\"bytes\"},{\"name\":\"c_date\",\"type\":{\"type\":\"int\",\"logicalType\":\"date\"}},{\"name\":\"c_float4\",\"type\":\"float\"},{\"name\":\"c_float8\",\"type\":\"double\"},{\"name\":\"c_int2\",\"type\":\"int\"},{\"name\":\"c_int4\",\"type\":\"int\"},{\"name\":\"c_int8\",\"type\":\"long\"},{\"name\":\"c_json\",\"type\":\"bytes\"},{\"name\":\"c_jsonb\",\"type\":\"bytes\"},{\"name\":\"c_numeric\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":8,\"scale\":2}},{\"name\":\"c_text\",\"type\":\"string\"},{\"name\":\"c_timestamp\",\"type\":{\"type\":\"long\",\"logicalType\":\"local-timestamp-micros\"}},{\"name\":\"c_timestamptz\",\"type\":{\"type\":\"long\",\"logicalType\":\"timestamp-micros\"}},{\"name\":\"c_uuid\",\"type\":{\"type\":\"string\",\"logicalType\":\"uuid\"}},{\"name\":\"c_varchar\",\"type\":\"string\"}]}",
+      "rowHex": {
+        "UTC": "011a7b2261223a5b312c322c335d7df2a90200007841295c8fc2f5283040feffffff0ffeffffff0ffeffffffffffffffff011a7b2261223a5b312c322c335d7d1a7b2261223a5b312c322c335d7d02011c666f6f206261722062617a20c3a980d28597e58bed0580d28597e58bed054862643934656530622d353634662d343038382d626634652d3864356536323663616636361c666f6f206261722062617a20c3a9",
+        "UTC+05:30": "011a7b2261223a5b312c322c335d7df2a90200007841295c8fc2f5283040feffffff0ffeffffff0ffeffffffffffffffff011a7b2261223a5b312c322c335d7d1a7b2261223a5b312c322c335d7d02011c666f6f206261722062617a20c3a980eae5d9f88ced0580d28597e58bed054862643934656530622d353634662d343038382d626634652d3864356536323663616636361c666f6f206261722062617a20c3a9",
+        "UTC-07": "011a7b2261223a5b312c322c335d7df2a90200007841295c8fc2f5283040feffffff0ffeffffff0ffeffffffffffffffff011a7b2261223a5b312c322c335d7d1a7b2261223a5b312c322c335d7d02011c666f6f206261722062617a20c3a980e2b9b6a98aed0580d28597e58bed054862643934656530622d353634662d343038382d626634652d3864356536323663616636361c666f6f206261722062617a20c3a9"
+      }
+    },
+    {
+      "name": "key schema, single column",
+      "schemaName": "t_key",
+      "cols": [
+        {
+          "name": "c_bool",
+          "pgType": "bool",
+          "typMod": -1
+        },
+        {
+          "name": "c_bytea",
+          "pgType": "bytea",
+          "typMod": -1
+        },
+        {
+          "name": "c_float4",
+          "pgType": "float4",
+          "typMod": -1
+        },
+        {
+          "name": "c_float8",
+          "pgType": "float8",
+          "typMod": -1
+        },
+        {
+          "name": "c_int2",
+          "pgType": "int2",
+          "typMod": -1
+        },
+        {
+          "name": "c_int4",
+          "pgType": "int4",
+          "typMod": -1
+        },
+        {
+          "name": "c_int8",
+          "pgType": "int8",
+          "typMod": -1
+        },
+        {
+          "name": "c_text",
+          "pgType": "text",
+          "typMod": -1
+        },
+        {
+          "name": "c_varchar",
+          "pgType": "varchar",
+          "typMod": 14
+        },
+        {
+          "name": "c_json",
+          "pgType": "json",
+          "typMod": -1
+        },
+        {
+          "name": "c_jsonb",
+          "pgType": "jsonb",
+          "typMod": -1
+        },
+        {
+          "name": "c_timestamptz",
+          "pgType": "timestamptz",
+          "typMod": -1
+        },
+        {
+          "name": "c_timestamp",
+          "pgType": "timestamp",
+          "typMod": -1
+        },
+        {
+          "name": "c_date",
+          "pgType": "date",
+          "typMod": -1
+        },
+        {
+          "name": "c_uuid",
+          "pgType": "uuid",
+          "typMod": -1
+        },
+        {
+          "name": "c_numeric",
+          "pgType": "numeric",
+          "typMod": 524294
+        }
+      ],
+      "keyCols": [
+        "c_int8"
+      ],
+      "schema": "{\"name\":\"t_key\",\"type\":\"record\",\"fields\":[{\"name\":\"c_int8\",\"type\":\"long\"}]}",
+      "rowHex": {
+        "UTC": "feffffffffffffffff01",
+        "UTC+05:30": "feffffffffffffffff01",
+        "UTC-07": "feffffffffffffffff01"
+      }
+    },
+    {
+      "name": "key schema, composite",
+      "schemaName": "t_key",
+      "cols": [
+        {
+          "name": "c_bool",
+          "pgType": "bool",
+          "typMod": -1
+        },
+        {
+          "name": "c_bytea",
+          "pgType": "bytea",
+          "typMod": -1
+        },
+        {
+          "name": "c_float4",
+          "pgType": "float4",
+          "typMod": -1
+        },
+        {
+          "name": "c_float8",
+          "pgType": "float8",
+          "typMod": -1
+        },
+        {
+          "name": "c_int2",
+          "pgType": "int2",
+          "typMod": -1
+        },
+        {
+          "name": "c_int4",
+          "pgType": "int4",
+          "typMod": -1
+        },
+        {
+          "name": "c_int8",
+          "pgType": "int8",
+          "typMod": -1
+        },
+        {
+          "name": "c_text",
+          "pgType": "text",
+          "typMod": -1
+        },
+        {
+          "name": "c_varchar",
+          "pgType": "varchar",
+          "typMod": 14
+        },
+        {
+          "name": "c_json",
+          "pgType": "json",
+          "typMod": -1
+        },
+        {
+          "name": "c_jsonb",
+          "pgType": "jsonb",
+          "typMod": -1
+        },
+        {
+          "name": "c_timestamptz",
+          "pgType": "timestamptz",
+          "typMod": -1
+        },
+        {
+          "name": "c_timestamp",
+          "pgType": "timestamp",
+          "typMod": -1
+        },
+        {
+          "name": "c_date",
+          "pgType": "date",
+          "typMod": -1
+        },
+        {
+          "name": "c_uuid",
+          "pgType": "uuid",
+          "typMod": -1
+        },
+        {
+          "name": "c_numeric",
+          "pgType": "numeric",
+          "typMod": 524294
+        }
+      ],
+      "keyCols": [
+        "c_uuid",
+        "c_text",
+        "c_numeric"
+      ],
+      "schema": "{\"name\":\"t_key\",\"type\":\"record\",\"fields\":[{\"name\":\"c_numeric\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":8,\"scale\":2}},{\"name\":\"c_text\",\"type\":\"string\"},{\"name\":\"c_uuid\",\"type\":{\"type\":\"string\",\"logicalType\":\"uuid\"}}]}",
+      "rowHex": {
+        "UTC": "02011c666f6f206261722062617a20c3a94862643934656530622d353634662d343038382d626634652d386435653632366361663636",
+        "UTC+05:30": "02011c666f6f206261722062617a20c3a94862643934656530622d353634662d343038382d626634652d386435653632366361663636",
+        "UTC-07": "02011c666f6f206261722062617a20c3a94862643934656530622d353634662d343038382d626634652d386435653632366361663636"
+      }
+    },
+    {
+      "name": "numeric unconstrained",
+      "schemaName": "n_payload",
+      "cols": [
+        {
+          "name": "n",
+          "pgType": "numeric",
+          "typMod": -1
+        }
+      ],
+      "keyCols": null,
+      "schema": "{\"name\":\"n_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"n\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":65535,\"scale\":65531}}]}",
+      "rowHex": {
+        "UTC": "0200",
+        "UTC+05:30": "0200",
+        "UTC-07": "0200"
+      }
+    },
+    {
+      "name": "numeric(1,0)",
+      "schemaName": "n_payload",
+      "cols": [
+        {
+          "name": "n",
+          "pgType": "numeric",
+          "typMod": 65540
+        }
+      ],
+      "keyCols": null,
+      "schema": "{\"name\":\"n_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"n\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":1}}]}",
+      "rowHex": {
+        "UTC": "0207",
+        "UTC+05:30": "0207",
+        "UTC-07": "0207"
+      }
+    },
+    {
+      "name": "numeric(10,3)",
+      "schemaName": "n_payload",
+      "cols": [
+        {
+          "name": "n",
+          "pgType": "numeric",
+          "typMod": 655367
+        }
+      ],
+      "keyCols": null,
+      "schema": "{\"name\":\"n_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"n\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":10,\"scale\":3}}]}",
+      "rowHex": {
+        "UTC": "0201",
+        "UTC+05:30": "0201",
+        "UTC-07": "0201"
+      }
+    },
+    {
+      "name": "numeric(18,18)",
+      "schemaName": "n_payload",
+      "cols": [
+        {
+          "name": "n",
+          "pgType": "numeric",
+          "typMod": 1179670
+        }
+      ],
+      "keyCols": null,
+      "schema": "{\"name\":\"n_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"n\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":18,\"scale\":18}}]}",
+      "rowHex": {
+        "UTC": "0201",
+        "UTC+05:30": "0201",
+        "UTC-07": "0201"
+      }
+    },
+    {
+      "name": "numeric(38,0)",
+      "schemaName": "n_payload",
+      "cols": [
+        {
+          "name": "n",
+          "pgType": "numeric",
+          "typMod": 2490372
+        }
+      ],
+      "keyCols": null,
+      "schema": "{\"name\":\"n_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"n\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":38}}]}",
+      "rowHex": {
+        "UTC": "0207",
+        "UTC+05:30": "0207",
+        "UTC-07": "0207"
+      }
+    },
+    {
+      "name": "numeric(38,20)",
+      "schemaName": "n_payload",
+      "cols": [
+        {
+          "name": "n",
+          "pgType": "numeric",
+          "typMod": 2490392
+        }
+      ],
+      "keyCols": null,
+      "schema": "{\"name\":\"n_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"n\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":38,\"scale\":20}}]}",
+      "rowHex": {
+        "UTC": "0201",
+        "UTC+05:30": "0201",
+        "UTC-07": "0201"
+      }
+    },
+    {
+      "name": "numeric(1000,500)",
+      "schemaName": "n_payload",
+      "cols": [
+        {
+          "name": "n",
+          "pgType": "numeric",
+          "typMod": 65536504
+        }
+      ],
+      "keyCols": null,
+      "schema": "{\"name\":\"n_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"n\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":1000,\"scale\":500}}]}",
+      "rowHex": {
+        "UTC": "0201",
+        "UTC+05:30": "0201",
+        "UTC-07": "0201"
+      }
+    }
+  ],
+  "typeChanges": [
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "bool",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "float4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "float8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "int2",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "int4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "int8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "text",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": false
+    },
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": false
+    },
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "json",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "date",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": false
+    },
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": false
+    },
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": false
+    },
+    {
+      "oldType": "bool",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "bool",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "float4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "float8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "int2",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "int4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "int8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "text",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": false
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": false
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "json",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "date",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": false
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": false
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": false
+    },
+    {
+      "oldType": "bytea",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "bool",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "float4",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "float8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "int2",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "int4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "int8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "text",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": false
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": false
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "json",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "date",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": false
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": false
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": false
+    },
+    {
+      "oldType": "float4",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "bool",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "float4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "float8",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "int2",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "int4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "int8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "text",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": false
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": false
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "json",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "date",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": false
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": false
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": false
+    },
+    {
+      "oldType": "float8",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "bool",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "float4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "float8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "int2",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "int4",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "int8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "text",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": false
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": false
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "json",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "date",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": false
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": false
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": false
+    },
+    {
+      "oldType": "int2",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "bool",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "float4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "float8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "int2",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "int4",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "int8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "text",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": false
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": false
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "json",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "date",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": false
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": false
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": false
+    },
+    {
+      "oldType": "int4",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "bool",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "float4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "float8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "int2",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "int4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "int8",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "text",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": false
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": false
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "json",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "date",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": false
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": false
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": false
+    },
+    {
+      "oldType": "int8",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "bool",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "float4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "float8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "int2",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "int4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "int8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "text",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": true
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": true
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "json",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "date",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": false
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": false
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": false
+    },
+    {
+      "oldType": "text",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "bool",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "float4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "float8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "int2",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "int4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "int8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "text",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": true
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": true
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "json",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "date",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 14,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "bool",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "float4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "float8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "int2",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "int4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "int8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "text",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": true
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": true
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "json",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "date",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": false
+    },
+    {
+      "oldType": "varchar",
+      "oldMod": 255,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "bool",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "float4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "float8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "int2",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "int4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "int8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "text",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": false
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": false
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "json",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "date",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": false
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": false
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": false
+    },
+    {
+      "oldType": "json",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "bool",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "float4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "float8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "int2",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "int4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "int8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "text",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": false
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": false
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "json",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "date",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": false
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": false
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": false
+    },
+    {
+      "oldType": "jsonb",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "bool",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "float4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "float8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "int2",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "int4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "int8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "text",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": false
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": false
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "json",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "date",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": false
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": false
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": false
+    },
+    {
+      "oldType": "timestamptz",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "bool",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "float4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "float8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "int2",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "int4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "int8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "text",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": false
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": false
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "json",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "date",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": false
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": false
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": false
+    },
+    {
+      "oldType": "timestamp",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "bool",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "float4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "float8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "int2",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "int4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "int8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "text",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": false
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": false
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "json",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "date",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": false
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": false
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": false
+    },
+    {
+      "oldType": "date",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "bool",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "float4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "float8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "int2",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "int4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "int8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "text",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": false
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": false
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "json",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "date",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": true
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": false
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": false
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": false
+    },
+    {
+      "oldType": "uuid",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "bool",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "float4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "float8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "int2",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "int4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "int8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "text",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "json",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "date",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": true
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524294,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "bool",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "float4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "float8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "int2",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "int4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "int8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "text",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "json",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "date",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": true
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 524295,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "bool",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "float4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "float8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "int2",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "int4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "int8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "text",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "json",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "date",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": true
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": 655366,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "bool",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "bytea",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "float4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "float8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "int2",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "int4",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "int8",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "text",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 14,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "varchar",
+      "newMod": 255,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "json",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "jsonb",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "timestamptz",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "timestamp",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "date",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "uuid",
+      "newMod": -1,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524294,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 524295,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": 655366,
+      "want": false
+    },
+    {
+      "oldType": "numeric",
+      "oldMod": -1,
+      "newType": "numeric",
+      "newMod": -1,
+      "want": true
+    }
+  ]
+}
