@@ -247,3 +247,22 @@ func assert[T any](a T, err error) T {
 
 	return a
 }
+
+// An unconstrained numeric is an Avro string (#375); numeric(p,s) stays a
+// decimal.
+func TestAvroExtract_UnconstrainedNumericIsString(t *testing.T) {
+	is := is.New(t)
+	for _, tc := range []struct {
+		typMod int32
+		want   string
+	}{
+		{-1, `{"name":"t_payload","type":"record","fields":[{"name":"n","type":"string"}]}`},
+		{10<<16 | 2 + 4, `{"name":"t_payload","type":"record","fields":[{"name":"n","type":{"type":"bytes","logicalType":"decimal","precision":10,"scale":2}}]}`},
+	} {
+		sch, err := Avro.Extract("t_payload", []pgconn.FieldDescription{
+			{Name: "n", DataTypeOID: pgtype.NumericOID, TypeModifier: tc.typMod},
+		})
+		is.NoErr(err)
+		is.Equal(sch.String(), tc.want)
+	}
+}

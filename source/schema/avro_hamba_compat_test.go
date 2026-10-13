@@ -50,6 +50,12 @@ import (
 // run with HAMBA_FIXTURE_GEN=1, and commit only the new entries. Never
 // regenerate existing entries with the new codec: they are the frozen record
 // of what the old library produced.
+//
+// One deliberate exception (#375): the "numeric unconstrained" entry and the
+// six typeChanges between text/varchar and an unconstrained numeric were edited
+// by hand when that column became an Avro string. The new schema is a plain
+// string, which hamba and iskorotkov encode identically (byte 0x02 0x30 for
+// "0"); this was checked on release/v0.14.x, which runs hamba.
 
 const (
 	pgBool        = "bool"
@@ -236,7 +242,12 @@ func rowFor(cols []compatCol) map[string]any {
 		case pgUUID:
 			row[c.Name] = "bd94ee0b-564f-4088-bf4e-8d5e626caf66"
 		case pgNumeric:
-			row[c.Name] = numericValue(c.TypMod)
+			if c.TypMod == -1 {
+				// unconstrained numeric is an Avro string (#375)
+				row[c.Name] = "0"
+			} else {
+				row[c.Name] = numericValue(c.TypMod)
+			}
 		}
 	}
 	return row

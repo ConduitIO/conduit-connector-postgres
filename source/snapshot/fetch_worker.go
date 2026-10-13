@@ -408,7 +408,7 @@ func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values [
 
 	for i, fd := range fields {
 		if fd.Name == f.conf.Key {
-			k, err := types.FormatFor(types.EncodingFor(f.conf.WithAvroSchema), fd.DataTypeOID, values[i])
+			k, err := types.FormatColumn(types.EncodingFor(f.conf.WithAvroSchema), fd.DataTypeOID, fd.TypeModifier, values[i])
 			if err != nil {
 				if located, ok := types.LocateErrorSnapshot(err, f.conf.Table, fd.Name); ok {
 					return key, payload, types.WithRow(located, f.rowID(fields, values))
@@ -419,7 +419,7 @@ func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values [
 			key[f.conf.Key] = k
 		}
 
-		v, err := types.FormatFor(types.EncodingFor(f.conf.WithAvroSchema), fd.DataTypeOID, values[i])
+		v, err := types.FormatColumn(types.EncodingFor(f.conf.WithAvroSchema), fd.DataTypeOID, fd.TypeModifier, values[i])
 		if err != nil {
 			if located, ok := types.LocateErrorSnapshot(err, f.conf.Table, fd.Name); ok {
 				return key, payload, types.WithRow(located, f.rowID(fields, values))

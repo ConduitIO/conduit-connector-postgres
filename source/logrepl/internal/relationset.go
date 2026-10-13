@@ -146,7 +146,7 @@ func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, data []
 		return nil, fmt.Errorf("failed to decode value of pgtype %v: %w", col.DataType, err)
 	}
 
-	v, err := types.FormatFor(rs.encoding, col.DataType, val)
+	v, err := types.FormatColumn(rs.encoding, col.DataType, col.TypeModifier, val)
 	if err != nil {
 		return nil, fmt.Errorf("failed to format column %q type %T: %w", col.Name, val, err)
 	}
