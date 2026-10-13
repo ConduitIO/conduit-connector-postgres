@@ -17,11 +17,13 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"math/big"
 	"slices"
 	"strings"
+	"sync"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/conduitio/conduit-commons/opencdc"
@@ -39,6 +41,12 @@ type Destination struct {
 	config       destination.Config
 	getTableName destination.TableFn
 
+	// connMu serializes use of conn: a pgx connection must not be used from
+	// two goroutines. Teardown can be called while a Write is still running
+	// (the SDK calls it without a prior Stop when a pipeline stops on an
+	// error, conduit-connector-sdk#400), so Teardown waits for the running
+	// Write instead of closing the connection under it.
+	connMu      sync.Mutex
 	conn        *pgx.Conn
 	dbInfo      *internal.DbInfo
 	stmtBuilder sq.StatementBuilderType
@@ -74,6 +82,13 @@ func (d *Destination) Open(ctx context.Context) error {
 // Write routes incoming records to their appropriate handler based on the
 // operation.
 func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, error) {
+	d.connMu.Lock()
+	defer d.connMu.Unlock()
+	if d.conn == nil {
+		// Torn down: nothing was written, so nothing may be acked.
+		return 0, errors.New("destination is closed")
+	}
+
 	b := &pgx.Batch{}
 	var skipped int
 	for _, rec := range recs {
@@ -129,8 +144,12 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 }
 
 func (d *Destination) Teardown(ctx context.Context) error {
+	d.connMu.Lock()
+	defer d.connMu.Unlock()
 	if d.conn != nil {
-		return d.conn.Close(ctx)
+		conn := d.conn
+		d.conn = nil
+		return conn.Close(ctx)
 	}
 	return nil
 }
