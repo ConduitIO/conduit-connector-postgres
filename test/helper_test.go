@@ -52,7 +52,9 @@ func TestRandomIdentifier_ConcurrentUnique(t *testing.T) {
 	seen := make(map[string]struct{}, workers*per)
 	var wg sync.WaitGroup
 	for range workers {
-		wg.Go(func() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 			ids := make([]string, per)
 			for i := range ids {
 				ids[i] = RandomIdentifier(t)
@@ -62,7 +64,7 @@ func TestRandomIdentifier_ConcurrentUnique(t *testing.T) {
 			for _, id := range ids {
 				seen[id] = struct{}{}
 			}
-		})
+		}()
 	}
 	wg.Wait()
 	is.Equal(len(seen), workers*per)
