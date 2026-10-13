@@ -1043,8 +1043,9 @@ non-transactional message at m would read `m ≤ Lc − 1`. That would re-delive
 a message at exactly Lc. It is the message Debezium's last offset came from:
 for a non-transactional message, Debezium's `lsn_commit` is that message's
 LSN as the walsender reports it, which is the same m Conduit sees (S1). So
-the import's resume point keeps Lc itself for messages, and #3033 specifies
-the rule for imported positions as **delivered iff m ≤ Lc**. With it:
+the import's resume point keeps Lc itself for messages: #3033 (head
+`66c27042`) sets `ResumePoint.MessageLSN = Lc` for an imported resume point,
+with the rule **delivered iff m ≤ Lc**. With it:
 
 - a non-transactional message at m < Lc was processed by Debezium before P's
   commit or at it, and is skipped;
@@ -1068,6 +1069,31 @@ The other choice, never skipping transactional messages, is equally safe but
 re-delivers every message in T's prefix, a set with no fixed bound. Applying
 one rule to every change of T keeps the bound to a single message and keeps
 the resume code free of a message special case.
+
+**Seq counting is unchanged by the partial rule.** #3033 counts a
+transactional message in `Seq` like any other change of its transaction, and
+the import agrees: D4 counts `seq` before the skip decision, for messages as
+for rows, so a message the partial rule skips still consumes its ordinal and
+the records Conduit delivers from T carry their real keys. The partial rule
+itself compares change LSNs with L, never `Seq`, so it gives the same result
+under either numbering.
+
+**Where Lc lives, and `tx_seq_msgs`.** The import never writes a position
+(Constraints: no persisted state of its own). Lc lives in the connector
+setting, `logrepl.import.debeziumOffset`, as `offset.lsn_commit`. At every
+start with an empty position, including a restart after a crash before the
+first durable ack, the connector re-reads it from the setting and builds the
+in-memory `ResumePoint`: `Key = (Lc − 1, MaxUint64)`, `LSN = Lc`,
+`MessageLSN = Lc`, plus `Partial` when armed. So `LastLSN` is not where Lc
+lives: there is no imported `Position` to hold it, and once a position
+exists the setting is ignored (D2). The first durable ack writes an ordinary
+version 2 position in the **effective** numbering. That position carries
+`tx_seq_msgs: true` when the `messages` option is effective, which is the
+normal case for a migrated pipeline: `migrate` enables Debezium-compatible
+output by default for Debezium Postgres pipelines with a Kafka destination
+(#3026), and the option is on from PG 14. The import's own resume point has
+no stored numbering, so #3033's flag-versus-option comparison does not apply
+to it, and there is nothing to mismatch.
 
 **The duplicate set** for the DML case is therefore T's changes at LSN L,
 plus at most one transactional message of T whose end LSN is L. `--peek` runs
