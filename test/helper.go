@@ -16,6 +16,8 @@ package test
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
@@ -272,20 +274,51 @@ func CreatePublication(t *testing.T, conn Querier, pubName string, tables []stri
 	})
 }
 
-// randomIdentifierSeq makes identifiers unique within a process even when two
-// calls land in the same microsecond bucket.
-var randomIdentifierSeq atomic.Uint64
+// maxIdentifierLen is Postgres' NAMEDATALEN-1. Longer identifiers are
+// silently truncated, which makes two distinct long names collapse into one.
+const maxIdentifierLen = 63
 
-// RandomIdentifier returns a table/slot-safe identifier for the test. The
-// suffix used to be time.Now().UnixMicro()%1000, i.e. only 1000 values, so two
-// calls from the same test name (or a leftover object from an earlier run)
-// could collide. It now combines a per-process counter with the full
-// microsecond clock.
+var (
+	// randomIdentifierSeq makes identifiers unique within a process.
+	randomIdentifierSeq atomic.Uint64
+	// randomIdentifierProc makes identifiers unique across test processes
+	// (go test runs each package as its own process against the same server).
+	randomIdentifierProc = newProcessID()
+)
+
+func newProcessID() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(fmt.Sprintf("test: reading random bytes: %v", err))
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// RandomIdentifier returns a table/slot/publication-safe identifier derived
+// from the test name. The result is always lowercase, consists only of
+// [a-z0-9_] (valid as an unquoted Postgres identifier) and is at most 63 bytes.
+//
+// Uniqueness comes from the suffix "_<process id>_<counter>", where the
+// process id is random per process and the counter is atomic, so results are
+// unique within and across test processes. The test-name part is sanitized and
+// truncated to whatever room the suffix leaves, so a long test name can never
+// push the unique suffix past Postgres' 63-byte limit (where it would be
+// silently cut off).
 func RandomIdentifier(t *testing.T) string {
-	return fmt.Sprintf("conduit_%v_%d_%d",
-		strings.ReplaceAll(strings.ToLower(t.Name()), "/", "_"),
-		time.Now().UnixMicro()%1000000,
-		randomIdentifierSeq.Add(1))
+	const prefix = "conduit_"
+	suffix := fmt.Sprintf("_%s_%d", randomIdentifierProc, randomIdentifierSeq.Add(1))
+
+	name := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '_'
+	}, strings.ToLower(t.Name()))
+
+	if room := maxIdentifierLen - len(prefix) - len(suffix); len(name) > room {
+		name = name[:room]
+	}
+	return prefix + name + suffix
 }
 
 func IsPgError(is *is.I, err error, wantCode string) {
