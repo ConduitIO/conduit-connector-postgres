@@ -73,6 +73,22 @@ The connector will automatically look up the primary key column for the specifie
 and use them as the key value. If that can't be determined, the connector will return
 an error.
 
+### NaN and Infinity in `numeric` Columns
+
+A `numeric` column can hold `NaN`, `Infinity` and `-Infinity` (the infinities
+need Postgres 14 or later, and an unconstrained `numeric`). The Avro `decimal`
+type cannot represent them, and the connector never replaces them with `NULL`
+or a number.
+
+- With `logrepl.withAvroSchema: true` (the default), the source stops with the
+  error code `postgres.source.numeric_not_representable`, which names the
+  table, the column and the value. Restarting replays the same row, so remove
+  the value or change the column first: add a constraint
+  (`CHECK (col NOT IN ('NaN', 'Infinity', '-Infinity'))`), or read the column
+  through a view or cast that maps these values to something you choose.
+- With `logrepl.withAvroSchema: false`, the values are emitted as the strings
+  `"NaN"`, `"Infinity"` and `"-Infinity"`. A `NULL` stays `NULL`.
+
 ## Destination
 
 The Postgres Destination takes a Conduit record and stores it using a SQL statement.

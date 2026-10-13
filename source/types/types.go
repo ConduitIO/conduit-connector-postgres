@@ -23,16 +23,59 @@ var (
 	UUID    = UUIDFormatter{}
 )
 
+// Encoding tells FormatFor how the formatted values are going to be
+// serialized. It only changes the Go representation of values the serializer
+// could not otherwise represent.
+type Encoding int
+
+const (
+	// EncodingNative is for values that leave the connector as plain Go values
+	// (JSON, protobuf struct), i.e. the connector does not attach an Avro
+	// schema to the record.
+	EncodingNative Encoding = iota
+	// EncodingAvro is for values that the SDK encodes with the Avro schema
+	// produced by source/schema (withAvroSchema).
+	EncodingAvro
+)
+
+// EncodingFor returns the encoding for a source whose withAvroSchema option has
+// the given value.
+func EncodingFor(withAvroSchema bool) Encoding {
+	if withAvroSchema {
+		return EncodingAvro
+	}
+	return EncodingNative
+}
+
+// Format normalizes a value decoded by pgx into the representation the
+// connector emits, using EncodingNative. See FormatFor.
 func Format(oid uint32, v any) (any, error) {
+	return FormatFor(EncodingNative, oid, v)
+}
+
+// FormatFor normalizes a value decoded by pgx into the representation the
+// connector emits:
+//
+//   - numeric is a *big.Rat; NaN, Infinity and -Infinity are the strings "NaN",
+//     "Infinity" and "-Infinity" (EncodingNative) or a
+//     *NumericNotRepresentableError (EncodingAvro, whose decimal cannot hold
+//     them). NULL is always the untyped nil, never a typed nil *big.Rat.
+//   - uuid is its text form.
+//
+// Everything else is returned as decoded.
+func FormatFor(enc Encoding, oid uint32, v any) (any, error) {
 	if oid == pgtype.UUIDOID {
 		return UUID.Format(v)
 	}
 
 	switch t := v.(type) {
 	case pgtype.Numeric:
-		return Numeric.BigRatFromNumeric(t)
+		return formatNumeric(enc, t)
 	case *pgtype.Numeric:
-		return Numeric.BigRatFromNumeric(*t)
+		if t == nil {
+			return nil, nil //nolint:nilnil // a nil pointer from pgx is NULL
+		}
+		return formatNumeric(enc, *t)
 	case []uint8:
 		if oid == pgtype.XMLOID {
 			return string(t), nil
