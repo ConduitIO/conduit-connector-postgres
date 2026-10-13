@@ -463,28 +463,53 @@ func TestCDCIterator_NextN_InternalBatching(t *testing.T) {
 	underTest := testCDCIterator(ctx, t, pool, table, true)
 	<-underTest.sub.Ready()
 
+	// NextN returns the records that are available right now (it blocks only
+	// for the first batch), so the test has to pin down what is available
+	// before each call instead of sleeping and hoping (#393). batchesCh has a
+	// capacity of 1 and the handler flushes a full batch of 2 into it, so the
+	// batches queued in it are observable.
 	insertTestRows(ctx, is, pool, table, 1, 1)
-	// wait until the CDCHandler flushes this one record
-	// so that we force the CDCIterator to wait for another batch
-	time.Sleep(time.Second * 2)
+	// the flush timer hands record 1 over as a batch of its own
+	waitForTest(t, "record 1 flushed as its own batch", func() bool { return len(underTest.batchesCh) == 1 })
 	insertTestRows(ctx, is, pool, table, 2, 5)
 
-	// we request 2 records, expect records 1 and 2
+	// Take that batch by hand and hand it back as the left-over of a previous
+	// read. The handler is now free to queue the batch of records 2 and 3,
+	// and we wait for it, so that NextN's top-up read finds it without racing
+	// the handler. This is the same left-over plus top-up path the
+	// sleeping version exercised.
+	underTest.recordsForNextRead = <-underTest.batchesCh
+	waitForTest(t, "records 2 and 3 queued", func() bool { return len(underTest.batchesCh) == 1 })
+
+	// we request 2 records, expect records 1 and 2; 3 is left over
 	got, err := underTest.NextN(ctx, 2)
 	is.NoErr(err)
 	verifyOpenCDCRecords(is, got, table, 1, 2)
-	time.Sleep(200 * time.Millisecond)
+	// the handler moves on to records 4 and 5 and queues them as one batch
+	waitForTest(t, "records 4 and 5 queued", func() bool { return len(underTest.batchesCh) == 1 })
 
-	// we request 2 records, expect records 3 and 4
+	// we request 2 records, expect records 3 (left over) and 4; 5 is left over
 	got, err = underTest.NextN(ctx, 2)
 	is.NoErr(err)
 	verifyOpenCDCRecords(is, got, table, 3, 4)
-	time.Sleep(200 * time.Millisecond)
 
-	// we request 2 records, expect record 5
+	// we request 2 records, expect record 5; nothing else exists
 	got, err = underTest.NextN(ctx, 2)
 	is.NoErr(err)
 	verifyOpenCDCRecords(is, got, table, 5, 5)
+}
+
+// waitForTest polls cond until it holds, failing the test after a generous
+// deadline. The deadline only bounds a hang; it is not part of the assertion.
+func waitForTest(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for: %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func insertTestRows(ctx context.Context, is *is.I, pool *pgxpool.Pool, table string, from int, to int) {

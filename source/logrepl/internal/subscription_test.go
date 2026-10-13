@@ -50,15 +50,45 @@ func TestSubscription_WithRepmgr(t *testing.T) {
 
 	sub, messages := setupSubscription(ctx, t, pool, table1, table2)
 
+	// seenRelations holds the relations whose Relation message the test has
+	// already consumed as an expected message.
+	seenRelations := map[uint32]bool{}
+
+	// fetchAndAssertMessageTypes reads len(msgTypes) messages and asserts their
+	// types, in order.
+	//
+	// pgoutput sends a Relation message before the first change to a relation
+	// in a session, and again whenever that relation's relcache entry is
+	// invalidated in between (autoanalyze, DDL on the table). The second kind
+	// can land anywhere in the stream and is not what this test is about
+	// (#389), so a Relation for a relation we already got is skipped when the
+	// test is not asking for one. The first Relation per relation is still
+	// required where the caller lists it, and an unexpected Relation for a
+	// relation we have not seen yet still fails the assertion. Message order
+	// and the data messages are asserted exactly as before.
 	fetchAndAssertMessageTypes := func(is *is.I, m chan pglogrepl.Message, msgTypes ...pglogrepl.MessageType) []pglogrepl.Message {
 		out := make([]pglogrepl.Message, len(msgTypes))
+		timeout := time.After(5 * time.Second)
 		for i, msgType := range msgTypes {
-			select {
-			case msg := <-m:
+			for {
+				var msg pglogrepl.Message
+				select {
+				case msg = <-m:
+				case <-timeout:
+					is.Fail() // timeout while waiting to receive message
+					return out
+				}
+
+				rel, isRel := msg.(*pglogrepl.RelationMessage)
+				if isRel && msgType != pglogrepl.MessageTypeRelation && seenRelations[rel.RelationID] {
+					continue // repeated Relation after relcache invalidation
+				}
+				if isRel {
+					seenRelations[rel.RelationID] = true
+				}
 				is.Equal(msg.Type(), msgType)
 				out[i] = msg
-			case <-time.After(time.Second):
-				is.Fail() // timeout while waiting to receive message
+				break
 			}
 		}
 		return out
