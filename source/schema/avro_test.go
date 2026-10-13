@@ -259,11 +259,14 @@ func TestAvroExtract_UnconstrainedNumericIsString(t *testing.T) {
 		{-1, `{"name":"t_payload","type":"record","fields":[{"name":"n","type":"string"}]}`},
 		{10<<16 | 2 + 4, `{"name":"t_payload","type":"record","fields":[{"name":"n","type":{"type":"bytes","logicalType":"decimal","precision":10,"scale":2}}]}`},
 	} {
-		sch, err := Avro.Extract("t_payload", []pgconn.FieldDescription{
-			{Name: "n", DataTypeOID: pgtype.NumericOID, TypeModifier: tc.typMod},
+		t.Run(fmt.Sprintf("typmod=%d", tc.typMod), func(t *testing.T) {
+			is := is.New(t)
+			sch, err := Avro.Extract("t_payload", []pgconn.FieldDescription{
+				{Name: "n", DataTypeOID: pgtype.NumericOID, TypeModifier: tc.typMod},
+			})
+			is.NoErr(err)
+			is.Equal(sch.String(), tc.want)
 		})
-		is.NoErr(err)
-		is.Equal(sch.String(), tc.want)
 	}
 
 	// The string schema encodes as the length-prefixed text, with hamba/avro

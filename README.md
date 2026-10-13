@@ -89,13 +89,18 @@ A `numeric` column with a precision and scale, `numeric(p,s)`, is an Avro
 A `numeric` column **without** a precision and scale can hold any value Postgres
 can store, which no Avro `decimal` can. With `logrepl.withAvroSchema: true` (the
 default) it is an Avro `string` holding the exact text of the value, with its
-scale (`1.50` stays `1.50`, `0.000` stays `0.000`), and `NaN`, `Infinity` and
+scale (`1.50` stays `1.50`), and `NaN`, `Infinity` and
 `-Infinity` as those three words: **a consumer of such a column must handle
 them**, a plain decimal parser will reject them. Earlier versions used `decimal(65535, 65531)`, which could not encode a
 value of 10000 or more and stopped the pipeline. The first record after an
 upgrade registers a new schema version for the table; consumers must read the
 field as a string. This connector's destination writes the string to a `numeric`
 column exactly.
+
+**Known issue:** a zero with a display scale reads as `0` in the snapshot and as
+`0.000` (its stored text) in change data capture. The values are numerically
+equal; only the text differs. Tracked in
+[#391](https://github.com/ConduitIO/conduit-connector-postgres/issues/391).
 
 So the Go type of an unconstrained `numeric` depends on the setting: a `string`
 with `logrepl.withAvroSchema: true`, a `big.Rat` with `false`.
