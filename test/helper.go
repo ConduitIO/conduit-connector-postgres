@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -271,10 +272,20 @@ func CreatePublication(t *testing.T, conn Querier, pubName string, tables []stri
 	})
 }
 
+// randomIdentifierSeq makes identifiers unique within a process even when two
+// calls land in the same microsecond bucket.
+var randomIdentifierSeq atomic.Uint64
+
+// RandomIdentifier returns a table/slot-safe identifier for the test. The
+// suffix used to be time.Now().UnixMicro()%1000, i.e. only 1000 values, so two
+// calls from the same test name (or a leftover object from an earlier run)
+// could collide. It now combines a per-process counter with the full
+// microsecond clock.
 func RandomIdentifier(t *testing.T) string {
-	return fmt.Sprintf("conduit_%v_%d",
+	return fmt.Sprintf("conduit_%v_%d_%d",
 		strings.ReplaceAll(strings.ToLower(t.Name()), "/", "_"),
-		time.Now().UnixMicro()%1000)
+		time.Now().UnixMicro()%1000000,
+		randomIdentifierSeq.Add(1))
 }
 
 func IsPgError(is *is.I, err error, wantCode string) {
