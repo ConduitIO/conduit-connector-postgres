@@ -18,6 +18,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -278,5 +280,83 @@ func TestDestinationTeardownContextExpires(t *testing.T) {
 	dst.release()
 	if dst.conn != nil {
 		t.Fatal("the abandoned connection was not closed when the Write finished")
+	}
+}
+
+// TestDestinationTeardownRacesManyWrites runs concurrent Writes against a
+// Teardown under -race. Invariants: once Teardown has begun every new Write
+// fails with (0, err); nothing is acked after Teardown returned (Teardown
+// returns only when no Write holds the connection); everything acked is
+// durable; and nothing panics on a closed or nil connection.
+func TestDestinationTeardownRacesManyWrites(t *testing.T) {
+	ctx := context.Background()
+	table, conn := newTeardownTable(ctx, t)
+	dst := newRawDestination(ctx, t, table)
+
+	const writers = 8
+	var (
+		tdReturned atomic.Bool
+		tdBegan    atomic.Bool
+		acked      atomic.Int64
+		nextID     atomic.Int64
+		wg         sync.WaitGroup
+		started    = make(chan struct{}, writers)
+		failures   = make(chan string, 4*writers)
+	)
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			started <- struct{}{}
+			for {
+				beganBefore := tdBegan.Load()
+				base := nextID.Add(5)
+				recs := make([]opencdc.Record, 5)
+				for j := range recs {
+					recs[j] = upsertRecord(base+int64(j), "x")
+				}
+				n, err := dst.Write(ctx, recs)
+				if n > 0 && tdReturned.Load() {
+					failures <- "a Write was acked after Teardown returned"
+				}
+				if err != nil && n != 0 {
+					failures <- fmt.Sprintf("Write returned n=%d with an error", n)
+				}
+				if beganBefore && tdReturned.Load() && err == nil {
+					failures <- "a Write that started after Teardown began succeeded"
+				}
+				acked.Add(int64(n))
+				if err != nil {
+					return
+				}
+			}
+		}()
+	}
+	for w := 0; w < writers; w++ {
+		<-started
+	}
+	time.Sleep(50 * time.Millisecond)
+	tdBegan.Store(true)
+	if err := dst.Teardown(ctx); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+	tdReturned.Store(true)
+	wg.Wait()
+	close(failures)
+	for f := range failures {
+		t.Error(f)
+	}
+
+	// Every new Write fails fast with (0, err).
+	n, err := dst.Write(ctx, []opencdc.Record{upsertRecord(-1, "late")})
+	if err == nil || n != 0 {
+		t.Fatalf("Write after Teardown returned n=%d err=%v, want n=0 and an error", n, err)
+	}
+	var rows int64
+	if err := conn.QueryRow(ctx, "SELECT count(*) FROM "+table).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows < acked.Load() {
+		t.Fatalf("acked %d records but only %d rows are durable", acked.Load(), rows)
 	}
 }
