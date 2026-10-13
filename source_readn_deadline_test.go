@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
@@ -35,6 +36,12 @@ func TestSource_ReadN_DeadlineDoesNotWedgeCDC(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _, _ = conn.Exec(context.Background(), "DROP TABLE "+table) })
+	// The test database allows few replication slots; leave none behind.
+	t.Cleanup(func() {
+		_ = logrepl.Cleanup(context.Background(), logrepl.CleanupConfig{
+			URL: test.RepmgrConnString, SlotName: table, PublicationName: table,
+		})
+	})
 
 	src := Connector.NewSource()
 	err := sdk.Util.ParseConfig(ctx, map[string]string{
