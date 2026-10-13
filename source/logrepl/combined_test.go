@@ -756,3 +756,47 @@ func TestCombinedIterator_TeardownRacesHandoff(t *testing.T) {
 	_ = it.Teardown(ctx)
 	<-done
 }
+
+// TestCombinedIterator_New_SnapshotInitFailureReleasesTheCDCIterator: the
+// snapshot iterator fails to initialise (the configured key column does not
+// exist) after the CDC iterator, and with it the subscription's pooled
+// replication connection, was created. The caller never receives the
+// iterator, so NewCombinedIterator must tear down what it created itself:
+// without that the connection stays acquired and the slot stays busy for the
+// life of the process.
+func TestCombinedIterator_New_SnapshotInitFailureReleasesTheCDCIterator(t *testing.T) {
+	ctx := test.Context(t)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupTestTable(ctx, t, pool)
+	t.Cleanup(func() {
+		_ = Cleanup(context.Background(), CleanupConfig{URL: test.RepmgrConnString, SlotName: table, PublicationName: table})
+	})
+
+	before := pool.Stat().AcquiredConns()
+	_, err := NewCombinedIterator(ctx, pool, Config{
+		Position:        opencdc.Position{},
+		Tables:          []string{table},
+		TableKeys:       map[string]string{table: "no_such_column"},
+		PublicationName: table,
+		SlotName:        table,
+		WithSnapshot:    true,
+	})
+	if err == nil {
+		t.Fatal("expected the snapshot iterator initialisation to fail")
+	}
+
+	// The pool releases connections asynchronously.
+	deadline := time.Now().Add(5 * time.Second)
+	for pool.Stat().AcquiredConns() > before {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d pooled connections still acquired after the failed open (err: %v)",
+				pool.Stat().AcquiredConns()-before, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// No replication connection may hold the slot.
+	if _, err := pool.Exec(ctx, "SELECT pg_drop_replication_slot($1)", table); err != nil {
+		t.Fatalf("the slot is still in use after the failed open: %v", err)
+	}
+}
