@@ -199,8 +199,17 @@ func TestDestinationTeardownBoundedByContext(t *testing.T) {
 	tctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	start := time.Now()
-	if err := dst.Teardown(tctx); err != nil {
-		t.Fatalf("Teardown: %v", err)
+	tdErr := make(chan error, 1)
+	go func() { tdErr <- dst.Teardown(tctx) }()
+	select {
+	case err := <-tdErr:
+		if err != nil {
+			t.Fatalf("Teardown: %v", err)
+		}
+	case <-time.After(6 * time.Second):
+		// Release the lock so the blocked goroutines can finish, then fail.
+		_ = tx.Rollback(ctx)
+		t.Fatal("Teardown still blocked 6s in, with a 3s context: it is not bounded by its context")
 	}
 	if took := time.Since(start); took > 2*time.Second {
 		t.Fatalf("Teardown took %s with the row lock still held, want it bounded by its context", took)
