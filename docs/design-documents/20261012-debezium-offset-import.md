@@ -614,7 +614,10 @@ re-run of `--cutover` finishes the observation first:
   missing, the re-run stops with `identity_mismatch`.
 - **Debezium is RUNNING:** the stop did not take effect, or is still pending
   (Kafka Connect's stop is asynchronous). The re-run issues the stop call
-  again and waits for STOPPED.
+  again and waits for STOPPED (or 404 with `debezium.stopMethod: delete`).
+- **Any other state** (`PAUSED`, `FAILED`, `UNASSIGNED`, `RESTARTING`, a 404
+  with `debezium.stopMethod: stop`, or anything unknown): the re-run refuses
+  with `connector_running` (D11) and changes nothing.
 
 `--check-rollback` performs the same observation read-only when it finds the
 journal at step 7 and Debezium stopped, and reports, without journalling,
@@ -930,6 +933,7 @@ fails closed with `rollback_check_state_unmapped`.
 | Kafka Connect | `RUNNING` (connector and every task) | running |
 | Kafka Connect | `UNASSIGNED` (connector or a task) | `waiting` (`rollback_check_connector_state`) |
 | Kafka Connect | `PAUSED`, `FAILED` or `RESTARTING` (connector or a task), or any other value | `unsafe` (`rollback_check_connector_state`), with the task's trace; a paused task can still hold its replication connection |
+| Kafka Connect | unreachable, or a call timing out | `unsafe` (`rollback_check_connect_unreachable`); inside `--watch`, `waiting`, and an observation gap while it lasts (S15) |
 | Conduit `GET /v1/pipelines/{id}` | `STATUS_STOPPED` with `stoppedReason` `STOPPED_REASON_USER` | stopped |
 | Conduit | 404 | absent |
 | Conduit | `STATUS_RUNNING` | running |
@@ -1002,6 +1006,7 @@ combination not in the table is `unsafe` (`rollback_check_state_unmapped`).
 | any, before the R7 snapshot | any | `RECOVERING`, or stopped by the system | — | `unsafe` (`pipeline_state`), transient |
 | any, after the R7 snapshot | any | a pipeline state other than stopped (`STATUS_STOPPED` by the user, or `DEGRADED`) or absent | — | `unsafe` (`two_writers`), terminal: someone started it |
 | any | any | Conduit unreachable | — | `unsafe` (`conduit_unreachable`); inside `--watch`, `waiting` (transient). An unreachable API is not a pipeline state, so this row wins over the two above; the API-independent backstop (Conduit's slot against the baseline) still runs |
+| any | Kafka Connect unreachable | any | — | `unsafe` (`connect_unreachable`); inside `--watch`, `waiting` (transient). An unreachable API is not a connector state, so this row wins over the connector-state rows. While it lasts R11 cannot run, so the interval is an observation gap (S15): only the same identity tuple is accepted across it |
 
 Inside `--watch`, every transient finding in this table (`connector_state`,
 `pipeline_state`, `conduit_unreachable`, `privileges`, `offset_unreadable`)
@@ -1030,9 +1035,9 @@ next: `continuity_unproven`, `slot_moved` (including R11's config change),
 restarted, `conduit_behind` and `state_unmapped`. The watch records a terminal
 finding in its log, and from then on every check and every later watch returns
 that `unsafe` verdict until `--abandon`. Every other finding is **transient**:
-an unreachable Conduit or Kafka Connect API (`conduit_unreachable`, or the Kafka
-Connect call timing out), a `FAILED`, `RESTARTING`, `UNASSIGNED` or `PAUSED`
-task (`connector_state`), `pipeline_state` before the R7 snapshot, `privileges`,
+an unreachable Conduit or Kafka Connect API (`conduit_unreachable`,
+`connect_unreachable`), a `FAILED`, `RESTARTING`, `UNASSIGNED` or `PAUSED` task
+(`connector_state`), `pipeline_state` before the R7 snapshot, `privileges`,
 `offset_unreadable`, `state_unmapped` before the restart, and `not_caught_up`.
 Inside `--watch` a transient finding is `waiting`, with the code as the reason,
 and the watch keeps polling; a one-shot check reports it as `unsafe` ("not now")
@@ -1043,8 +1048,10 @@ operator starts `--check-rollback --watch` while Debezium is still stopped,
 then restarts Debezium. The watch runs through the pipeline delete and exits
 only at `ready_to_drop`, a terminal `unsafe`, or its timeout. The watch:
 
-- polls at least once a second, reading `pg_replication_slots` and
-  `pg_stat_activity` twice per poll and requiring agreement (S15). From the
+- samples Postgres on its own timer, at least once a second, reading
+  `pg_replication_slots` and `pg_stat_activity` twice per sample and
+  requiring agreement (S15); the Kafka Connect and Conduit calls run
+  separately and never delay a sample. From the
   moment Kafka Connect first reports Debezium `RUNNING` it polls every 50 to
   100 ms, until it has seen Debezium's **second** walsender (the reconnect
   that follows the WAL position search, S15) or for 60 s, then goes back to
@@ -1169,9 +1176,19 @@ which still holds everything since F_c:
      Conduit's output up to K and Debezium's output in Kafka, and the operator
      re-snapshots;
    - after `slot_advanced` there is no loss-free way forward from the slots
-     either: the operator re-snapshots (a new pipeline with
-     `snapshotMode: initial`), then drops both slots by hand.
-4. **WAL retention.** From the failed restart until the forward pipeline
+     either: the operator re-snapshots ("The re-snapshot path", below).
+4. **The re-snapshot path** (Conduit's slot missing, or `slot_advanced`).
+   - Create a **new** pipeline with `snapshotMode: initial` and a **new**
+     slot and publication name (for example `<old slot>_resnap`), never the
+     journal's `.slot.name`.
+   - Once its snapshot has finished and it is streaming, drop the old slots
+     by explicit name: the journal's `.slot.name` (Conduit's old slot) and
+     `.debezium.slotName` (Debezium's), with their publications.
+   - Gate each drop on a name check: the name must equal the journal's
+     field, must differ from the new pipeline's slot, and the slot must not
+     be `active`. `--check-rollback --json` prints all three names for
+     the comparison.
+5. **WAL retention.** From the failed restart until the forward pipeline
    runs, **both** slots retain WAL: Debezium's from its `restart_lsn`,
    Conduit's from its own. `--abandon` prints both amounts and says so. Once
    Conduit is running again and the operator gives up on Debezium, Debezium's
@@ -1236,6 +1253,10 @@ which still holds everything since F_c:
   the API (`POST /v1/pipelines/<id>/stop`) and wait for `STATUS_STOPPED` with
   `STOPPED_REASON_USER`. (A `DEGRADED` pipeline already counts as
   stopped.)"_
+- `rollback_check_connect_unreachable`: _"The Kafka Connect API at `<url>`
+  did not answer. The check cannot read Debezium's state or compare its
+  config (R11), so it stops here; inside a watch, the outage counts as an
+  observation gap."_
 - `rollback_check_conduit_unreachable`: _"The Conduit API at `<url>` did not
   answer. The check cannot rule out a running pipeline, so it stops here."_
 - `rollback_check_restart_interrupted`: _"Debezium was restarted during this
@@ -1331,6 +1352,12 @@ runbook and asserting the verdict, then zero loss after the manual steps:
   including a pipeline deleted before it ran, a changed topology, and
   Conduit's slot missing; the drop gate refuses when the printed slot name
   differs from the journal's or equals Debezium's;
+- **(final confirmation)** Kafka Connect unreachable during the watch:
+  `waiting`, and a Debezium reconnect during the outage is
+  `continuity_unproven`; Kafka Connect and Conduit calls slowed to 5 s each
+  do not create a gap (Postgres sampling keeps its own timer); the
+  re-snapshot path refuses a drop whose name does not match the journal or
+  equals the new pipeline's slot;
 - **(round 3)** `track_activities=off` for Debezium's role: `privileges`;
   a `DEGRADED` pipeline counts as stopped and gets its R7 snapshot; after
   the snapshot, a user Start, Conduit's slot turning active, or F_c moving is
@@ -1721,7 +1748,14 @@ position across pids:
   observation gap is any interval between two sightings that one running
   watch did not cover with consecutive polls: the watch was killed or timed
   out and a new one started, a one-shot check runs after the watch exited,
-  or two of a watch's polls were more than 2 s apart (a stalled process).
+  two consecutive **Postgres** sightings of a watch are more than 2 s apart
+  (a stalled process), or **(final confirmation)** R11 could not be checked
+  because Kafka Connect was unreachable. Postgres sampling runs on its own
+  timer, independent of the Kafka Connect and Conduit HTTP calls, so a slow
+  HTTP call never delays a sighting or creates a false gap; the 2 s
+  threshold is measured between Postgres sightings only. An interval without
+  R11 counts as a gap from the last poll at which R11 passed to the next one
+  at which it passes again.
   **Across a gap, only the same-walsender rule (below) is accepted;** any
   change of walsender inside a gap is `continuity_unproven`. The reason: a
   slot switch and a switch back inside a gap (Debezium's config moved from
@@ -1736,7 +1770,8 @@ position across pids:
   `backend_start` or `query_start`, or an inactive interval, between two
   consecutive polls) is accepted only when the new walsender's first
   sighting shows `confirmed_flush_lsn` **equal** to F_last, the last value
-  seen before the change. Within one poll interval (at most 1 s, and 50 to
+  seen before the change. Within the window between two consecutive Postgres
+  sightings that are not a gap (up to 2 s; normally about 1 s, and 50 to
   100 ms around the restart) a switch to another slot and back would also
   need a Kafka Connect config change, a task restart and an offset flush;
   R11 checks the config on every poll, and that residual is listed with the
@@ -1780,8 +1815,9 @@ rule can exclude another actor dropping Debezium's slot between the last
 pre-restart check and Debezium's attach; the first-sighting rule catches it
 afterwards. The runbook says not to run other slot tooling against these two
 slots while going back. **(Confirmation review)** A second residual: within a
-single poll interval of a running watch (at most 1 s, 50 to 100 ms around the
-restart), a switch of Debezium to another slot and back, which needs a Kafka
+window between two Postgres sightings of a running watch that is not a gap
+(up to 2 s; normally about 1 s, and 50 to 100 ms around the restart), a
+switch of Debezium to another slot and back, which needs a Kafka
 Connect config change, a task restart and an offset flush inside that
 interval, would not be seen. R11 checks the config on every poll, and the
 runbook says not to change Debezium's config while going back.
@@ -2536,8 +2572,8 @@ deterministic exit code ADR):
 - `offset_not_found` – no offset for this connector.
 - `ambiguous_partition` – more than one partition.
 - `connector_running` – the connector is in any state other than exactly
-  `STOPPED`, or, on a worker older than Kafka 3.5 where the cutover deleted
-  it, a 404. One definition for all four uses: `--cutover` without
+  `STOPPED` or a 404 when the journal records `debezium.stopMethod: delete`.
+  One definition for all four uses: `--cutover` without
   `--stop-connector`, a `--cutover` re-run that finds Debezium running again
   after step 8 (S9), `--without-import`, and `--check-rollback --abandon`
   (S12).
@@ -2570,7 +2606,8 @@ deterministic exit code ADR):
   `rollback_check_connector_state`, `rollback_check_privileges`,
   `rollback_check_pipeline_state`, `rollback_check_conduit_unreachable`,
   `rollback_check_restart_interrupted`, `rollback_check_state_unmapped`,
-  `rollback_check_offset_unreadable`, and
+  `rollback_check_offset_unreadable`, `rollback_check_connect_unreachable`,
+  and
   `rollback_check_not_caught_up` (a `waiting` verdict). `--abandon` (S12)
   ends a failed attempt. Verdicts:
   `ready_to_stop_conduit`, `ready_to_restart_debezium`,
