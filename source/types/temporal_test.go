@@ -274,3 +274,42 @@ func TestTemporalNotRepresentableError(t *testing.T) {
 	_, ok = types.LocateTemporal(errors.New("boom"), "t", "c")
 	is.True(!ok)
 }
+
+// TestTemporalArrayNonFinite pins what date[], timestamp[] and timestamptz[]
+// do with infinity elements: strings without an Avro schema, the
+// temporal_not_representable error with one. Finite elements next to them are
+// normalized as in the scalar case.
+func TestTemporalArrayNonFinite(t *testing.T) {
+	la := mustLoc(t, "America/Los_Angeles")
+	for _, tc := range []struct {
+		name   string
+		oid    uint32
+		finite any
+		want   any
+	}{
+		{"date[]", pgtype.DateArrayOID, time.Date(2024, 1, 2, 0, 0, 0, 0, la), time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)},
+		{"timestamp[]", pgtype.TimestampArrayOID, time.Date(2024, 1, 2, 3, 4, 5, 0, la), time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)},
+		{"timestamptz[]", pgtype.TimestamptzArrayOID, time.Date(2024, 1, 1, 19, 4, 5, 0, la), time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			in := []any{tc.finite, pgtype.Infinity, nil, pgtype.NegativeInfinity}
+
+			got, err := types.Format(tc.oid, in)
+			is.NoErr(err)
+			arr := got.([]any)
+			is.Equal(len(arr), 4)
+			is.Equal(arr[0].(time.Time).String(), tc.want.(time.Time).String())
+			is.Equal(arr[1], "infinity")
+			is.Equal(arr[2], nil)
+			is.Equal(arr[3], "-infinity")
+
+			_, err = types.FormatFor(types.EncodingAvro, tc.oid, in)
+			var tne *types.TemporalNotRepresentableError
+			is.True(errors.As(err, &tne))
+			located, ok := types.LocateTemporal(err, "t", "c")
+			is.True(ok)
+			is.True(strings.HasPrefix(located.Error(), "postgres.source.temporal_not_representable: "))
+		})
+	}
+}
