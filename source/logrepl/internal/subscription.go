@@ -56,6 +56,11 @@ type Subscription struct {
 	stopped bool // Stop was called, possibly before Run began
 	running bool // Run was called
 
+	// beforeAcquire is a test seam, nil in production. It runs inside
+	// startReplication after the old connection was released and before the
+	// new one is acquired: the window #346 is about.
+	beforeAcquire func()
+
 	// replicating is set by Run once START_REPLICATION succeeded. Only then is
 	// there a stream to send the final status update and CopyDone on.
 	replicating bool
@@ -458,6 +463,9 @@ func (s *Subscription) startReplication(ctx context.Context) error {
 
 	s.conn.Release()
 	s.conn = nil // released; nothing may touch it until the new one is acquired
+	if s.beforeAcquire != nil {
+		s.beforeAcquire()
+	}
 
 	conn, err := s.pool.Acquire(cpool.WithReplication(ctx))
 	if err != nil {
