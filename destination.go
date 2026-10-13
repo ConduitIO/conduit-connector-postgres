@@ -94,6 +94,10 @@ func (d *Destination) Open(ctx context.Context) error {
 // Write routes incoming records to their appropriate handler based on the
 // operation.
 func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, error) {
+	// Fail fast once Teardown has begun instead of queueing behind it.
+	if d.isClosing() {
+		return 0, errors.New("destination is closing")
+	}
 	if err := d.acquire(ctx); err != nil {
 		return 0, fmt.Errorf("waiting for the connection: %w", err)
 	}
@@ -203,6 +207,12 @@ func (d *Destination) acquire(ctx context.Context) error {
 
 func (d *Destination) release() {
 	<-d.sem()
+}
+
+func (d *Destination) isClosing() bool {
+	d.stateMu.Lock()
+	defer d.stateMu.Unlock()
+	return d.closing
 }
 
 // beginWrite registers cancel so Teardown can stop the Write. It reports false
