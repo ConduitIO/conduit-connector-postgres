@@ -22,7 +22,7 @@ Measured on PG 17.5, pgx 5.7.5 to 5.11.0, with `TZ` set per run.
 | `timestamp '2024-01-02 03:04:05.123456'` | **Avro bytes encode the wall clock shifted by the host offset.** The Avro library writes a `time.Time` for `local-timestamp-micros` by converting it to `time.Local` first. A wall clock labeled UTC comes out as `19:04` on a Los Angeles host. | `logrepl.withAvroSchema` (default `true`), snapshot and CDC. This is #302: source and destination both on a CET host gave a destination row one hour later. |
 | `timestamptz` | Snapshot (pgx binary decode) has always returned the value in `time.Local`, on pgx 5.7.5, 5.8.0 and 5.11.0 alike. CDC (text decode) returned UTC up to pgx 5.10 and `time.Local` since 5.11. JSON shows `-08:00` where it could show `Z`. Same instant. | JSON. Snapshot: all versions. CDC: pgx 5.11 (Conduit v0.20). |
 | `tstzrange`, `tstzmultirange` | Bounds are the same `timestamptz` values: `time.Local` over CDC since pgx 5.11 (`"Lower":"2024-01-02T03:04:05Z"` became `"2024-01-01T19:04:05-08:00"` in Los Angeles). | JSON, CDC. |
-| `tsvector` | pgx >= 5.9 decodes `pgtype.TSVector`, which serializes as `{"Lexemes":[...],"Valid":true}`. Older pgx gave the text form. Conduit v0.17 to v0.20 shipped pgx >= 5.9.2 in the built-in connector. | JSON. Avro: no mapping in `avroMap`, so the schema could not be built at all. |
+| `tsvector` | pgx >= 5.9 decodes `pgtype.TSVector`, which serializes as `{"Lexemes":[...],"Valid":true}`. Older pgx gave the text form. Conduit v0.15 to v0.20 shipped pgx >= 5.9.2 in the built-in connector. | JSON. Avro: no mapping in `avroMap`, so the schema could not be built at all. |
 | `infinity`, `-infinity` | `pgtype.InfinityModifier` is an `int8`; it serialized as `1` / `-1`. | JSON. Avro: `timestamp` and `timestamptz` returned an opaque encoder error; **`date` was silently written as `1970-01-02` / `1969-12-31`** (confirmed pg to pg). |
 | BC dates, years above 9999 | pgx 5.11 reads them (earlier versions returned an error). `time.Time` cannot be marshalled to JSON outside years 0 to 9999, and `Record.Bytes()` in conduit-commons **panics**. | JSON. |
 
@@ -56,6 +56,7 @@ an Avro schema (`logrepl.withAvroSchema`).
 | `tsrange`, `tstzrange`, `daterange`, multiranges and arrays of them | `pgtype.Range[any]` with the bounds normalized as above; infinite bounds are strings | not supported by the Avro schema extractor |
 | Go year < 0 (before 1 BC) or > 9999 | Postgres text (`0044-03-15 12:00:00 BC`, `12345-06-07`) | as above; error if outside int64 microseconds |
 | arrays of the above | element by element | not supported by the Avro schema extractor, unchanged |
+| arrays of tsmultirange, tstzmultirange, datemultirange (OIDs 6152, 6153, 6155) | unchanged: pgx 5.11 does not register these types, the value is the Postgres text | n/a |
 
 Why a UTC `time.Time` for `timestamp` in native form: it is what the connector
 has always emitted, JSON prints it without an offset ambiguity beyond the `Z`
@@ -108,10 +109,11 @@ data that used to be only a crash risk.
 - **Unexpected Go type from pgx for a temporal OID:** returns an error naming
   the column rather than passing the value on.
 - **Error code:** `postgres.source.temporal_not_representable`, at the start of
-  the message like the numeric family (`postgres.source.numeric_not_representable`).
+  the error text (callers that wrap it with `%w` put their own prefix before it).
   The advice in it is `logrepl.withAvroSchema=false`. "Remove the value from the
-  table" is not advice for CDC: the change is already in the WAL and is read
-  again after every restart.
+  table" is not advice for a CDC change: it is already in the WAL and is read
+  again after every restart. The snapshot form of the error says that changing
+  the row also helps, because the snapshot reads the table.
 - **Values outside int64 microseconds under Avro** (after 292277 AD, Postgres
   allows to 294276): error. Before this change the Avro library wrapped around.
 - **Infinity under Avro:** error. For `timestamp` and `timestamptz` it was
@@ -129,7 +131,7 @@ data that used to be only a crash risk.
 ## Upgrade and rollback
 
 On a UTC host, nothing changes in the Avro bytes and nothing in `timestamp`
-JSON. What changes on every host: `tsvector` is text (a change for Conduit v0.17
+JSON. What changes on every host: `tsvector` is text (a change for Conduit v0.15
 to v0.20 built-in users, who got the `Lexemes` object), infinity is a string or,
 under Avro, a halt, BC/large years are strings. `timestamptz` JSON always ends in
 `Z`: on non-UTC hosts snapshot records go from the host offset to `Z` (every
@@ -174,11 +176,11 @@ tests under `America/Los_Angeles`, `Asia/Kolkata` and `Pacific/Auckland`.
 >   records did on pgx 5.11 (Conduit v0.20). Same instant; anything that parses
 >   or compares the string, or the offset, sees `Z` now.
 > - **`tsvector`** is emitted as text (`'a':1 'cat':3`) and can now be used with
->   Avro schemas. Conduit v0.17 to v0.20 shipped pgx 5.9.2 or later in the
->   built-in connector, which emitted `{"Lexemes":[...],"Valid":true}` when
+>   Avro schemas. Conduit v0.15 to v0.20 shipped pgx 5.9.2 or later in the
+>   built-in connector (from v0.15.0), which emitted `{"Lexemes":[...],"Valid":true}` when
 >   `logrepl.withAvroSchema` was `false` (with Avro on it failed to build the
 >   schema). If you consume that object, change the consumer before upgrading.
->   Versions before v0.17 emitted text.
+>   Versions before v0.15 emitted text.
 > - **`infinity` and `-infinity`** in date and timestamp columns:
 >   - Without an Avro schema they are the strings `infinity` and `-infinity`
 >     (they were the numbers 1 and -1).

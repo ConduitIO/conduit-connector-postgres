@@ -27,7 +27,8 @@ import (
 // ErrorCodeTemporalNotRepresentable prefixes the error returned when a date or
 // timestamp value (infinity, or a year beyond what Avro microseconds can hold)
 // has to be emitted under an Avro schema, whose logical types cannot hold it.
-// Like the other connector codes it is embedded at the start of the message.
+// The code is at the start of the error text; callers that wrap the error with
+// %w put their own prefix before it.
 const ErrorCodeTemporalNotRepresentable = "postgres.source.temporal_not_representable"
 
 // TemporalNotRepresentableError reports a date, timestamp or timestamptz value
@@ -39,6 +40,10 @@ type TemporalNotRepresentableError struct {
 	Column string
 	Type   string
 	Value  string
+	// Snapshot is set for a value read by the snapshot, where changing the row
+	// helps. A CDC change is already in the WAL and is read again after every
+	// restart.
+	Snapshot bool
 }
 
 func (e *TemporalNotRepresentableError) Error() string {
@@ -49,17 +54,23 @@ func (e *TemporalNotRepresentableError) Error() string {
 	case e.Column != "":
 		where = fmt.Sprintf(" in column %q", e.Column)
 	}
+	advice := "Removing the row does not help a change that is already in the " +
+		"WAL: it is read again after every restart"
+	if e.Snapshot {
+		advice = "Changing or deleting the row also helps, because the snapshot reads the table"
+	}
 	return fmt.Sprintf("%s: %s value %q%s cannot be encoded in an Avro schema, "+
 		"so the source halts instead of changing it. Fix: set logrepl.withAvroSchema to false "+
-		"to receive it as text. Removing the row does not help a change that is already in the "+
-		"WAL: it is read again after every restart",
-		ErrorCodeTemporalNotRepresentable, e.Type, e.Value, where)
+		"to receive it as text. %s",
+		ErrorCodeTemporalNotRepresentable, e.Type, e.Value, where, advice)
 }
 
 // LocateTemporal returns a copy of err with its table and column set, and
 // true, when err is or wraps a *TemporalNotRepresentableError. The copy is
 // returned unwrapped so the error code stays at the start of the message. For
 // any other error it returns err and false.
+//
+// The error is for a CDC change; LocateTemporalSnapshot is the snapshot form.
 func LocateTemporal(err error, table, column string) (error, bool) { //nolint:revive // the error is the result, ok says whether it was located
 	var tne *TemporalNotRepresentableError
 	if !errors.As(err, &tne) {
@@ -243,7 +254,8 @@ func formatTemporalArray(enc Encoding, kind temporalKind, v any) (any, error) {
 }
 
 // mapArray applies f to every element of an array decoded by pgx. A NULL
-// element stays nil.
+// element stays nil. pgx flattens multi-dimensional arrays into one slice (the
+// dimensions are lost, #377), so there is no nesting to recurse into.
 func mapArray(v any, name string, f func(any) (any, error)) (any, error) {
 	switch a := v.(type) {
 	case nil:
@@ -251,15 +263,6 @@ func mapArray(v any, name string, f func(any) (any, error)) (any, error) {
 	case []any:
 		out := make([]any, len(a))
 		for i, e := range a {
-			if sub, ok := e.([]any); ok {
-				// multi-dimensional arrays
-				r, err := mapArray(sub, name, f)
-				if err != nil {
-					return nil, fmt.Errorf("element %d: %w", i, err)
-				}
-				out[i] = r
-				continue
-			}
 			r, err := f(e)
 			if err != nil {
 				return nil, fmt.Errorf("element %d: %w", i, err)
@@ -286,13 +289,13 @@ var (
 		pgtype.TstzmultirangeOID: kindTimestamptz,
 		pgtype.DatemultirangeOID: kindDate,
 	}
+	// Arrays of multiranges (OIDs 6152, 6153, 6155) are left out on purpose: pgx
+	// 5.11 does not register those types, so their values arrive as the
+	// Postgres text and pass through unchanged, as they do on main.
 	rangeArrayKinds = map[uint32]temporalKind{
-		pgtype.TsrangeArrayOID:        kindTimestamp,
-		pgtype.TstzrangeArrayOID:      kindTimestamptz,
-		pgtype.DaterangeArrayOID:      kindDate,
-		pgtype.TsmultirangeArrayOID:   kindTimestamp,
-		pgtype.TstzmultirangeArrayOID: kindTimestamptz,
-		pgtype.DatemultirangeArrayOID: kindDate,
+		pgtype.TsrangeArrayOID:   kindTimestamp,
+		pgtype.TstzrangeArrayOID: kindTimestamptz,
+		pgtype.DaterangeArrayOID: kindDate,
 	}
 )
 
@@ -340,4 +343,14 @@ func formatRangeArray(kind temporalKind, v any) (any, error) {
 	return mapArray(v, kind.String()+" range[]", func(e any) (any, error) {
 		return formatRange(kind, e)
 	})
+}
+
+// LocateTemporalSnapshot is LocateTemporal for a value read by the snapshot, whose
+// error advice differs: the row can be fixed.
+func LocateTemporalSnapshot(err error, table, column string) (error, bool) { //nolint:revive // the error is the result, ok says whether it was located
+	located, ok := LocateTemporal(err, table, column)
+	if ok {
+		located.(*TemporalNotRepresentableError).Snapshot = true
+	}
+	return located, ok
 }

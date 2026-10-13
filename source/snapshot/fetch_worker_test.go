@@ -321,7 +321,7 @@ func Test_FetcherRun_TemporalTypes(t *testing.T) {
 			ctx    = test.Context(t)
 			is     = is.New(t)
 			pool   = test.ConnectPool(ctx, t, test.RegularConnString)
-			groups = []test.TemporalGroup{test.TemporalScalars, test.TemporalArrays, test.TemporalRanges, test.TemporalExtremes, test.TemporalInfinity}
+			groups = []test.TemporalGroup{test.TemporalScalars, test.TemporalArrays, test.TemporalRanges, test.TemporalMultirangeArrays, test.TemporalExtremes, test.TemporalInfinity}
 			table  = test.SetupTemporalTable(ctx, t, pool, groups...)
 			out    = make(chan []FetchData)
 			tt     = &tomb.Tomb{}

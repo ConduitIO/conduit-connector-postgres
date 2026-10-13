@@ -264,6 +264,14 @@ func TestTemporalNotRepresentableError(t *testing.T) {
 		is.True(strings.Contains(msg, want)) // msg: want
 	}
 	is.True(!strings.Contains(msg, "DLQ"))
+	is.True(strings.Contains(msg, "does not help")) // CDC: the change is in the WAL
+
+	// the snapshot form says the row can be fixed, and not the WAL advice
+	snap, ok := types.LocateTemporalSnapshot(err, "orders", "shipped_on")
+	is.True(ok)
+	is.True(strings.HasPrefix(snap.Error(), types.ErrorCodeTemporalNotRepresentable+": "))
+	is.True(strings.Contains(snap.Error(), "Changing or deleting the row also helps"))
+	is.True(!strings.Contains(snap.Error(), "WAL"))
 
 	// out-of-range microseconds carry the same code
 	_, err = types.FormatFor(types.EncodingAvro, pgtype.TimestampOID, time.Date(294276, 1, 1, 0, 0, 0, 0, time.UTC))
@@ -310,6 +318,31 @@ func TestTemporalArrayNonFinite(t *testing.T) {
 			located, ok := types.LocateTemporal(err, "t", "c")
 			is.True(ok)
 			is.True(strings.HasPrefix(located.Error(), "postgres.source.temporal_not_representable: "))
+		})
+	}
+}
+
+// TestMultirangeArraysPassThrough: pgx 5.11 registers no type for the arrays of
+// tsmultirange, tstzmultirange and datemultirange (OIDs 6152, 6153, 6155), so
+// their values reach the formatter as the Postgres text. They must pass through,
+// not be rejected as an unexpected type (that halted snapshots).
+func TestMultirangeArraysPassThrough(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		oid  uint32
+		text string
+	}{
+		{"tsmultirange[]", pgtype.TsmultirangeArrayOID, `{"{[\"2024-01-02 03:04:05\",\"2024-03-10 02:30:00\")}"}`},
+		{"tstzmultirange[]", pgtype.TstzmultirangeArrayOID, `{"{[\"2024-01-02 03:04:05+00\",\"2024-01-03 00:00:00+00\")}"}`},
+		{"datemultirange[]", pgtype.DatemultirangeArrayOID, `{"{[2024-01-02,2024-12-31)}"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			for _, enc := range []types.Encoding{types.EncodingNative, types.EncodingAvro} {
+				got, err := types.FormatFor(enc, tc.oid, tc.text)
+				is.NoErr(err)
+				is.Equal(got, tc.text)
+			}
 		})
 	}
 }

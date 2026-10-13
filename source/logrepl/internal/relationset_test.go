@@ -205,7 +205,7 @@ func TestRelationSetTemporalTypes(t *testing.T) {
 			name: "native",
 			enc:  types.EncodingNative,
 			groups: []test.TemporalGroup{
-				test.TemporalScalars, test.TemporalArrays, test.TemporalRanges, test.TemporalExtremes, test.TemporalInfinity,
+				test.TemporalScalars, test.TemporalArrays, test.TemporalRanges, test.TemporalMultirangeArrays, test.TemporalExtremes, test.TemporalInfinity,
 			},
 		},
 		{

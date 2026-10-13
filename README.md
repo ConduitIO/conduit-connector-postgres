@@ -234,6 +234,13 @@ snapshot and CDC.
 | Years before 1 BC or after 9999 AD | Postgres text, for example `0044-03-15 12:00:00 BC`. | As above, up to what 64-bit microseconds hold; beyond that the same error. |
 | Arrays, ranges, multiranges of these | Element and bound values as above. | Not supported by the Avro schema. |
 
+A range or multirange is a JSON object `{"Lower":...,"Upper":...,"LowerType":105,
+"UpperType":101,"Valid":true}`, and a multirange is an array of them. `LowerType` and
+`UpperType` are the ASCII codes of the bound kind: `105` (`i`) inclusive, `101` (`e`)
+exclusive, `85` (`U`) unbounded (the bound is `null`), `69` (`E`) empty range. Bounds
+follow the rules above. Arrays of `tsmultirange`, `tstzmultirange` and `datemultirange`
+are emitted as the Postgres text of the array.
+
 If the source halts with `postgres.source.temporal_not_representable`, set
 `logrepl.withAvroSchema` to `false`. Removing the row does not help a change that is
 already in the WAL, because it is read again after every restart.

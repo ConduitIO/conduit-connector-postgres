@@ -42,6 +42,10 @@ const (
 	// TemporalRanges are tsrange, tstzrange, daterange and a tstzmultirange,
 	// including an unbounded and an infinite bound. No Avro encoding either.
 	TemporalRanges
+	// TemporalMultirangeArrays are tsmultirange[], tstzmultirange[] and
+	// datemultirange[] (OIDs 6152, 6153, 6155). pgx 5.11 does not register these
+	// types, so the values arrive as the Postgres text and must pass through.
+	TemporalMultirangeArrays
 	// TemporalInfinity are infinity and -infinity. They have no Avro encoding.
 	TemporalInfinity
 )
@@ -114,6 +118,10 @@ var temporalColumns = []temporalColumn{
 		pgtype.Range[any]{Lower: date, Upper: dateEnd, LowerType: pgtype.Inclusive, UpperType: pgtype.Exclusive, Valid: true}, nil},
 	{"tstz_multirange", "tstzmultirange", "'{[2024-01-02 08:34:05.123456+05:30,2024-01-03 00:00:00+00)}'", TemporalRanges,
 		pgtype.Multirange[pgtype.Range[any]]{{Lower: tstzWall, Upper: utc(2024, 1, 3, 0, 0, 0, 0), LowerType: pgtype.Inclusive, UpperType: pgtype.Exclusive, Valid: true}}, nil},
+
+	{"tsmr_arr", "tsmultirange[]", "ARRAY['{[2024-01-02 03:04:05,2024-03-10 02:30:00)}'::tsmultirange]", TemporalMultirangeArrays, nil, nil},
+	{"tstzmr_arr", "tstzmultirange[]", "ARRAY['{[2024-01-02 08:34:05+05:30,2024-01-03 00:00:00+00)}'::tstzmultirange]", TemporalMultirangeArrays, nil, nil},
+	{"datemr_arr", "datemultirange[]", "ARRAY['{[2024-01-02,2024-12-31)}'::datemultirange]", TemporalMultirangeArrays, nil, nil},
 
 	{"ts_bc", typTimestamp, "'0044-03-15 12:00:00 BC'", TemporalExtremes, "0044-03-15 12:00:00 BC", wallMicros(tsBC)},
 	{"ts_big", typTimestamp, "'12345-06-07 08:09:10.5'", TemporalExtremes, "12345-06-07 08:09:10.5", wallMicros(tsBig)},
@@ -204,6 +212,11 @@ func TemporalExpected(ctx context.Context, t *testing.T, conn Querier, table str
 			continue
 		}
 		switch {
+		case strings.HasSuffix(c.typ, "multirange[]"):
+			// Unregistered in pgx: the value is the text Postgres prints.
+			var txt string
+			is.NoErr(conn.QueryRow(ctx, fmt.Sprintf("SELECT %s::text FROM %s ORDER BY id LIMIT 1", c.name, table)).Scan(&txt))
+			want[c.name] = txt
 		case c.typ == "tsvector[]":
 			var ss []string
 			is.NoErr(conn.QueryRow(ctx, fmt.Sprintf("SELECT %s::text[] FROM %s ORDER BY id LIMIT 1", c.name, table)).Scan(&ss))
