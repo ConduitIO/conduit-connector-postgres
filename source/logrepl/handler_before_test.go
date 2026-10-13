@@ -234,15 +234,13 @@ func TestHandler_Delete_NullKeyHalts(t *testing.T) {
 			is.True(strings.Contains(err.Error(), fmt.Sprintf("%q", name)))
 			is.True(strings.Contains(err.Error(), "WAL LSN 0/16B3A10"))
 			is.True(strings.Contains(err.Error(), "commits at LSN 0/16B3A40"))
-			is.True(strings.Contains(err.Error(), "pg_replication_slot_advance"))
-			is.Equal(len(ch), 0) // nothing emitted
+			is.True(strings.Contains(err.Error(), "pg_replication_slot_advance('<slot>', '0/16B3A41')")) // commit LSN + 1, as a literal
+			is.True(!strings.Contains(err.Error(), "pg_lsn + 1"))                                        // no pg_lsn arithmetic: it needs Postgres 14
+			is.Equal(len(ch), 0)                                                                         // nothing emitted
 		})
 	}
 }
 
-// TestHandler_Delete_UnknownRelationNotGuarded pins that the #380 guard only
-// applies to relations with a key column resolved at Open. Others keep the
-// previous behaviour (an empty key), which is out of scope here.
 // TestHandler_Delete_NullKeyHalts_QuotesTable pins that the suggested fix in
 // the error is runnable: a mixed-case table name must be quoted in the
 // ALTER TABLE statement, as in the Open error.
@@ -261,6 +259,9 @@ func TestHandler_Delete_NullKeyHalts_QuotesTable(t *testing.T) {
 	is.True(!strings.Contains(err.Error(), "ALTER TABLE "+name+" "))
 }
 
+// TestHandler_Delete_UnknownRelationNotGuarded pins that the #380 guard only
+// applies to relations with a key column resolved at Open. Others keep the
+// previous behaviour (an empty key), which is out of scope here.
 func TestHandler_Delete_UnknownRelationNotGuarded(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
