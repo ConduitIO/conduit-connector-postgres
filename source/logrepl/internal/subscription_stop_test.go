@@ -248,3 +248,85 @@ func TestSubscription_TeardownRacesStartingRun(t *testing.T) {
 	// the subscription holds none.
 	is.True(!sub.hasConn())
 }
+
+// TestSubscription_TeardownTimeoutLeavesConnToRun: Teardown's wait for Run ends
+// (ctx expired) while Run is alive and holds the replication connection. The
+// connection must NOT go back to the pool under Run (another pipeline could
+// acquire it and two owners would share one connection). Run releases it when
+// it exits.
+func TestSubscription_TeardownTimeoutLeavesConnToRun(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	sub := newStopTestSubscription(ctx, t)
+
+	parked := make(chan struct{})
+	gate := make(chan struct{})
+	sub.afterAcquire = func() {
+		close(parked)
+		<-gate
+	}
+	var once sync.Once
+	open := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(open)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- sub.Run(ctx) }()
+	select {
+	case <-parked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run never acquired the replication connection")
+	}
+	acquired := sub.pool.Stat().AcquiredConns()
+	is.True(acquired >= 1)
+
+	tctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	err := sub.Teardown(tctx) // Run is still alive: the wait ends with ctx
+	is.True(errors.Is(err, context.DeadlineExceeded))
+	is.True(sub.hasConn())                              // still held by Run
+	is.Equal(sub.pool.Stat().AcquiredConns(), acquired) // not handed back to the pool
+
+	open() // Run continues, sees the stop and exits
+	select {
+	case err := <-errCh:
+		is.True(err != nil)
+	case <-time.After(15 * time.Second):
+		t.Fatal("Run did not return")
+	}
+	is.True(!sub.hasConn())
+	// released exactly once, by Run (the pool settles asynchronously)
+	for deadline := time.Now().Add(5 * time.Second); sub.pool.Stat().AcquiredConns() != acquired-1; {
+		if time.Now().After(deadline) {
+			t.Fatalf("acquired conns = %d, want %d", sub.pool.Stat().AcquiredConns(), acquired-1)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestSubscription_RunAfterTeardownDoesNotTouchConn: a Run that starts after
+// Teardown must not use or acquire connections (Teardown already released the
+// initial one, which may belong to someone else by now).
+func TestSubscription_RunAfterTeardownDoesNotTouchConn(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	sub := newStopTestSubscription(ctx, t)
+
+	is.NoErr(sub.Teardown(ctx)) // Run never started
+	acquired := sub.pool.Stat().AcquiredConns()
+	sub.beforeRelease = func() { t.Error("Run touched the connection after Teardown") }
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- sub.Run(ctx) }()
+	select {
+	case err := <-errCh:
+		is.True(err != nil)
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return")
+	}
+	select {
+	case <-sub.Done():
+	default:
+		t.Fatal("done was not closed")
+	}
+	is.Equal(sub.pool.Stat().AcquiredConns(), acquired)
+}
