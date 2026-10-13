@@ -248,18 +248,26 @@ already in the WAL, because it is read again after every restart.
 ### NaN and Infinity in `numeric` Columns
 
 A `numeric` column can hold `NaN`, `Infinity` and `-Infinity` (the infinities
-need Postgres 14 or later, and an unconstrained `numeric`). The Avro `decimal`
-type cannot represent them, and the connector never replaces them with `NULL`
-or a number.
+need Postgres 14 or later). The Avro `decimal` type cannot represent them, and
+the connector never replaces them with `NULL` or a number.
 
 - With `logrepl.withAvroSchema: true` (the default), the source stops with the
   error code `postgres.source.numeric_not_representable`, which names the
-  table, the column and the value. Restarting replays the same row, so remove
-  the value or change the column first: add a constraint
-  (`CHECK (col NOT IN ('NaN', 'Infinity', '-Infinity'))`), or read the column
-  through a view or cast that maps these values to something you choose.
+  table, the column, the value and the row's key.
 - With `logrepl.withAvroSchema: false`, the values are emitted as the strings
-  `"NaN"`, `"Infinity"` and `"-Infinity"`. A `NULL` stays `NULL`.
+  `"NaN"`, `"Infinity"` and `"-Infinity"`. A `NULL` stays `NULL`. This applies
+  to the elements of `numeric[]` as well; finite elements are unchanged.
+
+How to continue after the source stopped:
+
+- **Change data capture:** restart once with `logrepl.withAvroSchema: false`
+  from the same position. The value is delivered as a string. Switch back
+  afterwards if you want Avro; it applies to the changes after that point.
+- **Snapshot:** `UPDATE` the row to a finite value (or `NULL`) and restart.
+- Removing the row, or adding a `CHECK` constraint, does not help for a change
+  that is already in the WAL: it is read again after every restart. Do not drop
+  the replication slot to get past it, that loses the position. A constraint
+  only keeps new bad values out.
 
 ### Limitations
 

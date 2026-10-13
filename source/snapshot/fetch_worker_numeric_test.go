@@ -77,7 +77,7 @@ func Test_FetcherRun_NumericNonFinite(t *testing.T) {
 				for data := range out {
 					got = append(got, data...)
 				}
-				runErr := tt.Err()
+				runErr := tt.Wait()
 
 				if avro && tc.text != "" {
 					// Invariant 6: the Avro decimal cannot hold it, so halt
@@ -88,6 +88,7 @@ func Test_FetcherRun_NumericNonFinite(t *testing.T) {
 					is.True(strings.Contains(msg, "postgres.source.numeric_not_representable"))
 					is.True(strings.Contains(msg, table))
 					is.True(strings.Contains(msg, `"v"`))
+					is.True(strings.Contains(msg, "(row id=1)"))
 					is.True(strings.Contains(msg, fmt.Sprintf("%q", tc.text)))
 					return
 				}

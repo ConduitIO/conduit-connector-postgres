@@ -17,6 +17,7 @@ package types
 import (
 	"errors"
 	"math/big"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -65,14 +66,19 @@ func TestNumericNotRepresentableError(t *testing.T) {
 
 	_, err := FormatFor(EncodingAvro, pgtype.NumericOID, pgtype.Numeric{NaN: true, Valid: true})
 	located, ok := LocateNumeric(err, "public.orders", "total")
+	located = WithRow(located, "id=7")
 	is.True(ok)
 	msg := located.Error()
 	is.True(strings.HasPrefix(msg, ErrorCodeNumericNotRepresentable+": ")) // code first
 	is.True(strings.Contains(msg, `"NaN"`))                                // the value
-	is.True(strings.Contains(msg, `"total"`))                              // the column
-	is.True(strings.Contains(msg, `"public.orders"`))                      // the table
-	is.True(strings.Contains(msg, `CHECK ("total" NOT IN`))                // fix: constraint
-	is.True(strings.Contains(msg, "logrepl.withAvroSchema"))               // fix: opt out
+	is.True(strings.Contains(msg, `"total"`))
+	is.True(strings.Contains(msg, "(row id=7)"))                                                            // the column
+	is.True(strings.Contains(msg, `"public.orders"`))                                                       // the table
+	is.True(strings.Contains(msg, "restart once with logrepl.withAvroSchema=false from the same position")) // CDC fix
+	is.True(strings.Contains(msg, "UPDATE it"))                                                             // snapshot fix
+	is.True(strings.Contains(msg, "do not drop the replication slot"))
+	is.True(strings.Contains(msg, "does not help once the change is in the WAL"))
+	is.True(!strings.Contains(msg, "CHECK"))
 	is.Equal(ErrorCodeNumericNotRepresentable, "postgres.source.numeric_not_representable")
 
 	// The original is left alone and wrapped errors are found.
@@ -88,8 +94,60 @@ func TestNumericNotRepresentableError(t *testing.T) {
 	got, ok := LocateNumeric(other, "t", "c")
 	is.True(!ok)
 	is.Equal(got, other)
+}
 
-	// Quotes in identifiers are escaped in the suggested SQL.
-	q, _ := LocateNumeric(err, "t", `we"ird`)
-	is.True(strings.Contains(q.Error(), `CHECK ("we""ird" NOT IN`))
+func TestFormatFor_NumericArray(t *testing.T) {
+	nan := pgtype.Numeric{NaN: true, Valid: true}
+	inf := pgtype.Numeric{InfinityModifier: pgtype.Infinity, Valid: true}
+	negInf := pgtype.Numeric{InfinityModifier: pgtype.NegativeInfinity, Valid: true}
+	one := pgxNumeric(t, "1.5")
+
+	cases := []struct {
+		name   string
+		in     []any
+		code   bool // Avro halts
+		native []any
+	}{
+		{"NaN", []any{one, nan}, true, []any{one, "NaN"}},
+		{"Infinity", []any{inf, nil}, true, []any{"Infinity", nil}},
+		{"-Infinity", []any{negInf}, true, []any{"-Infinity"}},
+		{"nested", []any{[]any{one, nan}, []any{negInf, inf}}, true, []any{[]any{one, "NaN"}, []any{"-Infinity", "Infinity"}}},
+		// Pinned: the output main emits today for a numeric[] without a
+		// non-finite element. Elements stay pgtype.Numeric (not *big.Rat); NULL
+		// elements (nil, or an invalid Numeric) are not touched.
+		{"finite", []any{one, pgxNumeric(t, "0"), nil, pgtype.Numeric{}}, false, []any{one, pgxNumeric(t, "0"), nil, pgtype.Numeric{}}},
+		{"finite nested", []any{[]any{one}, []any{one}}, false, []any{[]any{one}, []any{one}}},
+		{"empty", []any{}, false, []any{}},
+	}
+	for _, enc := range []Encoding{EncodingNative, EncodingAvro} {
+		for _, tc := range cases {
+			t.Run(encName(enc)+"/"+tc.name, func(t *testing.T) {
+				is := is.New(t)
+				orig := reflect.ValueOf(tc.in).Pointer()
+				got, err := FormatFor(enc, pgtype.NumericArrayOID, tc.in)
+				switch {
+				case tc.code && enc == EncodingAvro:
+					is.True(got == nil)
+					var nre *NumericNotRepresentableError
+					is.True(errors.As(err, &nre))
+					located, ok := LocateError(err, "t", "c")
+					is.True(ok)
+					is.True(strings.HasPrefix(located.Error(), ErrorCodeNumericNotRepresentable+": "))
+				default:
+					is.NoErr(err)
+					is.Equal(got, tc.native)
+				}
+				is.Equal(reflect.ValueOf(tc.in).Pointer(), orig) // input not modified
+			})
+		}
+	}
+
+	// Not an array shape pgx produces: left alone.
+	got, err := FormatFor(EncodingAvro, pgtype.NumericArrayOID, nil)
+	is := is.New(t)
+	is.NoErr(err)
+	is.True(got == nil)
+	got, err = FormatFor(EncodingNative, pgtype.NumericArrayOID, "x")
+	is.NoErr(err)
+	is.Equal(got, "x")
 }

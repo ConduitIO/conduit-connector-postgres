@@ -16,6 +16,7 @@ package types
 
 import (
 	"fmt"
+	"reflect"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -74,11 +75,29 @@ func Format(oid uint32, v any) (any, error) {
 //     "Infinity" and "-Infinity" (EncodingNative) or a
 //     *NumericNotRepresentableError (EncodingAvro, whose decimal cannot hold
 //     them). NULL is always the untyped nil, never a typed nil *big.Rat.
+//   - numeric[] elements that are NaN, Infinity or -Infinity follow the same
+//     rule (a string, or an error under EncodingAvro). Every other element,
+//     NULLs included, is the pgtype.Numeric pgx decoded, so a numeric[] without
+//     such an element is emitted exactly as before.
 //   - arrays of the above are normalized element by element.
 //
 // Native values that time.Time cannot serialize to JSON (years before 0000 or
 // after 9999) are emitted as the Postgres text form of the value.
 func FormatFor(enc Encoding, oid uint32, v any) (any, error) {
+	got, err := formatFor(enc, oid, v)
+	if err != nil {
+		return nil, err
+	}
+	// A nil pointer inside an interface is not nil: it passes `v == nil` checks
+	// and the Avro encoder dereferences it (#368). A nil pointer decoded from
+	// Postgres means NULL, so make that the untyped nil, whatever the type.
+	if rv := reflect.ValueOf(got); rv.Kind() == reflect.Pointer && rv.IsNil() {
+		return nil, nil //nolint:nilnil // NULL is an untyped nil record value
+	}
+	return got, nil
+}
+
+func formatFor(enc Encoding, oid uint32, v any) (any, error) {
 	if oid == pgtype.UUIDOID {
 		return UUID.Format(v)
 	}
@@ -94,6 +113,9 @@ func FormatFor(enc Encoding, oid uint32, v any) (any, error) {
 	}
 	if kind, ok := rangeArrayKinds[oid]; ok {
 		return formatRangeArray(kind, v)
+	}
+	if oid == pgtype.NumericArrayOID {
+		return formatNumericArray(enc, v)
 	}
 	switch oid {
 	case pgtype.TSVectorOID:

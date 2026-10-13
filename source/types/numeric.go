@@ -40,11 +40,13 @@ const (
 // NumericNotRepresentableError reports a numeric value that the Avro decimal
 // logical type cannot represent. Value is the canonical Postgres text form
 // ("NaN", "Infinity" or "-Infinity"). Table and Column are filled in by the
-// caller that knows them, see LocateNumeric.
+// caller that knows them, see LocateNumeric; Row identifies the row by its
+// primary key, see WithRow.
 type NumericNotRepresentableError struct {
 	Table  string
 	Column string
 	Value  string
+	Row    string
 }
 
 func (e *NumericNotRepresentableError) Error() string {
@@ -55,31 +57,31 @@ func (e *NumericNotRepresentableError) Error() string {
 	case e.Column != "":
 		where = fmt.Sprintf(" in column %q", e.Column)
 	}
+	if e.Row != "" {
+		where += fmt.Sprintf(" (row %s)", e.Row)
+	}
+	// The advice must work for a change that is already in the WAL: removing
+	// the row, a CHECK constraint or a view only help for rows that are not
+	// there yet, and dropping the slot loses the position.
 	return fmt.Sprintf("%s: numeric value %q%s cannot be encoded as an Avro decimal, "+
-		"so the source halts instead of changing it. Fix: constrain the column "+
-		"(CHECK (%s NOT IN ('NaN', 'Infinity', '-Infinity'))), cast it to a value you choose "+
-		"in a view or generated column, or set logrepl.withAvroSchema to false to receive "+
-		"the strings \"NaN\", \"Infinity\" and \"-Infinity\"",
-		ErrorCodeNumericNotRepresentable, e.Value, where, checkColumn(e.Column))
+		"so the source halts instead of changing it. Fix: restart once with "+
+		"logrepl.withAvroSchema=false from the same position, which delivers the value as the "+
+		"string %q; switch it back afterwards if you want Avro. For a row that is only in the "+
+		"snapshot, UPDATE it to a finite value and restart. Removing the row does not help once "+
+		"the change is in the WAL, and do not drop the replication slot: that loses the position",
+		ErrorCodeNumericNotRepresentable, e.Value, where, e.Value)
 }
 
-func checkColumn(c string) string {
-	if c == "" {
-		return "<column>"
+// WithRow returns a copy of err with Row set when err is or wraps a
+// *NumericNotRepresentableError, and err itself otherwise.
+func WithRow(err error, row string) error {
+	var nre *NumericNotRepresentableError
+	if row == "" || !errors.As(err, &nre) {
+		return err
 	}
-	return pgIdent(c)
-}
-
-// pgIdent quotes an identifier for use in the suggested SQL.
-func pgIdent(s string) string {
-	out := []byte{'"'}
-	for i := 0; i < len(s); i++ {
-		if s[i] == '"' {
-			out = append(out, '"')
-		}
-		out = append(out, s[i])
-	}
-	return string(append(out, '"'))
+	c := *nre
+	c.Row = row
+	return &c
 }
 
 // LocateNumeric returns a copy of err with its table and column set, and true,
@@ -178,4 +180,25 @@ func formatNumeric(enc Encoding, num pgtype.Numeric) (any, error) {
 		return nil, err
 	}
 	return r, nil
+}
+
+// formatNumericArray applies formatNumeric's rule for non-finite values to the
+// elements of a numeric[]. Finite and NULL elements are returned exactly as pgx
+// decoded them (a pgtype.Numeric, not a *big.Rat): that is what the source
+// emitted before, and changing it would change the output of every finite
+// numeric[] column.
+func formatNumericArray(enc Encoding, v any) (any, error) {
+	if _, ok := v.([]any); !ok {
+		return v, nil // nil or a shape pgx does not produce for numeric[]: leave it alone
+	}
+	return mapArray(v, "numeric[]", func(e any) (any, error) {
+		n, ok := e.(pgtype.Numeric)
+		if !ok {
+			return e, nil
+		}
+		if _, nonFin := nonFinite(n); !nonFin {
+			return e, nil
+		}
+		return formatNumeric(enc, n)
+	})
 }

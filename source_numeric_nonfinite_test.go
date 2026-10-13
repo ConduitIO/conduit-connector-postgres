@@ -196,8 +196,8 @@ func TestSource_NumericNonFinite(t *testing.T) {
 						is.True(strings.Contains(msg, table))                     // names the table
 						is.True(strings.Contains(msg, `"v"`))                     // names the column
 						is.True(strings.Contains(msg, fmt.Sprintf("%q", v.text))) // names the value
-						is.True(strings.Contains(msg, "CHECK"))                   // suggests a constraint
-						is.True(strings.Contains(msg, "logrepl.withAvroSchema"))  // suggests the opt-out
+						is.True(strings.Contains(msg, "withAvroSchema=false"))    // the fix that works from the WAL
+						is.True(strings.Contains(msg, "(row id=1)"))              // names the row
 						return
 					}
 
