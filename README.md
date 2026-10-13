@@ -151,10 +151,28 @@ sends the delete without the key. Check with
    destination. Only tables in the publication appear, which are the tables the pipeline
    captures.
 4. Delete that row from the destination yourself. The change has no key, so the pipeline
-   cannot do it. The other changes in the same transaction are in the same output
-   (`I` and `U` carry the full new row as text). Apply the ones you need to the
-   destination too, because the next step skips them. Step 5 also skips the earlier
-   transactions the peek listed, so check that the destination has them.
+   cannot do it. Then work out what else step 5 would skip. It skips every change the
+   peek lists before the stuck one, and the other changes of the stuck transaction.
+   Postgres has not been told they are done, and the pipeline may have read them
+   without the destination writing them before it stopped. Get the source connector's
+   last acknowledged position from Conduit:
+   `GET /v1/connectors/<source connector id>`, field `sourceState.position`. It is
+   base64 of JSON, for example
+   `{"version":2,"type":2,"last_lsn":"0/40845E8","tx_commit_lsn":"0/40846E8","tx_seq":1}`
+   (decode it with `base64 -d`). Conduit sets it only when the destination acknowledges a
+   record, never when the source reads one, so `last_lsn` is the WAL LSN of the last
+   change the destination has confirmed. If Conduit was restarted since the pipeline
+   stopped, it reports the last position it saved, which can be slightly older; that errs
+   on the safe side. Find the peek row of kind `I`, `U` or `D` whose `lsn` equals
+   `last_lsn`. Ignore `B` and `C` rows: a `C` row can show the same number as the first
+   change after it. If several rows share that `lsn` (one statement that changed many
+   rows can do that), `tx_seq` is the 1-based number of the change within its
+   transaction. Everything listed before that row is in the destination. For each change
+   listed after it, up to the stuck one and including the rest of the stuck transaction,
+   check the destination for its rows and apply any that are missing by hand (`I` and
+   `U` carry the full new row; `D` carries the identity columns). If no row matches,
+   treat every listed change as unconfirmed. A position without `last_lsn` (a pipeline
+   still in its snapshot) matches nothing.
 5. Skip the transaction. Use the same `<c>` as in step 3. Writing it as a literal is
    deliberate: `'<b>'::pg_lsn + 1` only works from Postgres 14.
    - Postgres 11 or later:
