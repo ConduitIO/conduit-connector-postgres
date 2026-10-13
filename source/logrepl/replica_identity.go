@@ -45,7 +45,9 @@ type RowQuerier interface {
 // the primary key, so DEFAULT covers it by construction. USING INDEX carries
 // only the index's key columns (indnkeyatts), so the index must contain
 // keyColumn among them: an INCLUDE column is listed in indkey but is not sent
-// in the old tuple. If the identity index has been dropped, Postgres behaves as NOTHING and rejects
+// in the old tuple. pg_index.indnkeyatts exists from Postgres 11; reading it
+// through to_jsonb falls back to indnatts (all columns are key columns) on
+// Postgres 10, where a direct reference would fail Open for every table. If the identity index has been dropped, Postgres behaves as NOTHING and rejects
 // deletes on the published table itself; that is refused too, because the
 // identity does not carry the key either. NOTHING is left to Postgres, which
 // rejects UPDATE and DELETE on a table that publishes them.
@@ -55,7 +57,7 @@ func CheckReplicaIdentity(ctx context.Context, q RowQuerier, table, keyColumn st
 		COALESCE((SELECT bool_or(a.attname = $2)
 			FROM pg_attribute a
 			WHERE a.attrelid = c.oid
-			AND a.attnum = ANY((i.indkey::int2[])[0:i.indnkeyatts-1])), false)
+			AND a.attnum = ANY((i.indkey::int2[])[0:COALESCE((to_jsonb(i)->>'indnkeyatts')::int, i.indnatts)-1])), false)
 	FROM pg_class c
 	LEFT JOIN pg_index i ON i.indrelid = c.oid AND i.indisreplident
 	WHERE c.oid = $1::regclass`

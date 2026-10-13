@@ -25,6 +25,7 @@ import (
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	cschema "github.com/conduitio/conduit-commons/schema"
+	pginternal "github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/conduitio/conduit-connector-postgres/internal/chaospoint"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
@@ -573,7 +574,7 @@ func (h *CDCHandler) requireDeleteKey(key opencdc.Data, table string, lsn pglogr
 			"This change is already in the WAL without its key: after fixing the identity, stop the pipeline, "+
 			"advance the slot past that transaction with pg_replication_slot_advance(<slot>, '<commit LSN>'::pg_lsn + 1) "+
 			"(this skips every change in the transaction, not only the delete), and reconcile the deleted row in the destination by hand",
-		ErrorCodeReplicaIdentityExcludesKey, table, where, keyColumn, table, keyColumn)
+		ErrorCodeReplicaIdentityExcludesKey, table, where, keyColumn, pginternal.WrapSQLIdent(table), keyColumn)
 }
 
 // buildRecordPayload takes the values from the message and extracts the payload
