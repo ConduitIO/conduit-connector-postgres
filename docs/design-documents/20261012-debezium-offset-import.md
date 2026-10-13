@@ -47,7 +47,7 @@ section, the Review fixes section and the amendment blocks govern.
 | Q1 | **Ship the partial rule in v0.21.** | D4's in-memory partial rule is in scope for v0.21. |
 | Q2 | **No override for `postgres.import.slot_ahead`.** | D5 check 5 is a hard refusal. Remedies are re-snapshot, dual-run, or redoing the cutover. |
 | Q3 | **The CLI may write a logical marker message only behind an explicit opt-in flag.** | `--cutover` never writes to the source database by default. Without the flag, the runbook tells the user to write to a captured table; S5 corrects what that write must be. With `--emit-cutover-marker`, the CLI writes a non-transactional message, `pg_logical_emit_message(false, 'conduit.migrate.cutover', …)`. Debezium treats a non-transactional message as a commit and advances `lsn_commit` to the message's end (S1). Caveats: Debezium sees the message only if pgoutput's `messages` option is on and the prefix passes `message.prefix.include.list`/`message.prefix.exclude.list`. The offset that carries it is committed only through the message's own record or a heartbeat. That record lands in Debezium's `<topic.prefix>.message` topic, where downstream consumers see it. Where the marker does not move `lsn_commit` past C before the timeout, the CLI fails with `migrate.kafka_connect.cutover_marker_unsupported`. |
-| Q4 | **v0.21 ships the fresh-slot strategy only.** Reusing Debezium's slot moves to v0.22, gated per Debezium version on a passing rollback test. | The CLI flag is `--slot-mode`, and its only value in v0.21 is `new` (the default). It replaces `--slot-strategy fresh\|reuse` in D3 and D10. In v0.21, pointing `logrepl.slotName` at Debezium's slot is refused with `postgres.import.slot_reuse_unsupported`. The reuse-only parts are v0.22: D3 "Reuse", the reuse column of D9 (redesigned per S7), the `autocleanup_on_reused_slot` code, and the reuse test cases. The n-based skip in D4 is dropped outright (B2). |
+| Q4 | **v0.21 ships the fresh-slot strategy only.** Reusing Debezium's slot moves to v0.22, gated per Debezium version on a passing rollback test. | The CLI flag stays `--slot-strategy fresh\|reuse`, as in D3 and D10 and in the migrate design (#3026). `fresh` is the default and the only strategy v0.21 executes. `--slot-strategy reuse` is accepted by the parser and refused in v0.21 with `postgres.import.slot_reuse_unsupported`. In v0.21, pointing `logrepl.slotName` at Debezium's slot is refused with `postgres.import.slot_reuse_unsupported`. The reuse-only parts are v0.22: D3 "Reuse", the reuse column of D9 (redesigned per S7), the `autocleanup_on_reused_slot` code, and the reuse test cases. The n-based skip in D4 is dropped outright (B2). |
 | Q5 | **Approved. The reviewer recommends deferral. Awaiting DeVaris.** | DeVaris approved the key. The Tier 1 review recommends deferring it, for two reasons: the first set this doc defined was wrong after a heartbeat or END record (S2), and a public metadata key is a contract. The Observability amendment designs both options. Until DeVaris decides, the implementation ships option A (an INFO log of the duplicate key range) and does not commit to the key. |
 | Q6 | **The setting name is `logrepl.import.debeziumOffset`.** | No change: the design already uses it. |
 | — | **`pgregory.net/rapid` is approved as a test-only dependency.** | It is used for the property tests (see the Tests amendment). |
@@ -589,7 +589,8 @@ second WAL retention during the rollback window. The cost is that rollback
 needs an offset written back to Debezium (D9).
 
 > **Amended 2026-10-12 (Q4).** v0.21 ships only the fresh strategy, selected with
-> `--slot-mode new`, which is the default and the only value. The reuse strategy
+> `--slot-strategy fresh`, the default. `--slot-strategy reuse` is refused in
+> v0.21 with `postgres.import.slot_reuse_unsupported`. The reuse strategy
 > above is v0.22. It will ship per Debezium version, and only for versions where
 > the reuse rollback test passes. Until then, an import whose `logrepl.slotName`
 > equals the offset's `slotName` fails with `postgres.import.slot_reuse_unsupported`.
@@ -826,8 +827,9 @@ conduit migrate kafka-connect rollback --pipeline orders --connect-url ...
 ```
 
 > **Amended 2026-10-12 (Q3, Q4).** The v0.21 flags are
-> `--cutover [--stop-connector] [--slot-mode new] [--emit-cutover-marker]`.
-> `--slot-mode` replaces `--slot-strategy`, and `new` is its only v0.21 value.
+> `--cutover [--stop-connector] [--slot-strategy fresh] [--emit-cutover-marker]`.
+> `fresh` is the default and the only strategy v0.21 executes;
+> `--slot-strategy reuse` is refused with `postgres.import.slot_reuse_unsupported`.
 > `--emit-cutover-marker` is the opt-in from Q3, and writes
 > `pg_logical_emit_message(false, …)`: without it, the CLI never writes to the
 > source database. `--cutover` also gains `--slot-create-timeout` and `--reset`
@@ -836,7 +838,7 @@ conduit migrate kafka-connect rollback --pipeline orders --connect-url ...
 > by the timeout, the CLI stops and prints the runbook step "write one row to
 > a captured table" (corrected by S5 to two transactions, or heartbeats). It
 > does not stop Debezium. In the dry-run JSON,
-> `slot.strategy` becomes `slot.mode` with the value `"new"`.
+> `slot.strategy` is always `"fresh"` in v0.21.
 
 `--stop-connector` is opt-in. Without it, the CLI checks that the connector is
 stopped and fails with a fix if it is not.
@@ -894,10 +896,11 @@ path and how to fix it, following the `postgres.schema_drift.*` style.
 | `postgres.import.tables_not_captured` | the pipeline has tables Debezium did not capture | Remove them and add them in a separate pipeline with a snapshot. |
 
 > **Amended 2026-10-12 (Q3, Q4).** In the table above, the fix "use
-> `--slot-strategy fresh`" now reads "use `--slot-mode new`", and
+> `--slot-strategy fresh`" stands unchanged, and
 > `autocleanup_on_reused_slot` is v0.22. New in v0.21:
 > `postgres.import.slot_reuse_unsupported` (the slot is Debezium's; fix: use
-> `--slot-mode new`, and reuse arrives in v0.22) and
+> `--slot-strategy fresh`, and reuse arrives in v0.22; also raised by the CLI
+> for `--slot-strategy reuse`) and
 > `migrate.kafka_connect.cutover_marker_unsupported` (`--emit-cutover-marker`
 > on a PG or Debezium combination where the marker does not advance
 > `lsn_commit`; fix: write two transactions to a captured table).
@@ -1268,7 +1271,7 @@ Each slice is its own PR. All are Tier 1 except slice 5.
 > - Slice 2 includes option A of Q5 (the INFO duplicate-range log), not the
 >   metadata key, until DeVaris decides Q5. It also includes the B1, S3, S4
 >   and S10 preflights and the `slot_reuse_unsupported` refusal.
-> - Slice 4 ships `--slot-mode new`, `--emit-cutover-marker`, the cutover
+> - Slice 4 ships `--slot-strategy fresh` (with `reuse` refused), `--emit-cutover-marker`, the cutover
 >   journal (S9), and starting the pipeline by default (S11).
 > - Reuse (D3 "Reuse", the D9 write-back per S7) is a separate v0.22 slice,
 >   gated per Debezium version on its rollback test.
