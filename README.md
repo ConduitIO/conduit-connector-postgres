@@ -102,6 +102,13 @@ versions wrote them as `1970-01-02` and `1969-12-31` (dates) without any error.
 - With `logrepl.withAvroSchema: false`, the values are emitted as the strings
   `"infinity"` and `"-infinity"`.
 
+The same applies per element of `date[]`, `timestamp[]`, `timestamptz[]` and
+`numeric[]` (for `numeric[]`, `NaN`, `Infinity` and `-Infinity` elements are
+emitted as strings; finite elements are unchanged). The connector has no Avro
+mapping for array columns, so with the default `logrepl.withAvroSchema: true`
+a table with an array column already stops with a schema error before any
+record is emitted.
+
 ## Destination
 
 The Postgres Destination takes a Conduit record and stores it using a SQL statement.

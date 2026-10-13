@@ -74,3 +74,60 @@ func TestFormatFor_TemporalUnchanged(t *testing.T) {
 		is.Equal(got, pgtype.Infinity)
 	}
 }
+
+func TestFormatFor_ArrayNonFinite(t *testing.T) {
+	d := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name  string
+		oid   uint32
+		in    []any
+		code  string
+		nativ []any
+	}{
+		{"date", pgtype.DateArrayOID, []any{d, pgtype.Infinity}, ErrorCodeTemporalNotRepresentable, []any{d, "infinity"}},
+		{"timestamp", pgtype.TimestampArrayOID, []any{pgtype.NegativeInfinity, nil}, ErrorCodeTemporalNotRepresentable, []any{"-infinity", nil}},
+		{"timestamptz", pgtype.TimestamptzArrayOID, []any{d, pgtype.NegativeInfinity}, ErrorCodeTemporalNotRepresentable, []any{d, "-infinity"}},
+		{"numeric NaN", pgtype.NumericArrayOID, []any{pgtype.Numeric{NaN: true, Valid: true}}, ErrorCodeNumericNotRepresentable, []any{"NaN"}},
+		{"numeric Infinity", pgtype.NumericArrayOID, []any{pgtype.Numeric{InfinityModifier: pgtype.Infinity, Valid: true}}, ErrorCodeNumericNotRepresentable, []any{"Infinity"}},
+		{"numeric -Infinity", pgtype.NumericArrayOID, []any{pgtype.Numeric{InfinityModifier: pgtype.NegativeInfinity, Valid: true}}, ErrorCodeNumericNotRepresentable, []any{"-Infinity"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			orig := append([]any(nil), tc.in...)
+
+			got, err := FormatFor(EncodingNative, tc.oid, tc.in)
+			is.NoErr(err)
+			is.Equal(got, tc.nativ)
+			is.Equal(tc.in, orig) // the decoded slice is not modified
+
+			got, err = FormatFor(EncodingAvro, tc.oid, tc.in)
+			is.True(got == nil)
+			is.True(err != nil)
+			is.True(strings.HasPrefix(err.Error(), tc.code))
+		})
+	}
+}
+
+// Arrays without a non-finite element are returned as decoded, not copied.
+func TestFormatFor_ArrayFiniteUnchanged(t *testing.T) {
+	is := is.New(t)
+	d := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
+	for _, enc := range []Encoding{EncodingNative, EncodingAvro} {
+		for oid, in := range map[uint32][]any{
+			pgtype.DateArrayOID:    {d, nil},
+			pgtype.NumericArrayOID: {pgxNumericVal("1.5"), nil},
+			pgtype.TextArrayOID:    {"a", pgtype.Infinity},
+		} {
+			got, err := FormatFor(enc, oid, in)
+			is.NoErr(err)
+			is.True(&got.([]any)[0] == &in[0]) // same backing array
+		}
+	}
+}
+
+func pgxNumericVal(s string) pgtype.Numeric {
+	var n pgtype.Numeric
+	_ = n.Scan(s)
+	return n
+}

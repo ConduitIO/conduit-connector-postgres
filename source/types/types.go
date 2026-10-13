@@ -64,12 +64,20 @@ func Format(oid uint32, v any) (any, error) {
 //     "infinity" and "-infinity" (EncodingNative) or a
 //     *TemporalNotRepresentableError (EncodingAvro, which has no such value).
 //     Finite values are returned as decoded.
+//   - the same holds per element of date[], timestamp[], timestamptz[] and
+//     numeric[]: an infinite or NaN element is a string (EncodingNative) or an
+//     error (EncodingAvro). An array without such an element is returned as
+//     decoded, so finite arrays are unchanged.
 //   - uuid is its text form.
 //
 // Everything else is returned as decoded.
 func FormatFor(enc Encoding, oid uint32, v any) (any, error) {
 	if oid == pgtype.UUIDOID {
 		return UUID.Format(v)
+	}
+
+	if elem, ok := arrayElementOIDs[oid]; ok {
+		return formatArray(enc, elem, v)
 	}
 
 	switch t := v.(type) {
@@ -95,4 +103,55 @@ func FormatFor(enc Encoding, oid uint32, v any) (any, error) {
 	default:
 		return t, nil
 	}
+}
+
+var arrayElementOIDs = map[uint32]uint32{
+	pgtype.DateArrayOID:        pgtype.DateOID,
+	pgtype.TimestampArrayOID:   pgtype.TimestampOID,
+	pgtype.TimestamptzArrayOID: pgtype.TimestamptzOID,
+	pgtype.NumericArrayOID:     pgtype.NumericOID,
+}
+
+// formatArray applies the scalar rules for non-finite values to each element of
+// a decoded array. The slice is copied only when an element changes, and finite
+// elements keep the exact value pgx decoded.
+func formatArray(enc Encoding, elemOID uint32, v any) (any, error) {
+	arr, ok := v.([]any)
+	if !ok {
+		return v, nil
+	}
+	var out []any
+	for i, e := range arr {
+		var (
+			nv  any
+			err error
+		)
+		switch t := e.(type) {
+		case pgtype.InfinityModifier:
+			typ, known := temporalTypeNames[elemOID]
+			if !known {
+				continue
+			}
+			nv, err = formatInfinity(enc, typ, t)
+		case pgtype.Numeric:
+			if _, nonFin := nonFinite(t); !nonFin {
+				continue
+			}
+			nv, err = formatNumeric(enc, t)
+		default:
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if out == nil {
+			out = make([]any, len(arr))
+			copy(out, arr)
+		}
+		out[i] = nv
+	}
+	if out == nil {
+		return v, nil
+	}
+	return out, nil
 }
