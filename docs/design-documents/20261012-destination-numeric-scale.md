@@ -50,7 +50,7 @@ resolves, at execution time: round half away from zero, or `numeric field overfl
   boundary: a non-terminating expansion has no finite form, and a terminating one with more
   than 16383 digits has more digits than any boundary. Truncation at 1001 digits keeps it on
   the same side of every boundary, so the column's rounding of the truncated string equals
-  rounding the exact value. `TestRatToDecimalString_RoundingEquivalence` checks this against
+  rounding the exact value. Deciding whether a value is exact is bounded in cost: a denominator wider than 10^16383 is rejected by bit length without dividing, and the factor loop stops after 16383 steps (`TestRatToDecimalString_HugeDenominators`). `TestRatToDecimalString_RoundingEquivalence` checks this against
   an independent oracle, including values at digit 1001 and with a tail of nines.
 
 ## Alternatives
@@ -83,8 +83,11 @@ rounding the exact value gives `0.00`.
 
 ## Behavior changes
 
-Removing the lookup removes its "column is not numeric" error. Postgres and pgx now decide.
-Values below were probed against Postgres 17 with this change.
+Removing the lookup removes its "column is not numeric" error. The general rule is: **any
+column whose text input accepts the decimal string stores it.** Postgres and pgx now decide, and
+the rows below are examples of that rule, probed against Postgres 17.5 with this change. A
+conversion to a non-numeric type is a silent coercion if the schema maps a numeric field to the
+wrong column.
 
 | Target column | Before | After |
 | --- | --- | --- |
@@ -95,9 +98,17 @@ Values below were probed against Postgres 17 with this change.
 | `text` | error from the connector | decimal string stored |
 | `varchar(n)` | error from the connector | stored if the string fits; otherwise rejected (22001) |
 | `money` | error from the connector | rounded to the locale's fraction digits (`1/3` as `$0.33`) |
+| `oid` | error from the connector | whole numbers stored (`7` as `7`) |
+| `char(n)` | error from the connector | stored if it fits; otherwise rejected (22001) |
 | `boolean` | error from the connector | `1` stored as `true`, `0` as `false`; other values rejected (22P02). Silent coercion if the schema is mis-mapped |
 | `date` | error from the connector | `20261012` stored as `2026-10-12`. Silent coercion if the schema is mis-mapped |
+| `timestamp` | error from the connector | `20261012` stored as `2026-10-12 00:00:00`. Silent coercion if the schema is mis-mapped |
+| `timestamptz` | error from the connector | `20261012` stored as `2026-10-12 00:00:00+00` (session time zone UTC). Silent coercion if the schema is mis-mapped |
 | `interval` | error from the connector | `12345` stored as `03:25:45`. Silent coercion if the schema is mis-mapped |
+| `json`, `jsonb` | error from the connector | `1/4` stored as the JSON number `0.25`. Silent coercion if the schema is mis-mapped |
+| `bytea` | error from the connector | `5/2` stored as `\x322e35`, the ASCII bytes of `2.5`. Silent coercion if the schema is mis-mapped |
+| `bit(n)` | error from the connector | stored if the string is exactly `n` binary digits (`101` into `bit(3)` stored as `101`). Silent coercion if the schema is mis-mapped |
+| `time`, `inet` | error from the connector | rejected (22007 and 22P02) |
 | domain over `numeric(p,s)` | worked | works |
 
 ## The remaining cached view of the schema

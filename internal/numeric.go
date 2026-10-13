@@ -35,6 +35,10 @@ var (
 	bigFive = big.NewInt(5)
 	bigTen  = big.NewInt(10)
 
+	// maxExactDenominatorBits bounds the denominator of a value that can be sent
+	// exactly: 2^a * 5^b with a, b <= maxExactDigits is at most 10^maxExactDigits.
+	maxExactDenominatorBits = new(big.Int).Exp(bigTen, big.NewInt(maxExactDigits), nil).BitLen()
+
 	// pow10Truncation is 10^maxTruncationDigits, computed once.
 	pow10Truncation = new(big.Int).Exp(bigTen, big.NewInt(maxTruncationDigits), nil)
 )
@@ -73,10 +77,19 @@ func RatToDecimalString(r *big.Rat) string {
 }
 
 // terminatingDigits reports whether 1/den has a terminating decimal expansion
-// and, if so, how many fractional digits it needs.
+// of at most maxExactDigits fractional digits and, if so, how many digits it
+// needs. It reports false for a longer expansion without computing it, so the
+// cost is bounded by maxExactDigits regardless of how large den is (1/5^200000
+// used to take seconds).
 func terminatingDigits(den *big.Int) (int, bool) {
+	if den.BitLen() > maxExactDenominatorBits {
+		return 0, false
+	}
 	d := new(big.Int).Set(den)
 	twos := int(d.TrailingZeroBits())
+	if twos > maxExactDigits {
+		return 0, false
+	}
 	d.Rsh(d, uint(twos))
 	var fives int
 	m := new(big.Int)
@@ -86,6 +99,9 @@ func terminatingDigits(den *big.Int) (int, bool) {
 			break
 		}
 		d, fives = q, fives+1
+		if fives > maxExactDigits {
+			return 0, false
+		}
 	}
 	if d.Cmp(big.NewInt(1)) != 0 {
 		return 0, false
