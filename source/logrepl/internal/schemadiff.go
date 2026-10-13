@@ -106,16 +106,16 @@ func (d SchemaDiff) HasDrift() bool { return len(d.Changes) > 0 }
 // Length-only changes to types whose Avro mapping ignores TypeModifier (varchar,
 // text) are compatible and evolve accepts them (Q2 in the B1 design doc: the
 // judgement is per-type against the Avro extraction rules, via
-// schema.TypeChangePreservesSchema, not "any type change blocks"). Policy
+// schema.TypeChangePreservesValues, not "any type change blocks"). Policy
 // treats the two differently; see the drift policy in the DBZ-3 design doc.
-func (d SchemaDiff) IsIncompatible() bool {
+func (d SchemaDiff) IsIncompatible(withAvroSchema bool) bool {
 	for _, c := range d.Changes {
 		switch c.Kind {
 		case ColumnDropped:
 			return true
 		case ColumnTypeChanged:
-			if !schema.Avro.TypeChangePreservesSchema(
-				c.OldDataType, c.OldTypeModifier,
+			if !schema.Avro.TypeChangePreservesValues(
+				withAvroSchema, c.OldDataType, c.OldTypeModifier,
 				c.NewDataType, c.NewTypeModifier,
 			) {
 				return true

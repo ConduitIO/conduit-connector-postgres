@@ -266,3 +266,25 @@ func TestAvroExtract_UnconstrainedNumericIsString(t *testing.T) {
 		is.Equal(sch.String(), tc.want)
 	}
 }
+
+func TestTypeChangePreservesValues(t *testing.T) {
+	is := is.New(t)
+	for _, tc := range []struct {
+		name           string
+		oldOID, newOID uint32
+		oldMod, newMod int32
+		avro, noAvro   bool
+	}{
+		{"text to unconstrained numeric", pgtype.TextOID, pgtype.NumericOID, -1, -1, true, false},
+		{"unconstrained numeric to varchar", pgtype.NumericOID, pgtype.VarcharOID, -1, 20, true, false},
+		{"text to varchar", pgtype.TextOID, pgtype.VarcharOID, -1, 20, true, true},
+		{"unconstrained to constrained numeric", pgtype.NumericOID, pgtype.NumericOID, -1, 10<<16 | 2 + 4, false, false},
+		{"constrained numeric widened", pgtype.NumericOID, pgtype.NumericOID, 10<<16 | 2 + 4, 12<<16 | 2 + 4, false, false},
+		{"unconstrained numeric unchanged", pgtype.NumericOID, pgtype.NumericOID, -1, -1, true, true},
+	} {
+		is.Equal(Avro.TypeChangePreservesValues(true, tc.oldOID, tc.oldMod, tc.newOID, tc.newMod), tc.avro) // with Avro: tc.name
+		is.Equal(Avro.TypeChangePreservesValues(false, tc.oldOID, tc.oldMod, tc.newOID, tc.newMod), tc.noAvro)
+		// the Avro-on judgement is the existing one
+		is.Equal(Avro.TypeChangePreservesSchema(tc.oldOID, tc.oldMod, tc.newOID, tc.newMod), tc.avro)
+	}
+}

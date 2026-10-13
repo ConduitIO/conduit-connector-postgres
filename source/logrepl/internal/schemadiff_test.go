@@ -143,7 +143,7 @@ func Test_RelationSet_Update_DetectsDrift(t *testing.T) {
 			got := rs.Update(rel(relID, tt.after...))
 			is.Equal(len(got.Changes), len(tt.wantKinds))
 			is.Equal(got.HasDrift(), len(tt.wantKinds) > 0)
-			is.Equal(got.IsIncompatible(), tt.wantIncompatible)
+			is.Equal(got.IsIncompatible(true), tt.wantIncompatible)
 
 			gotKinds := map[ColumnChangeKind]int{}
 			gotNames := map[string]bool{}
@@ -173,7 +173,7 @@ func Test_RelationSet_Update_FirstMessageIsNotDrift(t *testing.T) {
 
 	d := rs.Update(rel(7, col("id", 23, -1), col("name", 25, -1)))
 	is.True(!d.HasDrift())
-	is.True(!d.IsIncompatible())
+	is.True(!d.IsIncompatible(true))
 	is.Equal(d.String(), "no schema drift")
 }
 
@@ -239,7 +239,40 @@ func Test_SchemaDiff_TSVectorEvolve(t *testing.T) {
 			rs.Update(rel(1, col("id", pgtype.Int8OID, -1), col("c", tc.from, -1)))
 			diff := rs.Update(rel(1, col("id", pgtype.Int8OID, -1), col("c", tc.to, -1)))
 			is.True(diff.HasDrift())
-			is.Equal(diff.IsIncompatible(), tc.incompatible)
+			is.Equal(diff.IsIncompatible(true), tc.incompatible)
+		})
+	}
+}
+
+// An unconstrained numeric is an Avro string (#375), so changing a column
+// between text/varchar and it keeps the Avro shape. Without an Avro schema the
+// record holds a big.Rat for it and a string for text, so the value's type
+// changes and evolve must not accept it.
+func Test_SchemaDiff_UnconstrainedNumericVersusText(t *testing.T) {
+	numeric := int32(-1)
+	for _, tc := range []struct {
+		name               string
+		fromOID, toOID     uint32
+		fromMod, toMod     int32
+		wantAvro, wantNone bool // incompatible with Avro on / off
+	}{
+		{"text to numeric", pgtype.TextOID, pgtype.NumericOID, -1, numeric, false, true},
+		{"numeric to text", pgtype.NumericOID, pgtype.TextOID, numeric, -1, false, true},
+		{"varchar to numeric", pgtype.VarcharOID, pgtype.NumericOID, 14, numeric, false, true},
+		{"numeric to varchar", pgtype.NumericOID, pgtype.VarcharOID, numeric, 14, false, true},
+		// numeric(p,s) is a decimal in both modes
+		{"text to numeric(10,2)", pgtype.TextOID, pgtype.NumericOID, -1, 10<<16 | 2 + 4, true, true},
+		{"numeric to numeric(10,2)", pgtype.NumericOID, pgtype.NumericOID, numeric, 10<<16 | 2 + 4, true, true},
+		{"numeric unchanged type, text to text", pgtype.TextOID, pgtype.VarcharOID, -1, 14, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			rs := NewRelationSet()
+			rs.Update(rel(1, col("id", pgtype.Int8OID, -1), col("c", tc.fromOID, tc.fromMod)))
+			diff := rs.Update(rel(1, col("id", pgtype.Int8OID, -1), col("c", tc.toOID, tc.toMod)))
+			is.True(diff.HasDrift())
+			is.Equal(diff.IsIncompatible(true), tc.wantAvro)
+			is.Equal(diff.IsIncompatible(false), tc.wantNone)
 		})
 	}
 }

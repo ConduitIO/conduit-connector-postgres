@@ -52,10 +52,12 @@ import (
 // of what the old library produced.
 //
 // One deliberate exception (#375): the "numeric unconstrained" entry and the
-// six typeChanges between text/varchar and an unconstrained numeric were edited
-// by hand when that column became an Avro string. The new schema is a plain
-// string, which hamba and iskorotkov encode identically (byte 0x02 0x30 for
-// "0"); this was checked on release/v0.14.x, which runs hamba.
+// six typeChanges between text/varchar and an unconstrained numeric changed when
+// that column became an Avro string. They were edited in place (not regenerated
+// with the new codec), and a fresh review regenerated them with the hamba
+// generator on the pre-swap tree and found them byte-identical. The new schema is
+// a plain string, which hamba and iskorotkov encode identically (0x02 0x30 for
+// "0").
 
 const (
 	pgBool        = "bool"

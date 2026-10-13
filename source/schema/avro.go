@@ -140,16 +140,46 @@ func (a *avroExtractor) TypeChangePreservesSchema(oldType uint32, oldTypeMod int
 		return false
 	}
 
-	oldS, err := a.extractType(oldT, oldTypeMod)
+	return a.typeChangePreserves(true, oldT, oldTypeMod, newT, newTypeMod)
+}
+
+// TypeChangePreservesValues is TypeChangePreservesSchema for a source whose
+// withAvroSchema option has the given value. Without an Avro schema the value
+// a consumer sees is the Go value, and an unconstrained numeric is a big.Rat
+// there, not the string it is under Avro: a change between it and text/varchar
+// changes the value's type, so it is not preserved. Every other judgement is
+// the same in both modes.
+func (a *avroExtractor) TypeChangePreservesValues(withAvroSchema bool, oldType uint32, oldTypeMod int32, newType uint32, newTypeMod int32) bool {
+	oldT, oldOK := a.pgMap.TypeForOID(oldType)
+	newT, newOK := a.pgMap.TypeForOID(newType)
+	if !oldOK || !newOK {
+		return false
+	}
+	return a.typeChangePreserves(withAvroSchema, oldT, oldTypeMod, newT, newTypeMod)
+}
+
+func (a *avroExtractor) typeChangePreserves(withAvroSchema bool, oldT *pgtype.Type, oldTypeMod int32, newT *pgtype.Type, newTypeMod int32) bool {
+	oldS, err := a.extractTypeFor(withAvroSchema, oldT, oldTypeMod)
 	if err != nil {
 		return false
 	}
-	newS, err := a.extractType(newT, newTypeMod)
+	newS, err := a.extractTypeFor(withAvroSchema, newT, newTypeMod)
 	if err != nil {
 		return false
 	}
 
 	return oldS.String() == newS.String()
+}
+
+// extractTypeFor is extractType for the drift judgement. Without an Avro schema
+// an unconstrained numeric keeps the shape it had before it became a string,
+// so that it stays different from text and varchar (see
+// TypeChangePreservesValues).
+func (a *avroExtractor) extractTypeFor(withAvroSchema bool, t *pgtype.Type, typeMod int32) (avro.Schema, error) {
+	if !withAvroSchema && t.OID == pgtype.NumericOID && typeMod == -1 {
+		return avro.NewPrimitiveSchema(avro.Bytes, avro.NewDecimalLogicalSchema(65535, 65531)), nil
+	}
+	return a.extractType(t, typeMod)
 }
 
 func (a *avroExtractor) extractType(t *pgtype.Type, typeMod int32) (avro.Schema, error) {
