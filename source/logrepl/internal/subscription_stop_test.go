@@ -16,6 +16,8 @@ package internal
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -104,4 +106,110 @@ func TestSubscription_RunReturnsWhenContextExpires(t *testing.T) {
 	tctx, tcancel := context.WithTimeout(ctx, 10*time.Second)
 	defer tcancel()
 	is.NoErr(sub.Teardown(tctx))
+}
+
+// startBlocked runs the subscription with a hook that parks Run inside
+// startReplication (old connection released, new one not yet acquired).
+func startBlocked(ctx context.Context, t *testing.T) (sub *Subscription, release func(), runErr <-chan error) {
+	t.Helper()
+	sub = newStopTestSubscription(ctx, t)
+	inStart := make(chan struct{})
+	gate := make(chan struct{})
+	sub.beforeAcquire = func() {
+		close(inStart)
+		<-gate
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- sub.Run(ctx) }()
+	select {
+	case <-inStart:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run never reached startReplication")
+	}
+	var once sync.Once
+	rel := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(rel)
+	return sub, rel, errCh
+}
+
+// TestSubscription_StopBeforeRun: Stop arrives before Run has published its
+// cancel function. Run must notice (the `stopped` flag) and return instead of
+// replicating until the parent context ends.
+func TestSubscription_StopBeforeRun(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	sub := newStopTestSubscription(ctx, t)
+
+	sub.Stop()
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- sub.Run(ctx) }()
+	select {
+	case err := <-errCh:
+		is.True(errors.Is(err, context.Canceled))
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run ignored a Stop that arrived before it started")
+	}
+	tctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	is.NoErr(sub.Teardown(tctx))
+}
+
+// TestSubscription_StopWhileStarting: Stop is called while Run is parked inside
+// startReplication. Run must abort starting and return.
+func TestSubscription_StopWhileStarting(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	sub, release, runErr := startBlocked(ctx, t)
+
+	sub.Stop()
+	release()
+
+	select {
+	case err := <-runErr:
+		is.True(err != nil)
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return after Stop during start")
+	}
+	select {
+	case <-sub.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("done not closed")
+	}
+}
+
+// TestSubscription_TeardownWaitsForStartingRun: Teardown while Run is still
+// starting (not ready) must wait for Run to finish. Returning early let the
+// caller release the pool while Run still held or was about to take a
+// connection (the leaked goroutine in #346).
+func TestSubscription_TeardownWaitsForStartingRun(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	sub, release, _ := startBlocked(ctx, t)
+
+	tdone := make(chan error, 1)
+	go func() {
+		tctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		tdone <- sub.Teardown(tctx)
+	}()
+
+	select {
+	case <-tdone:
+		t.Fatal("Teardown returned while Run was still starting")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	release()
+	select {
+	case err := <-tdone:
+		is.NoErr(err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("Teardown did not return after Run finished")
+	}
+	select {
+	case <-sub.Done():
+	default:
+		t.Fatal("Teardown returned before done was closed")
+	}
 }

@@ -78,3 +78,79 @@ func TestSource_ReadN_DeadlineDoesNotWedgeCDC(t *testing.T) {
 		t.Fatal("Teardown did not return within 30s")
 	}
 }
+
+// TestSource_StopDuringStartup is the public-API probe for #346: Open on an
+// empty table (straight to CDC), ReadN in a goroutine, cancel the open context
+// after 0 to 5.5 ms, then Teardown. Whatever the timing, Teardown must return,
+// nothing may panic, and the replication slot must be droppable afterwards
+// (no replication connection left behind).
+func TestSource_StopDuringStartup(t *testing.T) {
+	ctx := context.Background()
+	conn := test.ConnectSimple(ctx, t, test.RepmgrConnString)
+	const runs = 60
+
+	for i := 0; i < runs; i++ {
+		delay := time.Duration(float64(i) / float64(runs-1) * 5.5 * float64(time.Millisecond))
+		name := fmt.Sprintf("stopstart_%d_%d", i, time.Now().UnixNano()%100000000)
+
+		if _, err := conn.Exec(ctx, "CREATE TABLE "+name+" (id bigint primary key, v text)"); err != nil {
+			t.Fatal(err)
+		}
+
+		src := Connector.NewSource()
+		err := sdk.Util.ParseConfig(ctx, map[string]string{
+			"url": test.RepmgrConnString, "tables": name, "cdcMode": "logrepl",
+			"logrepl.slotName": name, "logrepl.publicationName": name,
+			"sdk.schema.extract.key.enabled": "false", "sdk.schema.extract.payload.enabled": "false",
+		}, src.Config(), Connector.NewSpecification().SourceParams)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		openCtx, cancelOpen := context.WithCancel(ctx)
+		if err := src.Open(openCtx, nil); err != nil {
+			t.Fatalf("run %d: open: %v", i, err)
+		}
+
+		readDone := make(chan struct{})
+		go func() {
+			defer close(readDone)
+			_, _ = src.ReadN(openCtx, 1)
+		}()
+
+		time.Sleep(delay)
+		cancelOpen()
+
+		tdone := make(chan error, 1)
+		go func() {
+			tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			tdone <- src.Teardown(tctx)
+		}()
+		select {
+		case <-tdone:
+		case <-time.After(40 * time.Second):
+			t.Fatalf("run %d (cancel at %v): Teardown did not return", i, delay)
+		}
+		select {
+		case <-readDone:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("run %d: ReadN did not return after cancel", i)
+		}
+
+		// The slot must not stay held by a leaked replication connection. The
+		// server notices a closed connection asynchronously, so allow it a
+		// moment before calling it a leak.
+		var dropErr error
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			if _, dropErr = conn.Exec(ctx, "SELECT pg_drop_replication_slot($1)", name); dropErr == nil {
+				break
+			}
+		}
+		if dropErr != nil {
+			t.Fatalf("run %d (cancel at %v): slot still in use 5s after Teardown: %v", i, delay, dropErr)
+		}
+		_, _ = conn.Exec(ctx, "DROP PUBLICATION IF EXISTS "+name)
+		_, _ = conn.Exec(ctx, "DROP TABLE "+name)
+	}
+}
