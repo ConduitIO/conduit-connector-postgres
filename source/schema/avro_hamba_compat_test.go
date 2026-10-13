@@ -50,6 +50,14 @@ import (
 // run with HAMBA_FIXTURE_GEN=1, and commit only the new entries. Never
 // regenerate existing entries with the new codec: they are the frozen record
 // of what the old library produced.
+//
+// One deliberate exception (#375): the "numeric unconstrained" entry and the
+// six typeChanges between text/varchar and an unconstrained numeric changed when
+// that column became an Avro string. They were edited in place (not regenerated
+// with the new codec), and a fresh review regenerated them with the hamba
+// generator on the pre-swap tree and found them byte-identical. The new schema is
+// a plain string, which hamba and iskorotkov encode identically (0x02 0x30 for
+// "0").
 
 const (
 	pgBool        = "bool"
@@ -236,7 +244,12 @@ func rowFor(cols []compatCol) map[string]any {
 		case pgUUID:
 			row[c.Name] = "bd94ee0b-564f-4088-bf4e-8d5e626caf66"
 		case pgNumeric:
-			row[c.Name] = numericValue(c.TypMod)
+			if c.TypMod == -1 {
+				// unconstrained numeric is an Avro string (#375)
+				row[c.Name] = "0"
+			} else {
+				row[c.Name] = numericValue(c.TypMod)
+			}
 		}
 	}
 	return row
@@ -338,7 +351,7 @@ func TestAvroExtract_HambaCompat(t *testing.T) {
 		})
 	}
 
-	t.Run("TypeChangePreservesSchema", func(t *testing.T) {
+	t.Run("TypeChangePreservesValues", func(t *testing.T) {
 		cases := typeChangeCases()
 		if len(f.TypeChanges) != len(cases) {
 			t.Fatalf("fixture has %d type changes, typeChangeCases() has %d", len(f.TypeChanges), len(cases))
@@ -348,7 +361,7 @@ func TestAvroExtract_HambaCompat(t *testing.T) {
 			c := cases[i]
 			ot, _ := m.TypeForName(c.OldType)
 			nt, _ := m.TypeForName(c.NewType)
-			got := schema.Avro.TypeChangePreservesSchema(ot.OID, c.OldMod, nt.OID, c.NewMod)
+			got := schema.Avro.TypeChangePreservesValues(true, ot.OID, c.OldMod, nt.OID, c.NewMod)
 			if got != fx.Want {
 				t.Errorf("%s(%d) -> %s(%d): got %v, hamba said %v", c.OldType, c.OldMod, c.NewType, c.NewMod, got, fx.Want)
 			}
@@ -382,7 +395,7 @@ func generateHambaFixtures(t *testing.T, path string) {
 	for _, c := range typeChangeCases() {
 		ot, _ := m.TypeForName(c.OldType)
 		nt, _ := m.TypeForName(c.NewType)
-		c.Want = schema.Avro.TypeChangePreservesSchema(ot.OID, c.OldMod, nt.OID, c.NewMod)
+		c.Want = schema.Avro.TypeChangePreservesValues(true, ot.OID, c.OldMod, nt.OID, c.NewMod)
 		out.TypeChanges = append(out.TypeChanges, c)
 	}
 	b, err := json.MarshalIndent(out, "", "  ")

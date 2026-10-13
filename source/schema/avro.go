@@ -121,35 +121,53 @@ func (a *avroExtractor) Extract(schemaName string, fields []pgconn.FieldDescript
 	return sch, nil
 }
 
-// TypeChangePreservesSchema reports whether a column whose DataType/TypeModifier
+// TypeChangePreservesValues reports whether a column whose DataType/TypeModifier
 // pair changed from (oldType, oldTypeMod) to (newType, newTypeMod) still yields
-// the same Avro schema — i.e. whether the change is invisible to a consumer that
-// reads the Avro-encoded value. It is the evolve-policy compatibility judgement
-// (Q2 in the DBZ-3 B1 design doc): a change that preserves the Avro shape is
-// compatible and can be admitted automatically, one that doesn't must halt.
+// the same value for a consumer, for a source whose withAvroSchema option has
+// the given value. It is the evolve-policy compatibility judgement (Q2 in the
+// DBZ-3 B1 design doc): a change that preserves the shape is compatible and can
+// be admitted automatically, one that doesn't must halt.
 //
-// The judgement mirrors how Extract derives schemas: OIDs that map to a fixed
-// primitive (e.g. varchar/text -> String, ignoring TypeModifier) are preserved
-// under length-only changes; numeric changes precision/scale and therefore
-// changes the Avro decimal schema. Fail closed on anything the extractor cannot
-// resolve: an unmapped type might differ in ways we cannot see.
-func (a *avroExtractor) TypeChangePreservesSchema(oldType uint32, oldTypeMod int32, newType uint32, newTypeMod int32) bool {
+// With Avro on the judgement is whether the Avro schema is unchanged. It mirrors
+// how Extract derives schemas: OIDs that map to a fixed primitive (e.g.
+// varchar/text -> String, ignoring TypeModifier) are preserved under length-only
+// changes; a constrained numeric changes precision/scale and therefore the Avro
+// decimal schema. Without an Avro schema the value a consumer sees is the Go
+// value, and an unconstrained numeric is a big.Rat there, not the string it is
+// under Avro: a change between it and text/varchar changes the value's type, so
+// it is not preserved. Fail closed on anything the extractor cannot resolve: an
+// unmapped type might differ in ways we cannot see.
+func (a *avroExtractor) TypeChangePreservesValues(withAvroSchema bool, oldType uint32, oldTypeMod int32, newType uint32, newTypeMod int32) bool {
 	oldT, oldOK := a.pgMap.TypeForOID(oldType)
 	newT, newOK := a.pgMap.TypeForOID(newType)
 	if !oldOK || !newOK {
 		return false
 	}
+	return a.typeChangePreserves(withAvroSchema, oldT, oldTypeMod, newT, newTypeMod)
+}
 
-	oldS, err := a.extractType(oldT, oldTypeMod)
+func (a *avroExtractor) typeChangePreserves(withAvroSchema bool, oldT *pgtype.Type, oldTypeMod int32, newT *pgtype.Type, newTypeMod int32) bool {
+	oldS, err := a.extractTypeFor(withAvroSchema, oldT, oldTypeMod)
 	if err != nil {
 		return false
 	}
-	newS, err := a.extractType(newT, newTypeMod)
+	newS, err := a.extractTypeFor(withAvroSchema, newT, newTypeMod)
 	if err != nil {
 		return false
 	}
 
 	return oldS.String() == newS.String()
+}
+
+// extractTypeFor is extractType for the drift judgement. Without an Avro schema
+// an unconstrained numeric keeps the shape it had before it became a string,
+// so that it stays different from text and varchar (see
+// TypeChangePreservesValues).
+func (a *avroExtractor) extractTypeFor(withAvroSchema bool, t *pgtype.Type, typeMod int32) (avro.Schema, error) {
+	if !withAvroSchema && t.OID == pgtype.NumericOID && typeMod == -1 {
+		return avro.NewPrimitiveSchema(avro.Bytes, avro.NewDecimalLogicalSchema(65535, 65531)), nil
+	}
+	return a.extractType(t, typeMod)
 }
 
 func (a *avroExtractor) extractType(t *pgtype.Type, typeMod int32) (avro.Schema, error) {
@@ -159,6 +177,14 @@ func (a *avroExtractor) extractType(t *pgtype.Type, typeMod int32) (avro.Schema,
 
 	switch t.OID {
 	case pgtype.NumericOID:
+		if typeMod == -1 {
+			// An unconstrained numeric has no precision or scale, and any value
+			// Postgres can store (up to 131072 digits before and 16383 after the
+			// point, plus NaN and the infinities) is a valid one. No Avro
+			// decimal(p,s) can hold them all with a usable encoding, so it is
+			// the exact text of the value. See the design note on #375.
+			return avro.NewPrimitiveSchema(avro.String, nil), nil
+		}
 		scale := int((typeMod - 4) & 65535)
 		precision := int(((typeMod - 4) >> 16) & 65535)
 		return avro.NewPrimitiveSchema(

@@ -247,3 +247,47 @@ func assert[T any](a T, err error) T {
 
 	return a
 }
+
+// An unconstrained numeric is an Avro string (#375); numeric(p,s) stays a
+// decimal.
+func TestAvroExtract_UnconstrainedNumericIsString(t *testing.T) {
+	is := is.New(t)
+	for _, tc := range []struct {
+		typMod int32
+		want   string
+	}{
+		{-1, `{"name":"t_payload","type":"record","fields":[{"name":"n","type":"string"}]}`},
+		{10<<16 | 2 + 4, `{"name":"t_payload","type":"record","fields":[{"name":"n","type":{"type":"bytes","logicalType":"decimal","precision":10,"scale":2}}]}`},
+	} {
+		t.Run(fmt.Sprintf("typmod=%d", tc.typMod), func(t *testing.T) {
+			is := is.New(t)
+			sch, err := Avro.Extract("t_payload", []pgconn.FieldDescription{
+				{Name: "n", DataTypeOID: pgtype.NumericOID, TypeModifier: tc.typMod},
+			})
+			is.NoErr(err)
+			is.Equal(sch.String(), tc.want)
+		})
+	}
+}
+
+func TestTypeChangePreservesValues(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		oldOID, newOID uint32
+		oldMod, newMod int32
+		avro, noAvro   bool
+	}{
+		{"text to unconstrained numeric", pgtype.TextOID, pgtype.NumericOID, -1, -1, true, false},
+		{"unconstrained numeric to varchar", pgtype.NumericOID, pgtype.VarcharOID, -1, 20, true, false},
+		{"text to varchar", pgtype.TextOID, pgtype.VarcharOID, -1, 20, true, true},
+		{"unconstrained to constrained numeric", pgtype.NumericOID, pgtype.NumericOID, -1, 10<<16 | 2 + 4, false, false},
+		{"constrained numeric widened", pgtype.NumericOID, pgtype.NumericOID, 10<<16 | 2 + 4, 12<<16 | 2 + 4, false, false},
+		{"unconstrained numeric unchanged", pgtype.NumericOID, pgtype.NumericOID, -1, -1, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			is.Equal(Avro.TypeChangePreservesValues(true, tc.oldOID, tc.oldMod, tc.newOID, tc.newMod), tc.avro)
+			is.Equal(Avro.TypeChangePreservesValues(false, tc.oldOID, tc.oldMod, tc.newOID, tc.newMod), tc.noAvro)
+		})
+	}
+}

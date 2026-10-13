@@ -296,11 +296,11 @@
         }
       ],
       "keyCols": null,
-      "schema": "{\"name\":\"n_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"n\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":65535,\"scale\":65531}}]}",
+      "schema": "{\"name\":\"n_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"n\",\"type\":\"string\"}]}",
       "rowHex": {
-        "UTC": "0200",
-        "UTC+05:30": "0200",
-        "UTC-07": "0200"
+        "UTC": "0230",
+        "UTC+05:30": "0230",
+        "UTC-07": "0230"
       }
     },
     {
@@ -1531,7 +1531,7 @@
       "oldMod": -1,
       "newType": "numeric",
       "newMod": -1,
-      "want": false
+      "want": true
     },
     {
       "oldType": "varchar",
@@ -1671,7 +1671,7 @@
       "oldMod": 14,
       "newType": "numeric",
       "newMod": -1,
-      "want": false
+      "want": true
     },
     {
       "oldType": "varchar",
@@ -1811,7 +1811,7 @@
       "oldMod": 255,
       "newType": "numeric",
       "newMod": -1,
-      "want": false
+      "want": true
     },
     {
       "oldType": "json",
@@ -3127,21 +3127,21 @@
       "oldMod": -1,
       "newType": "text",
       "newMod": -1,
-      "want": false
+      "want": true
     },
     {
       "oldType": "numeric",
       "oldMod": -1,
       "newType": "varchar",
       "newMod": 14,
-      "want": false
+      "want": true
     },
     {
       "oldType": "numeric",
       "oldMod": -1,
       "newType": "varchar",
       "newMod": 255,
-      "want": false
+      "want": true
     },
     {
       "oldType": "numeric",

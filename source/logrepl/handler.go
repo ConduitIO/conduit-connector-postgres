@@ -903,7 +903,7 @@ func (h *CDCHandler) classifyDrift(
 			sdk.Logger(ctx).Warn().
 				Str("table", key).
 				Str("lsn", lsn.String()).
-				Bool("incompatible", diff.IsIncompatible()).
+				Bool("incompatible", diff.IsIncompatible(h.withAvroSchema)).
 				Msg("schema drift detected: " + diff.String())
 			return driftInProcess, diff, prev, hash
 		}
@@ -941,7 +941,7 @@ func (h *CDCHandler) haltsOnDrift(kind driftKind, diff internal.SchemaDiff) bool
 	}
 	// driftInProcess
 	if h.schemaDriftPolicy == SchemaDriftPolicyEvolve {
-		return diff.IsIncompatible()
+		return diff.IsIncompatible(h.withAvroSchema)
 	}
 	// halt — and dlq, which is rejected at config validation but fails closed
 	// here for direct CDCConfig users — stops on any drift.
@@ -1012,7 +1012,7 @@ func (h *CDCHandler) emitDriftMarker(
 	if kind == driftInProcess {
 		// The diff exists only for in-process drift; for driftAcrossRestart the
 		// metadata must not fabricate one (FM7/AC7).
-		metadata[MetadataSchemaDriftNarrowing] = strconv.FormatBool(diff.IsIncompatible())
+		metadata[MetadataSchemaDriftNarrowing] = strconv.FormatBool(diff.IsIncompatible(h.withAvroSchema))
 		metadata[MetadataSchemaDriftDiff] = diff.String()
 	}
 
