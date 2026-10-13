@@ -99,6 +99,17 @@ func TestSource_DeleteAndKeyChange_ReplicaIdentity(t *testing.T) {
 		},
 		openErr: logrepl.ErrorCodeReplicaIdentityExcludesKey,
 	}, {
+		// indkey lists INCLUDE columns too, but Postgres sends only the key
+		// columns (indnkeyatts) in the old tuple of a delete, so an INCLUDE
+		// column does not make the identity carry the primary key.
+		name: "using_index_include_pk_refused",
+		ddl: []string{
+			`CREATE TABLE %[1]s (id int PRIMARY KEY, i int NOT NULL, t text NOT NULL)`,
+			`CREATE UNIQUE INDEX %[2]s ON %[1]s (i) INCLUDE (id)`,
+			`ALTER TABLE %[1]s REPLICA IDENTITY USING INDEX %[2]s`,
+		},
+		openErr: logrepl.ErrorCodeReplicaIdentityExcludesKey,
+	}, {
 		name:     "default_key_change_update",
 		ddl:      []string{`CREATE TABLE %[1]s (id int PRIMARY KEY, i int NOT NULL, t text NOT NULL)`},
 		change:   `UPDATE %[1]s SET id = 2 WHERE id = 1`,
