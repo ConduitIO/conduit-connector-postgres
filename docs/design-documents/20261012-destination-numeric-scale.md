@@ -41,12 +41,17 @@ resolves, at execution time: round half away from zero, or `numeric field overfl
 
 - A rational whose denominator has only the prime factors 2 and 5 terminates and is sent
   exactly.
+- A terminating rational that needs more than 16383 fractional digits (Postgres's limit for a
+  NUMERIC input; 1/2^20000 is one) is rejected by Postgres with 22003 on every numeric column,
+  constrained or not, so it is handled like a non-terminating one.
 - Any other rational (1/3) is truncated toward zero after **1001 fractional digits**. Postgres
   allows a column scale of at most 1000, so the first dropped digit is always beyond every
-  rounding boundary (a boundary for scale s has s+1 digits). A non-terminating value never
-  equals a boundary, and truncation at more than s+1 digits keeps it on the same side of it,
-  so the column's rounding of the truncated string equals rounding the exact value.
-  `TestRatToDecimalString_RoundingEquivalence` checks this against an independent oracle.
+  rounding boundary (a boundary for scale s has s+1 <= 1001 digits). The value never equals a
+  boundary: a non-terminating expansion has no finite form, and a terminating one with more
+  than 16383 digits has more digits than any boundary. Truncation at 1001 digits keeps it on
+  the same side of every boundary, so the column's rounding of the truncated string equals
+  rounding the exact value. `TestRatToDecimalString_RoundingEquivalence` checks this against
+  an independent oracle, including values at digit 1001 and with a tail of nines.
 
 ## Alternatives
 
@@ -71,27 +76,48 @@ rounding the exact value gives `0.00`.
 | Value exceeds the column's precision | Postgres raises 22003, `Write` returns the error, the batch is rolled back and not acknowledged (invariant 1). |
 | Value has more scale than the column | Postgres rounds half away from zero. This is documented behavior, not a silent coercion by the connector. |
 | Unconstrained `numeric` | Stores the exact value, or 1001 digits for a non-terminating rational. Previously rounded to an integer. |
+| Terminating value with more than 16383 digits | Truncated at 1001 digits, then rounded by Postgres like any other value. Sent in full it would be rejected with 22003. |
 | Non-numeric column | See below. |
+| Column type changed while the destination runs | See "The remaining cached view of the schema". |
 | Crash mid-batch | Unchanged: the batch is one implicit transaction. |
 
 ## Behavior changes
 
-Removing the lookup removes its "column is not numeric" error. Postgres and pgx now decide:
+Removing the lookup removes its "column is not numeric" error. Postgres and pgx now decide.
+Values below were probed against Postgres 17 with this change.
 
 | Target column | Before | After |
 | --- | --- | --- |
 | `numeric(p,s)` | rounded client-side to a cached scale | rounded by Postgres to the live scale |
 | unconstrained `numeric` | rounded to an integer | exact value stored |
-| `integer` | error from the connector | whole values stored; fractional values rejected by Postgres |
+| `integer`, `smallint`, `bigint` | error from the connector | whole values stored; fractional values rejected (22P02), except after a live `ALTER` to an integer type, see below; out of range rejected (22003) |
+| `real`, `float8` | error from the connector | nearest binary float stored (`1/3` as `0.33333334` for `real`) |
 | `text` | error from the connector | decimal string stored |
-| `float8` | error from the connector | nearest double stored |
+| `varchar(n)` | error from the connector | stored if the string fits; otherwise rejected (22001) |
+| `money` | error from the connector | rounded to the locale's fraction digits (`1/3` as `$0.33`) |
+| `boolean` | error from the connector | `1` stored as `true`, `0` as `false`; other values rejected (22P02). Silent coercion if the schema is mis-mapped |
+| `date` | error from the connector | `20261012` stored as `2026-10-12`. Silent coercion if the schema is mis-mapped |
+| `interval` | error from the connector | `12345` stored as `03:25:45`. Silent coercion if the schema is mis-mapped |
 | domain over `numeric(p,s)` | worked | works |
+
+## The remaining cached view of the schema
+
+The destination connects with `pgx.Connect`, which caches prepared statements per connection.
+A cached statement keeps the parameter types inferred when it was prepared. This is the one
+cached view of the schema left in the destination. After `ALTER COLUMN ... TYPE integer` on a
+running destination, the parameter is still typed `numeric`, so Postgres casts it to `integer`
+by assignment and rounds: 5/2 is stored as 3 instead of being rejected. A freshly opened
+destination rejects it. This predates this change (v0.14.3 stores 3 as well) and applies to
+any value type, not only `big.Rat`. It is tracked in #367 and is not fixed here: the options
+(describe-exec query mode, or text-format parameters) change the write path and need their own
+design note. Numeric scale itself is not affected, because the scale is part of the column's
+typmod, not of the parameter type.
 
 ## Upgrade and rollback
 
 No config, protocol, position or state change. Rolling back restores the stale-scale
 behavior. Pipelines that relied on the connector rejecting a decimal written to a non-numeric
-column will now see it accepted for `text` and `float8`.
+column will now see it accepted for several column types (table above).
 
 ## Observability
 
