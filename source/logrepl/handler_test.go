@@ -221,7 +221,7 @@ func TestHandler_Truncate_WarningIsRateLimited(t *testing.T) {
 	h := &CDCHandler{relationSet: rs, now: func() time.Time { return now }}
 
 	trunc := &pglogrepl.TruncateMessage{RelationIDs: []uint32{7}}
-	for i := 0; i < 50; i++ {
+	for i := uint64(0); i < 50; i++ {
 		lsn, err := h.Handle(ctx, trunc, pglogrepl.LSN(100+i))
 		is.NoErr(err)
 		is.Equal(lsn, pglogrepl.LSN(0)) // logging only: nothing emitted, no LSN claimed
