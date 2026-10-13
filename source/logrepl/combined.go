@@ -37,6 +37,14 @@ type CombinedIterator struct {
 	conf Config
 	pool *pgxpool.Pool
 
+	// runCtx is the context the iterator was opened with. The CDC subscription
+	// outlives any single NextN call, so it must run on this context and never
+	// on a NextN context: when the snapshot handoff happens inside NextN, using
+	// that call's context tied the subscription's lifetime to one ReadN
+	// deadline, and after it expired the subscription spun and could not be
+	// stopped (#347).
+	runCtx context.Context
+
 	cdcIterator      *CDCIterator
 	snapshotIterator *snapshot.Iterator
 	activeIterator   iterator
@@ -97,8 +105,9 @@ func NewCombinedIterator(ctx context.Context, pool *pgxpool.Pool, conf Config) (
 	}
 
 	c := &CombinedIterator{
-		conf: conf,
-		pool: pool,
+		conf:   conf,
+		pool:   pool,
+		runCtx: ctx,
 	}
 
 	// Initialize the CDC iterator. This creates (or, on a resume, reuses) the
@@ -314,7 +323,7 @@ func (c *CombinedIterator) useCDCIterator(ctx context.Context) error {
 	// ack or SendStandbyStatusUpdate path, so it cannot advance the slot early.
 	c.cdcIterator.SetSnapshotLowWatermarkLSN(c.snapshotLowWatermarkLSN)
 
-	if err := c.cdcIterator.StartSubscriber(ctx); err != nil {
+	if err := c.cdcIterator.StartSubscriber(c.runCtx); err != nil {
 		return fmt.Errorf("failed to start CDC iterator: %w", err)
 	}
 

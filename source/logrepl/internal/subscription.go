@@ -60,7 +60,18 @@ type Subscription struct {
 	conn *pgxpool.Conn
 	pool *pgxpool.Pool
 
-	stop context.CancelFunc
+	// stopMu guards stop, stopped and running: Stop and Teardown are called
+	// from another goroutine, possibly before Run has created its context
+	// (#346: stopping right after the snapshot handoff overtook a starting
+	// subscription and left it unstoppable).
+	stopMu  sync.Mutex
+	stop    context.CancelFunc
+	stopped bool // Stop was called, possibly before Run began
+	running bool // Run was called
+
+	// replicating is set by Run once START_REPLICATION succeeded. Only then is
+	// there a stream to send the final status update and CopyDone on.
+	replicating bool
 
 	ready   chan struct{}
 	done    chan struct{}
@@ -190,13 +201,24 @@ func CreateSubscription(
 func (s *Subscription) Run(ctx context.Context) error {
 	defer s.doneReplication()
 
-	if err := s.startReplication(ctx); err != nil {
+	// The cancel function is published before anything blocking happens, so a
+	// Stop that arrives while replication is still starting is honoured.
+	lctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	s.stopMu.Lock()
+	s.stop = cancel
+	s.running = true
+	if s.stopped {
+		cancel()
+	}
+	s.stopMu.Unlock()
+
+	if err := s.startReplication(lctx); err != nil {
 		close(s.ready) // ready to fail.
 		return err
 	}
+	s.replicating = true
 
-	lctx, cancel := context.WithCancel(ctx)
-	s.stop = cancel
 	s.walWritten = s.StartLSN
 	s.walFlushed = s.StartLSN
 
@@ -226,6 +248,13 @@ func (s *Subscription) listen(ctx context.Context) error {
 		msg, err := s.receiveMessage(ctx, nextStatusUpdateAt)
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
+				if ctx.Err() != nil {
+					// It is the subscription's own context that expired, not
+					// the status-update deadline. Retrying can never succeed
+					// and used to spin forever, so Teardown never returned
+					// (#347).
+					return ctx.Err()
+				}
 				sdk.Logger(ctx).Trace().Msg("deadline exceeded while receiving message")
 				continue
 			}
@@ -384,6 +413,9 @@ func (s *Subscription) allAcked() bool {
 // Stop signals to the subscription it should stop. Call Wait to block until the
 // subscription actually stops running.
 func (s *Subscription) Stop() {
+	s.stopMu.Lock()
+	defer s.stopMu.Unlock()
+	s.stopped = true
 	if s.stop != nil {
 		s.stop()
 	}
@@ -416,12 +448,18 @@ func (s *Subscription) Teardown(ctx context.Context) error {
 
 	s.Stop()
 
-	select {
-	case <-s.ready:
-		return s.Wait(ctx, closeReplicationTimeout)
-	default:
+	s.stopMu.Lock()
+	running := s.running
+	s.stopMu.Unlock()
+	if !running {
+		// Run was never called (or has not been yet and will see stopped), so
+		// there is nothing to wait for.
 		return nil
 	}
+
+	// Wait for Run to finish, including when it is still starting: the
+	// connection must not be released while Run might use it (#346).
+	return s.Wait(ctx, closeReplicationTimeout)
 }
 
 // Ready returns a channel that is closed when the subscription is ready and
@@ -447,6 +485,7 @@ func (s *Subscription) startReplication(ctx context.Context) error {
 	// 		Safer to refresh the connection before replication begins.
 
 	s.conn.Release()
+	s.conn = nil // released; nothing may touch it until the new one is acquired
 
 	conn, err := s.pool.Acquire(cpool.WithReplication(ctx))
 	if err != nil {
@@ -604,8 +643,13 @@ func (s *Subscription) doneReplication() {
 	tctx, cancel := context.WithTimeout(context.Background(), closeReplicationTimeout)
 	defer cancel()
 
-	if err := s.sentStandbyDone(tctx); err != nil {
-		s.doneErr = errors.Join(s.doneErr, err)
+	// Without a started stream there is no connection in replication mode to
+	// talk on (startReplication released the old one), and using it
+	// panicked with a nil pointer dereference (#346).
+	if s.replicating && s.conn != nil {
+		if err := s.sentStandbyDone(tctx); err != nil {
+			s.doneErr = errors.Join(s.doneErr, err)
+		}
 	}
 
 	close(s.done)
