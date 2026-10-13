@@ -45,7 +45,13 @@ var beforeTestRelationSeq atomic.Int64
 // the global in-memory schema service never mixes subjects across tests.
 func newBeforeTestHandler(ctx context.Context, t *testing.T, withAvro bool) (*CDCHandler, chan []opencdc.Record, string) {
 	t.Helper()
-	name := fmt.Sprintf("before_test_%d", beforeTestRelationSeq.Add(1))
+	return newNamedBeforeTestHandler(ctx, t, withAvro, fmt.Sprintf("before_test_%d", beforeTestRelationSeq.Add(1)))
+}
+
+// newNamedBeforeTestHandler is newBeforeTestHandler for a relation with the
+// given name, for tests that need an identifier that needs quoting.
+func newNamedBeforeTestHandler(ctx context.Context, t *testing.T, withAvro bool, name string) (*CDCHandler, chan []opencdc.Record, string) {
+	t.Helper()
 	rs := internal.NewRelationSet()
 	rs.Add(&pglogrepl.RelationMessage{
 		RelationID:   1,
@@ -206,6 +212,24 @@ func TestHandler_Delete_NullKeyHalts(t *testing.T) {
 // TestHandler_Delete_UnknownRelationNotGuarded pins that the #380 guard only
 // applies to relations with a key column resolved at Open. Others keep the
 // previous behaviour (an empty key), which is out of scope here.
+// TestHandler_Delete_NullKeyHalts_QuotesTable pins that the suggested fix in
+// the error is runnable: a mixed-case table name must be quoted in the
+// ALTER TABLE statement, as in the Open error.
+func TestHandler_Delete_NullKeyHalts_QuotesTable(t *testing.T) {
+	ctx := context.Background()
+	is := is.New(t)
+	h, _, name := newNamedBeforeTestHandler(ctx, t, false, fmt.Sprintf("Orders_%d", beforeTestRelationSeq.Add(1)))
+
+	err := h.handleDelete(ctx, &pglogrepl.DeleteMessage{
+		RelationID:   1,
+		OldTupleType: pglogrepl.DeleteMessageTupleTypeKey,
+		OldTuple:     tuple(null(), txt("10"), null()),
+	}, 1)
+	is.True(err != nil)
+	is.True(strings.Contains(err.Error(), fmt.Sprintf("ALTER TABLE %q REPLICA IDENTITY FULL", name)))
+	is.True(!strings.Contains(err.Error(), "ALTER TABLE "+name+" "))
+}
+
 func TestHandler_Delete_UnknownRelationNotGuarded(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
