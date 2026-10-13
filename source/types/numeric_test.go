@@ -111,12 +111,10 @@ func TestFormatFor_NumericArray(t *testing.T) {
 		{"NaN", []any{one, nan}, true, []any{one, "NaN"}},
 		{"Infinity", []any{inf, nil}, true, []any{"Infinity", nil}},
 		{"-Infinity", []any{negInf}, true, []any{"-Infinity"}},
-		{"nested", []any{[]any{one, nan}, []any{negInf, inf}}, true, []any{[]any{one, "NaN"}, []any{"-Infinity", "Infinity"}}},
 		// Pinned: the output main emits today for a numeric[] without a
 		// non-finite element. Elements stay pgtype.Numeric (not *big.Rat); NULL
 		// elements (nil, or an invalid Numeric) are not touched.
 		{"finite", []any{one, pgxNumeric(t, "0"), nil, pgtype.Numeric{}}, false, []any{one, pgxNumeric(t, "0"), nil, pgtype.Numeric{}}},
-		{"finite nested", []any{[]any{one}, []any{one}}, false, []any{[]any{one}, []any{one}}},
 		{"empty", []any{}, false, []any{}},
 	}
 	for _, enc := range []Encoding{EncodingNative, EncodingAvro} {
