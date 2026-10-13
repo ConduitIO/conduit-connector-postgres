@@ -64,7 +64,7 @@ func corruptLedgerLine(is *is.I, path string, lineNo int) {
 	mutated[0] ^= 0xFF
 	lines[idx] = strings.SplitN(lines[idx], " ", 2)[0] + " " + string(mutated)
 
-	is.NoErr(os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600))
+	is.NoErr(os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)) //nolint:gosec // path is the test's own temp ledger file
 }
 
 // TestLedger_AppendAndReplay_RoundTrips proves the basic contract: every
@@ -92,7 +92,6 @@ func TestLedger_AppendAndReplay_RoundTrips(t *testing.T) {
 	is.Equal(len(bad), 0)
 	is.Equal(len(entries), 3)
 	for i, e := range entries {
-		//nolint:gosec // i is a small, non-negative test loop index (range over a 3-element slice)
 		is.Equal(e.Seq, uint64(i+1))
 		is.Equal(e.DeliveryKey, itoa(i))
 	}

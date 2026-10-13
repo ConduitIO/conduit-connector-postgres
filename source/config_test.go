@@ -29,7 +29,7 @@ func TestConfig_Validate(t *testing.T) {
 	}{
 		{
 			name: "valid config",
-			cfg: Config{
+			cfg: Config{ //nolint:gosec // credentials of the docker-compose test database
 				URL:     "postgresql://meroxauser:meroxapass@127.0.0.1:5432/meroxadb",
 				Tables:  []string{"table1", "table2"},
 				CDCMode: CDCModeLogrepl,

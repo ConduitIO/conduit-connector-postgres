@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/hamba/avro/v2"
+	"github.com/iskorotkov/avro/v2"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"

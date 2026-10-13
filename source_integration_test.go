@@ -78,7 +78,7 @@ func TestSource_ParseConfig(t *testing.T) {
 	}{
 		{
 			name: "valid postgres replication slot name",
-			cfg: config.Config{
+			cfg: config.Config{ //nolint:gosec // credentials of the docker-compose test database
 				"url":              "postgresql://meroxauser:meroxapass@127.0.0.1:5432/meroxadb",
 				"tables":           "table1,table2",
 				"cdcMode":          "logrepl",
@@ -87,7 +87,7 @@ func TestSource_ParseConfig(t *testing.T) {
 			wantErr: false,
 		}, {
 			name: "invalid postgres replication slot name",
-			cfg: config.Config{
+			cfg: config.Config{ //nolint:gosec // credentials of the docker-compose test database
 				"url":              "postgresql://meroxauser:meroxapass@127.0.0.1:5432/meroxadb",
 				"tables":           "table1,table2",
 				"cdcMode":          "logrepl",

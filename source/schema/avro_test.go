@@ -25,7 +25,7 @@ import (
 
 	"github.com/conduitio/conduit-connector-postgres/source/types"
 	"github.com/conduitio/conduit-connector-postgres/test"
-	"github.com/hamba/avro/v2"
+	"github.com/iskorotkov/avro/v2"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/matryer/is"
