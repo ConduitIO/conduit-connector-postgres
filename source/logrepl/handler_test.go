@@ -15,7 +15,11 @@
 package logrepl
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +29,7 @@ import (
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/matryer/is"
+	"github.com/rs/zerolog"
 )
 
 func TestHandler_Batching_BatchSizeReached(t *testing.T) {
@@ -203,4 +208,93 @@ func newTestRecord(id int) opencdc.Record {
 			"id": id,
 		},
 	}
+}
+
+// TestHandler_Truncate_WarningIsRateLimited: a storm of TRUNCATEs on one table
+// must not flood the log, and the swallowed ones must be counted.
+func TestHandler_Truncate_WarningIsRateLimited(t *testing.T) {
+	is := is.New(t)
+	var buf bytes.Buffer
+	ctx := zerolog.New(&buf).WithContext(context.Background())
+
+	rs := internal.NewRelationSet()
+	rs.Add(&pglogrepl.RelationMessage{RelationID: 7, Namespace: "public", RelationName: "orders"})
+	now := time.Unix(1000, 0)
+	h := &CDCHandler{relationSet: rs, now: func() time.Time { return now }}
+
+	trunc := &pglogrepl.TruncateMessage{RelationIDs: []uint32{7}}
+	for i := uint64(0); i < 50; i++ {
+		lsn, err := h.Handle(ctx, trunc, pglogrepl.LSN(100+i))
+		is.NoErr(err)
+		is.Equal(lsn, pglogrepl.LSN(0)) // logging only: nothing emitted, no LSN claimed
+	}
+	is.Equal(strings.Count(buf.String(), "TRUNCATE was NOT propagated"), 1)
+	is.Equal(h.truncateWarns["public.orders"].suppressed, uint64(49))
+
+	now = now.Add(truncateWarnInterval + time.Second)
+	_, err := h.Handle(ctx, trunc, pglogrepl.LSN(200))
+	is.NoErr(err)
+	out := buf.String()
+	is.Equal(strings.Count(out, "TRUNCATE was NOT propagated"), 2)
+	is.True(strings.Contains(out, `"suppressed":49`)) // 1 warning + 49 swallowed = the 50 of the burst
+	is.Equal(h.truncateWarns["public.orders"].suppressed, uint64(0))
+}
+
+// TestHandler_Truncate_StateIsBounded: the rate-limit state must not grow with
+// the number of distinct tables ever truncated (relation ids are recycled by
+// DROP/CREATE), only with those truncated within the last interval.
+func TestHandler_Truncate_StateIsBounded(t *testing.T) {
+	is := is.New(t)
+	var buf bytes.Buffer
+	ctx := zerolog.New(&buf).WithContext(context.Background())
+
+	rs := internal.NewRelationSet()
+	now := time.Unix(1000, 0)
+	h := &CDCHandler{relationSet: rs, now: func() time.Time { return now }}
+
+	for id := uint32(1); id <= 1000; id++ {
+		rs.Add(&pglogrepl.RelationMessage{RelationID: id, Namespace: "public", RelationName: fmt.Sprintf("t%d", id)})
+		_, err := h.Handle(ctx, &pglogrepl.TruncateMessage{RelationIDs: []uint32{id}}, pglogrepl.LSN(id))
+		is.NoErr(err)
+		now = now.Add(truncateWarnInterval) // each table's window has expired by the next truncate
+	}
+	is.Equal(strings.Count(buf.String(), "TRUNCATE was NOT propagated"), 1000)
+	is.True(len(h.truncateWarns) <= 2) // not 1000
+}
+
+// TestHandler_Truncate_EvictionReportsPendingCount: a table whose window
+// expired with swallowed TRUNCATEs must not lose that count silently when
+// another table's warning evicts it.
+func TestHandler_Truncate_EvictionReportsPendingCount(t *testing.T) {
+	is := is.New(t)
+	var buf bytes.Buffer
+	ctx := zerolog.New(&buf).WithContext(context.Background())
+
+	rs := internal.NewRelationSet()
+	rs.Add(&pglogrepl.RelationMessage{RelationID: 1, Namespace: "public", RelationName: "orders"})
+	rs.Add(&pglogrepl.RelationMessage{RelationID: 2, Namespace: "public", RelationName: "users"})
+	now := time.Unix(1000, 0)
+	h := &CDCHandler{relationSet: rs, now: func() time.Time { return now }}
+
+	for i := uint64(0); i < 4; i++ { // 1 warning + 3 swallowed
+		_, err := h.Handle(ctx, &pglogrepl.TruncateMessage{RelationIDs: []uint32{1}}, pglogrepl.LSN(10+i))
+		is.NoErr(err)
+	}
+	now = now.Add(truncateWarnInterval + time.Second)
+	_, err := h.Handle(ctx, &pglogrepl.TruncateMessage{RelationIDs: []uint32{2}}, pglogrepl.LSN(50))
+	is.NoErr(err)
+
+	var summaries []map[string]any
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, "(summary)") {
+			var m map[string]any
+			is.NoErr(json.Unmarshal([]byte(line), &m))
+			summaries = append(summaries, m)
+		}
+	}
+	is.Equal(len(summaries), 1)
+	is.Equal(summaries[0]["table"], "public.orders")
+	is.Equal(summaries[0]["suppressed"], float64(3))
+	_, stillThere := h.truncateWarns["public.orders"]
+	is.True(!stillThere) // evicted
 }

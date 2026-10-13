@@ -204,6 +204,24 @@ cannot be encoded
 ([#383](https://github.com/ConduitIO/conduit-connector-postgres/issues/383)). Set
 `REPLICA IDENTITY FULL` on such tables.
 
+### Limitations
+
+- **`TRUNCATE` is not propagated.** OpenCDC has no truncate operation, so a
+  `TRUNCATE` on a published table produces no record: rows it removed remain in
+  the destination. If the publication publishes `truncate` (the one the
+  connector creates does by default), the connector logs a `WARN` ("TRUNCATE was NOT
+  propagated") naming the table and the LSN, at most once a minute per table.
+  A restricted or user-supplied publication (for example
+  `publish = 'insert, update, delete'`) never sends the message, so there is
+  no warning and no other signal. The `suppressed` field counts the TRUNCATEs
+  of that table the rate limit swallowed since the previous warning; when
+  another table's warning evicts an expired entry that still holds a count, a
+  one-line summary with that count is logged. Treat the log lines as a signal,
+  not a precise counter: a count still pending when the process exits is
+  lost. Inserts, updates and deletes around the `TRUNCATE` are delivered as
+  usual. A configurable policy for TRUNCATE is planned. Until then, treat the
+  warning as a signal to reconcile the destination by hand.
+
 ## Destination
 
 The Postgres Destination takes a Conduit record and stores it using a SQL statement.
