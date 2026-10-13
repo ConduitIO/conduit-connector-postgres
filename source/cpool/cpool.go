@@ -19,7 +19,9 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/conduitio/conduit-connector-postgres/source/types"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -37,7 +39,12 @@ func New(ctx context.Context, conninfo string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("failed to parse pool config: %w", err)
 	}
 
-	config.BeforeAcquire = beforeAcquireHook
+	DefaultSCRAMCompat(&config.ConnConfig.Config)
+
+	// pgx 5.7.6 deprecated BeforeAcquire in favor of PrepareConn. Moving to it
+	// is a change to how connections are acquired, which a pgx security bump
+	// on a patch line should not carry.
+	config.BeforeAcquire = beforeAcquireHook //nolint:staticcheck // see above
 	config.BeforeConnect = beforeConnectHook
 	config.AfterConnect = afterConnectHook
 	config.AfterRelease = afterReleaseHook
@@ -48,6 +55,30 @@ func New(ctx context.Context, conninfo string) (*pgxpool.Pool, error) {
 	}
 
 	return pool, nil
+}
+
+// DefaultSCRAMCompat keeps the SCRAM behavior of pgx 5.7 for a connection
+// configuration parsed by pgx 5.9 or later: v0.14.x keeps pgx 5.7's SCRAM
+// behaviour; channel_binding=require stays opt-in.
+//
+// pgx 5.9 defaults channel_binding to "prefer", which makes it use
+// SCRAM-SHA-256-PLUS whenever the connection is TLS and the server offers it.
+// That breaks authentication that worked on pgx 5.7 (and on v0.14.3): a
+// server with an Ed25519 certificate fails with "SCRAM channel binding
+// negotiation error", and a TLS re-terminating proxy that passes SASL through
+// fails with "channel binding check failed". Mapping the default to "disable"
+// restores what 5.7 did.
+//
+// "prefer" is mapped whether it is the default or was written in the URL; the
+// two cannot be told apart after parsing, and no v0.14.3 URL can contain it
+// (see below). "require" and "disable" were chosen by the user and are kept.
+// The mapping is safe because no URL that worked on v0.14.3 can contain
+// channel_binding: pgx 5.7 sends unknown parameters to the server as startup
+// parameters, which the server rejects.
+func DefaultSCRAMCompat(cfg *pgconn.Config) {
+	if cfg.ChannelBinding == "prefer" {
+		cfg.ChannelBinding = "disable"
+	}
 }
 
 func afterConnectHook(_ context.Context, conn *pgx.Conn) error {
@@ -63,6 +94,10 @@ func afterConnectHook(_ context.Context, conn *pgx.Conn) error {
 		OID:   pgtype.JSONBOID,
 		Codec: &pgtype.JSONBCodec{Marshal: json.Marshal, Unmarshal: jsonNoopUnmarshal},
 	})
+
+	// Keep decoding tsvector as text on every pgx version, see
+	// types.RegisterTextOnly.
+	types.RegisterTextOnly(conn.TypeMap())
 
 	return nil
 }
