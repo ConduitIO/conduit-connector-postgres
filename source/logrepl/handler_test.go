@@ -17,6 +17,7 @@ package logrepl
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -209,7 +210,7 @@ func newTestRecord(id int) opencdc.Record {
 }
 
 // TestHandler_Truncate_WarningIsRateLimited: a storm of TRUNCATEs on one table
-// must not flood the log, and the count must keep rising.
+// must not flood the log, and the swallowed ones must be counted.
 func TestHandler_Truncate_WarningIsRateLimited(t *testing.T) {
 	is := is.New(t)
 	var buf bytes.Buffer
@@ -227,13 +228,35 @@ func TestHandler_Truncate_WarningIsRateLimited(t *testing.T) {
 		is.Equal(lsn, pglogrepl.LSN(0)) // logging only: nothing emitted, no LSN claimed
 	}
 	is.Equal(strings.Count(buf.String(), "TRUNCATE was NOT propagated"), 1)
-	is.Equal(h.truncates["public.orders"], uint64(50))
+	is.Equal(h.truncateWarns["public.orders"].suppressed, uint64(49))
 
 	now = now.Add(truncateWarnInterval + time.Second)
 	_, err := h.Handle(ctx, trunc, pglogrepl.LSN(200))
 	is.NoErr(err)
 	out := buf.String()
 	is.Equal(strings.Count(out, "TRUNCATE was NOT propagated"), 2)
-	is.True(strings.Contains(out, `"truncates_total":51`))
-	is.True(strings.Contains(out, `"suppressed":49`))
+	is.True(strings.Contains(out, `"suppressed":49`)) // 1 warning + 49 swallowed = the 50 of the burst
+	is.Equal(h.truncateWarns["public.orders"].suppressed, uint64(0))
+}
+
+// TestHandler_Truncate_StateIsBounded: the rate-limit state must not grow with
+// the number of distinct tables ever truncated (relation ids are recycled by
+// DROP/CREATE), only with those truncated within the last interval.
+func TestHandler_Truncate_StateIsBounded(t *testing.T) {
+	is := is.New(t)
+	var buf bytes.Buffer
+	ctx := zerolog.New(&buf).WithContext(context.Background())
+
+	rs := internal.NewRelationSet()
+	now := time.Unix(1000, 0)
+	h := &CDCHandler{relationSet: rs, now: func() time.Time { return now }}
+
+	for id := uint32(1); id <= 1000; id++ {
+		rs.Add(&pglogrepl.RelationMessage{RelationID: id, Namespace: "public", RelationName: fmt.Sprintf("t%d", id)})
+		_, err := h.Handle(ctx, &pglogrepl.TruncateMessage{RelationIDs: []uint32{id}}, pglogrepl.LSN(id))
+		is.NoErr(err)
+		now = now.Add(truncateWarnInterval) // each table's window has expired by the next truncate
+	}
+	is.Equal(strings.Count(buf.String(), "TRUNCATE was NOT propagated"), 1000)
+	is.True(len(h.truncateWarns) <= 2) // not 1000
 }
