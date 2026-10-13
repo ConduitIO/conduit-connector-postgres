@@ -544,6 +544,10 @@ itself survives a crash. The file mode is 0600. It records:
   from `IDENTIFY_SYSTEM`;
 - Conduit's slot name, C, and the publication;
 - S13's Debezium-slot proof;
+- **(Round 3)** `debezium.stopMethod`: `stop` when the cutover used
+  `PUT /connectors/{name}/stop`, `delete` when it deleted the connector on a
+  worker older than Kafka 3.5. `--check-rollback` keys its 404 rule on it
+  (S12), so it never has to infer the method from a version string;
 - the final O, and **(4th pass)** F_stop and R_stop, the `confirmed_flush_lsn`
   and `restart_lsn` of Debezium's slot read after the stop. They feed S13's
   `identity_ahead` warning and `--check-rollback` (S12);
@@ -635,8 +639,10 @@ refuses with `migrate.kafka_connect.rollback_in_progress` and changes
 nothing. Fix text: _"A manual rollback was started for this pipeline (watch
 log `<path>`). Finish it with the runbook, or end it with
 `--check-rollback --abandon --reason <text>` (Debezium must be stopped),
-then re-run."_ An abandoned log (`<pipeline>.rollback-watch.abandoned.json`)
-does not block; the re-run reads its R7 snapshot ("Going forward after a
+then re-run."_ An abandoned log
+(`<pipeline>.rollback-watch.abandoned.<UTC timestamp>.json`, one per
+abandoned attempt) does not block. The re-run reads the R7 snapshot from the
+**newest** archive, by the timestamp in its name ("Going forward after a
 failed restart", S12):
 
 | Re-run after `--abandon` | Required | Otherwise |
@@ -850,7 +856,8 @@ verdict:
 ```sh
 conduit migrate kafka-connect --check-rollback --pipeline <name> \
   --journal-dir <dir> [--pg-url <url>] [--connect-url <url>] \
-  [--conduit-url <url>] [--watch] [--watch-timeout 30m] [--json]
+  [--conduit-url <url>] [--offsets-from rest|topic] [--bootstrap-servers <s>] \
+  [--offsets-topic <t>] [--watch] [--watch-timeout 30m] [--json]
 conduit migrate kafka-connect --check-rollback --pipeline <name> \
   --journal-dir <dir> --abandon --reason <text> [--json]
 ```
@@ -886,8 +893,14 @@ Debezium's own credentials; see S9.)
 **Privileges.** The check's Postgres role needs `pg_read_all_stats` (or
 `pg_monitor`) so that `pg_stat_activity` shows other roles' sessions. Without
 it, `backend_type` and `backend_start` read as NULL for Debezium's walsender.
-The check fails closed on a NULL in either column
-(`rollback_check_privileges`), and requires `backend_type = 'walsender'` for
+**(Round 3)** It also needs activity tracking on for Debezium's role:
+with `track_activities=off`, server-wide or set for that role,
+`pg_stat_activity.state` is `disabled` and `query_start` is NULL (probed on
+PG 14 and PG 17), and the identity tuple (S15) would quietly lose
+`query_start`. The check fails closed on a NULL `backend_type`,
+`backend_start` or `query_start`, or a `state` of `disabled`
+(`rollback_check_privileges`; the fix text names `track_activities`), and
+requires `backend_type = 'walsender'` for
 every `active` sighting, so a SQL session consuming the slot (for example
 `pg_logical_slot_get_changes`) can never become an accepted sighting: that is
 `rollback_check_continuity_unproven`.
@@ -911,14 +924,16 @@ fails closed with `rollback_check_state_unmapped`.
 | Source | Reported | Treated as |
 | --- | --- | --- |
 | Kafka Connect `GET /connectors/{name}/status` | `STOPPED` | stopped |
-| Kafka Connect | 404, on a worker older than Kafka 3.5 where the cutover deleted the connector | stopped |
+| Kafka Connect | 404, when the journal says the cutover deleted the connector (`debezium.stopMethod: delete`, a worker older than Kafka 3.5) | stopped |
+| Kafka Connect | 404, when the journal says the cutover stopped it (`debezium.stopMethod: stop`) | before the restart: `state_unmapped`; after it: terminal `restart_interrupted` (R10) |
 | Kafka Connect | `RUNNING` (connector and every task) | running |
 | Kafka Connect | `UNASSIGNED` (connector or a task) | `waiting` (`rollback_check_connector_state`) |
 | Kafka Connect | `PAUSED`, `FAILED` or `RESTARTING` (connector or a task), or any other value | `unsafe` (`rollback_check_connector_state`), with the task's trace; a paused task can still hold its replication connection |
 | Conduit `GET /v1/pipelines/{id}` | `STATUS_STOPPED` with `stoppedReason` `STOPPED_REASON_USER` | stopped |
 | Conduit | 404 | absent |
 | Conduit | `STATUS_RUNNING` | running |
-| Conduit | `STATUS_RECOVERING`, `STATUS_DEGRADED`, or `STATUS_STOPPED` with `STOPPED_REASON_SYSTEM` or `STOPPED_REASON_UNSPECIFIED` | `unsafe` (`rollback_check_pipeline_state`): the lifecycle may restart these, so they are not stopped for R7 |
+| Conduit | `STATUS_DEGRADED` | stopped, **(round 3)** before the R7 snapshot: the lifecycle sets it only after a fatal error or a failed recovery (`pkg/lifecycle/service.go`, around L1471 and L1521), and nothing but a user Start runs the pipeline again; Stop on it returns `pipeline.not_running` |
+| Conduit | `STATUS_RECOVERING`, or `STATUS_STOPPED` with `STOPPED_REASON_SYSTEM` or `STOPPED_REASON_UNSPECIFIED` | `unsafe` (`rollback_check_pipeline_state`): the lifecycle restarts these by itself, so they are not stopped for R7 |
 | Conduit | unreachable, or any other answer | `unsafe` (`rollback_check_conduit_unreachable`) |
 
 **The checks.** Lc, C, F_stop and R_stop come from the journal, or from the
@@ -933,10 +948,11 @@ max(final Lc, F_stop).
 | R4 | Before Debezium is restarted: its slot has `confirmed_flush_lsn` ≤ B and `restart_lsn` ≤ B. A recreated or consumed slot has `confirmed_flush_lsn` past B; detection rests on that column, and `restart_lsn` alone proves nothing. **At step 7** B comes from the F_stop observed by the check itself, which would make R4 circular, so there the check requires F_stop ≤ Lc instead. A slot recreated after the stop starts strictly above the WAL position at its creation, which is past Lc, so it cannot pass; an ungraceful stop that flushed past Lc is refused too, and the operator goes forward. | `rollback_check_slot_moved` |
 | R5 | If F_stop > final Lc: Conduit's durable progress P ≥ F_stop. P is F_c, Conduit's slot's `confirmed_flush_lsn`; when Conduit's slot is missing (degraded), P is Kc, the commit LSN of the pipeline's persisted position (the checkpoint's LSN when it is keyless), taken from the R7 snapshot in the watch log once the pipeline is deleted. With Conduit's slot missing and no R7 snapshot, R5 fails closed. **Checked in every row that can lead to `ready_to_drop`, after the restart as well as before it.** | `rollback_check_conduit_behind` |
 | R6 | Before the restart only: Debezium's config passes S5 item 9 and `PUT /connector-plugins/{class}/config/validate`. On a Kafka 3.5+ worker this is the live config of the stopped connector; on an older worker, where the connector was deleted, it is the **saved** config from the journal. It is not run once Debezium is running: the validation's behaviour against a running connector holding its slot is unverified (pre-merge gate). | `rollback_check_config_unsafe`, with the S5 code as the cause |
-| R7 | Never two writers: Conduit's pipeline is stopped (`STATUS_STOPPED`, `STOPPED_REASON_USER`) or absent before Debezium runs. When the check first sees the pipeline stopped, it records the R7 snapshot in the watch log: pipeline id, position K, Kc and F_c. | `rollback_check_two_writers` |
+| R7 | Never two writers: Conduit's pipeline is stopped (`STATUS_STOPPED` with `STOPPED_REASON_USER`, or `STATUS_DEGRADED`) or absent before Debezium runs. When the watch first sees the pipeline stopped, it records the R7 snapshot in its log: pipeline id, position K, Kc and F_c. **(Round 3)** After the snapshot, two things are terminal `two_writers` whatever the API says: any pipeline state other than stopped or absent (only a user Start leaves those), and, as a backstop that does not depend on the Conduit API, Conduit's slot becoming `active` or its `confirmed_flush_lsn` changing from the snapshot's F_c. | `rollback_check_two_writers` |
 | R8 | After the restart, continuity holds (S15): the watch log covers the restart, the first `active` sighting is ≤ B, every sighting is a `walsender`, and every change of walsender passed the equality rule or the same-walsender rule. | `rollback_check_continuity_unproven` |
-| R9 | Before the drop: Debezium's slot `confirmed_flush_lsn` ≥ F_c (skipped when Conduit's slot is missing), and the pipeline is **absent**. While it still exists (stopped), the verdict is `ready_to_delete_pipeline`; the slot drop is never offered before the delete (S16). | `rollback_check_not_caught_up` (a `waiting` verdict, not a failure) |
-| R10 | Once the watch log shows Debezium running after the stop, Debezium must not be stopped again. A restart followed by a new stop ends the attempt: going back cannot be resumed from there. | `rollback_check_restart_interrupted` |
+| R9 | Before the drop: Debezium's slot `confirmed_flush_lsn` ≥ F_c (skipped when Conduit's slot is missing), and the pipeline is **absent**. While it still exists (stopped), the verdict is `ready_to_delete_pipeline`; the slot drop is never offered before the delete (S16). **(Round 3)** Both `ready_to_delete_pipeline` and `ready_to_drop` also require that the latest sighting of the journalled Debezium slot is `active` under an accepted walsender (R8): a slot Debezium has stopped reading cannot prove it is still Debezium's. | `rollback_check_not_caught_up` (a `waiting` verdict, not a failure) |
+| R10 | Once the watch log shows Debezium running after the stop, Debezium must not be stopped again, and **(round 3)** on a worker where the cutover only stopped the connector (journalled `debezium.stopMethod: stop`), a 404 after the restart means it was deleted. A restart followed by a new stop or a delete ends the attempt: going back cannot be resumed from there. | `rollback_check_restart_interrupted` |
+| R11 | **(Round 3)** After the restart, on every poll, Debezium's live config (`GET /connectors/{name}/config`) still names the journalled slot (`slot.name`), publication (`publication.name`), database (`database.dbname`) and plugin (`plugin.name`). A config change that points Debezium at another slot would leave the journalled slot inactive while R9 still held, and the drop would lose data. | `rollback_check_slot_moved` |
 
 All codes are `migrate.kafka_connect.*`.
 
@@ -965,16 +981,17 @@ combination not in the table is `unsafe` (`rollback_check_state_unmapped`).
 | step ≤ 6 | stopped or 404 | any | — | `unsafe` (`state_unmapped`): the cutover never stopped Debezium, so someone else did; restart it deliberately and check again |
 | step 7, no stopped sighting logged | running | absent | R1 | `unsafe` (`stop_incomplete`): finish the stop |
 | step 7, no stopped sighting logged | stopped | absent | R1–R4 (at-step-7 form), R5, R6 | `ready_to_restart_debezium`; the watch records F_stop, R_stop and the stopped sighting when it starts |
-| step 7, stopped sighting logged | running | absent | R1–R5, R7–R10 | as "step ≥ 8, running": Debezium was restarted, not left mid-stop |
+| step 7, stopped sighting logged | running | absent | R1–R5, R7–R11 | as "step ≥ 8, running": Debezium was restarted, not left mid-stop |
 | step 7 or ≥ 8, restart logged | stopped | any | R10 | `unsafe` (`restart_interrupted`): go forward (below) |
 | step ≥ 8, no restart logged | stopped | running | R1–R6 | `ready_to_stop_conduit` |
 | step ≥ 8, no restart logged | stopped | stopped or absent | R1–R7 | `ready_to_restart_debezium`: start `--watch`, then restart Debezium |
-| step ≥ 8 | running | stopped | R1–R5, R7–R10 | `waiting` until Debezium's slot passes F_c, then `ready_to_delete_pipeline` |
-| step ≥ 8 | running | absent | R1–R5, R7–R10 | `waiting` until R9 holds, then `ready_to_drop` |
+| step ≥ 8 | running | stopped | R1–R5, R7–R11 | `waiting` until Debezium's slot passes F_c, then `ready_to_delete_pipeline` |
+| step ≥ 8 | running | absent | R1–R5, R7–R11 | `waiting` until R9 holds, then `ready_to_drop` |
 | step ≥ 8 | running | running | R7 | `unsafe` (`two_writers`) |
 | any | `UNASSIGNED` | any | — | `waiting` (`connector_state`) |
 | any | `PAUSED`, `FAILED`, `RESTARTING` or unknown | any | — | `unsafe` (`connector_state`) |
-| any | any | `RECOVERING`, `DEGRADED`, or stopped by the system | — | `unsafe` (`pipeline_state`) |
+| any, before the R7 snapshot | any | `RECOVERING`, or stopped by the system | — | `unsafe` (`pipeline_state`), transient |
+| any, after the R7 snapshot | any | anything but stopped (`STATUS_STOPPED` by the user, or `DEGRADED`) or absent | — | `unsafe` (`two_writers`), terminal: someone started it |
 | any | any | Conduit unreachable | — | `unsafe` (`conduit_unreachable`); inside `--watch`, `waiting` (transient) |
 
 Inside `--watch`, every transient finding in this table (`connector_state`,
@@ -997,18 +1014,20 @@ from the journal. If the server's timeline differs from the journalled one,
 the output says a failover happened since the cutover.
 
 **Terminal and transient findings (verification round 2).** A finding is
-**terminal** when it shows that going back is no longer safe, whatever
-happens next: `continuity_unproven`, `slot_moved`, `slot_lost`,
-`two_writers`, `restart_interrupted`, and `conduit_behind` once Debezium has
-been restarted. The watch records a terminal finding in its log, and from
-then on every check and every later watch returns that `unsafe` verdict
-until `--abandon`. Every other finding is **transient**: an unreachable
-Conduit or Kafka Connect API (`conduit_unreachable`, or the Kafka Connect
-call timing out), a `FAILED`, `RESTARTING`, `UNASSIGNED` or `PAUSED` task
-(`connector_state`), `pipeline_state`, `privileges`, `offset_unreadable` and
-`not_caught_up`. Inside `--watch` a transient finding is `waiting`, with the
-code as the reason, and the watch keeps polling; a one-shot check reports it
-as `unsafe` ("not now") without recording it.
+**terminal** when it shows that going back is no longer safe, whatever happens
+next: `continuity_unproven`, `slot_moved` (including R11's config change),
+`slot_lost`, `two_writers` (including R7's after-snapshot rules),
+`restart_interrupted` (including R10's 404), and, once Debezium has been
+restarted, `conduit_behind` and `state_unmapped`. The watch records a terminal
+finding in its log, and from then on every check and every later watch returns
+that `unsafe` verdict until `--abandon`. Every other finding is **transient**:
+an unreachable Conduit or Kafka Connect API (`conduit_unreachable`, or the Kafka
+Connect call timing out), a `FAILED`, `RESTARTING`, `UNASSIGNED` or `PAUSED`
+task (`connector_state`), `pipeline_state` before the R7 snapshot, `privileges`,
+`offset_unreadable`, `state_unmapped` before the restart, and `not_caught_up`.
+Inside `--watch` a transient finding is `waiting`, with the code as the reason,
+and the watch keeps polling; a one-shot check reports it as `unsafe` ("not now")
+without recording it.
 
 **`--watch`.** Continuity after the restart needs an observer, so the
 operator starts `--check-rollback --watch` while Debezium is still stopped,
@@ -1108,13 +1127,13 @@ which still holds everything since F_c:
    writer.
 2. **`conduit migrate kafka-connect --check-rollback --abandon --reason
    "<text>" [--json]`.** It is read-only apart from the watch log. It
-   requires Debezium exactly `STOPPED`, or 404 on a worker older than Kafka
-   3.5; any other state, `UNASSIGNED` included, is refused with
-   `connector_running`. It takes the log's lock and appends the reason, the
+   requires Debezium exactly `STOPPED`, or 404 when the cutover deleted it
+   (`debezium.stopMethod: delete`); any other state, `UNASSIGNED` included,
+   is refused with `connector_running` (D11's single definition). It takes the log's lock and appends the reason, the
    current F_c and both slots' retained WAL
    (`pg_current_wal_lsn() - restart_lsn`). Then it archives the log, with its
    recorded verdict and findings, as
-   `<pipeline>.rollback-watch.abandoned.json` (fsync, rename, directory
+   `<pipeline>.rollback-watch.abandoned.<UTC timestamp>.json` (fsync, rename, directory
    fsync). That clears `rollback_in_progress`.
 3. **Re-run `--cutover`.** The journal is at step 8 or later, so S9's
    abandon table applies:
@@ -1193,13 +1212,17 @@ which still holds everything since F_c:
   it deliberately. `FAILED` or `RESTARTING`: fix the cause and let it run;
   the watch judges the new walsender against its log."_
 - `rollback_check_privileges`: _"`pg_stat_activity` hides other roles'
-  sessions from this role, so the walsender cannot be identified. Grant
-  `pg_read_all_stats` (or `pg_monitor`) to `<role>`, or run the check as a
-  role that has it."_
+  sessions from this role, or activity tracking is off for Debezium's role
+  (`state` is `disabled`, `query_start` is NULL), so the walsender cannot be
+  identified. Grant `pg_read_all_stats` (or `pg_monitor`) to `<role>`, and
+  make sure `track_activities` is on for Debezium's role
+  (`ALTER ROLE <debezium role> RESET track_activities`, or on server-wide)."_
 - `rollback_check_pipeline_state`: _"The Conduit pipeline is `<status>`
-  (`<stoppedReason>`). The engine may restart it, so it does not count as
-  stopped. Stop it through the API (`POST /v1/pipelines/<id>/stop`) and wait
-  for `STATUS_STOPPED` with `STOPPED_REASON_USER`."_
+  (`<stoppedReason>`): recovering, or stopped by the system. The engine
+  restarts those by itself, so it does not count as stopped. Stop it through
+  the API (`POST /v1/pipelines/<id>/stop`) and wait for `STATUS_STOPPED` with
+  `STOPPED_REASON_USER`. (A `DEGRADED` pipeline already counts as
+  stopped.)"_
 - `rollback_check_conduit_unreachable`: _"The Conduit API at `<url>` did not
   answer. The check cannot rule out a running pipeline, so it stops here."_
 - `rollback_check_restart_interrupted`: _"Debezium was restarted during this
@@ -1281,14 +1304,22 @@ runbook and asserting the verdict, then zero loss after the manual steps:
   catches the search connection and the reconnect on every Debezium
   version in the matrix; a terminal finding recorded by one watch is still
   `unsafe` after the watch is restarted; a resumed watch re-checks R8 over
-  the whole log; a `startStreaming` retry on the same connection (same pid
-  and `backend_start`, new `query_start`) is judged by the equality rule;
+  the whole log; a `startStreaming` retry on the same connection (same
+  (`active_pid`, `backend_start`), new `query_start`, so a different
+  identity tuple) is judged by the equality rule;
   Kafka Connect or Conduit unavailable, and a `FAILED` task, keep the watch
   in `waiting`; a one-shot check never writes the watch log; `--json` prints
   one document; `--abandon` refuses `UNASSIGNED`; the abandon table's rows,
   including a pipeline deleted before it ran, a changed topology, and
   Conduit's slot missing; the drop gate refuses when the printed slot name
   differs from the journal's or equals Debezium's;
+- **(round 3)** `track_activities=off` for Debezium's role: `privileges`;
+  a `DEGRADED` pipeline counts as stopped and gets its R7 snapshot; after
+  the snapshot, a user Start, Conduit's slot turning active, or F_c moving is
+  terminal `two_writers`; a Debezium config change to another slot after the
+  restart is terminal `slot_moved` (R11), and the journalled slot going
+  inactive blocks `ready_to_drop`; a 404 after the restart on a 3.5+ worker
+  is terminal `restart_interrupted`;
 - `--check-rollback` makes no write to any system: `pg_stat_database`
   `xact_commit` and the WAL position on the source, the Kafka Connect
   connector state and the Conduit pipeline list are unchanged across every
@@ -1661,7 +1692,8 @@ position across pids:
   `pg_current_wal_lsn()` is recorded for diagnosis only; no rule depends on
   it.
 - **Every `active` sighting** must show `backend_type = 'walsender'` for the
-  holder, with non-NULL `backend_type` and `backend_start`; a NULL is
+  holder, with non-NULL `backend_type`, `backend_start` and `query_start` and
+  a `state` other than `disabled`; a NULL or `disabled` is
   `rollback_check_privileges`, a non-walsender holder (a SQL session
   consuming the slot) is `rollback_check_continuity_unproven` (S12,
   "Privileges").
@@ -1695,7 +1727,7 @@ position across pids:
   every stream; that is false (`startStreaming` can retry on the same
   connection). A retry issues a new `START_REPLICATION`, which changes
   `query_start`, so it is judged by the equality rule instead. That a retry
-  always changes `query_start` is pre-merge gate item 12.
+  always changes `query_start` is pre-merge gate item 15.
 - **Anything else** (a first sighting above B, or a new walsender whose
   first sighting differs from F_last) is
   `rollback_check_continuity_unproven`.
@@ -2460,10 +2492,12 @@ deterministic exit code ADR):
 
 - `offset_not_found` – no offset for this connector.
 - `ambiguous_partition` – more than one partition.
-- `connector_running` – the connector is RUNNING or PAUSED: before
-  `--cutover` without `--stop-connector`, for a `--cutover` re-run that finds
-  Debezium running again after step 8 (S9), for `--without-import`, and for
-  `--check-rollback --abandon` (S12).
+- `connector_running` – the connector is in any state other than exactly
+  `STOPPED`, or, on a worker older than Kafka 3.5 where the cutover deleted
+  it, a 404. One definition for all four uses: `--cutover` without
+  `--stop-connector`, a `--cutover` re-run that finds Debezium running again
+  after step 8 (S9), `--without-import`, and `--check-rollback --abandon`
+  (S12).
 - `offsets_unreachable` – neither REST nor the topic could be read.
 - `cutover_timeout` – Lc (or Debezium's slot, S13) did not reach C within
   `--cutover-wait-timeout`.
@@ -2885,7 +2919,7 @@ probe result linked from that PR; an unverified item blocks the merge of the
 slice it belongs to.
 
 The final review's list, items 1–10, followed by the items the author lane
-had that it does not cover (11–14):
+had that it does not cover (11–15):
 
 1. Aurora, RDS, Cloud SQL and Azure accept `CREATE_REPLICATION_SLOT …
    TEMPORARY PHYSICAL` on a replication connection with the `-c tcp_*`
@@ -2921,6 +2955,9 @@ had that it does not cover (11–14):
     `automaticFlush` flushes received LSNs to the slot on its own (Debezium
     3.1 and earlier with a newer pgjdbc), which makes F_stop > Lc and fails
     every rollback closed (S12, "When F_stop > Lc").
+15. A `START_REPLICATION` retry on the same connection changes
+    `pg_stat_activity.query_start`, so the same-walsender rule never treats a
+    retried stream as the same one (S15).
 
 ## Implementation slices
 
