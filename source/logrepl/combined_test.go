@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -690,4 +691,112 @@ func TestCombinedIterator_ResumeAtSwitchoverBoundary(t *testing.T) {
 		SlotName:        table,
 		PublicationName: table,
 	}))
+}
+
+// TestCombinedIterator_TeardownRacesHandoff: Teardown while NextN is switching
+// from the snapshot to the CDC iterator used to read snapshotIterator while
+// useCDCIterator wrote it (#352). The interleaving is forced with sleeps, not
+// channels, because a channel would add a happens-before edge and hide the
+// race from the race detector. It is a guard, not a discriminating test: the
+// snapshot iterator's tomb mutex adds a happens-before edge, so it does not
+// fail without iterMu on its own.
+func TestCombinedIterator_TeardownRacesHandoff(t *testing.T) {
+	ctx := test.Context(t)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupTestTable(ctx, t, pool)
+	t.Cleanup(func() {
+		_ = Cleanup(context.Background(), CleanupConfig{URL: test.RepmgrConnString, SlotName: table, PublicationName: table})
+	})
+
+	it, err := NewCombinedIterator(ctx, pool, Config{
+		Position:        opencdc.Position{},
+		Tables:          []string{table},
+		TableKeys:       map[string]string{table: "id"},
+		PublicationName: table,
+		SlotName:        table,
+		WithSnapshot:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inHandoff atomic.Bool
+	var loopErr atomic.Value
+	it.beforeHandoff = func() {
+		inHandoff.Store(true)
+		time.Sleep(1500 * time.Millisecond)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			nctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			recs, err := it.NextN(nctx, 10)
+			cancel()
+			for _, r := range recs {
+				_ = it.Ack(ctx, r.Position)
+			}
+			if err != nil {
+				loopErr.Store(err.Error())
+				return
+			}
+		}
+	}()
+	for deadline := time.Now().Add(20 * time.Second); !inHandoff.Load(); { // NextN sits in the hook
+		select {
+		case <-done:
+			t.Fatalf("NextN stopped before the snapshot handoff: %v", loopErr.Load())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the snapshot handoff was never reached")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = it.Teardown(ctx)
+	<-done
+}
+
+// TestCombinedIterator_New_SnapshotInitFailureReleasesTheCDCIterator: the
+// snapshot iterator fails to initialise (the configured key column does not
+// exist) after the CDC iterator, and with it the subscription's pooled
+// replication connection, was created. The caller never receives the
+// iterator, so NewCombinedIterator must tear down what it created itself:
+// without that the connection stays acquired and the slot stays busy for the
+// life of the process.
+func TestCombinedIterator_New_SnapshotInitFailureReleasesTheCDCIterator(t *testing.T) {
+	ctx := test.Context(t)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupTestTable(ctx, t, pool)
+	t.Cleanup(func() {
+		_ = Cleanup(context.Background(), CleanupConfig{URL: test.RepmgrConnString, SlotName: table, PublicationName: table})
+	})
+
+	before := pool.Stat().AcquiredConns()
+	_, err := NewCombinedIterator(ctx, pool, Config{
+		Position:        opencdc.Position{},
+		Tables:          []string{table},
+		TableKeys:       map[string]string{table: "no_such_column"},
+		PublicationName: table,
+		SlotName:        table,
+		WithSnapshot:    true,
+	})
+	if err == nil {
+		t.Fatal("expected the snapshot iterator initialisation to fail")
+	}
+
+	// The pool releases connections asynchronously.
+	deadline := time.Now().Add(5 * time.Second)
+	for pool.Stat().AcquiredConns() > before {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d pooled connections still acquired after the failed open (err: %v)",
+				pool.Stat().AcquiredConns()-before, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// No replication connection may hold the slot.
+	if _, err := pool.Exec(ctx, "SELECT pg_drop_replication_slot($1)", table); err != nil {
+		t.Fatalf("the slot is still in use after the failed open: %v", err)
+	}
 }
