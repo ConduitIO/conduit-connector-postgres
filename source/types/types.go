@@ -70,6 +70,10 @@ func Format(oid uint32, v any) (any, error) {
 //     (EncodingNative) or an error (EncodingAvro, which cannot represent them).
 //   - the bounds of tsrange, tstzrange, daterange and their multiranges and
 //     arrays get the same treatment (always the native form).
+//   - numeric is a *big.Rat; NaN, Infinity and -Infinity are the strings "NaN",
+//     "Infinity" and "-Infinity" (EncodingNative) or a
+//     *NumericNotRepresentableError (EncodingAvro, whose decimal cannot hold
+//     them). NULL is always the untyped nil, never a typed nil *big.Rat.
 //   - arrays of the above are normalized element by element.
 //
 // Native values that time.Time cannot serialize to JSON (years before 0000 or
@@ -100,9 +104,12 @@ func FormatFor(enc Encoding, oid uint32, v any) (any, error) {
 
 	switch t := v.(type) {
 	case pgtype.Numeric:
-		return Numeric.BigRatFromNumeric(t)
+		return formatNumeric(enc, t)
 	case *pgtype.Numeric:
-		return Numeric.BigRatFromNumeric(*t)
+		if t == nil {
+			return nil, nil //nolint:nilnil // a nil pointer from pgx is NULL
+		}
+		return formatNumeric(enc, *t)
 	case []uint8:
 		if oid == pgtype.XMLOID {
 			return string(t), nil

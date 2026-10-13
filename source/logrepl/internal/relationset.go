@@ -104,7 +104,7 @@ func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]a
 
 		v, decodeErr := rs.decodeValue(col, tuple.Data)
 		if decodeErr != nil {
-			if located, ok := types.LocateTemporal(decodeErr, rel.RelationName, col.Name); ok {
+			if located, ok := types.LocateError(decodeErr, rel.RelationName, col.Name); ok {
 				return nil, located // keeps the error code at the start of the message
 			}
 			return nil, fmt.Errorf("failed to decode value for column %q: %w", col.Name, decodeErr)
