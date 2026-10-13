@@ -65,14 +65,19 @@ func TestNumericNotRepresentableError(t *testing.T) {
 
 	_, err := FormatFor(EncodingAvro, pgtype.NumericOID, pgtype.Numeric{NaN: true, Valid: true})
 	located, ok := Locate(err, "public.orders", "total")
+	located = WithRow(located, "id=7")
 	is.True(ok)
 	msg := located.Error()
 	is.True(strings.HasPrefix(msg, ErrorCodeNumericNotRepresentable+": ")) // code first
 	is.True(strings.Contains(msg, `"NaN"`))                                // the value
-	is.True(strings.Contains(msg, `"total"`))                              // the column
-	is.True(strings.Contains(msg, `"public.orders"`))                      // the table
-	is.True(strings.Contains(msg, `CHECK ("total" NOT IN`))                // fix: constraint
-	is.True(strings.Contains(msg, "logrepl.withAvroSchema"))               // fix: opt out
+	is.True(strings.Contains(msg, `"total"`))
+	is.True(strings.Contains(msg, "(row id=7)"))                                                            // the column
+	is.True(strings.Contains(msg, `"public.orders"`))                                                       // the table
+	is.True(strings.Contains(msg, "restart once with logrepl.withAvroSchema=false from the same position")) // CDC fix
+	is.True(strings.Contains(msg, "UPDATE it"))                                                             // snapshot fix
+	is.True(strings.Contains(msg, "do not drop the replication slot"))
+	is.True(strings.Contains(msg, "does not help once the change is in the WAL"))
+	is.True(!strings.Contains(msg, "CHECK"))
 	is.Equal(ErrorCodeNumericNotRepresentable, "postgres.source.numeric_not_representable")
 
 	// The original is left alone and wrapped errors are found.
@@ -88,8 +93,4 @@ func TestNumericNotRepresentableError(t *testing.T) {
 	got, ok := Locate(other, "t", "c")
 	is.True(!ok)
 	is.Equal(got, other)
-
-	// Quotes in identifiers are escaped in the suggested SQL.
-	q, _ := Locate(err, "t", `we"ird`)
-	is.True(strings.Contains(q.Error(), `CHECK ("we""ird" NOT IN`))
 }

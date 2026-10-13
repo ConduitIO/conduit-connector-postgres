@@ -76,38 +76,26 @@ an error.
 ### NaN and Infinity in `numeric` Columns
 
 A `numeric` column can hold `NaN`, `Infinity` and `-Infinity` (the infinities
-need Postgres 14 or later, and an unconstrained `numeric`). The Avro `decimal`
-type cannot represent them, and the connector never replaces them with `NULL`
-or a number.
+need Postgres 14 or later). The Avro `decimal` type cannot represent them, and
+the connector never replaces them with `NULL` or a number.
 
 - With `logrepl.withAvroSchema: true` (the default), the source stops with the
   error code `postgres.source.numeric_not_representable`, which names the
-  table, the column and the value. Restarting replays the same row, so remove
-  the value or change the column first: add a constraint
-  (`CHECK (col NOT IN ('NaN', 'Infinity', '-Infinity'))`), or read the column
-  through a view or cast that maps these values to something you choose.
+  table, the column, the value and the row's key.
 - With `logrepl.withAvroSchema: false`, the values are emitted as the strings
-  `"NaN"`, `"Infinity"` and `"-Infinity"`. A `NULL` stays `NULL`.
+  `"NaN"`, `"Infinity"` and `"-Infinity"`. A `NULL` stays `NULL`. This applies
+  to the elements of `numeric[]` as well; finite elements are unchanged.
 
-### Infinite Dates and Timestamps
+How to continue after the source stopped:
 
-`date`, `timestamp` and `timestamptz` columns can hold `infinity` and
-`-infinity`. The Avro date and timestamp types cannot represent them. Earlier
-versions wrote them as `1970-01-02` and `1969-12-31` (dates) without any error.
-
-- With `logrepl.withAvroSchema: true` (the default), the source stops with the
-  error code `postgres.source.temporal_not_representable`, which names the
-  table, the column and the value. Removing the row does not help once the
-  change is in the WAL: set `logrepl.withAvroSchema` to `false`.
-- With `logrepl.withAvroSchema: false`, the values are emitted as the strings
-  `"infinity"` and `"-infinity"`.
-
-The same applies per element of `date[]`, `timestamp[]`, `timestamptz[]` and
-`numeric[]` (for `numeric[]`, `NaN`, `Infinity` and `-Infinity` elements are
-emitted as strings; finite elements are unchanged). The connector has no Avro
-mapping for array columns, so with the default `logrepl.withAvroSchema: true`
-a table with an array column already stops with a schema error before any
-record is emitted.
+- **Change data capture:** restart once with `logrepl.withAvroSchema: false`
+  from the same position. The value is delivered as a string. Switch back
+  afterwards if you want Avro; it applies to the changes after that point.
+- **Snapshot:** `UPDATE` the row to a finite value (or `NULL`) and restart.
+- Removing the row, or adding a `CHECK` constraint, does not help for a change
+  that is already in the WAL: it is read again after every restart. Do not drop
+  the replication slot to get past it, that loses the position. A constraint
+  only keeps new bad values out.
 
 ## Destination
 

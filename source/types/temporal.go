@@ -55,10 +55,19 @@ func (e *TemporalNotRepresentableError) Error() string {
 		ErrorCodeTemporalNotRepresentable, e.Type, e.Value, where)
 }
 
+const (
+	typeDate        = "date"
+	typeTimestamp   = "timestamp"
+	typeTimestamptz = "timestamptz"
+
+	infinityText    = "infinity"
+	negInfinityText = "-infinity"
+)
+
 var temporalTypeNames = map[uint32]string{
-	pgtype.DateOID:        "date",
-	pgtype.TimestampOID:   "timestamp",
-	pgtype.TimestamptzOID: "timestamptz",
+	pgtype.DateOID:        typeDate,
+	pgtype.TimestampOID:   typeTimestamp,
+	pgtype.TimestamptzOID: typeTimestamptz,
 }
 
 // formatInfinity maps pgx's InfinityModifier for a date or timestamp column.
@@ -66,9 +75,9 @@ func formatInfinity(enc Encoding, typ string, m pgtype.InfinityModifier) (any, e
 	var text string
 	switch m {
 	case pgtype.Infinity:
-		text = "infinity"
+		text = infinityText
 	case pgtype.NegativeInfinity:
-		text = "-infinity"
+		text = negInfinityText
 	default:
 		return nil, fmt.Errorf("unexpected %s infinity modifier %d", typ, int8(m))
 	}

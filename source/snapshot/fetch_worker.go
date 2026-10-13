@@ -378,6 +378,16 @@ func (f *FetchWorker) buildSnapshotPosition(fields []pgconn.FieldDescription, va
 	return position.SnapshotPosition{}, fmt.Errorf("key %q not found in fields", f.conf.Key)
 }
 
+// rowID names the row being formatted by its key column, for error messages.
+func (f *FetchWorker) rowID(fields []pgconn.FieldDescription, values []any) string {
+	for i, fd := range fields {
+		if fd.Name == f.conf.Key {
+			return fmt.Sprintf("%s=%v", fd.Name, values[i])
+		}
+	}
+	return ""
+}
+
 func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values []any) (opencdc.StructuredData, opencdc.StructuredData, error) {
 	var (
 		key     = make(opencdc.StructuredData)
@@ -389,7 +399,7 @@ func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values [
 			k, err := types.FormatFor(types.EncodingFor(f.conf.WithAvroSchema), fd.DataTypeOID, values[i])
 			if err != nil {
 				if located, ok := types.Locate(err, f.conf.Table, fd.Name); ok {
-					return key, payload, located
+					return key, payload, types.WithRow(located, f.rowID(fields, values))
 				}
 				return key, payload, fmt.Errorf("failed to format key %q: %w", f.conf.Key, err)
 			}
@@ -400,7 +410,7 @@ func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values [
 		v, err := types.FormatFor(types.EncodingFor(f.conf.WithAvroSchema), fd.DataTypeOID, values[i])
 		if err != nil {
 			if located, ok := types.Locate(err, f.conf.Table, fd.Name); ok {
-				return key, payload, located
+				return key, payload, types.WithRow(located, f.rowID(fields, values))
 			}
 			return key, payload, fmt.Errorf("failed to format payload field %q: %w", fd.Name, err)
 		}

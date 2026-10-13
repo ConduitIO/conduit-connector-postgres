@@ -15,6 +15,8 @@
 package types
 
 import (
+	"reflect"
+
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -72,6 +74,20 @@ func Format(oid uint32, v any) (any, error) {
 //
 // Everything else is returned as decoded.
 func FormatFor(enc Encoding, oid uint32, v any) (any, error) {
+	got, err := formatFor(enc, oid, v)
+	if err != nil {
+		return nil, err
+	}
+	// A nil pointer inside an interface is not nil: it passes `v == nil` checks
+	// and the Avro encoder dereferences it (#368). A nil pointer decoded from
+	// Postgres means NULL, so make that the untyped nil, whatever the type.
+	if rv := reflect.ValueOf(got); rv.Kind() == reflect.Pointer && rv.IsNil() {
+		return nil, nil //nolint:nilnil // NULL is an untyped nil record value
+	}
+	return got, nil
+}
+
+func formatFor(enc Encoding, oid uint32, v any) (any, error) {
 	if oid == pgtype.UUIDOID {
 		return UUID.Format(v)
 	}

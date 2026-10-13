@@ -489,15 +489,20 @@ func TestRelationSetValues_NumericNonFinite(t *testing.T) {
 					RelationID:   7,
 					Namespace:    "public",
 					RelationName: "orders",
-					ColumnNum:    1,
-					Columns:      []*pglogrepl.RelationMessageColumn{{Name: "total", DataType: pgtype.NumericOID}},
+					ColumnNum:    2,
+					Columns: []*pglogrepl.RelationMessageColumn{
+						{Name: "id", DataType: pgtype.Int8OID, Flags: 1},
+						{Name: "total", DataType: pgtype.NumericOID},
+					},
 				})
 				col := &pglogrepl.TupleDataColumn{DataType: pglogrepl.TupleDataTypeText, Data: []byte(tc.data)}
 				if tc.data == "" {
 					col = &pglogrepl.TupleDataColumn{DataType: pglogrepl.TupleDataTypeNull}
 				}
 
-				values, err := rs.Values(7, &pglogrepl.TupleData{ColumnNum: 1, Columns: []*pglogrepl.TupleDataColumn{col}})
+				values, err := rs.Values(7, &pglogrepl.TupleData{ColumnNum: 2, Columns: []*pglogrepl.TupleDataColumn{
+					{DataType: pglogrepl.TupleDataTypeText, Data: []byte("7")}, col,
+				}})
 
 				if enc == types.EncodingAvro && tc.text != "" {
 					is.True(err != nil) // halt, never NULL or a number
@@ -505,6 +510,7 @@ func TestRelationSetValues_NumericNonFinite(t *testing.T) {
 					is.True(strings.HasPrefix(msg, "postgres.source.numeric_not_representable: "))
 					is.True(strings.Contains(msg, `"public.orders"`))
 					is.True(strings.Contains(msg, `"total"`))
+					is.True(strings.Contains(msg, "(row id=7)"))
 					is.True(strings.Contains(msg, fmt.Sprintf("%q", tc.text)))
 					return
 				}
@@ -525,4 +531,58 @@ func TestRelationSetValues_NumericNonFinite(t *testing.T) {
 			})
 		}
 	}
+}
+
+// numeric[] elements follow the same rule as a numeric column (#368): strings
+// without Avro, the coded error with it, and finite arrays as pgx decoded them.
+func TestRelationSetValues_NumericArrayNonFinite(t *testing.T) {
+	rel := &pglogrepl.RelationMessage{
+		RelationID: 9, Namespace: "public", RelationName: "prices", ColumnNum: 1,
+		Columns: []*pglogrepl.RelationMessageColumn{{Name: "v", DataType: pgtype.NumericArrayOID}},
+	}
+	tuple := func(text string) *pglogrepl.TupleData {
+		return &pglogrepl.TupleData{ColumnNum: 1, Columns: []*pglogrepl.TupleDataColumn{
+			{DataType: pglogrepl.TupleDataTypeText, Data: []byte(text)},
+		}}
+	}
+
+	t.Run("native", func(t *testing.T) {
+		is := is.New(t)
+		rs := NewRelationSetWithEncoding(types.EncodingNative)
+		rs.Add(rel)
+		got, err := rs.Values(9, tuple("{1.5,NaN,-Infinity,NULL}"))
+		is.NoErr(err)
+		a, ok := got["v"].([]any)
+		is.True(ok)
+		is.Equal(len(a), 4)
+		_, isNum := a[0].(pgtype.Numeric)
+		is.True(isNum) // finite elements are unchanged
+		is.Equal(a[1], "NaN")
+		is.Equal(a[2], "-Infinity")
+		is.True(a[3] == nil)
+	})
+	t.Run("finite is unchanged", func(t *testing.T) {
+		is := is.New(t)
+		for _, enc := range []types.Encoding{types.EncodingNative, types.EncodingAvro} {
+			rs := NewRelationSetWithEncoding(enc)
+			rs.Add(rel)
+			got, err := rs.Values(9, tuple("{1.5,2}"))
+			is.NoErr(err)
+			a, ok := got["v"].([]any)
+			is.True(ok)
+			is.Equal(len(a), 2)
+			_, isNum := a[0].(pgtype.Numeric)
+			is.True(isNum)
+		}
+	})
+	t.Run("avro", func(t *testing.T) {
+		is := is.New(t)
+		rs := NewRelationSetWithEncoding(types.EncodingAvro)
+		rs.Add(rel)
+		_, err := rs.Values(9, tuple("{1.5,Infinity}"))
+		is.True(err != nil)
+		is.True(strings.HasPrefix(err.Error(), "postgres.source.numeric_not_representable: "))
+		is.True(strings.Contains(err.Error(), `"Infinity"`))
+		is.True(strings.Contains(err.Error(), `"v"`))
+	})
 }

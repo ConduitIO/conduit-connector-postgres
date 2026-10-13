@@ -69,14 +69,23 @@ func numericCases(t *testing.T) []struct {
 // both encodings: whatever FormatFor returns, it is either an untyped nil or a
 // non-nil value. A typed nil would pass for a value and crash the encoder.
 func TestFormat_NeverTypedNil(t *testing.T) {
+	// Not only the numeric OID: a numeric value must never come out as a typed
+	// nil whatever the column's OID is, and neither must any other output.
+	oids := []uint32{
+		0, pgtype.TextOID, pgtype.Int4OID, pgtype.BoolOID, pgtype.ByteaOID, pgtype.JSONBOID,
+		pgtype.DateOID, pgtype.TimestampOID, pgtype.TimestamptzOID, pgtype.UUIDOID,
+		pgtype.NumericOID, pgtype.NumericArrayOID, pgtype.DateArrayOID, pgtype.TextArrayOID,
+	}
 	for _, enc := range []Encoding{EncodingNative, EncodingAvro} {
-		for _, tc := range numericCases(t) {
-			got, _ := FormatFor(enc, pgtype.NumericOID, tc.in)
-			if got == nil {
-				continue
-			}
-			if rv := reflect.ValueOf(got); rv.Kind() == reflect.Pointer && rv.IsNil() {
-				t.Errorf("%s/%s: FormatFor returned a typed nil %T", encName(enc), tc.name, got)
+		for _, oid := range oids {
+			for _, tc := range numericCases(t) {
+				got, _ := FormatFor(enc, oid, tc.in)
+				if got == nil {
+					continue
+				}
+				if rv := reflect.ValueOf(got); rv.Kind() == reflect.Pointer && rv.IsNil() {
+					t.Errorf("%s/oid %d/%s: FormatFor returned a typed nil %T", encName(enc), oid, tc.name, got)
+				}
 			}
 		}
 	}

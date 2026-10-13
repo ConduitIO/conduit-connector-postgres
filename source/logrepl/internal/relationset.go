@@ -17,6 +17,7 @@ package internal
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/conduitio/conduit-connector-postgres/source/types"
 	"github.com/jackc/pglogrepl"
@@ -78,7 +79,7 @@ func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]a
 		v, decodeErr := rs.decodeValue(col, tuple.Data)
 		if decodeErr != nil {
 			if located, ok := types.Locate(decodeErr, rel.Namespace+"."+rel.RelationName, col.Name); ok {
-				return nil, located
+				return nil, types.WithRow(located, keyText(rel, row))
 			}
 			return nil, fmt.Errorf("failed to decode value for column %q: %w", col.Name, decodeErr)
 		}
@@ -124,4 +125,17 @@ func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, data []
 	}
 
 	return v, nil
+}
+
+// keyText names the row of a tuple by the columns Postgres flags as part of the
+// key (the replica identity), using their text form, for error messages.
+func keyText(rel *pglogrepl.RelationMessage, row *pglogrepl.TupleData) string {
+	var parts []string
+	for i, tuple := range row.Columns {
+		if i >= len(rel.Columns) || rel.Columns[i].Flags&1 == 0 || tuple.DataType != pglogrepl.TupleDataTypeText {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s=%s", rel.Columns[i].Name, tuple.Data))
+	}
+	return strings.Join(parts, ",")
 }
