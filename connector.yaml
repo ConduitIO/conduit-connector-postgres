@@ -88,6 +88,19 @@ specification:
     - With `logrepl.withAvroSchema: false`, the values are emitted as the strings
       `"NaN"`, `"Infinity"` and `"-Infinity"`. A `NULL` stays `NULL`.
 
+    ### Infinite Dates and Timestamps
+
+    `date`, `timestamp` and `timestamptz` columns can hold `infinity` and
+    `-infinity`. The Avro date and timestamp types cannot represent them. Earlier
+    versions wrote them as `1970-01-02` and `1969-12-31` (dates) without any error.
+
+    - With `logrepl.withAvroSchema: true` (the default), the source stops with the
+      error code `postgres.source.temporal_not_representable`, which names the
+      table, the column and the value. Removing the row does not help once the
+      change is in the WAL: set `logrepl.withAvroSchema` to `false`.
+    - With `logrepl.withAvroSchema: false`, the values are emitted as the strings
+      `"infinity"` and `"-infinity"`.
+
     ## Destination
 
     The Postgres Destination takes a Conduit record and stores it using a SQL statement.

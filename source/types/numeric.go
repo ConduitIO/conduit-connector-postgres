@@ -83,17 +83,24 @@ func pgIdent(s string) string {
 }
 
 // Locate returns a copy of err with its table and column set, and true, when
-// err is or wraps a *NumericNotRepresentableError. The copy is returned
-// unwrapped so the error code stays at the start of the message. For any other
-// error it returns err and false.
+// err is or wraps a *NumericNotRepresentableError or a
+// *TemporalNotRepresentableError. The copy is returned unwrapped so the error
+// code stays at the start of the message. For any other error it returns err
+// and false.
 func Locate(err error, table, column string) (error, bool) { //nolint:revive // the error is the result, ok says whether it was located
 	var nre *NumericNotRepresentableError
-	if !errors.As(err, &nre) {
-		return err, false
+	if errors.As(err, &nre) {
+		located := *nre
+		located.Table, located.Column = table, column
+		return &located, true
 	}
-	located := *nre
-	located.Table, located.Column = table, column
-	return &located, true
+	var tre *TemporalNotRepresentableError
+	if errors.As(err, &tre) {
+		located := *tre
+		located.Table, located.Column = table, column
+		return &located, true
+	}
+	return err, false
 }
 
 type NumericFormatter struct{}

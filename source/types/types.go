@@ -60,6 +60,10 @@ func Format(oid uint32, v any) (any, error) {
 //     "Infinity" and "-Infinity" (EncodingNative) or a
 //     *NumericNotRepresentableError (EncodingAvro, whose decimal cannot hold
 //     them). NULL is always the untyped nil, never a typed nil *big.Rat.
+//   - date, timestamp and timestamptz 'infinity' and '-infinity' are the strings
+//     "infinity" and "-infinity" (EncodingNative) or a
+//     *TemporalNotRepresentableError (EncodingAvro, which has no such value).
+//     Finite values are returned as decoded.
 //   - uuid is its text form.
 //
 // Everything else is returned as decoded.
@@ -69,6 +73,13 @@ func FormatFor(enc Encoding, oid uint32, v any) (any, error) {
 	}
 
 	switch t := v.(type) {
+	case pgtype.InfinityModifier:
+		// Only date and timestamps decode to a bare InfinityModifier; every
+		// other type's output is unchanged.
+		if typ, ok := temporalTypeNames[oid]; ok {
+			return formatInfinity(enc, typ, t)
+		}
+		return t, nil
 	case pgtype.Numeric:
 		return formatNumeric(enc, t)
 	case *pgtype.Numeric:
