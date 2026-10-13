@@ -26,6 +26,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -57,10 +58,53 @@ type Subscription struct {
 	// forward from the position.
 	RestartLSN pglogrepl.LSN
 
-	conn *pgxpool.Conn
 	pool *pgxpool.Pool
 
-	stop context.CancelFunc
+	// connMu guards conn, runActive and tornDown. conn is a pooled
+	// connection: it must be released exactly once, and never while anything
+	// still uses it, because the pool hands it to another owner (another
+	// pipeline) the moment it is released. Ownership therefore follows Run:
+	//
+	//   - while Run is active (runActive), Run is the only user and the only
+	//     one that releases conn: startReplication swaps it, endRun releases
+	//     it on exit once Teardown asked for it;
+	//   - Teardown releases conn only if Run is not active (never started, or
+	//     already finished). If Teardown's wait for Run times out, it leaves
+	//     the release to Run's exit instead of releasing under it (#352).
+	connMu    sync.Mutex
+	conn      *pgxpool.Conn
+	runActive bool // Run started and has not finished
+	tornDown  bool // Teardown was called: release conn once Run is done with it
+
+	// stopMu guards stop and stopped: Stop and Teardown are called
+	// from another goroutine, possibly before Run has created its context
+	// (#346: stopping right after the snapshot handoff overtook a starting
+	// subscription and left it unstoppable).
+	stopMu  sync.Mutex
+	stop    context.CancelFunc
+	stopped bool // Stop was called, possibly before Run began
+
+	// afterAcquire is a test seam, nil in production. It runs in
+	// startReplication right after the replication connection was stored.
+	afterAcquire func()
+
+	// startErr is why Run never reached the receive loop (startReplication
+	// failed, or Run was refused after Teardown). It is written once, before
+	// ready is closed, and read only after <-Ready().
+	startErr error
+
+	// beforeRelease is a test seam, nil in production. It runs at the top of
+	// startReplication, before the old connection is released.
+	beforeRelease func()
+
+	// beforeAcquire is a test seam, nil in production. It runs inside
+	// startReplication after the old connection was released and before the
+	// new one is acquired: the window #346 is about.
+	beforeAcquire func()
+
+	// replicating is set by Run once START_REPLICATION succeeded. Only then is
+	// there a stream to send the final status update and CopyDone on.
+	replicating bool
 
 	ready   chan struct{}
 	done    chan struct{}
@@ -188,15 +232,36 @@ func CreateSubscription(
 // Run the logical replication listener and block until it returns an error,
 // or the context is canceled.
 func (s *Subscription) Run(ctx context.Context) error {
+	// endRun is registered first so it runs last, after doneReplication has
+	// used the connection for the final status update.
+	started := s.beginRun()
+	defer s.endRun(started)
 	defer s.doneReplication()
-
-	if err := s.startReplication(ctx); err != nil {
+	if !started {
+		err := errors.New("subscription was torn down before it started")
+		s.startErr, s.doneErr = err, err
 		close(s.ready) // ready to fail.
 		return err
 	}
 
+	// The cancel function is published before anything blocking happens, so a
+	// Stop that arrives while replication is still starting is honoured.
 	lctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	s.stopMu.Lock()
 	s.stop = cancel
+	if s.stopped {
+		cancel()
+	}
+	s.stopMu.Unlock()
+
+	if err := s.startReplication(lctx); err != nil {
+		s.startErr, s.doneErr = err, err
+		close(s.ready) // ready to fail.
+		return err
+	}
+	s.replicating = true
+
 	s.walWritten = s.StartLSN
 	s.walFlushed = s.StartLSN
 
@@ -226,6 +291,13 @@ func (s *Subscription) listen(ctx context.Context) error {
 		msg, err := s.receiveMessage(ctx, nextStatusUpdateAt)
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
+				if ctx.Err() != nil {
+					// It is the subscription's own context that expired, not
+					// the status-update deadline. Retrying can never succeed
+					// and used to spin forever, so Teardown never returned
+					// (#347).
+					return ctx.Err()
+				}
 				sdk.Logger(ctx).Trace().Msg("deadline exceeded while receiving message")
 				continue
 			}
@@ -384,6 +456,9 @@ func (s *Subscription) allAcked() bool {
 // Stop signals to the subscription it should stop. Call Wait to block until the
 // subscription actually stops running.
 func (s *Subscription) Stop() {
+	s.stopMu.Lock()
+	defer s.stopMu.Unlock()
+	s.stopped = true
 	if s.stop != nil {
 		s.stop()
 	}
@@ -407,21 +482,30 @@ func (s *Subscription) Wait(ctx context.Context, timeout time.Duration) error {
 	}
 }
 
+// Teardown stops the subscription and waits for Run to finish, at most until
+// ctx ends. It releases the pooled replication connection only when Run no
+// longer uses it. If the wait ends before Run does (ctx expired), the
+// connection is NOT released here: Run releases it on its way out, so a
+// connection is never handed back to the pool under a live user.
+//
+// Run's exit is itself bounded: the final status update and CopyDone run with
+// a deadline of closeReplicationTimeout on the connection, so a hung server
+// cannot keep Run, the connection and the replication slot busy forever.
+//
+// A Run that exits on its own (an error, or the context ending) keeps the
+// connection until Teardown is called; callers must always call Teardown.
 func (s *Subscription) Teardown(ctx context.Context) error {
-	defer func() {
-		if s.conn != nil {
-			s.conn.Release()
-		}
-	}()
-
 	s.Stop()
 
-	select {
-	case <-s.ready:
-		return s.Wait(ctx, closeReplicationTimeout)
-	default:
+	if !s.markTornDown() {
+		// Run is not active (never started, so it will refuse to start, or
+		// already finished): nothing to wait for, the connection is released.
 		return nil
 	}
+
+	// Run is active: wait for it, including when it is still starting. The
+	// connection stays Run's until it exits (#346).
+	return s.Wait(ctx, closeReplicationTimeout)
 }
 
 // Ready returns a channel that is closed when the subscription is ready and
@@ -446,14 +530,23 @@ func (s *Subscription) startReplication(ctx context.Context) error {
 	// N.B. Snapshots may take long time and connection may timeout.
 	// 		Safer to refresh the connection before replication begins.
 
-	s.conn.Release()
+	if s.beforeRelease != nil {
+		s.beforeRelease()
+	}
+	s.releaseConn() // nothing may touch the old connection from here on
+	if s.beforeAcquire != nil {
+		s.beforeAcquire()
+	}
 
 	conn, err := s.pool.Acquire(cpool.WithReplication(ctx))
 	if err != nil {
 		return fmt.Errorf("could not establish replication connection: %w", err)
 	}
 
-	s.conn = conn
+	s.setConn(conn)
+	if s.afterAcquire != nil {
+		s.afterAcquire()
+	}
 
 	pluginArgs := []string{
 		`"proto_version" '1'`,
@@ -462,7 +555,7 @@ func (s *Subscription) startReplication(ctx context.Context) error {
 
 	if err := pglogrepl.StartReplication(
 		ctx,
-		s.conn.Conn().PgConn(),
+		conn.Conn().PgConn(),
 		s.SlotName,
 		s.StartLSN,
 		pglogrepl.StartReplicationOptions{
@@ -481,7 +574,11 @@ func (s *Subscription) startReplication(ctx context.Context) error {
 // replication is done.
 func (s *Subscription) sendStandbyCopyDone(ctx context.Context) error {
 	sdk.Logger(ctx).Trace().Msg("sending standby copy done message")
-	_, err := pglogrepl.SendStandbyCopyDone(ctx, s.conn.Conn().PgConn())
+	conn, err := s.pgConn()
+	if err != nil {
+		return err
+	}
+	_, err = pglogrepl.SendStandbyCopyDone(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("failed to send standby copy done: %w", err)
 	}
@@ -523,7 +620,11 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 		Stringer("reported_flush", flush).
 		Msg("sending standby status update")
 
-	if err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn.Conn().PgConn(), pglogrepl.StandbyStatusUpdate{
+	pgConn, err := s.pgConn()
+	if err != nil {
+		return err
+	}
+	if err := pglogrepl.SendStandbyStatusUpdate(ctx, pgConn, pglogrepl.StandbyStatusUpdate{
 		WALWritePosition: write,
 		WALFlushPosition: flush,
 		WALApplyPosition: flush,
@@ -591,7 +692,11 @@ func (s *Subscription) receiveMessage(ctx context.Context, deadline time.Time) (
 	defer cancel()
 
 	sdk.Logger(ctx).Trace().Msg("receiving message")
-	msg, err := s.conn.Conn().PgConn().ReceiveMessage(wctx)
+	pgConn, err := s.pgConn()
+	if err != nil {
+		return nil, err
+	}
+	msg, err := pgConn.ReceiveMessage(wctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to receive message: %w", err)
 	}
@@ -604,8 +709,18 @@ func (s *Subscription) doneReplication() {
 	tctx, cancel := context.WithTimeout(context.Background(), closeReplicationTimeout)
 	defer cancel()
 
-	if err := s.sentStandbyDone(tctx); err != nil {
-		s.doneErr = errors.Join(s.doneErr, err)
+	// Without a started stream there is no connection in replication mode to
+	// talk on (startReplication released the old one), and using it
+	// panicked with a nil pointer dereference (#346).
+	if s.replicating && s.connUsable() {
+		// SendStandbyCopyDone waits for the server's reply and ignores tctx,
+		// so a hung server would keep Run, the connection and the slot busy
+		// forever. A deadline on the socket bounds every step below.
+		cancelDeadline := s.setConnDeadline(time.Now().Add(closeReplicationTimeout))
+		if err := s.sentStandbyDone(tctx); err != nil {
+			s.doneErr = errors.Join(s.doneErr, err)
+		}
+		cancelDeadline()
 	}
 
 	close(s.done)
@@ -643,4 +758,112 @@ func (s *Subscription) sentStandbyDone(ctx context.Context) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// beginRun marks Run active. It reports false if Teardown already ran: the
+// connection is gone and Run must not touch it.
+func (s *Subscription) beginRun() bool {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if s.tornDown {
+		return false
+	}
+	s.runActive = true
+	return true
+}
+
+// endRun marks Run finished and, if Teardown was called while it was active,
+// releases the connection Teardown left to it.
+func (s *Subscription) endRun(started bool) {
+	if !started {
+		return
+	}
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	s.runActive = false
+	if s.tornDown {
+		s.releaseConnLocked()
+	}
+}
+
+// markTornDown records that Teardown ran. If Run is not active it releases
+// the connection and reports false; if Run is active it reports true and
+// leaves the release to Run's exit (endRun).
+func (s *Subscription) markTornDown() (runActive bool) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	s.tornDown = true
+	if s.runActive {
+		return true
+	}
+	s.releaseConnLocked()
+	return false
+}
+
+// setConn stores the connection Run acquired.
+func (s *Subscription) setConn(conn *pgxpool.Conn) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	s.conn = conn
+}
+
+// releaseConn releases the pooled connection at most once and forgets it. Only
+// Run calls it, while active.
+func (s *Subscription) releaseConn() {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	s.releaseConnLocked()
+}
+
+func (s *Subscription) releaseConnLocked() {
+	if s.conn != nil {
+		s.conn.Release()
+		s.conn = nil
+	}
+}
+
+// connUsable reports whether there is a connection that is still open. A
+// connection that pgconn already closed (it closes the socket asynchronously
+// after a failed read or write) must not be written to: that races the close
+// and a deadline set here would overwrite the one pgconn set.
+func (s *Subscription) connUsable() bool {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	return s.conn != nil && !s.conn.Conn().PgConn().IsClosed()
+}
+
+func (s *Subscription) hasConn() bool {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	return s.conn != nil
+}
+
+// pgConn returns the current connection's wire connection, or an error if
+// there is none. Only Run's goroutine calls it; the connection stays valid
+// while Run is active because nobody else releases it (see connMu).
+func (s *Subscription) pgConn() (*pgconn.PgConn, error) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if s.conn == nil {
+		return nil, errors.New("replication connection was released")
+	}
+	return s.conn.Conn().PgConn(), nil
+}
+
+// setConnDeadline sets a read/write deadline on the connection's socket and
+// returns a function that clears it.
+func (s *Subscription) setConnDeadline(t time.Time) (cancelDeadline func()) {
+	pc, err := s.pgConn()
+	if err != nil {
+		return func() {}
+	}
+	nc := pc.Conn()
+	_ = nc.SetDeadline(t)
+	return func() { _ = nc.SetDeadline(time.Time{}) }
+}
+
+// StartErr returns why Run did not reach the receive loop, or nil. It is only
+// valid after Ready() was closed.
+func (s *Subscription) StartErr() error {
+	return s.startErr
 }
