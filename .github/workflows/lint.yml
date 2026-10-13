@@ -27,3 +27,9 @@ jobs:
         uses: golangci/golangci-lint-action@v8
         with:
           version: ${{ steps.golangci-lint-version.outputs.v }}
+          # The prebuilt v2.1.6 binary was built with Go 1.24 and refuses to
+          # load a module whose go directive is 1.25 ("the Go language
+          # version used to build golangci-lint is lower than the targeted Go
+          # version"). Building from source with the Go that setup-go
+          # installed keeps the pinned lint version, and so the same findings.
+          install-mode: goinstall
