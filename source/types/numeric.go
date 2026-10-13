@@ -66,9 +66,12 @@ func (e *NumericNotRepresentableError) Error() string {
 	return fmt.Sprintf("%s: numeric value %q%s cannot be encoded as an Avro decimal, "+
 		"so the source halts instead of changing it. Fix: restart once with "+
 		"logrepl.withAvroSchema=false from the same position, which delivers the value as the "+
-		"string %q; switch it back afterwards if you want Avro. For a row that is only in the "+
-		"snapshot, UPDATE it to a finite value and restart. Removing the row does not help once "+
-		"the change is in the WAL, and do not drop the replication slot: that loses the position",
+		"string %q, and set it back to true as soon as that record has been delivered: without Avro a "+
+		"finite numeric is a Go big.Rat, which a standalone connector cannot send to Conduit (#378), "+
+		"so the next finite numeric would stop the pipeline (built-in pipelines are not affected). "+
+		"For a row that is only in the snapshot, UPDATE it to a finite value and restart. Removing "+
+		"the row does not help once the change is in the WAL, and do not drop the replication slot: "+
+		"that loses the position",
 		ErrorCodeNumericNotRepresentable, e.Value, where, e.Value)
 }
 
