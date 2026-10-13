@@ -23,6 +23,7 @@ import (
 
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
 )
 
@@ -276,15 +277,15 @@ func TestSubscription_TeardownTimeoutLeavesConnToRun(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run never acquired the replication connection")
 	}
-	acquired := sub.pool.Stat().AcquiredConns()
+	acquired := settledAcquired(sub.pool)
 	is.True(acquired >= 1)
 
 	tctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
 	err := sub.Teardown(tctx) // Run is still alive: the wait ends with ctx
 	is.True(errors.Is(err, context.DeadlineExceeded))
-	is.True(sub.hasConn())                              // still held by Run
-	is.Equal(sub.pool.Stat().AcquiredConns(), acquired) // not handed back to the pool
+	is.True(sub.hasConn())                        // still held by Run
+	is.Equal(settledAcquired(sub.pool), acquired) // not handed back to the pool
 
 	open() // Run continues, sees the stop and exits
 	select {
@@ -312,7 +313,7 @@ func TestSubscription_RunAfterTeardownDoesNotTouchConn(t *testing.T) {
 	sub := newStopTestSubscription(ctx, t)
 
 	is.NoErr(sub.Teardown(ctx)) // Run never started
-	acquired := sub.pool.Stat().AcquiredConns()
+	acquired := settledAcquired(sub.pool)
 	sub.beforeRelease = func() { t.Error("Run touched the connection after Teardown") }
 
 	errCh := make(chan error, 1)
@@ -328,5 +329,20 @@ func TestSubscription_RunAfterTeardownDoesNotTouchConn(t *testing.T) {
 	default:
 		t.Fatal("done was not closed")
 	}
-	is.Equal(sub.pool.Stat().AcquiredConns(), acquired)
+	is.True(settledAcquired(sub.pool) <= acquired) // Run acquired nothing
+}
+
+// settledAcquired returns the pool's acquired count once releases, which the
+// pool completes asynchronously, stopped changing.
+func settledAcquired(pool *pgxpool.Pool) int32 {
+	last, stable := pool.Stat().AcquiredConns(), 0
+	for stable < 5 {
+		time.Sleep(20 * time.Millisecond)
+		if cur := pool.Stat().AcquiredConns(); cur != last {
+			last, stable = cur, 0
+		} else {
+			stable++
+		}
+	}
+	return last
 }
