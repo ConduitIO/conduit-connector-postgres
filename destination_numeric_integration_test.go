@@ -111,8 +111,11 @@ func TestDestination_NumericScale_SameTableTwoSchemas(t *testing.T) {
 	ctx := test.Context(t)
 	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
 
-	base := strings.ToLower(test.RandomIdentifier(t))
-	schemaA, schemaB := base+"_a", base+"_b"
+	// RandomIdentifier fills Postgres' 63-byte identifier limit, so appending
+	// a suffix would be truncated away and both names would collide. Take two
+	// identifiers instead; the per-process counter keeps them distinct.
+	schemaA := strings.ToLower(test.RandomIdentifier(t))
+	schemaB := strings.ToLower(test.RandomIdentifier(t))
 	for schema, scale := range map[string]int{schemaA: 2, schemaB: 6} {
 		_, err := conn.Exec(ctx, fmt.Sprintf(`CREATE SCHEMA %q`, schema))
 		is.NoErr(err)
