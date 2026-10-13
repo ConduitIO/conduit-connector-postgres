@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -435,4 +436,66 @@ func testRecords() []opencdc.StructuredData {
 			"UppercaseColumn1": nil,
 		},
 	}
+}
+
+// TestCombinedIterator_TeardownRacesHandoff: Teardown while NextN is switching
+// from the snapshot to the CDC iterator used to read snapshotIterator while
+// useCDCIterator wrote it (#352). The interleaving is forced with sleeps, not
+// channels, because a channel would add a happens-before edge and hide the
+// race from the race detector. Fails under -race without iterMu.
+func TestCombinedIterator_TeardownRacesHandoff(t *testing.T) {
+	ctx := test.Context(t)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupTestTable(ctx, t, pool)
+	t.Cleanup(func() {
+		_ = Cleanup(context.Background(), CleanupConfig{URL: test.RepmgrConnString, SlotName: table, PublicationName: table})
+	})
+
+	it, err := NewCombinedIterator(ctx, pool, Config{
+		Position:        opencdc.Position{},
+		Tables:          []string{table},
+		TableKeys:       map[string]string{table: "id"},
+		PublicationName: table,
+		SlotName:        table,
+		WithSnapshot:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inHandoff atomic.Bool
+	var loopErr atomic.Value
+	it.beforeHandoff = func() {
+		inHandoff.Store(true)
+		time.Sleep(1500 * time.Millisecond)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			nctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			recs, err := it.NextN(nctx, 10)
+			cancel()
+			for _, r := range recs {
+				_ = it.Ack(ctx, r.Position)
+			}
+			if err != nil {
+				loopErr.Store(err.Error())
+				return
+			}
+		}
+	}()
+	for deadline := time.Now().Add(20 * time.Second); !inHandoff.Load(); { // NextN sits in the hook
+		select {
+		case <-done:
+			t.Fatalf("NextN stopped before the snapshot handoff: %v", loopErr.Load())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the snapshot handoff was never reached")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = it.Teardown(ctx)
+	<-done
 }

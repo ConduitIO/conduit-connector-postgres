@@ -213,3 +213,38 @@ func TestSubscription_TeardownWaitsForStartingRun(t *testing.T) {
 		t.Fatal("Teardown returned before done was closed")
 	}
 }
+
+// TestSubscription_TeardownRacesStartingRun is the regression test for the
+// double release of the pooled connection (#352): Teardown gave up waiting
+// (its context ended) while Run was still about to replace the connection in
+// startReplication. Teardown's deferred release and Run's own release both
+// touched s.conn without synchronization, so the same pooled connection was
+// released twice. The interleaving is forced with sleeps rather than channels
+// on purpose: channels would add a happens-before edge and hide the race from
+// the race detector, which flags the unsynchronized accesses whatever their
+// real-time order. Fails under -race without connMu.
+func TestSubscription_TeardownRacesStartingRun(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	sub := newStopTestSubscription(ctx, t)
+	sub.beforeRelease = func() { time.Sleep(3 * time.Second) } // outlast Teardown
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- sub.Run(ctx) }()
+	time.Sleep(100 * time.Millisecond) // Run is parked before releasing
+
+	tctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	err := sub.Teardown(tctx) // returns at ~closeReplicationTimeout with ctx.Err()
+	is.True(err != nil)
+
+	select {
+	case err := <-errCh:
+		is.True(err != nil) // stopped before replication started
+	case <-time.After(15 * time.Second):
+		t.Fatal("Run did not return")
+	}
+	// Whatever the interleaving, the connection is released exactly once and
+	// the subscription holds none.
+	is.True(!sub.hasConn())
+}

@@ -25,6 +25,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -44,8 +45,16 @@ type Subscription struct {
 	StatusTimeout time.Duration
 	TXSnapshotID  string
 
-	conn *pgxpool.Conn
 	pool *pgxpool.Pool
+
+	// connMu guards conn and tornDown. Every assignment and release of conn
+	// goes through setConn/releaseConn, which release a pooled connection at
+	// most once (a double release corrupts the pool). Run replaces the
+	// connection in startReplication while Teardown may release it from
+	// another goroutine (#352).
+	connMu   sync.Mutex
+	conn     *pgxpool.Conn
+	tornDown bool
 
 	// stopMu guards stop, stopped and running: Stop and Teardown are called
 	// from another goroutine, possibly before Run has created its context
@@ -55,6 +64,10 @@ type Subscription struct {
 	stop    context.CancelFunc
 	stopped bool // Stop was called, possibly before Run began
 	running bool // Run was called
+
+	// beforeRelease is a test seam, nil in production. It runs at the top of
+	// startReplication, before the old connection is released.
+	beforeRelease func()
 
 	// beforeAcquire is a test seam, nil in production. It runs inside
 	// startReplication after the old connection was released and before the
@@ -417,11 +430,7 @@ func (s *Subscription) Wait(ctx context.Context, timeout time.Duration) error {
 }
 
 func (s *Subscription) Teardown(ctx context.Context) error {
-	defer func() {
-		if s.conn != nil {
-			s.conn.Release()
-		}
-	}()
+	defer s.releaseConn(true)
 
 	s.Stop()
 
@@ -461,8 +470,10 @@ func (s *Subscription) startReplication(ctx context.Context) error {
 	// N.B. Snapshots may take long time and connection may timeout.
 	// 		Safer to refresh the connection before replication begins.
 
-	s.conn.Release()
-	s.conn = nil // released; nothing may touch it until the new one is acquired
+	if s.beforeRelease != nil {
+		s.beforeRelease()
+	}
+	s.releaseConn(false) // nothing may touch the old connection from here on
 	if s.beforeAcquire != nil {
 		s.beforeAcquire()
 	}
@@ -472,7 +483,10 @@ func (s *Subscription) startReplication(ctx context.Context) error {
 		return fmt.Errorf("could not establish replication connection: %w", err)
 	}
 
-	s.conn = conn
+	if !s.setConn(conn) {
+		// Teardown already ran and will not release this connection.
+		return errors.New("subscription was torn down while starting replication")
+	}
 
 	pluginArgs := []string{
 		`"proto_version" '1'`,
@@ -481,7 +495,7 @@ func (s *Subscription) startReplication(ctx context.Context) error {
 
 	if err := pglogrepl.StartReplication(
 		ctx,
-		s.conn.Conn().PgConn(),
+		conn.Conn().PgConn(),
 		s.SlotName,
 		s.StartLSN,
 		pglogrepl.StartReplicationOptions{
@@ -500,7 +514,11 @@ func (s *Subscription) startReplication(ctx context.Context) error {
 // replication is done.
 func (s *Subscription) sendStandbyCopyDone(ctx context.Context) error {
 	sdk.Logger(ctx).Trace().Msg("sending standby copy done message")
-	_, err := pglogrepl.SendStandbyCopyDone(ctx, s.conn.Conn().PgConn())
+	conn, err := s.pgConn()
+	if err != nil {
+		return err
+	}
+	_, err = pglogrepl.SendStandbyCopyDone(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("failed to send standby copy done: %w", err)
 	}
@@ -528,7 +546,11 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 		Stringer("reported_flush", flush).
 		Msg("sending standby status update")
 
-	if err := pglogrepl.SendStandbyStatusUpdate(ctx, s.conn.Conn().PgConn(), pglogrepl.StandbyStatusUpdate{
+	pgConn, err := s.pgConn()
+	if err != nil {
+		return err
+	}
+	if err := pglogrepl.SendStandbyStatusUpdate(ctx, pgConn, pglogrepl.StandbyStatusUpdate{
 		WALWritePosition: write,
 		WALFlushPosition: flush,
 		WALApplyPosition: flush,
@@ -596,7 +618,11 @@ func (s *Subscription) receiveMessage(ctx context.Context, deadline time.Time) (
 	defer cancel()
 
 	sdk.Logger(ctx).Trace().Msg("receiving message")
-	msg, err := s.conn.Conn().PgConn().ReceiveMessage(wctx)
+	pgConn, err := s.pgConn()
+	if err != nil {
+		return nil, err
+	}
+	msg, err := pgConn.ReceiveMessage(wctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to receive message: %w", err)
 	}
@@ -612,7 +638,7 @@ func (s *Subscription) doneReplication() {
 	// Without a started stream there is no connection in replication mode to
 	// talk on (startReplication released the old one), and using it
 	// panicked with a nil pointer dereference (#346).
-	if s.replicating && s.conn != nil {
+	if s.replicating && s.hasConn() {
 		if err := s.sentStandbyDone(tctx); err != nil {
 			s.doneErr = errors.Join(s.doneErr, err)
 		}
@@ -641,4 +667,49 @@ func (s *Subscription) sentStandbyDone(ctx context.Context) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// setConn stores the connection Run acquired. It reports false, after releasing
+// conn, if Teardown already ran: nobody else would release it.
+func (s *Subscription) setConn(conn *pgxpool.Conn) bool {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if s.tornDown {
+		conn.Release()
+		return false
+	}
+	s.conn = conn
+	return true
+}
+
+// releaseConn releases the pooled connection at most once and forgets it.
+// With final set it also marks the subscription torn down, so a connection
+// acquired later by a late Run is released by setConn instead of leaking.
+func (s *Subscription) releaseConn(final bool) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if final {
+		s.tornDown = true
+	}
+	if s.conn != nil {
+		s.conn.Release()
+		s.conn = nil
+	}
+}
+
+func (s *Subscription) hasConn() bool {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	return s.conn != nil
+}
+
+// pgConn returns the current connection's wire connection, or an error if it
+// was released (Teardown gave up waiting for Run).
+func (s *Subscription) pgConn() (*pgconn.PgConn, error) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if s.conn == nil {
+		return nil, errors.New("replication connection was released")
+	}
+	return s.conn.Conn().PgConn(), nil
 }
