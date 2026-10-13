@@ -442,7 +442,9 @@ func testRecords() []opencdc.StructuredData {
 // from the snapshot to the CDC iterator used to read snapshotIterator while
 // useCDCIterator wrote it (#352). The interleaving is forced with sleeps, not
 // channels, because a channel would add a happens-before edge and hide the
-// race from the race detector. Fails under -race without iterMu.
+// race from the race detector. It is a guard, not a discriminating test: the
+// snapshot iterator's tomb mutex adds a happens-before edge, so it does not
+// fail without iterMu on its own.
 func TestCombinedIterator_TeardownRacesHandoff(t *testing.T) {
 	ctx := test.Context(t)
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
