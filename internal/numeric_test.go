@@ -19,6 +19,7 @@ import (
 	"math/rand"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/matryer/is"
 )
@@ -166,9 +167,48 @@ func shorten(s string) string {
 	return s
 }
 
+// TestRatToDecimalString_HugeDenominators bounds the cost of adversarial
+// denominators. A rational like 1/5^200000 used to take seconds because the
+// factor-of-5 loop divided a half-megabit number 200000 times.
+func TestRatToDecimalString_HugeDenominators(t *testing.T) {
+	pow := func(base, exp int64) *big.Int {
+		return new(big.Int).Exp(big.NewInt(base), big.NewInt(exp), nil)
+	}
+	for _, tt := range []struct {
+		name string
+		den  *big.Int
+	}{
+		{"1/5^200000", pow(5, 200000)},
+		{"1/5^16384", pow(5, maxExactDigits+1)},
+		{"1/5^16383", pow(5, maxExactDigits)},
+		{"1/2^200000", pow(2, 200000)},
+		{"1/10^200000", pow(10, 200000)},
+		{"1/(5^16383*3)", new(big.Int).Mul(pow(5, maxExactDigits), big.NewInt(3))},
+		{"1/(2^100000*7^50000)", new(big.Int).Mul(pow(2, 100000), pow(7, 50000))},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			is := is.New(t)
+			r := new(big.Rat).SetFrac(big.NewInt(1), tt.den)
+			start := time.Now()
+			got := RatToDecimalString(r)
+			elapsed := time.Since(start)
+			is.True(elapsed < time.Second) // generous: ~10 ms on a laptop, seconds before the fix
+			_, ok := new(big.Rat).SetString(got)
+			is.True(ok)
+		})
+	}
+}
+
 func BenchmarkRatToDecimalString(b *testing.B) {
 	b.Run("terminating", func(b *testing.B) {
 		r := big.NewRat(123456789, 1000000)
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = RatToDecimalString(r)
+		}
+	})
+	b.Run("huge-denominator-5^200000", func(b *testing.B) {
+		r := new(big.Rat).SetFrac(big.NewInt(1), new(big.Int).Exp(big.NewInt(5), big.NewInt(200000), nil))
 		b.ReportAllocs()
 		for b.Loop() {
 			_ = RatToDecimalString(r)
