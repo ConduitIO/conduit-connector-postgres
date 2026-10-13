@@ -403,3 +403,52 @@ func queryTestTable(ctx context.Context, conn test.Querier, tableName string, id
 		"UppercaseColumn1": uppercaseCol1,
 	}, nil
 }
+
+// TestDestination_Write_CommitTimeError is the regression test for #342.
+//
+// A DEFERRABLE INITIALLY DEFERRED unique constraint is only checked when the
+// batch's implicit transaction commits, i.e. after every statement result has
+// been read successfully. That error surfaces only from BatchResults.Close.
+// Write must report it (0 records written) instead of letting the engine ack
+// records that were rolled back (invariant 1).
+func TestDestination_Write_CommitTimeError(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+
+	table := test.RandomIdentifier(t)
+	_, err := conn.Exec(ctx, fmt.Sprintf(
+		`CREATE TABLE %q (id int PRIMARY KEY, v int, CONSTRAINT %q UNIQUE (v) DEFERRABLE INITIALLY DEFERRED)`,
+		table, table+"_u"))
+	is.NoErr(err)
+	t.Cleanup(func() {
+		_, err := conn.Exec(context.Background(), fmt.Sprintf(`DROP TABLE %q`, table))
+		is.NoErr(err)
+	})
+
+	d := NewDestination()
+	err = sdk.Util.ParseConfig(
+		ctx,
+		map[string]string{"url": test.RegularConnString, "table": table},
+		d.Config(),
+		Connector.NewSpecification().DestinationParams,
+	)
+	is.NoErr(err)
+	is.NoErr(d.Open(ctx))
+	defer func() { is.NoErr(d.Teardown(ctx)) }()
+
+	recs := []opencdc.Record{
+		{Operation: opencdc.OperationCreate, Key: opencdc.StructuredData{"id": 1}, Payload: opencdc.Change{After: opencdc.StructuredData{"v": 5}}},
+		{Operation: opencdc.OperationCreate, Key: opencdc.StructuredData{"id": 2}, Payload: opencdc.Change{After: opencdc.StructuredData{"v": 5}}},
+	}
+
+	n, err := d.Write(ctx, recs)
+
+	var count int
+	is.NoErr(conn.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM %q`, table)).Scan(&count))
+	t.Logf("Write returned n=%d err=%v; rows stored=%d", n, err, count)
+
+	is.True(err != nil) // commit-time failure must surface as an error
+	is.Equal(n, 0)      // nothing was stored, so nothing may be reported written
+	is.Equal(count, 0)
+}

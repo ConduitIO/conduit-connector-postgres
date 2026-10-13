@@ -115,15 +115,23 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 	}
 
 	br := d.conn.SendBatch(ctx, b)
-	defer br.Close()
 
 	for i := 0; i < len(recs)-skipped; i++ {
 		// fetch error for each statement
-		_, err := br.Exec()
-		if err != nil {
+		if _, err := br.Exec(); err != nil {
 			// the batch is executed in a transaction, if one failed all failed
+			_ = br.Close()
 			return 0, fmt.Errorf("failed to execute query for record %d: %w", i, err)
 		}
+	}
+	// Invariant 1: ack only after the destination confirms a durable write.
+	// The batch runs in one implicit transaction, and the COMMIT outcome (e.g.
+	// deferred constraints, serialization failures) is reported only by Close,
+	// after every statement result has been read successfully. If Close fails
+	// the transaction was rolled back, so none of the records are stored and
+	// none may be acked.
+	if err := br.Close(); err != nil {
+		return 0, fmt.Errorf("failed to commit batch: %w", err)
 	}
 	return len(recs), nil
 }
