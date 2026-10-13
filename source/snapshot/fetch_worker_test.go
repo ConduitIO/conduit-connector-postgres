@@ -235,7 +235,7 @@ func Test_FetcherRun_EmptySnapshot(t *testing.T) {
 		gotFetchData = append(gotFetchData, data...)
 	}
 
-	is.NoErr(testTomb.Err())
+	is.NoErr(testTomb.Wait()) // Wait, not Err: close(out) runs before the goroutine returns (#390)
 	is.True(len(gotFetchData) == 0)
 }
 
@@ -269,7 +269,7 @@ func Test_FetcherRun_Initial(t *testing.T) {
 		gotFetchData = append(gotFetchData, data...)
 	}
 
-	is.NoErr(tt.Err())
+	is.NoErr(tt.Wait()) // Wait, not Err: close(out) runs before the goroutine returns (#390)
 	is.Equal(len(gotFetchData), 4)
 
 	var (
@@ -344,7 +344,7 @@ func Test_FetcherRun_Resume(t *testing.T) {
 		dd = append(dd, d...)
 	}
 
-	is.NoErr(tt.Err())
+	is.NoErr(tt.Wait()) // Wait, not Err: close(out) runs before the goroutine returns (#390)
 	is.True(len(dd) == 1)
 
 	// validate generated record
