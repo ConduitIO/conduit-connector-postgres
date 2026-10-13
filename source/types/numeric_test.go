@@ -74,7 +74,9 @@ func TestNumericNotRepresentableError(t *testing.T) {
 	is.True(strings.Contains(msg, "(row id=7)"))                                                            // the column
 	is.True(strings.Contains(msg, `"public.orders"`))                                                       // the table
 	is.True(strings.Contains(msg, "restart once with logrepl.withAvroSchema=false from the same position")) // CDC fix
-	is.True(strings.Contains(msg, "UPDATE it"))                                                             // snapshot fix
+	is.True(strings.Contains(msg, "set it back to true as soon as that record has been delivered"))         // switching back is required
+	is.True(strings.Contains(msg, "#378"))
+	is.True(strings.Contains(msg, "UPDATE it")) // snapshot fix
 	is.True(strings.Contains(msg, "do not drop the replication slot"))
 	is.True(strings.Contains(msg, "does not help once the change is in the WAL"))
 	is.True(!strings.Contains(msg, "CHECK"))

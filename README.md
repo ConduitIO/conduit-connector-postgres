@@ -89,8 +89,11 @@ the connector never replaces them with `NULL` or a number.
 How to continue after the source stopped:
 
 - **Change data capture:** restart once with `logrepl.withAvroSchema: false`
-  from the same position. The value is delivered as a string. Switch back
-  afterwards if you want Avro; it applies to the changes after that point.
+  from the same position. The value is delivered as a string. **Then set it
+  back to `true` as soon as that record has been delivered.** Without an Avro
+  schema a finite `numeric` is a `big.Rat`, which a standalone connector
+  cannot send to Conduit (#378): the next finite numeric would stop the
+  pipeline. Built-in pipelines are not affected.
 - **Snapshot:** `UPDATE` the row to a finite value (or `NULL`) and restart.
 - Removing the row, or adding a `CHECK` constraint, does not help for a change
   that is already in the WAL: it is read again after every restart. Do not drop
