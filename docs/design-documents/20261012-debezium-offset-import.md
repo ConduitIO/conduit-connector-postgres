@@ -168,7 +168,8 @@ pass)**:
 - Rollback validates the resolved config with Kafka Connect, names
   `--without-import` as the way out of the F_stop deadlock, and qualifies
   "no loss" for tables outside the pipeline (S12).
-- S14 follows #3033 at `0087f85f` (`tx_seq_m`, keyless first acks).
+- S14 follows #3033 (`tx_seq_m`, keyless first acks); pinned at the
+  signed-off `53b767d1` in the 7th pass.
 
 **Sixth pass (round-6 review, 2026-10-12).** Fixed in place, tagged **(6th
 pass)**:
@@ -188,6 +189,29 @@ pass)**:
 - A re-run row for a degraded pipeline, rollback with Conduit's slot missing,
   and a pending-DeVaris proposal to refuse slot creation for any non-empty
   position.
+
+**Seventh pass (round-7 review, partial, 2026-10-12).** The round-7 review
+found two blockers in the automated `--reset` and rollback attach-proof
+machinery (a re-run after the restart has no specified proof state; `--reset`
+at step 7 with Debezium RUNNING). Whether automated `--reset` and rollback
+stay in v0.21 or become a manual runbook is with DeVaris, so those items, and
+the related should-fixes, are **not** addressed in this pass. Fixed in place,
+tagged **(7th pass)**:
+
+- The lock: server-side keepalives, a stale-holder fix text, a fixed-length
+  hashed name, a second lock on Debezium's slot taken in a fixed order, a
+  headroom preflight, fail-closed create errors, pgbouncer ≥ 1.23, and
+  managed platforms in the test plan (S15).
+- The attach proof reads the two views twice and treats a disagreement as a
+  change; the WAL position is diagnostic only; equality is a proof because a
+  recreated slot starts strictly above the insert position (S15).
+- Debezium 3.4 `offset.mismatch.strategy` and 2.7
+  `slot.seek.to.known.offset.on.start` are refused when they move the slot or
+  the offset at start (S5 item 9).
+- #3033 pinned at the signed-off `53b767d1`; the `slotOnly` branches are
+  gone; Kc for a keyless checkpoint; S10 corrected for `cdcMode: auto`.
+- Default-refuse for slot creation on a non-empty position, as a tri-state
+  `requireExistingSlot`, **recommended, pending DeVaris** (S13).
 
 **Decisions recorded (DeVaris, 2026-10-12, 5th pass).**
 
@@ -468,6 +492,29 @@ change carries its own LSN.
        (Lc, F]. Refusing it before the stop removes that cause. The F_stop
        checks in S9 and S12 stay, because a recreated slot or an ungraceful
        stop can still leave Debezium's slot past Lc.
+     - **(7th pass) Slot-moving startup options.** Debezium 3.4 added
+       `offset.mismatch.strategy`. With `trust_offset` or `trust_greater_lsn`
+       it calls `pg_replication_slot_advance` on every `startStreaming`,
+       including after a `reconnect()` (`PostgresReplicationConnection`
+       L738–739). With `trust_slot` it moves the offset forward to the slot.
+       Debezium 2.7's `slot.seek.to.known.offset.on.start=true` also advances
+       the slot at start. Positions:
+       - `trust_slot` is refused: on a restart with F_d > Lc it silently moves
+         Debezium past (Lc, F_d], the exact gap S9 and S12 exist to prevent.
+       - `trust_offset` and `trust_greater_lsn` are refused: they move
+         Debezium's slot at every start and reconnect with no flush behind
+         it, which breaks the premise of S13 and of the attach proof (S15)
+         that the slot moves only on a flushed, committed offset.
+       - `slot.seek.to.known.offset.on.start=true` is refused for the same
+         reason.
+       - Unset (the behaviour before 3.4) and `slot.seek.to.known.offset.on.start=false`
+         are accepted.
+
+       The code is `migrate.kafka_connect.slot_advance_on_start_unsupported`,
+       with the fix "remove `offset.mismatch.strategy` (or set
+       `slot.seek.to.known.offset.on.start=false`) for the cutover window; it
+       can be set back after the cutover, or after Debezium has taken over
+       again".
      - Masked secrets in the connector config are checked here too (S9).
      - **(4th pass)** These checks run against the live config before the
        stop, again against the config saved at step 6, and again before any
@@ -1018,7 +1065,9 @@ lock and does this:
    - **(6th pass) Conduit's slot missing** (a degraded pipeline, S9) before
      rollback has restarted Debezium: F_c cannot be read. The CLI uses Kc,
      the commit LSN of the pipeline's persisted position K, instead: acks are
-     FIFO, so every commit below Kc was durably delivered. The F_stop check
+     FIFO, so every commit below Kc was durably delivered. **(7th pass)** For
+     a keyless checkpoint (a non-transactional message, #3033 L699), Kc is
+     the checkpoint's LSN. The F_stop check
      becomes Kc ≥ F_stop (with an empty position, it fails whenever
      F_stop > Lc). Step 4 then waits only for the attach proof and for
      Debezium's committed Lc to move, since there is no Conduit slot left to
@@ -1196,13 +1245,43 @@ DeVaris confirmation**:
   resumes from the new slot's start. Detecting that needs the slot's identity,
   which Postgres does not expose; the import path is protected by its own
   checks (D5 check 5, F ≤ Lc), and a steady-state pipeline is not.
-- **Proposal (6th pass, pending DeVaris).** Make the connector refuse to
-  create a slot whenever the pipeline's position is non-empty, with no setting
-  at all. A position means a slot existed, and creating a new one is always a
-  silent gap. This would close the steady-state gap for every pipeline, not
-  only CLI-written ones, and `requireExistingSlot` would then matter only for
-  empty positions. It changes default behaviour for existing users, so it
-  needs its own decision and a release note.
+- **Default-refuse (6th pass proposal, made concrete in the 7th:
+  recommended, pending DeVaris).** A position means a slot existed, and
+  creating a new one is always a silent gap. So `logrepl.requireExistingSlot`
+  becomes tri-state:
+
+  | Value | Behaviour at `Open` |
+  | --- | --- |
+  | unset (the default) | Refuse to create a slot or publication when the position is non-empty, snapshot positions included; create them when the position is empty, as today. Fails with `postgres.logrepl.slot_missing` |
+  | `true` | Always refuse to create, whatever the position (what the CLI writes) |
+  | `false` (explicit) | Always allow, as today. Creating a slot for a non-empty position logs a WARN with `postgres.logrepl.slot_recreated` and increments a `slot_recreated` counter, so the gap is visible |
+
+  This closes the steady-state gap for every pipeline, not only CLI-written
+  ones. It is a **behaviour change** for existing users, so it ships with:
+  - **A release note** (marked "Behaviour change"): _"The Postgres source no
+    longer creates a replication slot for a pipeline that already has a
+    position. A missing slot used to be recreated at the current WAL,
+    silently skipping every change since the old one. It now fails with
+    `postgres.logrepl.slot_missing`. Set `logrepl.requireExistingSlot: false`
+    to keep the old behaviour; the connector then logs
+    `postgres.logrepl.slot_recreated`."_
+  - **Runbook entries** (`docs/operations/`), each symptom → diagnosis →
+    remediation:
+    - _slot dropped by mistake:_ the changes since the position are gone from
+      Postgres; re-snapshot, or set `false` for one start if the gap is
+      acceptable;
+    - _database restored from backup:_ slots are not in base backups taken
+      with most tools; re-snapshot;
+    - _`pg_upgrade` from a version below 17:_ logical slots are not carried
+      over before PG 17; recreate the slot before writes resume and set
+      `false` for one start, or re-snapshot;
+    - _failover to a standby:_ unless the slot was synchronised (PG 17
+      `sync_replication_slots`, or a platform equivalent), it is missing on
+      the new primary; re-snapshot, or `false` for one start if the gap is
+      acceptable;
+    - _RDS blue/green switchover:_ logical slots do not move to the green
+      environment; plan the switchover as a re-snapshot, or `false` for one
+      start.
 - **The CLI writes it, `true`, on every pipeline it creates**: the import, and
   the `--without-import` fallback. After the import completes, the setting
   keeps the pipeline from silently recreating a dropped slot.
@@ -1224,12 +1303,9 @@ DeVaris confirmation**:
   rejects it at validation or ignores it; if it ignores it, it falls back to
   today's create-if-missing behaviour. Pipelines `migrate` writes require the
   build that ships the import, which has the setting.
-- **If DeVaris keeps `slotOnly`** instead, the same B2 rule applies to it: Key
-  zero, `MessageLSN = 0`, no `Partial`.
-- #3033 (head `0087f85f`) names both `slotOnly` and
-  `logrepl.requireExistingSlot` for this fallback, with the same resume point:
-  Key zero, `MessageLSN = 0`, no `Partial`. The two documents agree whichever
-  name DeVaris confirms.
+- #3033 (signed off at `53b767d1`) specifies the same resume point for the
+  `logrepl.requireExistingSlot` fallback: Key zero, `MessageLSN = 0`, no
+  `Partial`.
 
 **Duplicate bound.** The connector streams from C. Duplicates are every
 change Debezium produced into Kafka with commit at or after C: the records up
@@ -1256,7 +1332,7 @@ a message at exactly Lc. It is the message Debezium's last offset came from:
 for a non-transactional message, Debezium's `lsn_commit` is that message's
 LSN as the walsender reports it, which is the same m Conduit sees (S1). So
 the import's resume point keeps Lc itself for messages: #3033 (head
-`0087f85f`) sets `ResumePoint.MessageLSN = Lc` for an imported resume point,
+`53b767d1`) sets `ResumePoint.MessageLSN = Lc` for an imported resume point,
 with the rule **delivered iff m ≤ Lc**. With it:
 
 - a non-transactional message at m < Lc was processed by Debezium before P's
@@ -1302,9 +1378,9 @@ ignored (D2). These values apply **only to a real import**; the
 `requireExistingSlot` path uses Key zero, `MessageLSN = 0` and no `Partial`
 (S13, B2).
 
-**The first position (5th pass, corrected to #3033 `0087f85f`).** The first
+**The first position (5th pass, corrected to #3033 `53b767d1`).** The first
 durable ack writes an ordinary version 2 position in the **effective**
-numbering. #3033 (head `0087f85f`; the model was introduced at `e9d0f414`)
+numbering. #3033 (head `53b767d1`; the model was introduced at `e9d0f414`)
 replaced the earlier `tx_seq_msgs` flag, which is gone, with a separate
 field. When the `messages` option is effective (the normal case for a
 migrated pipeline: `migrate` enables Debezium-compatible output by default for
@@ -1337,7 +1413,11 @@ Two fixes were evaluated:
 - **A temporary replication slot (chosen).** Every mutating command
   (`--cutover`, `--cutover --without-import`, `--reset`, `rollback`) opens a
   replication connection and runs `CREATE_REPLICATION_SLOT
-  conduit_migrate_lock_<slot> TEMPORARY PHYSICAL`, without `RESERVE_WAL`.
+  <lock name> TEMPORARY PHYSICAL`, without `RESERVE_WAL`. **(7th pass)** The
+  lock name is `conduit_migrate_lock_` plus the first 32 hex characters of
+  the SHA-256 of the protected slot's name: 53 bytes in all. A name built
+  from the slot name itself could pass 63 bytes, which Postgres silently
+  truncates, so two long slot names could collide on one lock.
 
 Why the slot wins:
 
@@ -1355,18 +1435,55 @@ Why the slot wins:
   it retains no WAL and holds back no vacuum. Unlike a logical slot, creating
   it does not wait for running transactions.
 - The cost is one `max_replication_slots` entry and one `max_wal_senders`
-  connection for the command's lifetime. If either is exhausted, the create
-  fails and the command refuses with `migrate.kafka_connect.lock_unavailable`,
-  naming the setting, before it changes anything.
+  connection per lock for the command's lifetime.
+
+**(7th pass) Two locks, in a fixed order.** Two pipelines can cut over from
+one Debezium connector, and both would stop and restart it. So every command
+takes two locks: one keyed on Conduit's slot and one keyed on Debezium's
+slot, each named as above. It takes them in a fixed order (by lock name,
+ascending), so two commands cannot each hold one and wait for the other; the
+second create simply fails with "already exists" and the command refuses.
+
+**(7th pass) Capacity, errors and poolers.**
+
+- **Headroom preflight.** Before taking the locks, the command checks that
+  `max_wal_senders` minus the walsenders in use leaves at least 2 free, and
+  that `max_replication_slots` minus the slots in use leaves at least 1 free
+  beyond the slot Conduit's pipeline will need (and beyond the lock slots
+  themselves). Otherwise it refuses with `lock_unavailable`, naming the
+  setting and the counts. The headroom keeps the locks from taking the last
+  walsender a restarted Debezium or the pipeline needs.
+- **Every create error fails closed.** "Already exists" (SQLSTATE 42710) is
+  `operation_in_progress`. Every other error, including
+  `max_replication_slots` or `max_wal_senders` exhausted (53400), a missing
+  `REPLICATION` privilege (42501), an unsupported command on a managed
+  platform, or a connection failure, is `lock_unavailable` with the Postgres
+  error attached. No mutating step runs without both locks.
+- **Poolers.** Replication connections through pgbouncer need pgbouncer
+  1.23 or later. The command detects a pooler on the replication connection
+  (`SHOW VERSION` answered by pgbouncer, or `pg_backend_pid()` changing
+  between two calls) and refuses with `lock_unavailable` below 1.23 or when
+  the pooler is not in session mode for that connection. A direct connection
+  is the recommendation.
+- **Network partitions.** With default settings, Postgres keeps a dead
+  client's session, and so the lock slot, for about two hours. The lock
+  connection therefore sets server-side keepalives in its startup options:
+  `options=-c tcp_keepalives_idle=5 -c tcp_keepalives_interval=2 -c
+  tcp_keepalives_count=2 -c tcp_user_timeout=10000`. The round-7 review's
+  probe saw the slot dropped within 20 s of a partition with these settings.
+- **A stale holder.** The `operation_in_progress` fix text names the holder
+  (`active_pid`, `application_name`, `client_addr`, `backend_start`) and
+  says: _"If that process is gone (for example a CLI on a host that lost its
+  network), end its session with `SELECT pg_terminate_backend(<pid>)`. The
+  lock slot is temporary and disappears with it. Then re-run."_
 
 Before **every** mutating step (slot creation, a stop or start call, a
-pipeline write or delete, a drop), the command checks that the lock slot
-still exists with `active_pid` equal to its own walsender's pid (read once
+pipeline write or delete, a drop), the command checks that both lock slots
+still exist with `active_pid` equal to its own walsenders' pids (read once
 with `pg_backend_pid()` on the replication connection, which accepts SQL in
 `replication=database` mode). If not, it aborts with `lock_unavailable`
 before the step, and a re-run resumes from the journal. An idle replication
-connection is kept alive with TCP keepalives and a `SELECT 1` every 10 s on
-that connection.
+connection is also kept busy with a `SELECT 1` every 10 s.
 
 A journal that records a `--reset` or rollback in progress (any of its steps
 journalled, and the journal not closed) also makes `--cutover` refuse with
@@ -1389,26 +1506,31 @@ across pids:
 - From the restart call on, the CLI polls at least once a second and
   journals, for each poll, the slot's `active`, `active_pid`, the pid's
   `backend_start`, `confirmed_flush_lsn`, and `pg_current_wal_lsn()`.
+  **(7th pass)** `pg_replication_slots` and `pg_stat_activity` are separate
+  views read without a common snapshot, so each poll reads both twice and
+  requires the two reads to agree on pid, `backend_start` and
+  `confirmed_flush_lsn`; a disagreement is treated as a change of walsender
+  and judged by the rules below. `pg_current_wal_lsn()` is **diagnostic
+  only**: since the 7th pass the proof does not depend on it (see the
+  equality bullet).
 - **The first sighting** with `active = true` must show
   `confirmed_flush_lsn` ≤ the bound: max(final Lc, F_stop) for rollback, final
   Lc for `--reset` after the stop, `reset_target` for `--reset` before it.
 - **A change of walsender** (a new `active_pid` or `backend_start`, or an
   inactive gap between sightings) is accepted only when the new walsender's
   first sighting shows `confirmed_flush_lsn` **equal** to F_last, the last
-  value seen under the old one. W_last is `pg_current_wal_lsn()` at the old
-  walsender's last poll.
-  - When F_last < W_last, equality proves continuity. A recreated slot starts
-    at its consistent point, which is at or above the WAL position at its
-    creation, so at or above W_last, and a slot's `confirmed_flush_lsn` never
-    moves backwards. It cannot show F_last.
-  - When F_last = W_last, equality cannot tell a reattach from a slot
-    recreated at that same position. It is accepted anyway, because it is
-    safe: a recreated slot showing F_last was created when the WAL ended at
-    F_last, so there is nothing between F_last and its start, and Debezium
-    resumes at the same point either way. (This refines the review's
-    recommendation, which required F_last < W_last. On an idle database, which
-    is when `--reset` most often waits, the strict rule would send every normal
-    reconnect to `*_pending`.)
+  value seen under the old one. (W_last, `pg_current_wal_lsn()` at the old
+  walsender's last poll, is journalled for diagnosis.)
+  - **Equality proves continuity (corrected in the 7th pass).** A recreated
+    slot starts at its consistent point, which is **strictly above** the WAL
+    insert position at its creation: creating a logical slot writes its own
+    `xl_running_xacts` record and starts after it. The round-7 review's probe
+    measured `confirmed_flush_lsn` = insert position + `0x38` on PG 17 and
+    PG 18. The insert position at creation is at or above W_last, and so at
+    or above F_last, and a slot's `confirmed_flush_lsn` never moves
+    backwards. So a recreated slot can never show F_last, whether F_last is
+    below W_last or equal to it (an idle database). The 6th pass's separate
+    argument for the equal case is no longer needed.
 - **Anything else** (a first sighting above the bound, or a new walsender
   whose first sighting differs from F_last) ends the command with
   `reset_pending` or `rollback_pending`, both slots kept.
@@ -1585,9 +1707,12 @@ that `logrepl.requireExistingSlot: true` should stay.
 ### S10. CDC mode
 
 With an import set, `cdcMode` must be `logrepl`. `auto` is rejected with
-`postgres.import.cdc_mode_conflict`, because `auto` may fall back to long
-polling, which would ignore the slot and the resume point. The CLI writes
-`logrepl`.
+`postgres.import.cdc_mode_conflict`, and the CLI writes `logrepl`.
+**(Corrected in the 7th pass)** On `main`, `auto` does not fall back to long
+polling: it falls through to logical replication (`source.go`, the `cdcMode`
+switch, L96–99, with a TODO to add the check). The refusal stays because
+`auto` documents a fallback, and an import must not depend on a mode whose
+meaning may change; requiring `logrepl` states the intent.
 
 ### Nits
 
@@ -2209,6 +2334,8 @@ deterministic exit code ADR):
 - `lossy_source_config` – a warning (S2, S6).
 - `slot_advanced`, `slot_in_use`, `slot_unowned`, `slot_create_blocked`,
   `reset_unsafe`, `reset_pending`, `pipeline_exists`, `config_masked` – S9.
+- `slot_advance_on_start_unsupported` – S5 item 9 (7th pass), before the
+  stop and before any restart.
 - `slot_drop_on_stop`, `lsn_flush_mode_unsupported` – S5, before the stop,
   again at step 6, and before any Debezium restart. `lsn_flush_mode_unsupported`
   covers `manual`, `connector_and_driver` and `flush.lsn.source=false`
@@ -2223,6 +2350,8 @@ deterministic exit code ADR):
 Connector codes added in the 5th pass, for `logrepl.requireExistingSlot`
 (S13): `postgres.logrepl.slot_missing`, `postgres.logrepl.slot_plugin`,
 `postgres.logrepl.slot_invalidated`, `postgres.logrepl.publication_missing`.
+The 7th-pass default-refuse proposal adds the warning
+`postgres.logrepl.slot_recreated` (pending DeVaris).
 
 `rollback_unsupported` is not in v0.21; it returns with v0.22 reuse.
 
@@ -2338,7 +2467,7 @@ exact count, and the harness asserts equality, not just the bound.
 - Downgrading after the first ack works the same as for any version 2
   position (see the interleaved-tx doc). **(5th pass)** With the `messages`
   option on, that position carries `tx_seq_m` and no `tx_seq` (#3033,
-  `0087f85f`). A build that predates the field reads it as a legacy position
+  `53b767d1`). A build that predates the field reads it as a legacy position
   (`position.go`: a position with `TxCommitLSN` but no `TxSeq` is legacy) and
   resumes by the legacy rule: duplicates, never a skip.
 - **(5th pass)** `logrepl.requireExistingSlot` is a new optional setting
@@ -2513,6 +2642,30 @@ exact count, and the harness asserts equality, not just the bound.
 >     (rollback completes, zero loss); a Debezium slot recreated after the
 >     stop (`rollback_slot_lost`); a missing `--debezium-secret` variable
 >     (refused before the pipeline is stopped);
+>   - **(7th pass) Debezium startup options:** on Debezium 3.4+ each
+>     `offset.mismatch.strategy` value (`trust_offset`, `trust_greater_lsn`,
+>     `trust_slot`) is refused before the stop with
+>     `slot_advance_on_start_unsupported`, and the unset case passes; on
+>     Debezium 2.7, `slot.seek.to.known.offset.on.start=true` is refused and
+>     `false` passes. A forced variant enables each one after preflight and
+>     asserts the refusal at step 6 against the saved config. Debezium 3.4+
+>     joins the nightly matrix.
+>   - **(7th pass) Locks:** a network partition of the CLI's host drops both
+>     lock slots within 30 s with the keepalive options; a stale holder is
+>     named in the `operation_in_progress` text; two pipelines cutting over
+>     from one Debezium connector are serialised by the Debezium-slot lock; a
+>     slot name over 63 bytes gets a 53-byte lock name; exhausted
+>     `max_wal_senders` and `max_replication_slots` fail the headroom
+>     preflight with `lock_unavailable`; pgbouncer below 1.23, and in
+>     transaction mode, is refused.
+>   - **(7th pass) Managed platforms, before sign-off:** Amazon Aurora
+>     PostgreSQL, Amazon RDS for PostgreSQL, Google Cloud SQL and Azure
+>     Database for PostgreSQL must each be verified to accept
+>     `CREATE_REPLICATION_SLOT … TEMPORARY PHYSICAL` on a replication
+>     connection with the keepalive options, and to drop it on disconnect.
+>     A platform that does not is unsupported for `--cutover`, `--reset` and
+>     rollback until a different lock is designed, and the CLI refuses there
+>     with `lock_unavailable`.
 >   - **(4th pass)** `--without-import`: zero loss and the S13 duplicate
 >     bound; refused when Conduit's slot is missing, and with
 >     `logrepl.requireExistingSlot: true` the connector never creates a slot
