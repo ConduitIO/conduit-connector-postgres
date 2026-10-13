@@ -390,9 +390,16 @@ func (h *CDCHandler) handleUpdate(
 	// REPLICA IDENTITY, OldTuple only has key columns, so non-key TOASTed
 	// columns stay omitted from newValues; that is the documented fallback,
 	// never a silent NULL.
-	for col, oldVal := range oldValues {
-		if _, ok := newValues[col]; !ok {
-			newValues[col] = oldVal
+	//
+	// Only a full old row ('O') can backfill. A key-only old tuple ('K', sent
+	// when the identity columns change under DEFAULT or USING INDEX) carries
+	// NULL for every non-identity column, so backfilling from it would turn
+	// "unchanged" into a fabricated NULL — exactly what the omission avoids.
+	if msg.OldTupleType == pglogrepl.UpdateMessageTupleTypeOld {
+		for col, oldVal := range oldValues {
+			if _, ok := newValues[col]; !ok {
+				newValues[col] = oldVal
+			}
 		}
 	}
 
@@ -400,7 +407,7 @@ func (h *CDCHandler) handleUpdate(
 		h.buildPosition(lsn),
 		h.buildRecordMetadata(rel),
 		h.buildRecordKey(newValues, rel.RelationName),
-		h.buildRecordPayload(oldValues),
+		h.buildRecordBefore(msg.OldTupleType, oldValues),
 		h.buildRecordPayload(newValues),
 	)
 	h.attachSchemas(rec, rel.RelationName)
@@ -410,7 +417,9 @@ func (h *CDCHandler) handleUpdate(
 }
 
 // handleDelete formats a record with DELETE event data from Postgres and sends
-// it to the output channel. Deleted records only contain the key and no payload.
+// it to the output channel. The record always carries the key. It carries a
+// Before payload only under REPLICA IDENTITY FULL, where Postgres sends the
+// whole old row; see buildRecordBefore.
 func (h *CDCHandler) handleDelete(
 	ctx context.Context,
 	msg *pglogrepl.DeleteMessage,
@@ -440,11 +449,21 @@ func (h *CDCHandler) handleDelete(
 		return fmt.Errorf("failed to update avro schema: %w", err)
 	}
 
+	key := h.buildRecordKey(oldValues, rel.RelationName)
+	// Invariant 3: a delete with a null key cannot be applied downstream (the
+	// Postgres destination turns it into `WHERE id IS NULL`, matches nothing
+	// and acks), so the row would silently survive. Open refuses tables whose
+	// replica identity does not cover the key column; this catches the same
+	// condition if the identity is changed while the pipeline runs.
+	if err := h.requireDeleteKey(key, rel.RelationName); err != nil {
+		return err
+	}
+
 	rec := sdk.Util.Source.NewRecordDelete(
 		h.buildPosition(lsn),
 		h.buildRecordMetadata(rel),
-		h.buildRecordKey(oldValues, rel.RelationName),
-		h.buildRecordPayload(oldValues),
+		key,
+		h.buildRecordBefore(msg.OldTupleType, oldValues),
 	)
 	h.attachSchemas(rec, rel.RelationName)
 	h.addToBatch(ctx, rec)
@@ -491,6 +510,60 @@ func (h *CDCHandler) buildRecordKey(values map[string]any, table string) opencdc
 		}
 	}
 	return key
+}
+
+// buildRecordBefore returns the Before payload of an UPDATE or DELETE.
+//
+// Postgres sends the old row in one of two shapes. 'O' (REPLICA IDENTITY FULL)
+// is the whole previous row, and is emitted as Before unchanged. 'K' (DEFAULT
+// or USING INDEX) carries only the identity columns; pgoutput still sends
+// every column, with NULL for the rest. Emitting that as Before would report
+// NULL for columns that were not NULL (invariant 6), and under Avro the SDK
+// encodes Before against the table's payload schema, where those columns are
+// not nullable, so the encode fails and the source halts on every restart
+// (conduit-connector-postgres#379). A 'K' tuple holds nothing the key does not
+// already carry, except the old key of a key-changing UPDATE, so Before is
+// left empty. A missing old tuple (UPDATE that changed no identity column)
+// also gives an empty Before.
+//
+// The 'K'/'O' distinction is decided here, where the default-mode record is
+// built, and not in RelationSet.Values: other consumers of the decoded tuple
+// need the per-column information it carries.
+func (h *CDCHandler) buildRecordBefore(oldTupleType uint8, oldValues map[string]any) opencdc.Data {
+	// UpdateMessageTupleTypeOld and DeleteMessageTupleTypeOld are both 'O'.
+	if oldTupleType != pglogrepl.DeleteMessageTupleTypeOld {
+		return nil
+	}
+	return h.buildRecordPayload(oldValues)
+}
+
+// requireDeleteKey returns an error coded ErrorCodeReplicaIdentityExcludesKey
+// when the key of a delete is missing or null. A primary-key column is never
+// NULL in a stored row, so a null key on a delete means the old tuple did not
+// include the key column: the table's REPLICA IDENTITY is USING INDEX on an
+// index without it (conduit-connector-postgres#380).
+//
+// It only checks relations the source resolved a key column for at Open. A
+// relation without one (for example a partition leaf, which pgoutput reports
+// under its own name) already gets an empty key on every operation; that is a
+// separate limitation and this check does not change it.
+func (h *CDCHandler) requireDeleteKey(key opencdc.Data, table string) error {
+	keyColumn, known := h.tableKeys[table]
+	if !known || keyColumn == "" {
+		return nil
+	}
+	if sd, ok := key.(opencdc.StructuredData); ok {
+		if v, present := sd[keyColumn]; present && v != nil {
+			return nil
+		}
+	}
+	return fmt.Errorf(
+		"%s: delete on table %q arrived without a value for key column %q, so it cannot be applied downstream; "+
+			"the table's REPLICA IDENTITY does not include the key column. "+
+			"Fix: ALTER TABLE %s REPLICA IDENTITY FULL (or DEFAULT, or USING INDEX on a unique index that includes %q). "+
+			"This change is already in the WAL without its key: after fixing the identity, advance the slot past it "+
+			"and reconcile the deleted row in the destination by hand",
+		ErrorCodeReplicaIdentityExcludesKey, table, keyColumn, table, keyColumn)
 }
 
 // buildRecordPayload takes the values from the message and extracts the payload

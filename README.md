@@ -73,6 +73,23 @@ The connector will automatically look up the primary key column for the specifie
 and use them as the key value. If that can't be determined, the connector will return
 an error.
 
+The table's `REPLICA IDENTITY` must carry the primary key in deletes. `DEFAULT` and
+`FULL` always do. `USING INDEX` does only if the index includes the primary-key
+column; otherwise Postgres sends deletes without the key, and they cannot be applied
+downstream. The source refuses to open on such a table with the error code
+`postgres.source.replica_identity_excludes_key`. Fix it with
+`ALTER TABLE <table> REPLICA IDENTITY FULL`, or use a unique index that includes the
+primary key.
+
+### Before Image of Updates and Deletes
+
+`Payload.Before` is set only when Postgres sends the whole old row, which it does
+under `REPLICA IDENTITY FULL`. Under `DEFAULT` and `USING INDEX`, Postgres sends only
+the identity columns of the old row, so deletes and key-changing updates carry no
+`Before`. The deleted row's key is in the record `Key`. A key-changing update carries
+the new key in `Key`; the old key is not carried. If you need the old row or the old
+key, set `REPLICA IDENTITY FULL` on the table.
+
 ### Unchanged TOASTed Columns
 
 Postgres stores large field values (`text`, `bytea`, `jsonb`, and other
