@@ -17,6 +17,7 @@ package internal
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/conduitio/conduit-connector-postgres/source/types"
 	"github.com/jackc/pglogrepl"
@@ -28,13 +29,23 @@ import (
 type RelationSet struct {
 	relations map[uint32]*pglogrepl.RelationMessage
 	connInfo  *pgtype.Map
+	encoding  types.Encoding
 }
 
-// NewRelationSet creates a new relation set.
+// NewRelationSet creates a new relation set that formats values for records
+// without an Avro schema.
 func NewRelationSet() *RelationSet {
+	return NewRelationSetWithEncoding(types.EncodingNative)
+}
+
+// NewRelationSetWithEncoding creates a new relation set that formats values for
+// the given encoding. Use types.EncodingAvro when the connector attaches Avro
+// schemas to the records built from these values.
+func NewRelationSetWithEncoding(enc types.Encoding) *RelationSet {
 	return &RelationSet{
 		relations: map[uint32]*pglogrepl.RelationMessage{},
 		connInfo:  pgtype.NewMap(),
+		encoding:  enc,
 	}
 }
 
@@ -94,6 +105,9 @@ func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]a
 
 		v, decodeErr := rs.decodeValue(col, tuple.Data)
 		if decodeErr != nil {
+			if located, ok := types.Locate(decodeErr, rel.Namespace+"."+rel.RelationName, col.Name); ok {
+				return nil, types.WithRow(located, keyText(rel, row))
+			}
 			return nil, fmt.Errorf("failed to decode value for column %q: %w", col.Name, decodeErr)
 		}
 
@@ -132,10 +146,23 @@ func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, data []
 		return nil, fmt.Errorf("failed to decode value of pgtype %v: %w", col.DataType, err)
 	}
 
-	v, err := types.Format(col.DataType, val)
+	v, err := types.FormatFor(rs.encoding, col.DataType, val)
 	if err != nil {
 		return nil, fmt.Errorf("failed to format column %q type %T: %w", col.Name, val, err)
 	}
 
 	return v, nil
+}
+
+// keyText names the row of a tuple by the columns Postgres flags as part of the
+// key (the replica identity), using their text form, for error messages.
+func keyText(rel *pglogrepl.RelationMessage, row *pglogrepl.TupleData) string {
+	var parts []string
+	for i, tuple := range row.Columns {
+		if i >= len(rel.Columns) || rel.Columns[i].Flags&1 == 0 || tuple.DataType != pglogrepl.TupleDataTypeText {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s=%s", rel.Columns[i].Name, tuple.Data))
+	}
+	return strings.Join(parts, ",")
 }

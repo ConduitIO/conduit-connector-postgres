@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-connector-postgres/source/types"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pglogrepl"
@@ -654,4 +655,130 @@ func isValuesAllTypesStandalone(is *is.I, got map[string]any) {
 			return x.Cmp(y) == 0
 		}),
 	))
+}
+
+// TestRelationSetValues_NumericNonFinite is the CDC half of the regression test
+// for #368 (the snapshot half is in source/snapshot). The tuple is built by
+// hand with the text pgoutput sends, so it needs no Postgres. Without the fix
+// NaN and +/-Infinity came out as a typed-nil *big.Rat, which the Avro encoder
+// dereferenced.
+func TestRelationSetValues_NumericNonFinite(t *testing.T) {
+	cases := []struct {
+		name string
+		data string // pgoutput text; "" means NULL
+		text string // canonical text of a non-finite value
+	}{
+		{name: "NaN", data: "NaN", text: "NaN"},
+		{name: "Infinity", data: "Infinity", text: "Infinity"},
+		{name: "NegInfinity", data: "-Infinity", text: "-Infinity"},
+		{name: "NULL"},
+		{name: "finite", data: "1.50"},
+	}
+
+	for _, enc := range []types.Encoding{types.EncodingAvro, types.EncodingNative} {
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("avro=%t/%s", enc == types.EncodingAvro, tc.name), func(t *testing.T) {
+				is := is.New(t)
+
+				rs := NewRelationSetWithEncoding(enc)
+				rs.Add(&pglogrepl.RelationMessage{
+					RelationID:   7,
+					Namespace:    "public",
+					RelationName: "orders",
+					ColumnNum:    2,
+					Columns: []*pglogrepl.RelationMessageColumn{
+						{Name: "id", DataType: pgtype.Int8OID, Flags: 1},
+						{Name: "total", DataType: pgtype.NumericOID},
+					},
+				})
+				col := &pglogrepl.TupleDataColumn{DataType: pglogrepl.TupleDataTypeText, Data: []byte(tc.data)}
+				if tc.data == "" {
+					col = &pglogrepl.TupleDataColumn{DataType: pglogrepl.TupleDataTypeNull}
+				}
+
+				values, err := rs.Values(7, &pglogrepl.TupleData{ColumnNum: 2, Columns: []*pglogrepl.TupleDataColumn{
+					{DataType: pglogrepl.TupleDataTypeText, Data: []byte("7")}, col,
+				}})
+
+				if enc == types.EncodingAvro && tc.text != "" {
+					is.True(err != nil) // halt, never NULL or a number
+					msg := err.Error()
+					is.True(strings.HasPrefix(msg, "postgres.source.numeric_not_representable: "))
+					is.True(strings.Contains(msg, `"public.orders"`))
+					is.True(strings.Contains(msg, `"total"`))
+					is.True(strings.Contains(msg, "(row id=7)"))
+					is.True(strings.Contains(msg, fmt.Sprintf("%q", tc.text)))
+					return
+				}
+
+				is.NoErr(err)
+				got, present := values["total"]
+				is.True(present)
+				switch {
+				case tc.text != "":
+					is.Equal(got, tc.text)
+				case tc.data == "":
+					is.True(got == nil) // a real NULL is the untyped nil
+				default:
+					r, ok := got.(*big.Rat)
+					is.True(ok)
+					is.Equal(r.Cmp(big.NewRat(3, 2)), 0)
+				}
+			})
+		}
+	}
+}
+
+// numeric[] elements follow the same rule as a numeric column (#368): strings
+// without Avro, the coded error with it, and finite arrays as pgx decoded them.
+func TestRelationSetValues_NumericArrayNonFinite(t *testing.T) {
+	rel := &pglogrepl.RelationMessage{
+		RelationID: 9, Namespace: "public", RelationName: "prices", ColumnNum: 1,
+		Columns: []*pglogrepl.RelationMessageColumn{{Name: "v", DataType: pgtype.NumericArrayOID}},
+	}
+	tuple := func(text string) *pglogrepl.TupleData {
+		return &pglogrepl.TupleData{ColumnNum: 1, Columns: []*pglogrepl.TupleDataColumn{
+			{DataType: pglogrepl.TupleDataTypeText, Data: []byte(text)},
+		}}
+	}
+
+	t.Run("native", func(t *testing.T) {
+		is := is.New(t)
+		rs := NewRelationSetWithEncoding(types.EncodingNative)
+		rs.Add(rel)
+		got, err := rs.Values(9, tuple("{1.5,NaN,-Infinity,NULL}"))
+		is.NoErr(err)
+		a, ok := got["v"].([]any)
+		is.True(ok)
+		is.Equal(len(a), 4)
+		_, isNum := a[0].(pgtype.Numeric)
+		is.True(isNum) // finite elements are unchanged
+		is.Equal(a[1], "NaN")
+		is.Equal(a[2], "-Infinity")
+		is.True(a[3] == nil)
+	})
+	t.Run("finite is unchanged", func(t *testing.T) {
+		is := is.New(t)
+		for _, enc := range []types.Encoding{types.EncodingNative, types.EncodingAvro} {
+			rs := NewRelationSetWithEncoding(enc)
+			rs.Add(rel)
+			got, err := rs.Values(9, tuple("{1.5,2}"))
+			is.NoErr(err)
+			a, ok := got["v"].([]any)
+			is.True(ok)
+			is.Equal(len(a), 2)
+			_, isNum := a[0].(pgtype.Numeric)
+			is.True(isNum)
+		}
+	})
+	t.Run("avro", func(t *testing.T) {
+		is := is.New(t)
+		rs := NewRelationSetWithEncoding(types.EncodingAvro)
+		rs.Add(rel)
+		_, err := rs.Values(9, tuple("{1.5,Infinity}"))
+		is.True(err != nil)
+		is.True(strings.HasPrefix(err.Error(), "postgres.source.numeric_not_representable: "))
+		is.True(strings.Contains(err.Error(), `"Infinity"`))
+		is.True(strings.Contains(err.Error(), `"v"`))
+	})
 }
