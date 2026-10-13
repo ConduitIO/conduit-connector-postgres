@@ -131,3 +131,24 @@ func pgxNumericVal(s string) pgtype.Numeric {
 	_ = n.Scan(s)
 	return n
 }
+
+// This branch has no range handling (that is #361, main only). Range and
+// multirange types, and their arrays, must come out of FormatFor exactly as
+// decoded: only the four array OIDs the connector handles are touched.
+func TestFormatFor_RangesPassThrough(t *testing.T) {
+	is := is.New(t)
+	for _, oid := range []uint32{
+		pgtype.Int4rangeOID, pgtype.NumrangeOID, pgtype.TsrangeOID, pgtype.TstzrangeOID, pgtype.DaterangeOID, pgtype.Int8rangeOID,
+		pgtype.Int4multirangeOID, pgtype.NummultirangeOID, pgtype.TsmultirangeOID, pgtype.TstzmultirangeOID, pgtype.DatemultirangeOID, pgtype.Int8multirangeOID,
+		pgtype.Int4multirangeArrayOID, pgtype.NummultirangeArrayOID, pgtype.TsmultirangeArrayOID,
+		pgtype.TstzmultirangeArrayOID, pgtype.DatemultirangeArrayOID, pgtype.Int8multirangeArrayOID,
+	} {
+		for _, enc := range []Encoding{EncodingNative, EncodingAvro} {
+			for _, in := range []any{nil, []any{"x", 1}, []any{pgtype.Infinity}, "text", pgtype.Range[any]{}} {
+				got, err := FormatFor(enc, oid, in)
+				is.NoErr(err)
+				is.Equal(got, in)
+			}
+		}
+	}
+}
