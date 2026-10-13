@@ -152,6 +152,9 @@ func (i *CDCIterator) StartSubscriber(ctx context.Context) error {
 	}()
 
 	<-i.sub.Ready()
+	if err := i.sub.StartErr(); err != nil {
+		return fmt.Errorf("logical replication did not start: %w", err)
+	}
 
 	sdk.Logger(ctx).Info().
 		Str("slot", i.config.SlotName).

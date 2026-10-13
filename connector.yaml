@@ -72,6 +72,14 @@ specification:
     and use them as the key value. If that can't be determined, the connector will return
     an error.
 
+    The table's `REPLICA IDENTITY` must carry the primary key in deletes. `DEFAULT` and
+    `FULL` always do. `USING INDEX` does only if the index includes the primary-key
+    column; otherwise Postgres sends deletes without the key, and they cannot be applied
+    downstream. The source refuses to open on such a table with the error code
+    `postgres.replica_identity.excludes_key`. Fix it with
+    `ALTER TABLE <table> REPLICA IDENTITY FULL`, or use a unique index that includes the
+    primary key.
+
     ### NaN and Infinity in `numeric` Columns
 
     A `numeric` column can hold `NaN`, `Infinity` and `-Infinity` (the infinities
@@ -123,6 +131,129 @@ specification:
     mapping for array columns, so with the default `logrepl.withAvroSchema: true`
     a table with an array column already stops with a schema error before any
     record is emitted.
+
+    ### Before Image of Updates and Deletes
+
+    `Payload.Before` is set only when Postgres sends the whole old row, which it does
+    under `REPLICA IDENTITY FULL`. Under `DEFAULT` and `USING INDEX`, Postgres sends only
+    the identity columns of the old row, so deletes and key-changing updates carry no
+    `Before`. The deleted row's key is in the record `Key`. A key-changing update carries
+    the new key in `Key`; the old key is not carried. If you need the old row or the old
+    key, set `REPLICA IDENTITY FULL` on the table.
+
+    :warning: The Postgres destination does not delete the old row when a primary key
+    changes. It upserts on the new key, so a primary-key-changing `UPDATE` leaves the row
+    under its old key in the destination next to the new one. This happens with or without
+    Avro and under `REPLICA IDENTITY FULL` as well. It is a known destination bug
+    ([#386](https://github.com/ConduitIO/conduit-connector-postgres/issues/386)). Until it
+    is fixed, avoid changing primary keys on tables replicated to Postgres, or reconcile
+    the old rows by hand.
+
+    ### Delete With a Missing Key
+
+    **Symptom.** The pipeline fails and keeps failing after restarts with
+    `postgres.replica_identity.excludes_key: delete on table "<table>" (WAL LSN <a>, in the
+    transaction that commits at LSN <b>) arrived without a value for key column ...`.
+    The replication slot retains WAL while it is stuck.
+
+    **Diagnosis.** The table's `REPLICA IDENTITY` was changed while the pipeline was
+    running, to `USING INDEX` on an index whose key columns do not include the primary key
+    (columns in `INCLUDE` do not count), or the identity index was dropped. Postgres then
+    sends the delete without the key. Check with
+    `SELECT relreplident FROM pg_class WHERE oid = '<table>'::regclass` (`i` is
+    `USING INDEX`).
+
+    **Remediation.**
+
+    1. Fix the identity so that new deletes carry the key:
+       `ALTER TABLE <table> REPLICA IDENTITY FULL`, or `REPLICA IDENTITY DEFAULT`, or
+       `REPLICA IDENTITY USING INDEX <index>` on a unique index that has the primary key
+       among its key columns. This does not repair the change already in the WAL. A restart
+       alone fails on it again.
+    2. Stop the pipeline. Postgres refuses to read or advance a slot while a connection
+       uses it.
+    3. Find the row. The error carries no row values, because they would end up in logs.
+       Read the stuck transaction from the slot instead, as a superuser or a role with
+       `REPLICATION`. Peeking does not consume anything. `<c>` is the commit LSN `<b>`
+       from the error with its low hex part incremented by one (`0/40C5318` becomes
+       `0/40C5319`); the error prints it:
+
+       ```sql
+       SELECT xid, lsn, encode(data, 'escape') AS message
+       FROM pg_logical_slot_peek_binary_changes(
+              '<slot name>', '<c>', NULL,
+              'proto_version', '1', 'publication_names', '<publication name>');
+       ```
+
+       Use the values of `logrepl.slotName` and `logrepl.publicationName` (defaults
+       `conduitslot` and `conduitpub`).
+       The output can start with earlier transactions that the pipeline already delivered
+       but Postgres has not yet been told about (the connector reports its position
+       periodically). They can contain the same value as the stuck delete, so do not read
+       them. Read only the transaction (`xid`) that contains the `D` row whose `lsn` is the
+       WAL LSN `<a>` in the error.
+       Each row is one pgoutput message. `B` and `C` begin and commit the transaction. `R`
+       names a table and its columns. `I`, `U` and `D` are the changes. A `K` tuple follows
+       the table's object id: a 2-byte column count, then one entry per column, `n` for NULL
+       or `t`, a 4-byte length and the text value. For this error the only non-null columns
+       are those of the identity index, so the readable text is the value to look for, for
+       example `222` in a `D` row that shows `K ... n t ... 222 n`. Postgres only accepts a
+       unique index as a replica identity, so that value identifies the row in the
+       destination. Only tables in the publication appear, which are the tables the pipeline
+       captures.
+    4. Delete that row from the destination yourself. The change has no key, so the pipeline
+       cannot do it. The other changes in the same transaction are in the same output
+       (`I` and `U` carry the full new row as text). Apply the ones you need to the
+       destination too, because the next step skips them. Step 5 also skips the earlier
+       transactions the peek listed, so check that the destination has them.
+    5. Skip the transaction. Use the same `<c>` as in step 3. Writing it as a literal is
+       deliberate: `'<b>'::pg_lsn + 1` only works from Postgres 14.
+       - Postgres 11 or later:
+         `SELECT pg_replication_slot_advance('<slot name>', '<c>');`
+       - Postgres 10 has no such function. Consume the changes up to `<c>` instead. This
+         skips exactly the same changes and needs no new snapshot:
+         `SELECT count(*) FROM pg_logical_slot_get_binary_changes('<slot name>', '<c>', NULL, 'proto_version', '1', 'publication_names', '<publication name>');`
+
+       Advancing to `<c>` is what skips the transaction. Advancing to the change LSN
+       (`<a>`) or to the commit LSN `<b>` itself does not: Postgres replays the transaction
+       and the pipeline fails on the same delete.
+    6. Start the pipeline.
+
+    **Skipping the transaction skips that change, and it skips the whole transaction,
+    including its other changes to captured tables.** Skipping data is your decision and the
+    connector cannot check it for you.
+
+    ### Unchanged TOASTed Columns
+
+    Postgres stores large field values (`text`, `bytea`, `jsonb`, and other
+    variable-length types past a size threshold) out-of-line using
+    [TOAST](https://www.postgresql.org/docs/current/storage-toast.html). When a row is
+    updated but a TOASTed column is **not** changed, Postgres omits that column's value
+    from the logical-replication message to avoid re-transmitting large unchanged data.
+
+    For such columns, this connector **omits the field from the record payload** rather
+    than emitting it as `NULL`. Emitting `NULL` would be silent data corruption — a
+    downstream sink cannot distinguish "the value was set to NULL" from "the value did
+    not change". Omission preserves that distinction: absence means "unchanged".
+
+    What this means for your destination:
+
+    - **Partial-update / upsert sinks** (including this connector's own Postgres
+      destination, which builds its `ON CONFLICT DO UPDATE SET` clause only from the
+      fields present in the payload) handle omission correctly — an absent field is left
+      untouched in the target row.
+    - **Full-row / full-document replace sinks** must treat an absent field as
+      "unchanged" and preserve the existing target value. If a sink cannot do this, set
+      `REPLICA IDENTITY FULL` on the source table. Under `REPLICA IDENTITY FULL` the old
+      row image carries every column, and this connector backfills unchanged TOASTed
+      values from it so the payload is always complete.
+
+    With the default `logrepl.withAvroSchema: true` and the default
+    `REPLICA IDENTITY`, an update that leaves a TOASTed column unchanged still stops the
+    source: the field is omitted, but the Avro payload schema requires it, so the record
+    cannot be encoded
+    ([#383](https://github.com/ConduitIO/conduit-connector-postgres/issues/383)). Set
+    `REPLICA IDENTITY FULL` on such tables.
 
     ## Destination
 
