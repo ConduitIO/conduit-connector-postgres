@@ -341,7 +341,7 @@ func Test_FetcherRun_TemporalTypes(t *testing.T) {
 		for data := range out {
 			got = append(got, data...)
 		}
-		is.NoErr(tt.Err())
+		is.NoErr(tt.Wait())
 		is.Equal(len(got), 1)
 
 		want := test.TemporalExpected(ctx, t, pool, table, false, groups...)
