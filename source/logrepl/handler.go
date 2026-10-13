@@ -366,22 +366,35 @@ func (h *CDCHandler) requireDeleteKey(key opencdc.Data, table string, lsn pglogr
 		}
 	}
 	// The slot can only be moved past a whole transaction: advancing to an LSN
-	// inside it replays it from the start, and a commit LSN itself is not past
-	// the transaction (it is the start of the commit record), so the operator
-	// needs both the change LSN (to find the change) and the commit LSN (to
-	// skip it). See "Delete with a missing key" in the README.
+	// inside it replays it from the start, and the commit LSN itself is not past
+	// the transaction (it is the start of the commit record). So the operator
+	// needs the change LSN (to find the change) and the first LSN after the
+	// commit record start (to skip the transaction). The latter is printed as a
+	// literal because pg_lsn + integer only exists from Postgres 14. See "Delete
+	// With a Missing Key" in the README.
 	where := fmt.Sprintf("WAL LSN %s", lsn)
+	skip := "advance the slot past that transaction"
 	if h.lastTXLSN != 0 {
 		where = fmt.Sprintf("WAL LSN %s, in the transaction that commits at LSN %s", lsn, h.lastTXLSN)
+		skip = fmt.Sprintf("advance the slot past that transaction with pg_replication_slot_advance('<slot>', '%s') "+
+			"(Postgres 11 or later; see the README for Postgres 10)", nextLSN(h.lastTXLSN))
 	}
 	return fmt.Errorf(
 		"%s: delete on table %q (%s) arrived without a value for key column %q, so it cannot be applied downstream; "+
 			"the table's REPLICA IDENTITY does not include the key column. "+
 			"Fix: ALTER TABLE %s REPLICA IDENTITY FULL (or DEFAULT, or USING INDEX on a unique index that includes %q). "+
 			"This change is already in the WAL without its key: after fixing the identity, stop the pipeline, "+
-			"advance the slot past that transaction with pg_replication_slot_advance(<slot>, '<commit LSN>'::pg_lsn + 1) "+
-			"(this skips every change in the transaction, not only the delete), and reconcile the deleted row in the destination by hand",
-		ErrorCodeReplicaIdentityExcludesKey, table, where, keyColumn, pginternal.WrapSQLIdent(table), keyColumn)
+			"%s (this skips every change in the transaction, not only the delete), and reconcile the deleted row in the destination by hand",
+		ErrorCodeReplicaIdentityExcludesKey, table, where, keyColumn, pginternal.WrapSQLIdent(table), keyColumn, skip)
+}
+
+// nextLSN returns the LSN one byte after l, in the X/Y hex form Postgres
+// reads. Skipping a transaction needs an LSN just past its commit record
+// start; the operator writes it as a literal, since pg_lsn arithmetic is not
+// available before Postgres 14. A low part of FFFFFFFF carries into the high
+// part.
+func nextLSN(l pglogrepl.LSN) string {
+	return (l + 1).String()
 }
 
 // buildRecordPayload takes the values from the message and extracts the payload

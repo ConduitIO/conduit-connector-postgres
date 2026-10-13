@@ -123,44 +123,54 @@ sends the delete without the key. Check with
    uses it.
 3. Find the row. The error carries no row values, because they would end up in logs.
    Read the stuck transaction from the slot instead, as a superuser or a role with
-   `REPLICATION`. Peeking does not consume anything:
+   `REPLICATION`. Peeking does not consume anything. `<c>` is the commit LSN `<b>`
+   from the error with its low hex part incremented by one (`0/40C5318` becomes
+   `0/40C5319`); the error prints it:
 
    ```sql
-   SELECT lsn, xid, encode(data, 'escape') AS message
+   SELECT xid, lsn, encode(data, 'escape') AS message
    FROM pg_logical_slot_peek_binary_changes(
-          '<slot name>', NULL, 100,
+          '<slot name>', '<c>', NULL,
           'proto_version', '1', 'publication_names', '<publication name>');
    ```
 
    Use the values of `logrepl.slotName` and `logrepl.publicationName` (defaults
    `conduitslot` and `conduitpub`).
-   The pipeline has acknowledged everything before the stuck transaction, so it is the
-   first one returned. Each row is one pgoutput message. `B` and `C` begin and commit
-   the transaction. `R` names a table and its columns. `I`, `U` and `D` are the
-   changes. Find the `D` row whose `lsn` is the WAL LSN in the error. A `K` tuple
-   follows the table's object id: a 2-byte column count, then one entry per column,
-   `n` for NULL or `t`, a 4-byte length and the text value. For this error the only
-   non-null columns are those of the identity index, so the readable text is the value
-   to look for, for example `222` in a `D` row that shows `K ... n t ... 222 n`. If the
-   identity index is unique, that value identifies the row in the destination. Only
-   tables in the publication appear, which are the tables the pipeline captures.
+   The output can start with earlier transactions that the pipeline already delivered
+   but Postgres has not yet been told about (the connector reports its position
+   periodically). They can contain the same value as the stuck delete, so do not read
+   them. Read only the transaction (`xid`) that contains the `D` row whose `lsn` is the
+   WAL LSN `<a>` in the error.
+   Each row is one pgoutput message. `B` and `C` begin and commit the transaction. `R`
+   names a table and its columns. `I`, `U` and `D` are the changes. A `K` tuple follows
+   the table's object id: a 2-byte column count, then one entry per column, `n` for NULL
+   or `t`, a 4-byte length and the text value. For this error the only non-null columns
+   are those of the identity index, so the readable text is the value to look for, for
+   example `222` in a `D` row that shows `K ... n t ... 222 n`. Postgres only accepts a
+   unique index as a replica identity, so that value identifies the row in the
+   destination. Only tables in the publication appear, which are the tables the pipeline
+   captures.
 4. Delete that row from the destination yourself. The change has no key, so the pipeline
    cannot do it. The other changes in the same transaction are in the same output
    (`I` and `U` carry the full new row as text). Apply the ones you need to the
-   destination too, because the next step skips them.
-5. Advance the slot past the transaction named in the error, using its commit LSN
-   (`<b>`), on Postgres 11 or later:
-   `SELECT pg_replication_slot_advance('<slot name>', '<b>'::pg_lsn + 1);`
-   The `+ 1` matters. Advancing to the change LSN (`<a>`) or to the commit LSN itself
-   does not skip the transaction: Postgres replays it and the pipeline fails on the same
-   delete. **Postgres 10 has no `pg_replication_slot_advance`.** There the only option is
-   to drop the slot (`SELECT pg_drop_replication_slot('<slot name>')`) and start the
-   pipeline over with a new slot, which means a new snapshot.
+   destination too, because the next step skips them. Step 5 also skips the earlier
+   transactions the peek listed, so check that the destination has them.
+5. Skip the transaction. Use the same `<c>` as in step 3. Writing it as a literal is
+   deliberate: `'<b>'::pg_lsn + 1` only works from Postgres 14.
+   - Postgres 11 or later:
+     `SELECT pg_replication_slot_advance('<slot name>', '<c>');`
+   - Postgres 10 has no such function. Consume the changes up to `<c>` instead. This
+     skips exactly the same changes and needs no new snapshot:
+     `SELECT count(*) FROM pg_logical_slot_get_binary_changes('<slot name>', '<c>', NULL, 'proto_version', '1', 'publication_names', '<publication name>');`
+
+   Advancing to `<c>` is what skips the transaction. Advancing to the change LSN
+   (`<a>`) or to the commit LSN `<b>` itself does not: Postgres replays the transaction
+   and the pipeline fails on the same delete.
 6. Start the pipeline.
 
-**Advancing the slot skips that change, and it skips the whole transaction, including
-its other changes to captured tables.** Skipping data is your decision and the connector
-cannot check it for you.
+**Skipping the transaction skips that change, and it skips the whole transaction,
+including its other changes to captured tables.** Skipping data is your decision and the
+connector cannot check it for you.
 
 ## Destination
 
