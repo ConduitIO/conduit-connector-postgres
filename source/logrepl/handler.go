@@ -530,13 +530,16 @@ type truncateWarn struct {
 // warning; a warning therefore stands for 1+suppressed TRUNCATEs.
 //
 // State is bounded: on each warning, entries whose window has expired are
-// dropped, so it holds only tables truncated within the last interval. The
-// price is that the suppressed count of a burst is reported only by the next
-// warning for that table; if the table is never truncated again, or its entry
-// is evicted first, the tail of the burst is not reported. The first TRUNCATE of
-// every burst is always logged, so the operator is told at least once. This is
-// deliberately not fixed with a timer: it would add a goroutine to a handler
-// that has none, for a count that only refines a warning already delivered.
+// dropped, so it holds only tables truncated within the last interval. An
+// evicted entry that still holds a suppressed count is reported with a one-line
+// summary as it goes, so a burst's tail is lost only if no other table warns
+// before the process exits. The first TRUNCATE of every burst is always logged,
+// so the operator is told at least once. There is deliberately no timer for the
+// rest: it would add a goroutine to a handler that has none.
+//
+// Postgres only sends the TRUNCATE message if the publication publishes
+// "truncate"; a user-supplied or restricted publication never does, and then
+// there is nothing to warn about.
 func (h *CDCHandler) warnTruncate(ctx context.Context, m *pglogrepl.TruncateMessage, lsn pglogrepl.LSN) {
 	if h.truncateWarns == nil {
 		h.truncateWarns = map[string]truncateWarn{}
@@ -561,8 +564,16 @@ func (h *CDCHandler) warnTruncate(ctx context.Context, m *pglogrepl.TruncateMess
 		}
 
 		for k, v := range h.truncateWarns {
-			if t.Sub(v.warnedAt) >= truncateWarnInterval {
-				delete(h.truncateWarns, k)
+			if t.Sub(v.warnedAt) < truncateWarnInterval {
+				continue
+			}
+			delete(h.truncateWarns, k)
+			if v.suppressed > 0 && k != table { // this table's count goes in its own warning below
+				sdk.Logger(ctx).Warn().
+					Str("table", k).
+					Uint64("suppressed", v.suppressed).
+					Msg("rate-limited TRUNCATE warnings for this table (summary): " +
+						"these TRUNCATEs were also NOT propagated")
 			}
 		}
 		h.truncateWarns[table] = truncateWarn{warnedAt: t}
