@@ -69,6 +69,10 @@ func (e *NumericNotRepresentableError) Error() string {
 		"string %q, and set it back to true as soon as that record has been delivered: without Avro a "+
 		"finite numeric is a Go big.Rat, which a standalone connector cannot send to Conduit (#378), "+
 		"so the next finite numeric would stop the pipeline (built-in pipelines are not affected). "+
+		"On a standalone connector the SDK also fails the whole read batch on the first record it cannot "+
+		"send, so if the record or its batch contains any finite numeric it is never delivered with Avro "+
+		"off and this workaround does not help (#378). Until then JSON-serializing destinations receive "+
+		"a finite numeric as the string \"3/2\". "+
 		"For a row that is only in the snapshot, UPDATE it to a finite value and restart. Removing "+
 		"the row does not help once the change is in the WAL, and do not drop the replication slot: "+
 		"that loses the position",

@@ -93,6 +93,11 @@ specification:
       schema a finite `numeric` is a `big.Rat`, which a standalone connector
       cannot send to Conduit (#378): the next finite numeric would stop the
       pipeline. Built-in pipelines are not affected.
+      On a standalone connector the SDK also fails the whole read batch on the
+      first record it cannot send, so if the NaN/Infinity record or its batch
+      contains any finite numeric, it is never delivered with Avro off and this
+      workaround does not help (#378 is the fix). While Avro is off,
+      JSON-serializing destinations receive a finite numeric as the string `"3/2"`.
     - **Snapshot:** `UPDATE` the row to a finite value (or `NULL`) and restart.
     - Removing the row, or adding a `CHECK` constraint, does not help for a change
       that is already in the WAL: it is read again after every restart. Do not drop
