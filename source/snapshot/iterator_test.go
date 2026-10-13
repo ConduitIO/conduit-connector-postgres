@@ -27,6 +27,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/matryer/is"
 	"github.com/rs/zerolog"
+	"go.uber.org/goleak"
 )
 
 // Test_Iterator_buildRecord_ResumedTag is a white-box unit test (no DB) for the
@@ -279,4 +280,40 @@ func Test_Iterator_ResumeWarning_NotSilent(t *testing.T) {
 	ctx = zerolog.New(&buf).WithContext(context.Background())
 	emitResumeWarning(ctx, false, pos)
 	is.Equal(buf.String(), "")
+}
+
+// Test_Iterator_NextN_CanceledWhileUnacked is the regression test for the
+// goroutine leak behind suite case SRC-07: stopping (canceling the context)
+// while snapshot records are unacked left a goroutine parked forever in the
+// ack wait, pinning the Iterator.
+func Test_Iterator_NextN_CanceledWhileUnacked(t *testing.T) {
+	is := is.New(t)
+	var (
+		ctx   = test.Context(t)
+		pool  = test.ConnectPool(ctx, t, test.RegularConnString)
+		table = test.SetupTestTable(ctx, t, pool)
+	)
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+
+	i, err := NewIterator(ctx, pool, Config{
+		Position:  position.Position{}.ToSDKPosition(),
+		Tables:    []string{table},
+		TableKeys: map[string]string{table: "id"},
+		FetchSize: 10,
+	})
+	is.NoErr(err)
+
+	// Take every record and ack none, so the end-of-data ack wait has to block.
+	var got int
+	for got < 4 {
+		records, err := i.NextN(ctx, 10)
+		is.NoErr(err)
+		got += len(records)
+	}
+
+	stopCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	_, err = i.NextN(stopCtx, 1)
+	is.True(errors.Is(err, context.DeadlineExceeded)) // stopped while records are unacked
+	is.NoErr(i.Teardown(ctx))
 }
