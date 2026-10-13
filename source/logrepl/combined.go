@@ -311,6 +311,9 @@ func (c *CombinedIterator) useCDCIterator(ctx context.Context) error {
 
 	if snap := c.takeSnapshotIterator(); snap != nil {
 		if err := snap.Teardown(ctx); err != nil {
+			// Keep the iterator so the next NextN retries the handoff instead
+			// of losing both the error and the iterator.
+			c.restoreSnapshotIterator(snap)
 			return fmt.Errorf("failed to teardown snapshot iterator during switch: %w", err)
 		}
 	}
@@ -364,4 +367,14 @@ func (c *CombinedIterator) takeSnapshotIterator() *snapshot.Iterator {
 	snap := c.snapshotIterator
 	c.snapshotIterator = nil
 	return snap
+}
+
+// restoreSnapshotIterator puts snap back unless the slot was refilled or
+// Teardown already ran (in which case it owns teardown of what is left).
+func (c *CombinedIterator) restoreSnapshotIterator(snap *snapshot.Iterator) {
+	c.iterMu.Lock()
+	defer c.iterMu.Unlock()
+	if c.snapshotIterator == nil {
+		c.snapshotIterator = snap
+	}
 }

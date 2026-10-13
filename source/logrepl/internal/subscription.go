@@ -76,18 +76,22 @@ type Subscription struct {
 	runActive bool // Run started and has not finished
 	tornDown  bool // Teardown was called: release conn once Run is done with it
 
-	// stopMu guards stop, stopped and running: Stop and Teardown are called
+	// stopMu guards stop and stopped: Stop and Teardown are called
 	// from another goroutine, possibly before Run has created its context
 	// (#346: stopping right after the snapshot handoff overtook a starting
 	// subscription and left it unstoppable).
 	stopMu  sync.Mutex
 	stop    context.CancelFunc
 	stopped bool // Stop was called, possibly before Run began
-	running bool // Run was called
 
 	// afterAcquire is a test seam, nil in production. It runs in
 	// startReplication right after the replication connection was stored.
 	afterAcquire func()
+
+	// startErr is why Run never reached the receive loop (startReplication
+	// failed, or Run was refused after Teardown). It is written once, before
+	// ready is closed, and read only after <-Ready().
+	startErr error
 
 	// beforeRelease is a test seam, nil in production. It runs at the top of
 	// startReplication, before the old connection is released.
@@ -234,8 +238,10 @@ func (s *Subscription) Run(ctx context.Context) error {
 	defer s.endRun(started)
 	defer s.doneReplication()
 	if !started {
+		err := errors.New("subscription was torn down before it started")
+		s.startErr, s.doneErr = err, err
 		close(s.ready) // ready to fail.
-		return errors.New("subscription was torn down before it started")
+		return err
 	}
 
 	// The cancel function is published before anything blocking happens, so a
@@ -244,13 +250,13 @@ func (s *Subscription) Run(ctx context.Context) error {
 	defer cancel()
 	s.stopMu.Lock()
 	s.stop = cancel
-	s.running = true
 	if s.stopped {
 		cancel()
 	}
 	s.stopMu.Unlock()
 
 	if err := s.startReplication(lctx); err != nil {
+		s.startErr, s.doneErr = err, err
 		close(s.ready) // ready to fail.
 		return err
 	}
@@ -481,22 +487,24 @@ func (s *Subscription) Wait(ctx context.Context, timeout time.Duration) error {
 // longer uses it. If the wait ends before Run does (ctx expired), the
 // connection is NOT released here: Run releases it on its way out, so a
 // connection is never handed back to the pool under a live user.
+//
+// Run's exit is itself bounded: the final status update and CopyDone run with
+// a deadline of closeReplicationTimeout on the connection, so a hung server
+// cannot keep Run, the connection and the replication slot busy forever.
+//
+// A Run that exits on its own (an error, or the context ending) keeps the
+// connection until Teardown is called; callers must always call Teardown.
 func (s *Subscription) Teardown(ctx context.Context) error {
-	defer s.releaseIfIdle()
-
 	s.Stop()
 
-	s.stopMu.Lock()
-	running := s.running
-	s.stopMu.Unlock()
-	if !running {
-		// Run was never called (or has not been yet and will see stopped), so
-		// there is nothing to wait for.
+	if !s.markTornDown() {
+		// Run is not active (never started, so it will refuse to start, or
+		// already finished): nothing to wait for, the connection is released.
 		return nil
 	}
 
-	// Wait for Run to finish, including when it is still starting: the
-	// connection must not be released while Run might use it (#346).
+	// Run is active: wait for it, including when it is still starting. The
+	// connection stays Run's until it exits (#346).
 	return s.Wait(ctx, closeReplicationTimeout)
 }
 
@@ -705,9 +713,14 @@ func (s *Subscription) doneReplication() {
 	// talk on (startReplication released the old one), and using it
 	// panicked with a nil pointer dereference (#346).
 	if s.replicating && s.hasConn() {
+		// SendStandbyCopyDone waits for the server's reply and ignores tctx,
+		// so a hung server would keep Run, the connection and the slot busy
+		// forever. A deadline on the socket bounds every step below.
+		clearDeadline := s.setConnDeadline(time.Now().Add(closeReplicationTimeout))
 		if err := s.sentStandbyDone(tctx); err != nil {
 			s.doneErr = errors.Join(s.doneErr, err)
 		}
+		clearDeadline()
 	}
 
 	close(s.done)
@@ -773,16 +786,18 @@ func (s *Subscription) endRun(started bool) {
 	}
 }
 
-// releaseIfIdle is Teardown's release: it records that Teardown ran and
-// releases the connection unless Run is still active, in which case endRun
-// does it.
-func (s *Subscription) releaseIfIdle() {
+// markTornDown records that Teardown ran. If Run is not active it releases
+// the connection and reports false; if Run is active it reports true and
+// leaves the release to Run's exit (endRun).
+func (s *Subscription) markTornDown() (runActive bool) {
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
 	s.tornDown = true
-	if !s.runActive {
-		s.releaseConnLocked()
+	if s.runActive {
+		return true
 	}
+	s.releaseConnLocked()
+	return false
 }
 
 // setConn stores the connection Run acquired.
@@ -823,4 +838,22 @@ func (s *Subscription) pgConn() (*pgconn.PgConn, error) {
 		return nil, errors.New("replication connection was released")
 	}
 	return s.conn.Conn().PgConn(), nil
+}
+
+// setConnDeadline sets a read/write deadline on the connection's socket and
+// returns a function that clears it.
+func (s *Subscription) setConnDeadline(t time.Time) (clear func()) {
+	pc, err := s.pgConn()
+	if err != nil {
+		return func() {}
+	}
+	nc := pc.Conn()
+	_ = nc.SetDeadline(t)
+	return func() { _ = nc.SetDeadline(time.Time{}) }
+}
+
+// StartErr returns why Run did not reach the receive loop, or nil. It is only
+// valid after Ready() was closed.
+func (s *Subscription) StartErr() error {
+	return s.startErr
 }
