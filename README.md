@@ -245,6 +245,38 @@ If the source halts with `postgres.source.temporal_not_representable`, set
 `logrepl.withAvroSchema` to `false`. Removing the row does not help a change that is
 already in the WAL, because it is read again after every restart.
 
+### NaN and Infinity in `numeric` Columns
+
+A `numeric` column can hold `NaN`, `Infinity` and `-Infinity` (the infinities
+need Postgres 14 or later). The Avro `decimal` type cannot represent them, and
+the connector never replaces them with `NULL` or a number.
+
+- With `logrepl.withAvroSchema: true` (the default), the source stops with the
+  error code `postgres.source.numeric_not_representable`, which names the
+  table, the column, the value and the row's key.
+- With `logrepl.withAvroSchema: false`, the values are emitted as the strings
+  `"NaN"`, `"Infinity"` and `"-Infinity"`. A `NULL` stays `NULL`. This applies
+  to the elements of `numeric[]` as well; finite elements are unchanged.
+
+How to continue after the source stopped:
+
+- **Change data capture:** restart once with `logrepl.withAvroSchema: false`
+  from the same position. The value is delivered as a string. **Then set it
+  back to `true` as soon as that record has been delivered.** Without an Avro
+  schema a finite `numeric` is a `big.Rat`, which a standalone connector
+  cannot send to Conduit (#378): the next finite numeric would stop the
+  pipeline. Built-in pipelines are not affected.
+  On a standalone connector the SDK also fails the whole read batch on the
+  first record it cannot send, so if the NaN/Infinity record or its batch
+  contains any finite numeric, it is never delivered with Avro off and this
+  workaround does not help (#378 is the fix). While Avro is off,
+  JSON-serializing destinations receive a finite numeric as the string `"3/2"`.
+- **Snapshot:** `UPDATE` the row to a finite value (or `NULL`) and restart.
+- Removing the row, or adding a `CHECK` constraint, does not help for a change
+  that is already in the WAL: it is read again after every restart. Do not drop
+  the replication slot to get past it, that loses the position. A constraint
+  only keeps new bad values out.
+
 ### Limitations
 
 - **`TRUNCATE` is not propagated.** OpenCDC has no truncate operation, so a
