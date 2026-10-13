@@ -109,15 +109,27 @@ use it with the field's type modifier. Key columns too.
   carry version N+1 (string). A reader that follows the schema version per record
   copes; a reader that pins version N does not.
 - Tables without an unconstrained numeric are not affected.
-- A column change between an unconstrained numeric and `text` or `varchar` now
-  has the same Avro shape, so the evolve drift policy treats it as compatible
-  (it was a halt). Between an unconstrained numeric and `numeric(p,s)`, or any
-  other type, the schema still differs and the drift policy decides as before.
+- The evolve schema-drift policy exists on `main` only, not on `release/v0.14.x`;
+  see the main PR for how a change between `text`/`varchar` and an unconstrained
+  numeric is judged there (only with `withAvroSchema` on).
 - Rollback to v0.14.3: the schema goes back to the decimal and the halt for
   values of 10000 or more is back. Rows already emitted as strings stay in the
   sink.
 - The registered schema text is pinned by `source/schema/testdata` fixtures;
   the unconstrained entry was changed on purpose.
+
+## Details worth knowing
+
+- With `withAvroSchema` off, an unconstrained numeric is a `big.Rat` as before:
+  the Go type of the column depends on the setting.
+- The snapshot fetches `numeric` columns in text format (pgx's binary form drops
+  the display scale of a zero, so `0.000` was `"0"` in the snapshot and `"0.000"`
+  in CDC). Both paths now give the same text; tested with `0.000`, `0.00000` and
+  `-0.0` (Postgres stores the last as `0.0`).
+- Rows written before the upgrade through the old schema were rounded by the
+  destination: v0.20.0's built-in postgres destination wrote `2.50` as `3`.
+  #365/#366 fix that for new rows only; existing rows stay wrong and need a
+  re-sync.
 
 ## Failure modes
 

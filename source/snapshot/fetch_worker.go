@@ -33,6 +33,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -272,7 +273,13 @@ func (f *FetchWorker) updateSnapshotEnd(ctx context.Context, tx pgx.Tx) error {
 func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 	start := time.Now().UTC()
 
-	rows, err := tx.Query(ctx, fmt.Sprintf("FETCH %d FROM %s", f.conf.FetchSize, f.cursorName))
+	// numeric is fetched in text format. The binary form does not tell pgx the
+	// display scale of a zero, so 0.000 would arrive as 0, while CDC (text)
+	// delivers 0.000; with text both paths give the same value and the same
+	// digits, which matters now that an unconstrained numeric is emitted as its
+	// exact text (#375). Every other column keeps pgx's default format.
+	rows, err := tx.Query(ctx, fmt.Sprintf("FETCH %d FROM %s", f.conf.FetchSize, f.cursorName),
+		pgx.QueryResultFormatsByOID{pgtype.NumericOID: pgtype.TextFormatCode})
 	if err != nil {
 		return 0, fmt.Errorf("failed to fetch rows: %w", err)
 	}
