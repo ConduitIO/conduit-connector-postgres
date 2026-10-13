@@ -163,7 +163,7 @@ func spawnChildWithEnv(t *testing.T, env []string) *childProcess {
 	// bought nothing but the appearance of cancellation support. This
 	// package's actual "stop the child" mechanism is sigkill (below),
 	// which every scenario calls explicitly.
-	cmd := exec.Command(exe)
+	cmd := exec.Command(exe) //nolint:gosec,noctx // exe is this test binary re-executed as the chaos child, from os.Executable
 	// The child's PGCHAOS_ environment is built from scratch, not inherited.
 	// Forwarding os.Environ() wholesale made the re-exec protocol additive:
 	// with a stray PGCHAOS_REAL_CHILD=1 exported in the shell, an ECHO child
