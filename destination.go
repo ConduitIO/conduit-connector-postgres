@@ -128,7 +128,7 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 		sdk.Logger(ctx).Warn().
 			Int("records", strayDrift).
 			Str("metadata_key", logrepl.MetadataSchemaDrift).
-			Msg("records carry the schema-drift metadata but are not drift markers (they have a key, a payload or a non-create operation); writing them as regular records")
+			Msg("records carry schema-drift metadata but do not match the drift-marker shape; writing them as normal records")
 	}
 
 	br := d.conn.SendBatch(ctx, b)

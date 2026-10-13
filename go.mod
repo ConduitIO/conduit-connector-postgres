@@ -6,6 +6,7 @@ require (
 	github.com/Masterminds/sprig/v3 v3.3.0
 	github.com/Masterminds/squirrel v1.5.4
 	github.com/conduitio/conduit-commons v0.7.0
+	github.com/conduitio/conduit-connector-protocol v0.9.5
 	github.com/conduitio/conduit-connector-sdk v0.14.2
 	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
@@ -16,6 +17,7 @@ require (
 	github.com/matryer/is v1.4.1
 	github.com/rs/zerolog v1.35.1
 	github.com/shopspring/decimal v1.4.0
+	google.golang.org/protobuf v1.36.12
 	gopkg.in/tomb.v2 v2.0.0-20161208151619-d5d1b5820637
 )
 
@@ -23,7 +25,6 @@ require (
 	dario.cat/mergo v1.0.1 // indirect
 	github.com/Masterminds/goutils v1.1.1 // indirect
 	github.com/Masterminds/semver/v3 v3.5.0 // indirect
-	github.com/conduitio/conduit-connector-protocol v0.9.5 // indirect
 	github.com/conduitio/evolviconf v0.1.1 // indirect
 	github.com/conduitio/evolviconf/evolviyaml v0.1.0 // indirect
 	github.com/conduitio/yaml/v3 v3.3.0 // indirect
@@ -66,6 +67,5 @@ require (
 	golang.org/x/time v0.16.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260706201446-f0a921348800 // indirect
 	google.golang.org/grpc v1.84.0 // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
