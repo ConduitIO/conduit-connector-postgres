@@ -15,7 +15,6 @@ require (
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/matryer/is v1.4.1
 	github.com/rs/zerolog v1.35.1
-	github.com/shopspring/decimal v1.4.0
 	gopkg.in/tomb.v2 v2.0.0-20161208151619-d5d1b5820637
 )
 
@@ -54,6 +53,7 @@ require (
 	github.com/samber/lo v1.53.0 // indirect
 	github.com/samber/slog-common v0.21.0 // indirect
 	github.com/samber/slog-zerolog/v2 v2.9.2 // indirect
+	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/spf13/cast v1.7.0 // indirect
 	github.com/twmb/go-cache v1.3.0 // indirect
 	go.uber.org/goleak v1.3.0
