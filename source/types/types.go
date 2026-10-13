@@ -15,6 +15,8 @@
 package types
 
 import (
+	"fmt"
+
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -23,9 +25,69 @@ var (
 	UUID    = UUIDFormatter{}
 )
 
+// Encoding tells Format how the formatted values are going to be serialized.
+// It only changes the Go representation of values for which the serializer
+// would otherwise produce host-dependent or wrong output; the logical value
+// is the same either way.
+type Encoding int
+
+const (
+	// EncodingNative is for values that leave the connector as plain Go values
+	// (JSON, protobuf struct), i.e. the connector does not attach an Avro
+	// schema to the record.
+	EncodingNative Encoding = iota
+	// EncodingAvro is for values that the SDK encodes with the Avro schema
+	// produced by source/schema (logrepl.withAvroSchema, snapshot.withAvroSchema).
+	EncodingAvro
+)
+
+// EncodingFor returns the encoding for a source whose withAvroSchema option has
+// the given value.
+func EncodingFor(withAvroSchema bool) Encoding {
+	if withAvroSchema {
+		return EncodingAvro
+	}
+	return EncodingNative
+}
+
+// Format normalizes a value decoded by pgx into the representation the
+// connector emits, using EncodingNative. See FormatFor.
 func Format(oid uint32, v any) (any, error) {
+	return FormatFor(EncodingNative, oid, v)
+}
+
+// FormatFor normalizes a value decoded by pgx into the representation the
+// connector emits. The output must not depend on the host time zone or on the
+// pgx version that decoded the value:
+//
+//   - timestamp (without time zone) keeps its wall clock and is labeled UTC
+//     (EncodingNative), or is an int64 of microseconds of that wall clock since
+//     1970-01-01T00:00:00 (EncodingAvro, see formatTimestampAvro for why).
+//   - timestamptz is always in UTC.
+//   - date is midnight UTC of the calendar date.
+//   - tsvector is its canonical text form.
+//   - infinity and -infinity are the strings "infinity" and "-infinity"
+//     (EncodingNative) or an error (EncodingAvro, which cannot represent them).
+//   - arrays of the above are normalized element by element.
+//
+// Native values that time.Time cannot serialize to JSON (years before 0000 or
+// after 9999) are emitted as the Postgres text form of the value.
+func FormatFor(enc Encoding, oid uint32, v any) (any, error) {
 	if oid == pgtype.UUIDOID {
 		return UUID.Format(v)
+	}
+
+	if kind, ok := temporalKinds[oid]; ok {
+		return formatTemporal(enc, kind, v)
+	}
+	if kind, ok := temporalArrayKinds[oid]; ok {
+		return formatTemporalArray(enc, kind, v)
+	}
+	switch oid {
+	case pgtype.TSVectorOID:
+		return formatTSVector(v)
+	case pgtype.TSVectorArrayOID:
+		return formatTSVectorArray(v)
 	}
 
 	switch t := v.(type) {
@@ -41,4 +103,8 @@ func Format(oid uint32, v any) (any, error) {
 	default:
 		return t, nil
 	}
+}
+
+func unexpectedType(oid string, v any) error {
+	return fmt.Errorf("unexpected %T for a %s value", v, oid)
 }

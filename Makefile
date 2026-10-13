@@ -12,6 +12,20 @@ test:
 		docker compose -f test/docker-compose.yml down --volumes; \
 		exit $$ret
 
+.PHONY: test-timezones
+test-timezones:
+	# Values must not depend on the host time zone (#302). `make test` runs in
+	# whatever zone the machine is in (UTC on CI), where the pre-fix code is
+	# right, so replay the value tests in zones with a non-zero offset, a half
+	# hour offset and DST gaps.
+	docker compose -f test/docker-compose.yml up --force-recreate --quiet-pull -d --wait
+	ret=0; for tz in America/Los_Angeles Asia/Kolkata Pacific/Auckland; do \
+		echo "TZ=$$tz"; \
+		TZ=$$tz go test -count=1 $(GOTEST_FLAGS) -race -run 'TestGolden|TestRelationSet|Test_FetcherRun_TemporalTypes' ./source/... || ret=1; \
+	done; \
+	docker compose -f test/docker-compose.yml down --volumes; \
+	exit $$ret
+
 .PHONY: test-chaos
 test-chaos:
 	# DBZ-3 process-kill chaos harness (test/chaos). Separate compose

@@ -19,6 +19,21 @@ jobs:
       - name: Test
         run: make test GOTEST_FLAGS="-v -count=1"
 
+  # `make test` runs in the zone of the runner (UTC), where host-zone bugs
+  # are invisible. This replays the value tests in zones that are not (#302).
+  test-timezones:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Test in other host time zones
+        run: make test-timezones GOTEST_FLAGS="-v"
+
   # `make test` (the job above) never passes -tags conduitchaos, so it never
   # compiles internal/chaospoint's real (parking) implementation or, once
   # B0-2 lands, test/chaos itself. Without this job a rename anywhere the

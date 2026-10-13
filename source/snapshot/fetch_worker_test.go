@@ -24,7 +24,9 @@ import (
 	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
+	cavro "github.com/conduitio/conduit-commons/schema/avro"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
+	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pgx/v5"
@@ -303,6 +305,96 @@ func Test_FetcherRun_Initial(t *testing.T) {
 			is.Equal(got.Table, table)
 		})
 	}
+}
+
+// Test_FetcherRun_TemporalTypes reads timestamp, timestamptz, date and tsvector
+// values (and arrays of them, BC dates, years above 9999 and infinity) with
+// the snapshot fetcher. The values must be the same whatever the zone of the
+// host running the test is: run it with TZ set (make test-timezones does).
+func Test_FetcherRun_TemporalTypes(t *testing.T) {
+	strictTime := cmp.Comparer(func(x, y time.Time) bool {
+		return x.Equal(y) && x.Location() == time.UTC && y.Location() == time.UTC
+	})
+
+	t.Run("native", func(t *testing.T) {
+		var (
+			ctx    = test.Context(t)
+			is     = is.New(t)
+			pool   = test.ConnectPool(ctx, t, test.RegularConnString)
+			groups = []test.TemporalGroup{test.TemporalScalars, test.TemporalArrays, test.TemporalExtremes, test.TemporalInfinity}
+			table  = test.SetupTemporalTable(ctx, t, pool, groups...)
+			out    = make(chan []FetchData)
+			tt     = &tomb.Tomb{}
+		)
+
+		f := NewFetchWorker(pool, out, FetchConfig{Table: table, Key: "id"})
+		tt.Go(func() error {
+			runCtx := tt.Context(ctx)
+			defer close(out)
+			if err := f.Validate(runCtx); err != nil {
+				return err
+			}
+			return f.Run(runCtx)
+		})
+
+		var got []FetchData
+		for data := range out {
+			got = append(got, data...)
+		}
+		is.NoErr(tt.Err())
+		is.Equal(len(got), 1)
+
+		want := test.TemporalExpected(ctx, t, pool, table, false, groups...)
+		want["id"] = int64(1)
+		is.Equal("", cmp.Diff(opencdc.StructuredData(want), got[0].Payload, strictTime))
+
+		// What the pipeline sees must be serializable: Record.Bytes panics on
+		// a time.Time outside of years 0000-9999.
+		rec := opencdc.Record{Payload: opencdc.Change{After: got[0].Payload}}
+		is.True(len(rec.Bytes()) > 0)
+	})
+
+	t.Run("avro", func(t *testing.T) {
+		var (
+			ctx    = test.Context(t)
+			is     = is.New(t)
+			pool   = test.ConnectPool(ctx, t, test.RegularConnString)
+			groups = []test.TemporalGroup{test.TemporalScalars, test.TemporalExtremes}
+			table  = test.SetupTemporalTable(ctx, t, pool, groups...)
+		)
+
+		// The fetcher's own record builder, on rows read the way Run reads them.
+		rows, err := pool.Query(ctx, "SELECT * FROM "+table)
+		is.NoErr(err)
+		defer rows.Close()
+		is.True(rows.Next())
+		values, err := rows.Values()
+		is.NoErr(err)
+		fields := rows.FieldDescriptions()
+
+		_, payload, err := (&FetchWorker{
+			conf: FetchConfig{Table: table, Key: "id", WithAvroSchema: true},
+		}).buildRecordData(fields, values)
+		is.NoErr(err)
+
+		want := test.TemporalExpected(ctx, t, pool, table, true, groups...)
+		want["id"] = int64(1)
+		is.Equal("", cmp.Diff(opencdc.StructuredData(want), payload, strictTime))
+
+		// Encode as the SDK does with the schema the connector registers.
+		sch, err := schema.Avro.Extract(table+"_payload", fields)
+		is.NoErr(err)
+		serde, err := cavro.Parse([]byte(sch.String()))
+		is.NoErr(err)
+		encoded, err := serde.Marshal(payload)
+		is.NoErr(err)
+
+		var decoded map[string]any
+		is.NoErr(serde.Unmarshal(encoded, &decoded))
+		ts, ok := decoded["ts"].(time.Time)
+		is.True(ok)
+		is.Equal(ts.Format("2006-01-02T15:04:05.000000"), "2024-01-02T03:04:05.123456")
+	})
 }
 
 func Test_FetcherRun_Resume(t *testing.T) {

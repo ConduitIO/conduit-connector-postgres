@@ -24,6 +24,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-commons/opencdc"
+	cavro "github.com/conduitio/conduit-commons/schema/avro"
+	"github.com/conduitio/conduit-connector-postgres/source/schema"
+	"github.com/conduitio/conduit-connector-postgres/source/types"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pglogrepl"
@@ -124,10 +128,6 @@ func TestRelationSetUnregisteredType(t *testing.T) {
 }
 
 func TestRelationSetAllTypes(t *testing.T) {
-	// need to reset local timezone in test to ensure it runs the same way on
-	// any machine (CI or local)
-	time.Local = nil
-
 	ctx := test.Context(t)
 	is := is.New(t)
 
@@ -182,6 +182,100 @@ func TestRelationSetAllTypes(t *testing.T) {
 		is.NoErr(err)
 		isValuesAllTypesStandalone(is, values)
 	})
+}
+
+// strictTime compares times by instant and requires UTC, so a value that is
+// right in the zone the test machine happens to be in does not pass.
+var strictTime = cmp.Comparer(func(x, y time.Time) bool {
+	return x.Equal(y) && x.Location() == time.UTC && y.Location() == time.UTC
+})
+
+// TestRelationSetTemporalTypes reads timestamp, timestamptz, date and tsvector
+// values (and arrays of them, BC dates, years above 9999 and infinity) from a
+// real logical replication stream. The values must be the same whatever the
+// zone of the host running the test is: run it with TZ set (make
+// test-timezones does).
+func TestRelationSetTemporalTypes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		enc    types.Encoding
+		groups []test.TemporalGroup
+	}{
+		{
+			name: "native",
+			enc:  types.EncodingNative,
+			groups: []test.TemporalGroup{
+				test.TemporalScalars, test.TemporalArrays, test.TemporalExtremes, test.TemporalInfinity,
+			},
+		},
+		{
+			// Arrays and infinity have no Avro encoding.
+			name:   "avro",
+			enc:    types.EncodingAvro,
+			groups: []test.TemporalGroup{test.TemporalScalars, test.TemporalExtremes},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := test.Context(t)
+			is := is.New(t)
+			pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+
+			table := test.CreateTemporalTable(ctx, t, pool, tc.groups...)
+			_, messages := setupSubscription(ctx, t, pool, table)
+			test.InsertTemporalRow(ctx, t, pool, table, tc.groups...)
+
+			rel, ins := nextInsert(messages)
+			rs := NewRelationSetWithEncoding(tc.enc)
+			rs.Add(rel)
+
+			got, err := rs.Values(ins.RelationID, ins.Tuple)
+			is.NoErr(err)
+
+			want := test.TemporalExpected(ctx, t, pool, table, tc.enc == types.EncodingAvro, tc.groups...)
+			want["id"] = int64(1)
+			is.Equal("", cmp.Diff(want, got, strictTime))
+
+			if tc.enc != types.EncodingAvro {
+				// What the pipeline sees must be serializable: Record.Bytes
+				// panics on a time.Time outside of years 0000-9999.
+				rec := opencdc.Record{Payload: opencdc.Change{After: opencdc.StructuredData(got)}}
+				is.True(len(rec.Bytes()) > 0)
+				return
+			}
+
+			// Encode as the SDK does with the schema the connector registers.
+			sch, err := schema.Avro.ExtractLogrepl(table+"_payload", rel)
+			is.NoErr(err)
+			serde, err := cavro.Parse([]byte(sch.String()))
+			is.NoErr(err)
+			encoded, err := serde.Marshal(opencdc.StructuredData(got))
+			is.NoErr(err)
+
+			var decoded map[string]any
+			is.NoErr(serde.Unmarshal(encoded, &decoded))
+			ts, ok := decoded["ts"].(time.Time)
+			is.True(ok)
+			is.Equal(ts.Format("2006-01-02T15:04:05.000000"), "2024-01-02T03:04:05.123456")
+		})
+	}
+}
+
+// nextInsert returns the relation and insert messages of the next
+// non-empty transaction.
+func nextInsert(messages <-chan pglogrepl.Message) (*pglogrepl.RelationMessage, *pglogrepl.InsertMessage) {
+	for {
+		_ = (<-messages).(*pglogrepl.BeginMessage)
+
+		msg := <-messages
+		if _, ok := msg.(*pglogrepl.CommitMessage); ok {
+			continue // empty transaction
+		}
+
+		rel := msg.(*pglogrepl.RelationMessage)
+		ins := (<-messages).(*pglogrepl.InsertMessage)
+		_ = (<-messages).(*pglogrepl.CommitMessage)
+		return rel, ins
+	}
 }
 
 // TestRelationSetValues_UnchangedToast_Integration is the end-to-end
@@ -544,6 +638,7 @@ func isValuesAllTypes(is *is.I, got map[string]any) {
 		"col_xml":         "<foo>bar</foo>",
 	}
 	is.Equal("", cmp.Diff(want, got,
+		strictTime,
 		cmp.Comparer(func(x, y *big.Int) bool {
 			return x.Cmp(y) == 0
 		}),
@@ -644,6 +739,7 @@ func isValuesAllTypesStandalone(is *is.I, got map[string]any) {
 		"col_xml":         "<foo>bar</foo>",
 	}
 	is.Equal("", cmp.Diff(want, got,
+		strictTime,
 		cmp.Comparer(func(x, y *big.Int) bool {
 			return x.Cmp(y) == 0
 		}),
