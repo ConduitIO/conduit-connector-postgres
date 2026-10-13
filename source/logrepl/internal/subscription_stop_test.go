@@ -360,9 +360,9 @@ type stallProxy struct {
 	ln      net.Listener
 }
 
-func newStallProxy(t *testing.T, upstream string) *stallProxy {
+func newStallProxy(ctx context.Context, t *testing.T, upstream string) *stallProxy {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +377,7 @@ func newStallProxy(t *testing.T, upstream string) *stallProxy {
 			if err != nil {
 				return
 			}
-			u, err := net.Dial("tcp", upstream)
+			u, err := (&net.Dialer{}).DialContext(ctx, "tcp", upstream)
 			if err != nil {
 				_ = c.Close()
 				continue
@@ -421,7 +421,7 @@ func TestSubscription_TeardownBoundedWhenServerHangs(t *testing.T) {
 
 	u, err := url.Parse(test.RepmgrConnString)
 	is.NoErr(err)
-	proxy := newStallProxy(t, u.Host)
+	proxy := newStallProxy(ctx, t, u.Host)
 	// Unstall before the pool cleanups run, or closing the proxied
 	// connections would hang on the stalled proxy.
 	defer proxy.stalled.Store(false)

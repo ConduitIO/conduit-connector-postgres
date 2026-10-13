@@ -712,15 +712,15 @@ func (s *Subscription) doneReplication() {
 	// Without a started stream there is no connection in replication mode to
 	// talk on (startReplication released the old one), and using it
 	// panicked with a nil pointer dereference (#346).
-	if s.replicating && s.hasConn() {
+	if s.replicating && s.connUsable() {
 		// SendStandbyCopyDone waits for the server's reply and ignores tctx,
 		// so a hung server would keep Run, the connection and the slot busy
 		// forever. A deadline on the socket bounds every step below.
-		clearDeadline := s.setConnDeadline(time.Now().Add(closeReplicationTimeout))
+		cancelDeadline := s.setConnDeadline(time.Now().Add(closeReplicationTimeout))
 		if err := s.sentStandbyDone(tctx); err != nil {
 			s.doneErr = errors.Join(s.doneErr, err)
 		}
-		clearDeadline()
+		cancelDeadline()
 	}
 
 	close(s.done)
@@ -822,6 +822,16 @@ func (s *Subscription) releaseConnLocked() {
 	}
 }
 
+// connUsable reports whether there is a connection that is still open. A
+// connection that pgconn already closed (it closes the socket asynchronously
+// after a failed read or write) must not be written to: that races the close
+// and a deadline set here would overwrite the one pgconn set.
+func (s *Subscription) connUsable() bool {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	return s.conn != nil && !s.conn.Conn().PgConn().IsClosed()
+}
+
 func (s *Subscription) hasConn() bool {
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
@@ -842,7 +852,7 @@ func (s *Subscription) pgConn() (*pgconn.PgConn, error) {
 
 // setConnDeadline sets a read/write deadline on the connection's socket and
 // returns a function that clears it.
-func (s *Subscription) setConnDeadline(t time.Time) (clear func()) {
+func (s *Subscription) setConnDeadline(t time.Time) (cancelDeadline func()) {
 	pc, err := s.pgConn()
 	if err != nil {
 		return func() {}

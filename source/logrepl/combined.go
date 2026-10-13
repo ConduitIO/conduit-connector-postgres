@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/internal/chaospoint"
@@ -57,6 +58,7 @@ type CombinedIterator struct {
 	// run on other goroutines (#352). The snapshot iterator is torn down by
 	// whoever takes it out under the lock, so exactly once.
 	iterMu           sync.Mutex
+	tornDown         bool // Teardown ran: a snapshot iterator is never put back
 	snapshotIterator *snapshot.Iterator
 	activeIterator   iterator
 
@@ -144,6 +146,7 @@ func NewCombinedIterator(ctx context.Context, pool *pgxpool.Pool, conf Config) (
 	// Initialize the snapshot iterator when snapshotting is enabled and not completed.
 	// The CDC iterator must be initialized first when snapshotting is requested.
 	if err := c.initSnapshotIterator(ctx, pos); err != nil {
+		c.abortOpen(err)
 		return nil, err
 	}
 
@@ -152,7 +155,9 @@ func NewCombinedIterator(ctx context.Context, pool *pgxpool.Pool, conf Config) (
 		c.setActive(c.snapshotIterator)
 	default:
 		if err := c.cdcIterator.StartSubscriber(ctx); err != nil {
-			return nil, fmt.Errorf("failed to start CDC iterator: %w", err)
+			err = fmt.Errorf("failed to start CDC iterator: %w", err)
+			c.abortOpen(err)
+			return nil, err
 		}
 
 		c.setActive(c.cdcIterator)
@@ -160,6 +165,23 @@ func NewCombinedIterator(ctx context.Context, pool *pgxpool.Pool, conf Config) (
 
 	return c, nil
 }
+
+// abortOpen releases everything NewCombinedIterator created when it fails after
+// initCDCIterator. The caller never gets the iterator, so nobody else would
+// ever call Teardown: without this the subscription keeps its pooled
+// replication connection (a walsender on the server) for the life of the
+// process, and pool.Close blocks on it. The caller's context may already be
+// done, so teardown gets its own bounded context.
+func (c *CombinedIterator) abortOpen(cause error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.runCtx), abortOpenTimeout)
+	defer cancel()
+	if err := c.Teardown(ctx); err != nil {
+		sdk.Logger(ctx).Warn().Err(err).AnErr("cause", cause).Msg("failed to clean up after a failed open")
+	}
+}
+
+// abortOpenTimeout bounds the cleanup in abortOpen.
+const abortOpenTimeout = 10 * time.Second
 
 // NextN retrieves up to n records from the active iterator.
 // If the end of the snapshot is reached during this call, it will switch to the CDC iterator
@@ -194,6 +216,10 @@ func (c *CombinedIterator) Ack(ctx context.Context, p opencdc.Position) error {
 // Teardown will stop and teardown the CDC and Snapshot iterators.
 func (c *CombinedIterator) Teardown(ctx context.Context) error {
 	logger := sdk.Logger(ctx)
+
+	c.iterMu.Lock()
+	c.tornDown = true
+	c.iterMu.Unlock()
 
 	var errs []error
 
@@ -313,7 +339,10 @@ func (c *CombinedIterator) useCDCIterator(ctx context.Context) error {
 		if err := snap.Teardown(ctx); err != nil {
 			// Keep the iterator so the next NextN retries the handoff instead
 			// of losing both the error and the iterator.
-			c.restoreSnapshotIterator(snap)
+			if !c.restoreSnapshotIterator(snap) {
+				// Teardown already ran and will not see this iterator again.
+				_ = snap.Teardown(ctx)
+			}
 			return fmt.Errorf("failed to teardown snapshot iterator during switch: %w", err)
 		}
 	}
@@ -369,12 +398,16 @@ func (c *CombinedIterator) takeSnapshotIterator() *snapshot.Iterator {
 	return snap
 }
 
-// restoreSnapshotIterator puts snap back unless the slot was refilled or
-// Teardown already ran (in which case it owns teardown of what is left).
-func (c *CombinedIterator) restoreSnapshotIterator(snap *snapshot.Iterator) {
+// restoreSnapshotIterator puts snap back so the next handoff attempt retries
+// its teardown. It reports false, and does not store snap, if Teardown already
+// ran (nobody would ever tear the restored iterator down) or the slot was
+// refilled; the caller then tears snap down itself.
+func (c *CombinedIterator) restoreSnapshotIterator(snap *snapshot.Iterator) bool {
 	c.iterMu.Lock()
 	defer c.iterMu.Unlock()
-	if c.snapshotIterator == nil {
-		c.snapshotIterator = snap
+	if c.tornDown || c.snapshotIterator != nil {
+		return false
 	}
+	c.snapshotIterator = snap
+	return true
 }
