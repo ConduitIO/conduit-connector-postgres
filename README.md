@@ -199,17 +199,18 @@ What this means for your destination:
 
 ### Limitations
 
-* **`TRUNCATE` is not propagated.** OpenCDC has no truncate operation, so a
+- **`TRUNCATE` is not propagated.** OpenCDC has no truncate operation, so a
   `TRUNCATE` on a published table produces no record: rows it removed remain in
   the destination. The connector logs a `WARN` ("TRUNCATE was NOT propagated")
-  naming the table and the LSN, at most once a minute per table, with a
-  `truncates_total` field (the connector exposes no metrics, so count these log
-  lines) and a `suppressed` field for warnings the rate limit swallowed. Inserts,
-  updates and deletes around the `TRUNCATE` are delivered as usual. A
-  `truncate.policy` setting is planned for v0.21: `halt` (the default, stops the
-  pipeline with an error naming the tables) or an explicit `skip` that only
-  warns. Until then, treat the warning as a signal to reconcile the destination
-  by hand.
+  naming the table and the LSN, at most once a minute per table. Its
+  `suppressed` field counts the TRUNCATEs of that table the rate limit swallowed
+  since the previous warning, so a warning stands for `1 + suppressed`
+  TRUNCATEs (the connector exposes no metrics, so count these log lines). The
+  suppressed count of a burst is reported by the next warning for that table;
+  if the table is not truncated again, the tail of the burst is not reported.
+  Inserts, updates and deletes around the `TRUNCATE` are delivered as usual. A
+  configurable policy for TRUNCATE is planned. Until then, treat the warning as
+  a signal to reconcile the destination by hand.
 
 ## Destination
 

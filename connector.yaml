@@ -196,6 +196,21 @@ specification:
       row image carries every column, and this connector backfills unchanged TOASTed
       values from it so the payload is always complete.
 
+    ### Limitations
+
+    - **`TRUNCATE` is not propagated.** OpenCDC has no truncate operation, so a
+      `TRUNCATE` on a published table produces no record: rows it removed remain in
+      the destination. The connector logs a `WARN` ("TRUNCATE was NOT propagated")
+      naming the table and the LSN, at most once a minute per table. Its
+      `suppressed` field counts the TRUNCATEs of that table the rate limit swallowed
+      since the previous warning, so a warning stands for `1 + suppressed`
+      TRUNCATEs (the connector exposes no metrics, so count these log lines). The
+      suppressed count of a burst is reported by the next warning for that table;
+      if the table is not truncated again, the tail of the burst is not reported.
+      Inserts, updates and deletes around the `TRUNCATE` are delivered as usual. A
+      configurable policy for TRUNCATE is planned. Until then, treat the warning as
+      a signal to reconcile the destination by hand.
+
     ## Destination
 
     The Postgres Destination takes a Conduit record and stores it using a SQL statement.
