@@ -351,7 +351,7 @@ func TestAvroExtract_HambaCompat(t *testing.T) {
 		})
 	}
 
-	t.Run("TypeChangePreservesSchema", func(t *testing.T) {
+	t.Run("TypeChangePreservesValues", func(t *testing.T) {
 		cases := typeChangeCases()
 		if len(f.TypeChanges) != len(cases) {
 			t.Fatalf("fixture has %d type changes, typeChangeCases() has %d", len(f.TypeChanges), len(cases))
@@ -361,7 +361,7 @@ func TestAvroExtract_HambaCompat(t *testing.T) {
 			c := cases[i]
 			ot, _ := m.TypeForName(c.OldType)
 			nt, _ := m.TypeForName(c.NewType)
-			got := schema.Avro.TypeChangePreservesSchema(ot.OID, c.OldMod, nt.OID, c.NewMod)
+			got := schema.Avro.TypeChangePreservesValues(true, ot.OID, c.OldMod, nt.OID, c.NewMod)
 			if got != fx.Want {
 				t.Errorf("%s(%d) -> %s(%d): got %v, hamba said %v", c.OldType, c.OldMod, c.NewType, c.NewMod, got, fx.Want)
 			}
@@ -395,7 +395,7 @@ func generateHambaFixtures(t *testing.T, path string) {
 	for _, c := range typeChangeCases() {
 		ot, _ := m.TypeForName(c.OldType)
 		nt, _ := m.TypeForName(c.NewType)
-		c.Want = schema.Avro.TypeChangePreservesSchema(ot.OID, c.OldMod, nt.OID, c.NewMod)
+		c.Want = schema.Avro.TypeChangePreservesValues(true, ot.OID, c.OldMod, nt.OID, c.NewMod)
 		out.TypeChanges = append(out.TypeChanges, c)
 	}
 	b, err := json.MarshalIndent(out, "", "  ")

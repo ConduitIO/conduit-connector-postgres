@@ -125,10 +125,17 @@ use it with the field's type modifier. Key columns too.
 
 - With `withAvroSchema` off, an unconstrained numeric is a `big.Rat` as before:
   the Go type of the column depends on the setting.
-- The snapshot fetches `numeric` columns in text format (pgx's binary form drops
-  the display scale of a zero, so `0.000` was `"0"` in the snapshot and `"0.000"`
-  in CDC). Both paths now give the same text; tested with `0.000`, `0.00000` and
-  `-0.0` (Postgres stores the last as `0.0`).
+- Known issue (#391): a zero with a display scale is `"0"` in the snapshot and
+  `"0.000"` in CDC. pgx's binary format, which the snapshot uses, does not carry
+  the display scale of a zero (`0.000`, `0.00000` and `-0.0`, stored as `0.0`,
+  all arrive as `0`). The values are numerically equal. Non-zero values keep
+  their scale on both paths. An earlier revision of this change fetched `numeric`
+  in text format to remove the difference. That was dropped: pgx applies the
+  result-format map by OID and gives every unmapped OID the text format, so the
+  whole snapshot switched to text. Output then depended on DateStyle,
+  IntervalStyle, bytea_output, extra_float_digits and TimeZone, float4/float8
+  were silently rounded or failed to parse, and a 1M-row snapshot lost 10 to 21%
+  throughput. #391 tracks a fix that keeps the binary format.
 - Rows written before the upgrade through the old schema were rounded by the
   destination: v0.20.0's built-in postgres destination wrote `2.50` as `3`.
   #365/#366 fix that for new rows only; existing rows stay wrong and need a

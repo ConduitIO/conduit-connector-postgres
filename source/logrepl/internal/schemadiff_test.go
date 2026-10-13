@@ -263,7 +263,7 @@ func Test_SchemaDiff_UnconstrainedNumericVersusText(t *testing.T) {
 		// numeric(p,s) is a decimal in both modes
 		{"text to numeric(10,2)", pgtype.TextOID, pgtype.NumericOID, -1, 10<<16 | 2 + 4, true, true},
 		{"numeric to numeric(10,2)", pgtype.NumericOID, pgtype.NumericOID, numeric, 10<<16 | 2 + 4, true, true},
-		{"numeric unchanged type, text to text", pgtype.TextOID, pgtype.VarcharOID, -1, 14, false, false},
+		{"text to varchar, neither is numeric", pgtype.TextOID, pgtype.VarcharOID, -1, 14, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			is := is.New(t)

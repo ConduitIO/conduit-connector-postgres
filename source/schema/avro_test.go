@@ -259,16 +259,18 @@ func TestAvroExtract_UnconstrainedNumericIsString(t *testing.T) {
 		{-1, `{"name":"t_payload","type":"record","fields":[{"name":"n","type":"string"}]}`},
 		{10<<16 | 2 + 4, `{"name":"t_payload","type":"record","fields":[{"name":"n","type":{"type":"bytes","logicalType":"decimal","precision":10,"scale":2}}]}`},
 	} {
-		sch, err := Avro.Extract("t_payload", []pgconn.FieldDescription{
-			{Name: "n", DataTypeOID: pgtype.NumericOID, TypeModifier: tc.typMod},
+		t.Run(fmt.Sprintf("typmod=%d", tc.typMod), func(t *testing.T) {
+			is := is.New(t)
+			sch, err := Avro.Extract("t_payload", []pgconn.FieldDescription{
+				{Name: "n", DataTypeOID: pgtype.NumericOID, TypeModifier: tc.typMod},
+			})
+			is.NoErr(err)
+			is.Equal(sch.String(), tc.want)
 		})
-		is.NoErr(err)
-		is.Equal(sch.String(), tc.want)
 	}
 }
 
 func TestTypeChangePreservesValues(t *testing.T) {
-	is := is.New(t)
 	for _, tc := range []struct {
 		name           string
 		oldOID, newOID uint32
@@ -282,9 +284,10 @@ func TestTypeChangePreservesValues(t *testing.T) {
 		{"constrained numeric widened", pgtype.NumericOID, pgtype.NumericOID, 10<<16 | 2 + 4, 12<<16 | 2 + 4, false, false},
 		{"unconstrained numeric unchanged", pgtype.NumericOID, pgtype.NumericOID, -1, -1, true, true},
 	} {
-		is.Equal(Avro.TypeChangePreservesValues(true, tc.oldOID, tc.oldMod, tc.newOID, tc.newMod), tc.avro) // with Avro: tc.name
-		is.Equal(Avro.TypeChangePreservesValues(false, tc.oldOID, tc.oldMod, tc.newOID, tc.newMod), tc.noAvro)
-		// the Avro-on judgement is the existing one
-		is.Equal(Avro.TypeChangePreservesSchema(tc.oldOID, tc.oldMod, tc.newOID, tc.newMod), tc.avro)
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			is.Equal(Avro.TypeChangePreservesValues(true, tc.oldOID, tc.oldMod, tc.newOID, tc.newMod), tc.avro)
+			is.Equal(Avro.TypeChangePreservesValues(false, tc.oldOID, tc.oldMod, tc.newOID, tc.newMod), tc.noAvro)
+		})
 	}
 }

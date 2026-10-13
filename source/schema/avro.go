@@ -121,34 +121,22 @@ func (a *avroExtractor) Extract(schemaName string, fields []pgconn.FieldDescript
 	return sch, nil
 }
 
-// TypeChangePreservesSchema reports whether a column whose DataType/TypeModifier
+// TypeChangePreservesValues reports whether a column whose DataType/TypeModifier
 // pair changed from (oldType, oldTypeMod) to (newType, newTypeMod) still yields
-// the same Avro schema — i.e. whether the change is invisible to a consumer that
-// reads the Avro-encoded value. It is the evolve-policy compatibility judgement
-// (Q2 in the DBZ-3 B1 design doc): a change that preserves the Avro shape is
-// compatible and can be admitted automatically, one that doesn't must halt.
+// the same value for a consumer, for a source whose withAvroSchema option has
+// the given value. It is the evolve-policy compatibility judgement (Q2 in the
+// DBZ-3 B1 design doc): a change that preserves the shape is compatible and can
+// be admitted automatically, one that doesn't must halt.
 //
-// The judgement mirrors how Extract derives schemas: OIDs that map to a fixed
-// primitive (e.g. varchar/text -> String, ignoring TypeModifier) are preserved
-// under length-only changes; numeric changes precision/scale and therefore
-// changes the Avro decimal schema. Fail closed on anything the extractor cannot
-// resolve: an unmapped type might differ in ways we cannot see.
-func (a *avroExtractor) TypeChangePreservesSchema(oldType uint32, oldTypeMod int32, newType uint32, newTypeMod int32) bool {
-	oldT, oldOK := a.pgMap.TypeForOID(oldType)
-	newT, newOK := a.pgMap.TypeForOID(newType)
-	if !oldOK || !newOK {
-		return false
-	}
-
-	return a.typeChangePreserves(true, oldT, oldTypeMod, newT, newTypeMod)
-}
-
-// TypeChangePreservesValues is TypeChangePreservesSchema for a source whose
-// withAvroSchema option has the given value. Without an Avro schema the value
-// a consumer sees is the Go value, and an unconstrained numeric is a big.Rat
-// there, not the string it is under Avro: a change between it and text/varchar
-// changes the value's type, so it is not preserved. Every other judgement is
-// the same in both modes.
+// With Avro on the judgement is whether the Avro schema is unchanged. It mirrors
+// how Extract derives schemas: OIDs that map to a fixed primitive (e.g.
+// varchar/text -> String, ignoring TypeModifier) are preserved under length-only
+// changes; a constrained numeric changes precision/scale and therefore the Avro
+// decimal schema. Without an Avro schema the value a consumer sees is the Go
+// value, and an unconstrained numeric is a big.Rat there, not the string it is
+// under Avro: a change between it and text/varchar changes the value's type, so
+// it is not preserved. Fail closed on anything the extractor cannot resolve: an
+// unmapped type might differ in ways we cannot see.
 func (a *avroExtractor) TypeChangePreservesValues(withAvroSchema bool, oldType uint32, oldTypeMod int32, newType uint32, newTypeMod int32) bool {
 	oldT, oldOK := a.pgMap.TypeForOID(oldType)
 	newT, newOK := a.pgMap.TypeForOID(newType)
