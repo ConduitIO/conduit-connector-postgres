@@ -69,7 +69,7 @@ func TestRatToDecimalString(t *testing.T) {
 	}
 }
 
-func pow2(n int) *big.Int { return new(big.Int).Lsh(big.NewInt(1), uint(n)) }
+func pow2(n int) *big.Int { return new(big.Int).Lsh(big.NewInt(1), uint(n)) } //nolint:gosec // n is a small non-negative test constant
 
 // TestRatToDecimalString_RoundingEquivalence checks the property the connector
 // relies on: rounding RatToDecimalString's output to any column scale (what

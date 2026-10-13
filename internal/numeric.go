@@ -86,11 +86,11 @@ func terminatingDigits(den *big.Int) (int, bool) {
 		return 0, false
 	}
 	d := new(big.Int).Set(den)
-	twos := int(d.TrailingZeroBits())
+	twos := int(d.TrailingZeroBits()) //nolint:gosec // bounded by den.BitLen(), which is checked against maxExactDenominatorBits above
 	if twos > maxExactDigits {
 		return 0, false
 	}
-	d.Rsh(d, uint(twos))
+	d.Rsh(d, uint(twos)) //nolint:gosec // twos came from a uint and is not negative
 	var fives int
 	m := new(big.Int)
 	for {
