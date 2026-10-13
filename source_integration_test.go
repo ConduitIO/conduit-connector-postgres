@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/conduitio/conduit-commons/config"
 	"github.com/conduitio/conduit-connector-postgres/source"
@@ -138,7 +139,9 @@ func TestSource_Read(t *testing.T) {
 	err = s.Open(ctx, nil)
 	is.NoErr(err)
 
-	recs, err := s.ReadN(ctx, 1)
+	readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	recs, err := s.ReadN(readCtx, 1)
 	is.NoErr(err)
 
 	fmt.Println(recs)

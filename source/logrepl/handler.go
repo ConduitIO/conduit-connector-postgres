@@ -116,7 +116,7 @@ type CDCHandler struct {
 	// exactly one writer:
 	//
 	//   - driftMarkerLSN is written on the subscription goroutine
-	//     (emitDriftMarker, after the marker is queued) and read on the engine
+	//     (emitDriftMarker, BEFORE the marker is queued) and read on the engine
 	//     goroutine (CDCIterator.Ack -> maybeArmDriftHalt, the D4 skip checks,
 	//     and the F6 marker-preference selects). 0 means no marker is pending.
 	//     The marker is emitted by the delivered change that decided the
@@ -174,6 +174,14 @@ type CDCHandler struct {
 	// in tests that drive the handler without a subscription; positions then
 	// carry no key and resume with the legacy rule.
 	changeKey func() internal.ChangeKey
+
+	// afterMarkerQueued is a test seam, nil in production. emitDriftMarker
+	// calls it immediately after the marker has been handed to the batch
+	// channel, on the subscription goroutine. A test uses it to deliver the
+	// marker's ack at the exact instant the engine could in production, since
+	// the flush timer and the batch-size flush both hand the marker over
+	// without any further involvement of the subscription goroutine.
+	afterMarkerQueued func()
 }
 
 func NewCDCHandler(
@@ -834,7 +842,8 @@ func (h *CDCHandler) haltsOnDrift(kind driftKind, diff internal.SchemaDiff) bool
 
 // emitDriftMarker builds and queues the D1 marker record and publishes the
 // acked-gated halt state (D3 step 1: record version, build marker, hand it to
-// the batch channel, set the pending flag).
+// the batch channel, set the pending flag). The pending state is published
+// before the marker is queued; see the ordering invariant in the body.
 //
 // It runs on the delivered change that decided the drift (see
 // decideDriftOnDelivery), so lsn and the change key are that change's: the
@@ -915,25 +924,50 @@ func (h *CDCHandler) emitDriftMarker(
 	// delivered and acked after the restart.
 	markerKey := h.currentChangeKey()
 	rec := sdk.Util.Source.NewRecordCreate(h.buildPositionAt(lsn, markerKey.Predecessor()), metadata, nil, nil)
-	h.addToBatch(ctx, rec)
 
-	// Publish the pending-marker state AFTER the marker is queued, so a reader
-	// that observes a non-zero driftMarkerLSN (or the armed flag, or the closed
-	// driftHaltCh) can never miss the marker itself. The plain driftHaltErr
-	// write is ordered before the atomic store; readers observe it after
-	// driftHaltArmed or driftHaltCh (see the field comment).
-	h.driftHaltErr = haltErr
-	h.driftMarkerKey = markerKey // before the atomic store below
-	if mp, err := position.ParseSDKPosition(rec.Position); err != nil {
+	mp, perr := position.ParseSDKPosition(rec.Position)
+	if perr != nil {
 		// Cannot happen for a position this handler just serialized. If it
 		// did, no ack could match the marker and the halt would never arm.
-		sdk.Logger(ctx).Error().Err(err).
+		sdk.Logger(ctx).Error().Err(perr).
 			Msg("failed to parse the drift marker's own position; the halt cannot arm")
-	} else {
+	}
+
+	// Ordering invariant (Invariant 1, #369): the pending-marker state is
+	// published BEFORE the marker is queued, never after. Once the marker is
+	// on the batch channel nothing on this goroutine controls when the engine
+	// reads and acks it: the flush timer and the batch-size flush hand it over
+	// independently, and the ack arrives on the engine goroutine. If the state
+	// were published after the queue, an ack inside that window would see
+	// driftMarkerLSN == 0 in maybeArmDriftHalt and return, and since D4 emits
+	// nothing after the marker no later ack could arm the halt: the pipeline
+	// would stall silently with the slot held. Publishing first makes that
+	// impossible, because the marker's ack happens-after the engine received
+	// the marker, which happens-after the queue, which happens-after this
+	// publish (recordBatchLock and the channel send/receive are the edges).
+	//
+	// Publishing first is safe for every other reader of driftMarkerLSN: the
+	// F6 selects only prefer the batch channel over sub.Done, so a pending
+	// flag that is visible slightly before the marker is a wait for a marker
+	// that is about to arrive, and the D4 skip checks run on this goroutine.
+	// An ack of an earlier record that lands in the gap does not arm: its key
+	// is before the marker's key and its position differs from the marker's
+	// (maybeArmDriftHalt).
+	//
+	// The plain fields are written before the atomic store; readers observe
+	// them after the store (or after the armed flag / closed channel).
+	h.driftHaltErr = haltErr
+	h.driftMarkerKey = markerKey
+	if perr == nil {
 		h.driftMarkerPos = mp
 	}
 	h.driftMarkerLSN.Store(uint64(lsn))
 	h.warnIfMarkerStaysUnacked(ctx, key)
+
+	h.addToBatch(ctx, rec)
+	if h.afterMarkerQueued != nil {
+		h.afterMarkerQueued()
+	}
 }
 
 // driftMarkerPending reports whether a drift marker has been emitted but not
