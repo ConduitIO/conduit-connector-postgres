@@ -98,3 +98,48 @@ func TestNumericNotRepresentableError(t *testing.T) {
 	is.True(!ok)
 	is.Equal(got, other)
 }
+
+// An unconstrained numeric is an Avro string (#375): FormatColumn gives its
+// exact text under Avro and is FormatFor everywhere else.
+func TestFormatColumn_UnconstrainedNumeric(t *testing.T) {
+	is := is.New(t)
+	huge := strings.Repeat("9", 1000) + "." + strings.Repeat("7", 60)
+
+	for _, in := range []string{"0", "1.50", "100.00", "-5.500", "0.000001", "12345.678", huge} {
+		got, err := FormatColumn(EncodingAvro, pgtype.NumericOID, -1, pgxNumeric(t, in))
+		is.NoErr(err)
+		is.Equal(got, in) // exact, scale kept, nothing rounded
+	}
+
+	for in, want := range map[string]string{"NaN": "NaN", "Infinity": "Infinity", "-Infinity": "-Infinity"} {
+		got, err := FormatColumn(EncodingAvro, pgtype.NumericOID, -1, pgxNumeric(t, in))
+		is.NoErr(err)
+		is.Equal(got, want) // lossless as text, so no halt
+	}
+
+	for _, null := range []any{nil, pgtype.Numeric{}, &pgtype.Numeric{}, (*pgtype.Numeric)(nil)} {
+		got, err := FormatColumn(EncodingAvro, pgtype.NumericOID, -1, null)
+		is.NoErr(err)
+		is.True(got == nil)
+	}
+
+	// Constrained numeric(p,s) stays an Avro decimal: *big.Rat, and NaN halts.
+	got, err := FormatColumn(EncodingAvro, pgtype.NumericOID, 8<<16|2+4, pgxNumeric(t, "1.50"))
+	is.NoErr(err)
+	_, ok := got.(*big.Rat)
+	is.True(ok)
+	_, err = FormatColumn(EncodingAvro, pgtype.NumericOID, 8<<16|2+4, pgxNumeric(t, "NaN"))
+	var nre *NumericNotRepresentableError
+	is.True(errors.As(err, &nre))
+
+	// Without Avro nothing changes, whatever the modifier.
+	got, err = FormatColumn(EncodingNative, pgtype.NumericOID, -1, pgxNumeric(t, "1.50"))
+	is.NoErr(err)
+	_, ok = got.(*big.Rat)
+	is.True(ok)
+
+	// Other types are untouched.
+	got, err = FormatColumn(EncodingAvro, pgtype.TextOID, -1, "x")
+	is.NoErr(err)
+	is.Equal(got, "x")
+}

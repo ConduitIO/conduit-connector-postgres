@@ -81,20 +81,30 @@ downstream. The source refuses to open on such a table with the error code
 `ALTER TABLE <table> REPLICA IDENTITY FULL`, or use a unique index that includes the
 primary key.
 
-### NaN and Infinity in `numeric` Columns
+### Numeric Columns
 
-A `numeric` column can hold `NaN`, `Infinity` and `-Infinity` (the infinities
-need Postgres 14 or later). The Avro `decimal` type cannot represent them, and
-the connector never replaces them with `NULL` or a number.
+A `numeric` column with a precision and scale, `numeric(p,s)`, is an Avro
+`decimal(p,s)` and its values are `big.Rat`.
 
-- With `logrepl.withAvroSchema: true` (the default), the source stops with the
-  error code `postgres.source.numeric_not_representable`, which names the
-  table, the column, the value and the row's key.
-- With `logrepl.withAvroSchema: false`, the values are emitted as the strings
-  `"NaN"`, `"Infinity"` and `"-Infinity"`. A `NULL` stays `NULL`. This applies
-  to the elements of `numeric[]` as well; finite elements are unchanged.
+A `numeric` column **without** a precision and scale can hold any value Postgres
+can store, which no Avro `decimal` can. With `logrepl.withAvroSchema: true` (the
+default) it is an Avro `string` holding the exact text of the value, with its
+scale (`1.50` stays `1.50`), and `NaN`, `Infinity` and `-Infinity` as those
+words. Earlier versions used `decimal(65535, 65531)`, which could not encode a
+value of 10000 or more and stopped the pipeline. The first record after an
+upgrade registers a new schema version for the table; consumers must read the
+field as a string. This connector's destination writes the string to a `numeric`
+column exactly.
 
-How to continue after the source stopped:
+Without an Avro schema, a `numeric` is a `big.Rat`; `NaN`, `Infinity` and
+`-Infinity` are the strings `"NaN"`, `"Infinity"` and `"-Infinity"`, and the same
+applies to the elements of `numeric[]` (finite elements are unchanged). A `NULL`
+stays `NULL`.
+
+`NaN` in a `numeric(p,s)` column (the infinities cannot be stored there) cannot
+be an Avro decimal, and the connector never replaces it with `NULL` or a number:
+the source stops with the error code `postgres.source.numeric_not_representable`,
+which names the table, the column, the value and the row's key. To continue:
 
 - **Change data capture:** restart once with `logrepl.withAvroSchema: false`
   from the same position. The value is delivered as a string. **Then set it

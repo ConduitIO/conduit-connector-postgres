@@ -150,9 +150,17 @@ func TestSource_NumericNonFinite(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					is := is.New(t)
 					id := numericTableSeq.Add(1)
+					// An unconstrained numeric is an Avro string and holds NaN and
+					// the infinities as text (#375). Only a constrained numeric(p,s)
+					// is an Avro decimal that cannot, and only NaN fits in one.
+					colType := "numeric"
+					halts := avro && v.text == "NaN"
+					if halts {
+						colType = "numeric(8,2)"
+					}
 					table := fmt.Sprintf("nonfinite_%d_%d", time.Now().UnixMicro()%1000000, id)
 
-					_, err := conn.Exec(ctx, fmt.Sprintf(`CREATE TABLE %s (id bigint PRIMARY KEY, v numeric)`, table))
+					_, err := conn.Exec(ctx, fmt.Sprintf(`CREATE TABLE %s (id bigint PRIMARY KEY, v %s)`, table, colType))
 					is.NoErr(err)
 					dropReplication(ctx, t, table)
 					t.Cleanup(func() {
@@ -188,7 +196,7 @@ func TestSource_NumericNonFinite(t *testing.T) {
 
 					rec, err := readOne(ctx, t, s)
 
-					if avro && v.text != "" {
+					if halts {
 						// Avro decimal cannot hold it: halt with an actionable error.
 						is.True(err != nil) // expected the source to halt
 						msg := err.Error()
@@ -208,6 +216,8 @@ func TestSource_NumericNonFinite(t *testing.T) {
 						is.Equal(got, v.text) // canonical text, never NULL or 0
 					case v.sql == "NULL":
 						is.True(got == nil) // a real NULL stays an untyped NULL
+					case avro:
+						is.Equal(got, "1.50") // unconstrained numeric: exact text, scale kept
 					default:
 						r, ok := got.(*big.Rat)
 						is.True(ok) // finite numerics are unchanged

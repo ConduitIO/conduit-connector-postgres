@@ -126,6 +126,14 @@ func (a *avroExtractor) extractType(t *pgtype.Type, typeMod int32) (avro.Schema,
 
 	switch t.OID {
 	case pgtype.NumericOID:
+		if typeMod == -1 {
+			// An unconstrained numeric has no precision or scale, and any value
+			// Postgres can store (up to 131072 digits before and 16383 after the
+			// point, plus NaN and the infinities) is a valid one. No Avro
+			// decimal(p,s) can hold them all with a usable encoding, so it is
+			// the exact text of the value. See the design note on #375.
+			return avro.NewPrimitiveSchema(avro.String, nil), nil
+		}
 		scale := int((typeMod - 4) & 65535)
 		precision := int(((typeMod - 4) >> 16) & 65535)
 		return avro.NewPrimitiveSchema(
