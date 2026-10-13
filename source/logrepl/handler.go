@@ -37,6 +37,12 @@ type CDCHandler struct {
 	tableKeys   map[string]string
 	relationSet *internal.RelationSet
 
+	// truncateWarns rate-limits the TRUNCATE warning, one entry per table.
+	// Only touched on the subscription goroutine (Handle). now is replaceable
+	// in tests.
+	truncateWarns map[string]truncateWarn
+	now           func() time.Time
+
 	// batchSize is the largest number of records this handler will send at once.
 	batchSize     int
 	flushInterval time.Duration
@@ -149,6 +155,11 @@ func (h *CDCHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogr
 			return 0, fmt.Errorf("logrepl handler delete: %w", err)
 		}
 		return lsn, nil
+	case *pglogrepl.TruncateMessage:
+		// Not propagated: OpenCDC has no truncate operation. Logging only, no
+		// change to what is emitted or acked (#344; a configurable policy is planned).
+		h.warnTruncate(ctx, m, lsn)
+		return 0, nil
 	case *pglogrepl.BeginMessage:
 		h.lastTXLSN = m.FinalLSN
 	case *pglogrepl.CommitMessage:
@@ -499,4 +510,81 @@ func (h *CDCHandler) attachSchemas(rec opencdc.Record, relationName string) {
 	}
 	cschema.AttachPayloadSchemaToRecord(rec, h.payloadSchemas[relationName])
 	cschema.AttachKeySchemaToRecord(rec, h.keySchemas[relationName])
+}
+
+// truncateWarnInterval is the minimum time between two warnings for the same
+// table, so a storm of TRUNCATEs cannot flood the log.
+const truncateWarnInterval = time.Minute
+
+// truncateWarn is the rate-limit state of one table.
+type truncateWarn struct {
+	warnedAt   time.Time // when the last warning for the table was logged
+	suppressed uint64    // TRUNCATEs swallowed by the rate limit since then
+}
+
+// warnTruncate tells the operator that a TRUNCATE happened and was NOT
+// propagated: the rows it removed are still in the destination. Until a policy
+// exists (a configurable policy is planned) this is the only signal. The
+// connector exposes no metrics, so each warning carries "suppressed", the number
+// of TRUNCATEs of that table the rate limit swallowed since the previous
+// warning; a warning therefore stands for 1+suppressed TRUNCATEs.
+//
+// State is bounded: on each warning, entries whose window has expired are
+// dropped, so it holds only tables truncated within the last interval. An
+// evicted entry that still holds a suppressed count is reported with a one-line
+// summary as it goes, so a burst's tail is lost only if no other table warns
+// before the process exits. The first TRUNCATE of every burst is always logged,
+// so the operator is told at least once. There is deliberately no timer for the
+// rest: it would add a goroutine to a handler that has none.
+//
+// Postgres only sends the TRUNCATE message if the publication publishes
+// "truncate"; a user-supplied or restricted publication never does, and then
+// there is nothing to warn about.
+func (h *CDCHandler) warnTruncate(ctx context.Context, m *pglogrepl.TruncateMessage, lsn pglogrepl.LSN) {
+	if h.truncateWarns == nil {
+		h.truncateWarns = map[string]truncateWarn{}
+	}
+	now := time.Now
+	if h.now != nil {
+		now = h.now
+	}
+	t := now()
+
+	for _, id := range m.RelationIDs {
+		table := fmt.Sprintf("relation_id=%d", id)
+		if rel, err := h.relationSet.Get(id); err == nil {
+			table = rel.Namespace + "." + rel.RelationName
+		}
+
+		st, ok := h.truncateWarns[table]
+		if ok && t.Sub(st.warnedAt) < truncateWarnInterval {
+			st.suppressed++
+			h.truncateWarns[table] = st
+			continue
+		}
+
+		for k, v := range h.truncateWarns {
+			if t.Sub(v.warnedAt) < truncateWarnInterval {
+				continue
+			}
+			delete(h.truncateWarns, k)
+			if v.suppressed > 0 && k != table { // this table's count goes in its own warning below
+				sdk.Logger(ctx).Warn().
+					Str("table", k).
+					Uint64("suppressed", v.suppressed).
+					Msg("rate-limited TRUNCATE warnings for this table (summary): " +
+						"these TRUNCATEs were also NOT propagated")
+			}
+		}
+		h.truncateWarns[table] = truncateWarn{warnedAt: t}
+		sdk.Logger(ctx).Warn().
+			Str("table", table).
+			Stringer("lsn", lsn).
+			Bool("cascade", m.Option&pglogrepl.TruncateOptionCascade != 0).
+			Bool("restart_identity", m.Option&pglogrepl.TruncateOptionRestartIdentity != 0).
+			Uint64("suppressed", st.suppressed).
+			Msg("TRUNCATE was NOT propagated: the rows it removed still exist downstream. " +
+				"No record is emitted for TRUNCATE; a configurable policy is planned. " +
+				"See the Limitations section of the connector README.")
+	}
 }
