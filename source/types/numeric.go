@@ -177,3 +177,53 @@ func formatNumeric(enc Encoding, num pgtype.Numeric) (any, error) {
 	}
 	return r, nil
 }
+
+// FormatColumn is FormatFor for a column whose type modifier is known. It
+// differs from FormatFor in one case: under EncodingAvro an unconstrained
+// numeric (type modifier -1) is its exact decimal text, because that column's
+// Avro schema is a string (see source/schema). Every other column is FormatFor.
+func FormatColumn(enc Encoding, oid uint32, typeMod int32, v any) (any, error) {
+	if enc == EncodingAvro && oid == pgtype.NumericOID && typeMod == -1 {
+		return formatNumericText(v)
+	}
+	return FormatFor(enc, oid, v)
+}
+
+// formatNumericText returns the exact text Postgres uses for a numeric value:
+// the digits as stored (scale included, 1.50 stays "1.50"), or "NaN",
+// "Infinity" or "-Infinity". Nothing is rounded, and, unlike a big.Rat, nothing
+// is lost to a repeating expansion. NULL is the untyped nil.
+func formatNumericText(v any) (any, error) {
+	var n pgtype.Numeric
+	switch t := v.(type) {
+	case nil:
+		return nil, nil //nolint:nilnil // NULL is an untyped nil record value
+	case pgtype.Numeric:
+		n = t
+	case *pgtype.Numeric:
+		if t == nil {
+			return nil, nil //nolint:nilnil // a nil pointer from pgx is NULL
+		}
+		n = *t
+	default:
+		return v, nil
+	}
+	if !n.Valid {
+		return nil, nil //nolint:nilnil // NULL is an untyped nil record value
+	}
+	if text, ok := nonFinite(n); ok {
+		return text, nil
+	}
+	if n.Int == nil {
+		return nil, errors.New("numeric has neither digits nor a special value")
+	}
+	driverVal, err := n.Value()
+	if err != nil {
+		return nil, err
+	}
+	text, ok := driverVal.(string)
+	if !ok {
+		return nil, fmt.Errorf("unexpected %T for a numeric value", driverVal)
+	}
+	return text, nil
+}

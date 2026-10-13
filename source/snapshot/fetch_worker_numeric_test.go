@@ -56,7 +56,15 @@ func Test_FetcherRun_NumericNonFinite(t *testing.T) {
 					pool  = test.ConnectPool(ctx, t, test.RegularConnString)
 					table = fmt.Sprintf("snap_numeric_%d", time.Now().UnixNano()%1000000000)
 				)
-				_, err := pool.Exec(ctx, fmt.Sprintf("CREATE TABLE %s (id bigint PRIMARY KEY, v numeric)", table))
+				// An unconstrained numeric is an Avro string and holds NaN and the
+				// infinities as text (#375); only numeric(p,s), an Avro decimal,
+				// halts, and only NaN fits in one.
+				colType := "numeric"
+				halts := avro && tc.text == "NaN"
+				if halts {
+					colType = "numeric(8,2)"
+				}
+				_, err := pool.Exec(ctx, fmt.Sprintf("CREATE TABLE %s (id bigint PRIMARY KEY, v %s)", table, colType))
 				is.NoErr(err)
 				t.Cleanup(func() { _, _ = pool.Exec(context.Background(), "DROP TABLE "+table) })
 				_, err = pool.Exec(ctx, fmt.Sprintf("INSERT INTO %s VALUES (1, %s)", table, tc.sql))
@@ -79,7 +87,7 @@ func Test_FetcherRun_NumericNonFinite(t *testing.T) {
 				}
 				runErr := tt.Wait()
 
-				if avro && tc.text != "" {
+				if halts {
 					// Invariant 6: the Avro decimal cannot hold it, so halt
 					// with an actionable error instead of changing the value.
 					is.True(runErr != nil)
@@ -102,6 +110,8 @@ func Test_FetcherRun_NumericNonFinite(t *testing.T) {
 					is.Equal(v, tc.text)
 				case tc.null:
 					is.True(v == nil) // untyped nil, not a typed nil *big.Rat
+				case avro:
+					is.Equal(v, "1.50") // exact text, scale kept
 				default:
 					r, ok := v.(*big.Rat)
 					is.True(ok)
