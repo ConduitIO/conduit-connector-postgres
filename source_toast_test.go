@@ -48,11 +48,21 @@ func TestSource_UnchangedToast_ThroughMiddleware(t *testing.T) {
 		name      string
 		identity  string // empty: DEFAULT
 		withAvro  bool
-		wantToast bool // true: After carries the unchanged value; false: the field is omitted
+		wantToast bool   // true: After carries the unchanged value; false: the field is omitted
+		update    string // %s is the table; default: change a small column only
+		wantID    string
+		wantI     string
 	}{
 		{name: "full_avro_on", identity: "FULL", withAvro: true, wantToast: true},
 		{name: "full_avro_off", identity: "FULL", withAvro: false, wantToast: true},
 		{name: "default_avro_off", identity: "", withAvro: false, wantToast: false},
+		// A key-changing UPDATE under DEFAULT sends a key-only ('K') old tuple
+		// with NULL in every other column, including the TOASTed one. The
+		// backfill must not read it: the column stays omitted, never NULL.
+		{
+			name: "default_pk_change_avro_off", identity: "", withAvro: false, wantToast: false,
+			update: `UPDATE %s SET id = 2 WHERE id = 1`, wantID: "2", wantI: "10",
+		},
 	}
 
 	for _, tc := range cases {
@@ -95,7 +105,11 @@ func TestSource_UnchangedToast_ThroughMiddleware(t *testing.T) {
 			})
 			is.NoErr(s.Open(ctx, nil))
 
-			_, err = conn.Exec(ctx, fmt.Sprintf(`UPDATE %s SET i = 11 WHERE id = 1`, table))
+			update, wantID, wantI := tc.update, tc.wantID, tc.wantI
+			if update == "" {
+				update, wantID, wantI = `UPDATE %s SET i = 11 WHERE id = 1`, "1", "11"
+			}
+			_, err = conn.Exec(ctx, fmt.Sprintf(update, table))
 			is.NoErr(err)
 			_, err = conn.Exec(ctx, fmt.Sprintf(`INSERT INTO %s VALUES (9, 90, 'z')`, table))
 			is.NoErr(err)
@@ -106,7 +120,8 @@ func TestSource_UnchangedToast_ThroughMiddleware(t *testing.T) {
 			got := recs[0]
 			is.Equal(got.Operation, opencdc.OperationUpdate)
 			after := decodeRow(ctx, t, got, got.Payload.After, false)
-			is.Equal(after["i"], "11")
+			is.Equal(after["id"], wantID)
+			is.Equal(after["i"], wantI)
 			if tc.wantToast {
 				is.True(after["t"] == big) // the unchanged value is preserved (not is.Equal: a failure would print 12.8 KB)
 			} else {
