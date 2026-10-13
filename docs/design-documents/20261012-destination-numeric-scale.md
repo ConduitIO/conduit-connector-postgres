@@ -1,0 +1,137 @@
+# Destination: let Postgres apply the NUMERIC scale
+
+## Summary
+
+The destination used to read a NUMERIC column's scale from the catalog, cache it for the life
+of the process, and round `big.Rat` values to that scale itself. After
+`ALTER COLUMN ... TYPE numeric(12,6)` it kept rounding to the old scale of 2, so 1/3 was
+stored as `0.33` before and after the change. The lookup also ignored the table's schema.
+This document replaces the lookup with sending the exact decimal and letting Postgres apply
+the live column definition on assignment.
+
+Risk tier: 1 (record payload values written to the target). Violated invariant: 6, schema
+handling never silently mangles data.
+
+## Context
+
+`internal/db_info.go` (v0.14.3 and `main`, identical) did three things wrong:
+
+1. `DbInfo.cache` was keyed by table name and column and never evicted, so a type change was
+   invisible until the pipeline restarted.
+2. `numericScaleFromDb` queried `information_schema.columns WHERE table_name = $1` with no
+   schema condition and took the first row. The INSERT resolves the table through the
+   connection's `search_path`, so the scale could come from another schema's table with the
+   same name.
+3. A NULL `numeric_scale` (unconstrained `numeric`) was mapped to 0, so 5/2 was stored as 3
+   and 1/3 as 0.
+
+## Constraints
+
+- Backportable to `release/v0.14.x` without a protocol, config or state change.
+- Correct under concurrent DDL, not only across a restart.
+- Never round silently: when the value has more scale than the column, the outcome must be
+  what Postgres itself does or an error.
+
+## Decision
+
+Format a `big.Rat` as an exact decimal string and pass it as the statement parameter.
+Postgres applies the column's typmod on assignment, against the table the statement actually
+resolves, at execution time: round half away from zero, or `numeric field overflow` (SQLSTATE
+22003) when precision is exceeded. The destination no longer reads, caches or applies a scale.
+
+- A rational whose denominator has only the prime factors 2 and 5 terminates and is sent
+  exactly.
+- A terminating rational that needs more than 16383 fractional digits (Postgres's limit for a
+  NUMERIC input; 1/2^20000 is one) is rejected by Postgres with 22003 on every numeric column,
+  constrained or not, so it is handled like a non-terminating one.
+- Any other rational (1/3) is truncated toward zero after **1001 fractional digits**. Postgres
+  allows a column scale of at most 1000, so the first dropped digit is always beyond every
+  rounding boundary (a boundary for scale s has s+1 <= 1001 digits). The value never equals a
+  boundary: a non-terminating expansion has no finite form, and a terminating one with more
+  than 16383 digits has more digits than any boundary. Truncation at 1001 digits keeps it on
+  the same side of every boundary, so the column's rounding of the truncated string equals
+  rounding the exact value. Deciding whether a value is exact is bounded in cost: a denominator wider than 10^16383 is rejected by bit length without dividing, and the factor loop stops after 16383 steps (`TestRatToDecimalString_HugeDenominators`). `TestRatToDecimalString_RoundingEquivalence` checks this against
+  an independent oracle, including values at digit 1001 and with a tail of nines.
+
+## Alternatives
+
+| Alternative | Why it lost |
+| --- | --- |
+| Keep the cache, key it by schema-qualified name, expire on a TTL | Stale for up to the TTL after DDL, which is the bug with a smaller window. |
+| Re-read the scale when a write fails | A stale larger scale never fails, it rounds twice (see below). |
+| Read `atttypmod` once per batch per table | Correct across restarts and batches, but costs a round trip per table per batch and still has a window between the read and the batch executing, in which a concurrent `ALTER` can land. Closing it needs an explicit transaction and a `LOCK TABLE` before the read. |
+| Round client-side with a fresh lookup inside the batch's transaction | Same lock requirement, more moving parts than not rounding at all. |
+
+Stale-scale double rounding: with the old scale 6 cached and the column now `numeric(12,2)`,
+0.0049999 was rounded to `0.005000` client-side and then to `0.01` by Postgres. Postgres
+rounding the exact value gives `0.00`.
+
+## Failure modes
+
+| Failure | Behavior |
+| --- | --- |
+| `ALTER COLUMN` commits between batches | Next batch uses the new typmod. No state to invalidate. |
+| `ALTER COLUMN` commits while a batch is in flight | `ALTER` takes `ACCESS EXCLUSIVE`, so it waits for the batch's transaction. The batch used one consistent definition. |
+| Same table name in two schemas | The statement resolves through `search_path`, so Postgres picks the table the INSERT writes. |
+| Value exceeds the column's precision | Postgres raises 22003, `Write` returns the error, the batch is rolled back and not acknowledged (invariant 1). |
+| Value has more scale than the column | Postgres rounds half away from zero. This is documented behavior, not a silent coercion by the connector. |
+| Unconstrained `numeric` | Stores the exact value, or 1001 digits for a non-terminating rational. Previously rounded to an integer. |
+| Terminating value with more than 16383 digits | Truncated at 1001 digits, then rounded by Postgres like any other value. Sent in full it would be rejected with 22003. |
+| Non-numeric column | See below. |
+| Column type changed while the destination runs | See "The remaining cached view of the schema". |
+| Crash mid-batch | Unchanged: the batch is one implicit transaction. |
+
+## Behavior changes
+
+Removing the lookup removes its "column is not numeric" error. The general rule is: **any
+column whose text input accepts the decimal string stores it.** Postgres and pgx now decide, and
+the rows below are examples of that rule, probed against Postgres 17.5 with this change. A
+conversion to a non-numeric type is a silent coercion if the schema maps a numeric field to the
+wrong column.
+
+| Target column | Before | After |
+| --- | --- | --- |
+| `numeric(p,s)` | rounded client-side to a cached scale | rounded by Postgres to the live scale |
+| unconstrained `numeric` | rounded to an integer | exact value stored |
+| `integer`, `smallint`, `bigint` | error from the connector | whole values stored; fractional values rejected (22P02), except after a live `ALTER` to an integer type, see below; out of range rejected (22003) |
+| `real`, `float8` | error from the connector | nearest binary float stored (`1/3` as `0.33333334` for `real`) |
+| `text` | error from the connector | decimal string stored |
+| `varchar(n)` | error from the connector | stored if the string fits; otherwise rejected (22001) |
+| `money` | error from the connector | rounded to the locale's fraction digits (`1/3` as `$0.33`) |
+| `oid` | error from the connector | whole numbers stored (`7` as `7`) |
+| `char(n)` | error from the connector | stored if it fits; otherwise rejected (22001) |
+| `boolean` | error from the connector | `1` stored as `true`, `0` as `false`; other values rejected (22P02). Silent coercion if the schema is mis-mapped |
+| `date` | error from the connector | `20261012` stored as `2026-10-12`. Silent coercion if the schema is mis-mapped |
+| `timestamp` | error from the connector | `20261012` stored as `2026-10-12 00:00:00`. Silent coercion if the schema is mis-mapped |
+| `timestamptz` | error from the connector | `20261012` stored as `2026-10-12 00:00:00+00` (session time zone UTC). Silent coercion if the schema is mis-mapped |
+| `interval` | error from the connector | `12345` stored as `03:25:45`. Silent coercion if the schema is mis-mapped |
+| `json`, `jsonb` | error from the connector | `1/4` stored as the JSON number `0.25`. Silent coercion if the schema is mis-mapped |
+| `bytea` | error from the connector | `5/2` stored as `\x322e35`, the ASCII bytes of `2.5`. Silent coercion if the schema is mis-mapped |
+| `bit(n)` | error from the connector | stored if the string is exactly `n` binary digits (`101` into `bit(3)` stored as `101`). Silent coercion if the schema is mis-mapped |
+| `time`, `inet` | error from the connector | rejected (22007 and 22P02) |
+| domain over `numeric(p,s)` | worked | works |
+
+## The remaining cached view of the schema
+
+The destination connects with `pgx.Connect`, which caches prepared statements per connection.
+A cached statement keeps the parameter types inferred when it was prepared. This is the one
+cached view of the schema left in the destination. After `ALTER COLUMN ... TYPE integer` on a
+running destination, the parameter is still typed `numeric`, so Postgres casts it to `integer`
+by assignment and rounds: 5/2 is stored as 3 instead of being rejected. A freshly opened
+destination rejects it. This predates this change (v0.14.3 stores 3 as well) and applies to
+any value type, not only `big.Rat`. It is tracked in #367 and is not fixed here: the options
+(describe-exec query mode, or text-format parameters) change the write path and need their own
+design note. Numeric scale itself is not affected, because the scale is part of the column's
+typmod, not of the parameter type.
+
+## Upgrade and rollback
+
+No config, protocol, position or state change. Rolling back restores the stale-scale
+behavior. Pipelines that relied on the connector rejecting a decimal written to a non-numeric
+column will now see it accepted for several column types (table above).
+
+## Observability
+
+Overflow surfaces as the Postgres error with SQLSTATE 22003 in the destination's write
+error. There is no new metric. The cache and its catalog query are gone, which removes one
+query per new column per process.

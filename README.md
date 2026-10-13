@@ -151,10 +151,31 @@ sends the delete without the key. Check with
    destination. Only tables in the publication appear, which are the tables the pipeline
    captures.
 4. Delete that row from the destination yourself. The change has no key, so the pipeline
-   cannot do it. The other changes in the same transaction are in the same output
-   (`I` and `U` carry the full new row as text). Apply the ones you need to the
-   destination too, because the next step skips them. Step 5 also skips the earlier
-   transactions the peek listed, so check that the destination has them.
+   cannot do it. Then work out what else step 5 would skip. It skips every change the
+   peek lists before the stuck one, and the other changes of the stuck transaction.
+   Postgres has not been told they are done, and the pipeline may have read them
+   without the destination writing them before it stopped. Get the source connector's
+   last acknowledged position from Conduit:
+   `GET /v1/connectors/<source connector id>`, field `sourceState.position`. It is
+   base64 of JSON, for example
+   `{"version":2,"type":2,"last_lsn":"0/40845E8","tx_commit_lsn":"0/40846E8","tx_seq":1}`
+   (decode it with `base64 -d`). Conduit sets it only when the destination acknowledges a
+   record, never when the source reads one, so `last_lsn` is the WAL LSN of the last
+   change the destination has confirmed. If Conduit was restarted since the pipeline
+   stopped, it reports the last position it saved, which can be slightly older; that errs
+   on the safe side. Find the peek row of kind `I`, `U` or `D` whose `lsn` equals
+   `last_lsn`. Ignore `B` and `C` rows: a `C` row can show the same number as the first
+   change after it. If several rows share that `lsn` (a `COPY` or another statement
+   that changes many rows can do that), use `tx_seq`. It numbers the transaction's
+   `I`, `U`, `D` and `T` (truncate) rows in the order listed, starting at 1 after its
+   `B` row. `R` (relation), `Y` (type) and `O` (origin) rows are not counted. The row
+   with that number is the one to match, and it is an `I`, `U` or `D` row. The matched row
+   itself and everything listed before it are in the destination. For each change
+   listed after it, up to the stuck one and including the rest of the stuck transaction,
+   check the destination for its rows and apply any that are missing by hand (`I` and
+   `U` carry the full new row; `D` carries the identity columns). If no row matches,
+   treat every listed change as unconfirmed. A position without `last_lsn` (a pipeline
+   still in its snapshot) matches nothing.
 5. Skip the transaction. Use the same `<c>` as in step 3. Writing it as a literal is
    deliberate: `'<b>'::pg_lsn + 1` only works from Postgres 14.
    - Postgres 11 or later:
@@ -204,6 +225,24 @@ cannot be encoded
 ([#383](https://github.com/ConduitIO/conduit-connector-postgres/issues/383)). Set
 `REPLICA IDENTITY FULL` on such tables.
 
+### Limitations
+
+- **`TRUNCATE` is not propagated.** OpenCDC has no truncate operation, so a
+  `TRUNCATE` on a published table produces no record: rows it removed remain in
+  the destination. If the publication publishes `truncate` (the one the
+  connector creates does by default), the connector logs a `WARN` ("TRUNCATE was NOT
+  propagated") naming the table and the LSN, at most once a minute per table.
+  A restricted or user-supplied publication (for example
+  `publish = 'insert, update, delete'`) never sends the message, so there is
+  no warning and no other signal. The `suppressed` field counts the TRUNCATEs
+  of that table the rate limit swallowed since the previous warning; when
+  another table's warning evicts an expired entry that still holds a count, a
+  one-line summary with that count is logged. Treat the log lines as a signal,
+  not a precise counter: a count still pending when the process exits is
+  lost. Inserts, updates and deletes around the `TRUNCATE` are delivered as
+  usual. A configurable policy for TRUNCATE is planned. Until then, treat the
+  warning as a signal to reconcile the destination by hand.
+
 ## Destination
 
 The Postgres Destination takes a Conduit record and stores it using a SQL statement.
@@ -223,6 +262,56 @@ If the target table does not contain a record with the same key as a record bein
 deleted, the record will be ignored.
 
 If there is no key, the record will be simply appended.
+
+### Numeric columns
+
+Decimal values (`big.Rat`) are sent to Postgres as exact decimal strings, and
+Postgres applies the column's precision and scale itself when it stores the
+value. The destination never reads or caches a column's scale, so an
+`ALTER TABLE ... ALTER COLUMN ... TYPE numeric(p,s)` takes effect on the next
+write without restarting the pipeline, and the table is resolved through the
+connection's `search_path` like the rest of the statement.
+
+Postgres rounds half away from zero when a value has more fractional digits
+than the column's scale, and rejects a value that exceeds the column's
+precision (`numeric field overflow`). A rejected batch is not acknowledged.
+
+A decimal that has no finite expansion, such as 1/3, is truncated toward zero
+after 1001 fractional digits before it is sent. So is a decimal that terminates
+but needs more than 16383 fractional digits, which Postgres rejects on every
+numeric column. Postgres allows a column scale of at most 1000, so the
+truncation never changes the result of the column's rounding. An unconstrained
+`numeric` column stores all 1001 digits.
+
+The destination no longer checks that the target column is numeric. The general
+rule: any column whose text input accepts the decimal string stores it.
+Postgres converts the string, and the examples below were checked on
+Postgres 17.5:
+
+- `integer`, `smallint`, `bigint`: stored if the value is whole. A fractional
+  value is rejected, except on a destination that was already running when the
+  column was changed to an integer type: the cached prepared statement still
+  types the parameter as `numeric`, so 5/2 is silently rounded to 3
+  (see #367).
+- `real`, `float8`: stored as the nearest binary float.
+- `money`: rounded to the locale's fraction digits (1/3 is stored as `$0.33`).
+- `oid`: stored if the value is a whole number (7 is stored as `7`).
+- `text`: stored as the decimal string. `varchar(n)` and `char(n)`: rejected
+  with 22001 if the string is longer than `n`.
+- `boolean`: 1 is stored as `true` and 0 as `false`; other values are rejected.
+- `date`: 20261012 is stored as `2026-10-12`.
+- `timestamp`: 20261012 is stored as `2026-10-12 00:00:00`.
+- `timestamptz`: 20261012 is stored as `2026-10-12 00:00:00+00` (session time
+  zone UTC).
+- `interval`: 12345 is stored as `03:25:45`.
+- `json`, `jsonb`: 1/4 is stored as the JSON number `0.25`.
+- `bytea`: 5/2 is stored as `\x322e35`, the ASCII bytes of `2.5`.
+- `bit(n)`: stored if the decimal string is exactly `n` binary digits (101 is
+  stored as `101` in a `bit(3)`).
+- `time`, `inet`: rejected.
+
+Every accepted conversion to a non-numeric type is a silent coercion if the
+schema maps a numeric field to the wrong column, so check the mapping.
 <!-- /readmegen:description -->
 
 ## Source Configuration Parameters
