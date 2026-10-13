@@ -218,6 +218,33 @@ What this means for your destination:
   row image carries every column, and this connector backfills unchanged TOASTed
   values from it so the payload is always complete.
 
+### Value Representation
+
+Values do not depend on the time zone of the machine running the connector or on the
+version of the Postgres driver. The same row gives the same record everywhere, for
+snapshot and CDC.
+
+| Postgres type | Without an Avro schema | With an Avro schema (`logrepl.withAvroSchema`, the default) |
+| --- | --- | --- |
+| `timestamp` | The wall clock stored in Postgres, as a time with no offset information (`2024-01-02T03:04:05Z` for `2024-01-02 03:04:05`). | `local-timestamp-micros` of the same wall clock. |
+| `timestamptz` | The instant, in UTC (`Z`). | `timestamp-micros`. |
+| `date` | Midnight UTC of the date. | `date`. |
+| `tsvector` | Postgres text form, `'a':1 'cat':3A,4B`. | `string`, same text. |
+| `infinity`, `-infinity` | The strings `infinity` and `-infinity`. | The source halts with error code `postgres.source.temporal_not_representable`. |
+| Years before 1 BC or after 9999 AD | Postgres text, for example `0044-03-15 12:00:00 BC`. | As above, up to what 64-bit microseconds hold; beyond that the same error. |
+| Arrays, ranges, multiranges of these | Element and bound values as above. | Not supported by the Avro schema. |
+
+A range or multirange is a JSON object `{"Lower":...,"Upper":...,"LowerType":105,
+"UpperType":101,"Valid":true}`, and a multirange is an array of them. `LowerType` and
+`UpperType` are the ASCII codes of the bound kind: `105` (`i`) inclusive, `101` (`e`)
+exclusive, `85` (`U`) unbounded (the bound is `null`), `69` (`E`) empty range. Bounds
+follow the rules above. Arrays of `tsmultirange`, `tstzmultirange` and `datemultirange`
+are emitted as the Postgres text of the array.
+
+If the source halts with `postgres.source.temporal_not_representable`, set
+`logrepl.withAvroSchema` to `false`. Removing the row does not help a change that is
+already in the WAL, because it is read again after every restart.
+
 ### Limitations
 
 - **`TRUNCATE` is not propagated.** OpenCDC has no truncate operation, so a

@@ -23,6 +23,7 @@ import (
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
+	"github.com/conduitio/conduit-connector-postgres/source/types"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -102,7 +103,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	batchesCh := make(chan []opencdc.Record, 1)
 	handler := NewCDCHandler(
 		ctx,
-		internal.NewRelationSet(),
+		internal.NewRelationSetWithEncoding(types.EncodingFor(c.WithAvroSchema)),
 		c.TableKeys,
 		batchesCh,
 		c.WithAvroSchema,

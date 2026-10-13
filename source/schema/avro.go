@@ -39,6 +39,8 @@ var Avro = &avroExtractor{
 		"varchar": avro.NewPrimitiveSchema(avro.String, nil),
 		"jsonb":   avro.NewPrimitiveSchema(avro.Bytes, nil),
 		"json":    avro.NewPrimitiveSchema(avro.Bytes, nil),
+		// tsvector is emitted as its canonical text form, see source/types.
+		"tsvector": avro.NewPrimitiveSchema(avro.String, nil),
 		"timestamptz": avro.NewPrimitiveSchema(
 			avro.Long,
 			avro.NewPrimitiveLogicalSchema(avro.TimestampMicros),

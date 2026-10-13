@@ -28,13 +28,23 @@ import (
 type RelationSet struct {
 	relations map[uint32]*pglogrepl.RelationMessage
 	connInfo  *pgtype.Map
+	encoding  types.Encoding
 }
 
-// NewRelationSet creates a new relation set.
+// NewRelationSet creates a new relation set that formats values for records
+// without an Avro schema.
 func NewRelationSet() *RelationSet {
+	return NewRelationSetWithEncoding(types.EncodingNative)
+}
+
+// NewRelationSetWithEncoding creates a new relation set that formats values for
+// the given encoding. Use types.EncodingAvro when the connector attaches Avro
+// schemas to the records built from these values.
+func NewRelationSetWithEncoding(enc types.Encoding) *RelationSet {
 	return &RelationSet{
 		relations: map[uint32]*pglogrepl.RelationMessage{},
 		connInfo:  pgtype.NewMap(),
+		encoding:  enc,
 	}
 }
 
@@ -94,6 +104,9 @@ func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]a
 
 		v, decodeErr := rs.decodeValue(col, tuple.Data)
 		if decodeErr != nil {
+			if located, ok := types.LocateTemporal(decodeErr, rel.RelationName, col.Name); ok {
+				return nil, located // keeps the error code at the start of the message
+			}
 			return nil, fmt.Errorf("failed to decode value for column %q: %w", col.Name, decodeErr)
 		}
 
@@ -132,7 +145,7 @@ func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, data []
 		return nil, fmt.Errorf("failed to decode value of pgtype %v: %w", col.DataType, err)
 	}
 
-	v, err := types.Format(col.DataType, val)
+	v, err := types.FormatFor(rs.encoding, col.DataType, val)
 	if err != nil {
 		return nil, fmt.Errorf("failed to format column %q type %T: %w", col.Name, val, err)
 	}
