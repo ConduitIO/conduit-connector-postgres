@@ -50,7 +50,7 @@ func TestCDCIterator_DriftHalt_AckGating(t *testing.T) {
 	_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5)
 		VALUES (29, 'baseline', 1, false, 1.1, 2)`, table))
 	is.NoErr(err)
-	rr, err := i.NextN(ctx, 1)
+	rr, err := i.NextN(bounded(ctx, t), 1)
 	is.NoErr(err)
 	is.True(len(rr) == 1)
 
@@ -65,7 +65,7 @@ func TestCDCIterator_DriftHalt_AckGating(t *testing.T) {
 	is.NoErr(err)
 
 	// The marker is served to the engine.
-	rr, err = i.NextN(ctx, 1)
+	rr, err = i.NextN(bounded(ctx, t), 1)
 	is.NoErr(err)
 	is.True(len(rr) == 1)
 	is.Equal(rr[0].Metadata[MetadataSchemaDrift], "true")
@@ -82,7 +82,7 @@ func TestCDCIterator_DriftHalt_AckGating(t *testing.T) {
 
 	// Acking the marker arms the halt (D3).
 	is.NoErr(i.Ack(ctx, rr[0].Position))
-	_, err = i.NextN(ctx, 1)
+	_, err = i.NextN(bounded(ctx, t), 1)
 	is.True(err != nil)
 	is.True(strings.Contains(err.Error(), ErrorCodeSchemaDriftHalt))
 }
@@ -112,7 +112,7 @@ func TestCDCIterator_DriftHalt_SubStopRace(t *testing.T) {
 	_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (id, column1, column2, column3, column4, column5)
 		VALUES (29, 'baseline', 1, false, 1.1, 2)`, table))
 	is.NoErr(err)
-	rr, err := i.NextN(ctx, 1)
+	rr, err := i.NextN(bounded(ctx, t), 1)
 	is.NoErr(err)
 	is.True(len(rr) == 1)
 
@@ -138,13 +138,13 @@ func TestCDCIterator_DriftHalt_SubStopRace(t *testing.T) {
 	}
 
 	// The marker is still served, and its ack still arms the halt.
-	rr, err = i.NextN(ctx, 1)
+	rr, err = i.NextN(bounded(ctx, t), 1)
 	is.NoErr(err)
 	is.True(len(rr) == 1)
 	is.Equal(rr[0].Metadata[MetadataSchemaDrift], "true")
 
 	is.NoErr(i.Ack(ctx, rr[0].Position))
-	_, err = i.NextN(ctx, 1)
+	_, err = i.NextN(bounded(ctx, t), 1)
 	is.True(err != nil)
 	is.True(strings.Contains(err.Error(), ErrorCodeSchemaDriftHalt))
 }

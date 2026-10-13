@@ -195,7 +195,7 @@ func TestFlushGate_NeverPassesUnackedRecord(t *testing.T) {
 	is.NoErr(err)
 	committedBy := currentWALLSN(ctx, t, pool)
 
-	recs, err := i.NextN(ctx, 1)
+	recs, err := i.NextN(bounded(ctx, t), 1)
 	is.NoErr(err)
 	is.Equal(len(recs), 1)
 	rec := recs[0] // emitted, not acked
@@ -314,7 +314,7 @@ func TestFlushGate_ConcurrentDataNeverConfirmsUnacked(t *testing.T) {
 	)
 	for read < rows || len(inFlight) > 0 {
 		if read < rows {
-			recs, err := i.NextN(ctx, 1)
+			recs, err := i.NextN(bounded(ctx, t), 1)
 			is.NoErr(err)
 			inFlight = append(inFlight, recs...)
 			read += len(recs)

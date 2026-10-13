@@ -320,7 +320,7 @@ func TestDrift335_HaltApprovalMidTransaction(t *testing.T) {
 	is.Equal(recs[1].Metadata[MetadataSchemaDrift], "true") // the marker replaces p2 (D4); the restart delivers it (#338)
 	is.NoErr(run1.Ack(ctx, recs[0].Position))
 	is.NoErr(run1.Ack(ctx, recs[1].Position))
-	_, err = run1.NextN(ctx, 1)
+	_, err = run1.NextN(bounded(ctx, t), 1)
 	is.True(err != nil && strings.Contains(err.Error(), ErrorCodeSchemaDriftHalt))
 	_ = run1.Teardown(ctx)
 
@@ -403,7 +403,7 @@ func TestDrift335_DriftWhileDownMidTransaction(t *testing.T) {
 			for _, r := range got {
 				is.NoErr(run2.Ack(ctx, r.Position))
 			}
-			_, err = run2.NextN(ctx, 1)
+			_, err = run2.NextN(bounded(ctx, t), 1)
 			is.True(err != nil && strings.Contains(err.Error(), ErrorCodeSchemaDriftHalt))
 		})
 	}

@@ -372,7 +372,7 @@ func TestCDCIterator_EnsureLSN(t *testing.T) {
 				VALUES (6, 'bizz', 456, false, 12.3, 14)`, table))
 	is.NoErr(err)
 
-	rr, err := i.NextN(ctx, 1)
+	rr, err := i.NextN(bounded(ctx, t), 1)
 	is.NoErr(err)
 	is.True(len(rr) > 0)
 
@@ -470,19 +470,19 @@ func TestCDCIterator_NextN_InternalBatching(t *testing.T) {
 	insertTestRows(ctx, is, pool, table, 2, 5)
 
 	// we request 2 records, expect records 1 and 2
-	got, err := underTest.NextN(ctx, 2)
+	got, err := underTest.NextN(bounded(ctx, t), 2)
 	is.NoErr(err)
 	verifyOpenCDCRecords(is, got, table, 1, 2)
 	time.Sleep(200 * time.Millisecond)
 
 	// we request 2 records, expect records 3 and 4
-	got, err = underTest.NextN(ctx, 2)
+	got, err = underTest.NextN(bounded(ctx, t), 2)
 	is.NoErr(err)
 	verifyOpenCDCRecords(is, got, table, 3, 4)
 	time.Sleep(200 * time.Millisecond)
 
 	// we request 2 records, expect record 5
-	got, err = underTest.NextN(ctx, 2)
+	got, err = underTest.NextN(bounded(ctx, t), 2)
 	is.NoErr(err)
 	verifyOpenCDCRecords(is, got, table, 5, 5)
 }
@@ -598,7 +598,7 @@ func TestCDCIterator_NextN(t *testing.T) {
 		// Will keep calling NextN until all records are received
 		records := make([]opencdc.Record, 0, 2)
 		for len(records) < 2 {
-			recordsTmp, err := i.NextN(ctx, 5)
+			recordsTmp, err := i.NextN(bounded(ctx, t), 5)
 			is.NoErr(err)
 			records = append(records, recordsTmp...)
 		}
@@ -635,7 +635,7 @@ func TestCDCIterator_NextN(t *testing.T) {
 		is := is.New(t)
 		i := testCDCIterator(ctx, t, pool, table, false)
 
-		_, err := i.NextN(ctx, 5)
+		_, err := i.NextN(bounded(ctx, t), 5)
 		is.Equal(err.Error(), "logical replication has not been started")
 	})
 
@@ -663,7 +663,7 @@ func TestCDCIterator_NextN(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		is.NoErr(i.Teardown(ctx))
 
-		_, err = i.NextN(ctx, 5)
+		_, err = i.NextN(bounded(ctx, t), 5)
 		is.True(err != nil)
 		is.True(strings.Contains(err.Error(), "logical replication error"))
 	})
@@ -752,7 +752,7 @@ func TestCDCIterator_Schema(t *testing.T) {
 		)
 		is.NoErr(err)
 
-		rr, err := i.NextN(ctx, 1)
+		rr, err := i.NextN(bounded(ctx, t), 1)
 		is.NoErr(err)
 		is.True(len(rr) > 0)
 
@@ -775,7 +775,7 @@ func TestCDCIterator_Schema(t *testing.T) {
 		)
 		is.NoErr(err)
 
-		rr, err := i.NextN(ctx, 1)
+		rr, err := i.NextN(bounded(ctx, t), 1)
 		is.NoErr(err)
 		is.True(len(rr) > 0)
 
@@ -801,7 +801,7 @@ func TestCDCIterator_Schema(t *testing.T) {
 		)
 		is.NoErr(err)
 
-		rr, err := i.NextN(ctx, 1)
+		rr, err := i.NextN(bounded(ctx, t), 1)
 		is.NoErr(err)
 		is.True(len(rr) == 1)
 
@@ -813,7 +813,7 @@ func TestCDCIterator_Schema(t *testing.T) {
 		// Acking the marker arms the halt: the next read is the terminal error
 		// (D3), never another record.
 		is.NoErr(i.Ack(ctx, r.Position))
-		_, err = i.NextN(ctx, 1)
+		_, err = i.NextN(bounded(ctx, t), 1)
 		is.True(err != nil)
 		is.True(strings.Contains(err.Error(), ErrorCodeSchemaDriftHalt))
 	})
