@@ -216,6 +216,30 @@ If the target table does not contain a record with the same key as a record bein
 deleted, the record will be ignored.
 
 If there is no key, the record will be simply appended.
+
+### Numeric columns
+
+Decimal values (`big.Rat`) are sent to Postgres as exact decimal strings, and
+Postgres applies the column's precision and scale itself when it stores the
+value. The destination never reads or caches a column's scale, so an
+`ALTER TABLE ... ALTER COLUMN ... TYPE numeric(p,s)` takes effect on the next
+write without restarting the pipeline, and the table is resolved through the
+connection's `search_path` like the rest of the statement.
+
+Postgres rounds half away from zero when a value has more fractional digits
+than the column's scale, and rejects a value that exceeds the column's
+precision (`numeric field overflow`). A rejected batch is not acknowledged.
+
+A decimal that has no finite expansion, such as 1/3, is truncated toward zero
+after 1001 fractional digits before it is sent. Postgres allows a column scale
+of at most 1000, so this never changes the result of the column's rounding. An
+unconstrained `numeric` column stores all 1001 digits.
+
+The destination no longer checks that the target column is numeric. A decimal
+written to an `integer` column is stored if it is whole and rejected by Postgres
+if it has a fractional part. A decimal written to a `text` column is stored as
+its decimal string, and one written to a `float8` column is stored as the
+nearest double.
 <!-- /readmegen:description -->
 
 ## Source Configuration Parameters
