@@ -17,7 +17,10 @@ package internal
 import (
 	"context"
 	"errors"
+	"net"
+	"net/url"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -345,4 +348,140 @@ func settledAcquired(pool *pgxpool.Pool) int32 {
 		}
 	}
 	return last
+}
+
+// stallProxy is a TCP proxy to Postgres that can stop forwarding in both
+// directions without closing anything, which is what a hung server (or a
+// network partition) looks like to the client.
+type stallProxy struct {
+	addr    string
+	stalled atomic.Bool
+	closed  atomic.Bool
+	ln      net.Listener
+}
+
+func newStallProxy(t *testing.T, upstream string) *stallProxy {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &stallProxy{addr: ln.Addr().String(), ln: ln}
+	t.Cleanup(func() {
+		p.closed.Store(true)
+		_ = ln.Close()
+	})
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			u, err := net.Dial("tcp", upstream)
+			if err != nil {
+				_ = c.Close()
+				continue
+			}
+			go p.pipe(c, u)
+			go p.pipe(u, c)
+		}
+	}()
+	return p
+}
+
+func (p *stallProxy) pipe(dst, src net.Conn) {
+	defer dst.Close()
+	defer src.Close()
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := src.Read(buf)
+		if n > 0 {
+			for p.stalled.Load() && !p.closed.Load() {
+				time.Sleep(10 * time.Millisecond)
+			}
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// TestSubscription_TeardownBoundedWhenServerHangs: the server stops answering
+// while the subscription is receiving. Run's closing sequence (final status
+// update, CopyDone) waits for a reply that never comes; without a deadline on
+// the socket it blocked forever, so Teardown timed out and Run kept the pooled
+// connection and the replication slot. Run must exit within the close timeout
+// and release the connection.
+func TestSubscription_TeardownBoundedWhenServerHangs(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+
+	u, err := url.Parse(test.RepmgrConnString)
+	is.NoErr(err)
+	proxy := newStallProxy(t, u.Host)
+	// Unstall before the pool cleanups run, or closing the proxied
+	// connections would hang on the stalled proxy.
+	defer proxy.stalled.Store(false)
+	u.Host = proxy.addr
+	pool := test.ConnectPool(ctx, t, u.String())
+	table := test.SetupTestTable(ctx, t, pool)
+	slot, pub := test.RandomIdentifier(t), test.RandomIdentifier(t)
+	test.CreatePublication(t, pool, pub, []string{table})
+	t.Cleanup(func() {
+		direct := test.ConnectPool(context.Background(), t, test.RepmgrConnString)
+		_, _ = direct.Exec(context.Background(),
+			"SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots WHERE slot_name=$1 AND active", slot)
+		time.Sleep(200 * time.Millisecond)
+		_, _ = direct.Exec(context.Background(),
+			"SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name=$1", slot)
+	})
+	sub, err := CreateSubscription(ctx, pool, slot, pub, []string{table}, 0,
+		func(context.Context, pglogrepl.Message, pglogrepl.LSN) (pglogrepl.LSN, error) { return 0, nil })
+	is.NoErr(err)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- sub.Run(ctx) }()
+	select {
+	case <-sub.Ready():
+	case <-time.After(10 * time.Second):
+		t.Fatal("subscription never became ready")
+	}
+	is.NoErr(sub.StartErr())
+
+	proxy.stalled.Store(true) // the server hangs
+
+	start := time.Now()
+	tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	err = sub.Teardown(tctx)
+	took := time.Since(start)
+	t.Logf("Teardown took %s, err=%v", took, err)
+	is.True(took < 10*time.Second) // bounded by the close timeout, not by ctx
+	select {
+	case <-errCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run is still blocked on the hung server")
+	}
+	is.True(!sub.hasConn()) // released by Run on exit
+}
+
+// TestSubscription_RefusedRunReportsError: a Run refused because Teardown
+// already ran sets the subscription's error, so consumers do not report "no
+// more data (this smells like a bug)" and StartSubscriber does not claim the
+// replication started.
+func TestSubscription_RefusedRunReportsError(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	sub := newStopTestSubscription(ctx, t)
+	is.NoErr(sub.Teardown(ctx))
+
+	err := sub.Run(ctx)
+	is.True(err != nil)
+	<-sub.Ready()
+	is.True(sub.StartErr() != nil)
+	<-sub.Done()
+	is.True(sub.Err() != nil)
 }
