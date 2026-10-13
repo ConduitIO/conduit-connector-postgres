@@ -118,6 +118,17 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 	if !d.beginWrite(cancel) {
 		return 0, errors.New("destination is closing")
 	}
+	// pgx must not watch this context. When a watched context ends in the
+	// middle of a batch, pgx leaves its context-watcher goroutine parked
+	// forever (it waits for an Unwatch that the failed batch never reaches),
+	// pinning the connection: one leaked goroutine per interrupted
+	// connection. So the database calls get a context that cannot be
+	// canceled, and the interruption is done here instead: when ctx ends,
+	// the connection's deadline is set to now, which fails the blocked read
+	// the same way pgx does. stopWatch always runs before Write returns.
+	stopWatch := interruptOnDone(ctx, d.conn)
+	defer stopWatch()
+	ctx = context.WithoutCancel(ctx)
 
 	b := &pgx.Batch{}
 	for _, rec := range recs {
@@ -478,4 +489,38 @@ func (d *Destination) formatBigRat(ctx context.Context, table string, column str
 
 	//nolint:gosec // no risk of overflow, because the scale in Pg is always <= 16383
 	return decimal.NewFromBigRat(v, int32(scale)).String(), nil
+}
+
+// interruptOnDone makes a blocked read or write on conn fail once ctx is done,
+// by moving the connection's deadline to now. The connection is unusable
+// afterwards (pgx closes it on the resulting error), as it is after pgx's own
+// context cancellation. The returned stop function ends the watcher and waits
+// for it; once it has returned, ctx ending no longer touches conn, so a
+// healthy connection never gets a stray deadline.
+func interruptOnDone(ctx context.Context, conn *pgx.Conn) (stop func()) {
+	var (
+		mu       sync.Mutex
+		finished bool
+		done     = make(chan struct{})
+		exited   = make(chan struct{})
+	)
+	go func() {
+		defer close(exited)
+		select {
+		case <-ctx.Done():
+			mu.Lock()
+			defer mu.Unlock()
+			if !finished {
+				_ = conn.PgConn().Conn().SetDeadline(time.Now())
+			}
+		case <-done:
+		}
+	}()
+	return func() {
+		mu.Lock()
+		finished = true
+		mu.Unlock()
+		close(done)
+		<-exited
+	}
 }

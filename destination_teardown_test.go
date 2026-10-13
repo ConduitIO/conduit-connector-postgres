@@ -28,6 +28,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
+	"go.uber.org/goleak"
 )
 
 // TestDestinationTeardownDuringWrite is the regression test for #354: Teardown used to close the pgx connection while a Write was still using it. The SDK
@@ -171,6 +172,10 @@ func TestDestinationTeardownBoundedByContext(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Interrupting a Write mid-batch must not leave pgx's context watcher
+	// parked (it does when pgx is handed the canceled context).
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+
 	type result struct {
 		n   int
 		err error
@@ -292,6 +297,9 @@ func TestDestinationTeardownRacesManyWrites(t *testing.T) {
 	ctx := context.Background()
 	table, conn := newTeardownTable(ctx, t)
 	dst := newRawDestination(ctx, t, table)
+	// No Write, semaphore wait or connection watcher may outlive Teardown.
+	// Goroutines of the test's own helpers are excluded.
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
 	const writers = 8
 	var (
