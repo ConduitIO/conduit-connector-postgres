@@ -164,9 +164,12 @@ specification:
        stopped, it reports the last position it saved, which can be slightly older; that errs
        on the safe side. Find the peek row of kind `I`, `U` or `D` whose `lsn` equals
        `last_lsn`. Ignore `B` and `C` rows: a `C` row can show the same number as the first
-       change after it. If several rows share that `lsn` (one statement that changed many
-       rows can do that), `tx_seq` is the 1-based number of the change within its
-       transaction. Everything listed before that row is in the destination. For each change
+       change after it. If several rows share that `lsn` (a `COPY` or another statement
+       that changes many rows can do that), use `tx_seq`. It numbers the transaction's
+       `I`, `U`, `D` and `T` (truncate) rows in the order listed, starting at 1 after its
+       `B` row. `R` (relation), `Y` (type) and `O` (origin) rows are not counted. The row
+       with that number is the one to match, and it is an `I`, `U` or `D` row. The matched row
+       itself and everything listed before it are in the destination. For each change
        listed after it, up to the stuck one and including the rest of the stuck transaction,
        check the destination for its rows and apply any that are missing by hand (`I` and
        `U` carry the full new row; `D` carries the identity columns). If no row matches,
