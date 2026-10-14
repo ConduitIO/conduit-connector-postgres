@@ -1,0 +1,34 @@
+name: tls
+
+# Runs the SCRAM channel-binding tests (cpool.TestPool_SCRAMChannelBinding,
+# TestDestination_Open_SCRAMChannelBinding) against real TLS servers. test.yml
+# runs them too, but they skip there: they need PGX_TLS_ED25519_URL and
+# PGX_TLS_PROXY_URL, which `make test` does not set. A skipped test is green,
+# so without this job the mapping in cpool.DefaultSCRAMCompat (pgx 5.9's
+# channel_binding=prefer -> disable) is only covered by the unit tests that
+# inspect the parsed config, not by a connection that would fail without it.
+#
+# test/tls/run.sh generates the certificates with openssl, starts a Postgres
+# with an Ed25519 certificate and a TLS re-terminating proxy, and fails if any
+# of the four subtests skips or does not run.
+#
+# Not a required status check; making it required is a separate decision.
+on:
+  push:
+    branches: [ main, 'release/**' ]
+  pull_request:
+
+jobs:
+  tls-channel-binding:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Channel-binding tests against TLS servers
+        run: make test-tls

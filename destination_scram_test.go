@@ -24,9 +24,10 @@ import (
 	"github.com/matryer/is"
 )
 
-// TestDestination_Open_AppliesSCRAMCompat runs in CI (the TLS test below does
-// not): Open must map pgx's default channel_binding=prefer to disable. If Open
-// goes back to pgx.Connect(url), the connection keeps prefer and this fails.
+// TestDestination_Open_AppliesSCRAMCompat runs under `make test` (the TLS test
+// below needs `make test-tls`): Open must map pgx's default
+// channel_binding=prefer to disable. If Open goes back to pgx.Connect(url), the
+// connection keeps prefer and this fails.
 func TestDestination_Open_AppliesSCRAMCompat(t *testing.T) {
 	tests := []struct {
 		name string
@@ -63,7 +64,7 @@ func TestDestination_Open_AppliesSCRAMCompat(t *testing.T) {
 
 // TestDestination_Open_SCRAMChannelBinding opens the destination against the
 // servers described in cpool.TestPool_SCRAMChannelBinding (PGX_TLS_ED25519_URL,
-// PGX_TLS_PROXY_URL). Skipped when they are not set.
+// PGX_TLS_PROXY_URL). Skipped when they are not set; `make test-tls` sets them.
 func TestDestination_Open_SCRAMChannelBinding(t *testing.T) {
 	for _, env := range []string{"PGX_TLS_ED25519_URL", "PGX_TLS_PROXY_URL"} {
 		t.Run(env, func(t *testing.T) {
