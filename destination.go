@@ -30,6 +30,7 @@ import (
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/destination"
 	"github.com/conduitio/conduit-connector-postgres/internal"
+	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
 )
@@ -74,7 +75,15 @@ func NewDestination() sdk.Destination {
 }
 
 func (d *Destination) Open(ctx context.Context) error {
-	conn, err := pgx.Connect(ctx, d.config.URL)
+	connConfig, err := pgx.ParseConfig(d.config.URL)
+	if err != nil {
+		return fmt.Errorf("failed to open connection: %w", err)
+	}
+	// v0.14.x keeps pgx 5.7's SCRAM behaviour; channel_binding=require stays
+	// opt-in. See cpool.DefaultSCRAMCompat.
+	cpool.DefaultSCRAMCompat(&connConfig.Config)
+
+	conn, err := pgx.ConnectConfig(ctx, connConfig)
 	if err != nil {
 		return fmt.Errorf("failed to open connection: %w", err)
 	}

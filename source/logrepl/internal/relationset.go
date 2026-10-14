@@ -42,9 +42,15 @@ func NewRelationSet() *RelationSet {
 // the given encoding. Use types.EncodingAvro when the connector attaches Avro
 // schemas to the records built from these values.
 func NewRelationSetWithEncoding(enc types.Encoding) *RelationSet {
+	connInfo := pgtype.NewMap()
+	// Keep decoding tsvector as text on every pgx version, see
+	// types.RegisterTextOnly. This is the constructor every CDC path calls
+	// (NewRelationSet delegates here), so the override cannot be skipped.
+	types.RegisterTextOnly(connInfo)
+
 	return &RelationSet{
 		relations: map[uint32]*pglogrepl.RelationMessage{},
-		connInfo:  pgtype.NewMap(),
+		connInfo:  connInfo,
 		encoding:  enc,
 	}
 }

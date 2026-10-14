@@ -1,0 +1,51 @@
+[
+ {
+  "after": "opencdc.StructuredData{d: time.Time(0000-01-01T00:00:00Z loc=UTC off=0), ia: []interface {}[int32(1), int32(2), int32(3), int32(4)], id: int64(1), iv: pgtype.Interval{Microseconds: int64(14706789000), Days: int32(3), Months: int32(14), Valid: bool(true)}, j: interface {}(7b2278223a2031323334353637383930313233343536373839307d), n: *big.Rat(123456789012345678901234567890123456789/1000000000), nn: []interface {}[pgtype.Numeric{Int: \u0026big.Int{}, Exp: int32(-1), NaN: bool(false), InfinityModifier: pgtype.InfinityModifier(0), Valid: bool(true)}, pgtype.Numeric{Int: \u0026big.Int{}, Exp: int32(0), NaN: bool(false), InfinityModifier: pgtype.InfinityModifier(0), Valid: bool(true)}, interface {}(nil)], ta: []interface {}[string(\"a\"), string(\"b c\"), interface {}(nil)], ts: time.Time(2022-03-14T23:16:17.123456Z loc=UTC off=0), tsa: []interface {}[time.Time(2022-03-14T23:16:17Z loc=UTC off=0), string(\"infinity\")], tsv: string(\"'a' 'cat' 'fat'\"), tsva: string(\"{\\\"'a':1 'b':2\\\",NULL}\")}",
+  "before": "opencdc.StructuredData{}",
+  "json": "{\"position\":null,\"operation\":\"create\",\"metadata\":null,\"key\":{\"id\":1},\"payload\":{\"before\":null,\"after\":{\"d\":\"0000-01-01T00:00:00Z\",\"ia\":[1,2,3,4],\"id\":1,\"iv\":{\"Microseconds\":14706789000,\"Days\":3,\"Months\":14,\"Valid\":true},\"j\":\"eyJ4IjogMTIzNDU2Nzg5MDEyMzQ1Njc4OTB9\",\"n\":\"123456789012345678901234567890123456789/1000000000\",\"nn\":[1.5,2,null],\"ta\":[\"a\",\"b c\",null],\"ts\":\"2022-03-14T23:16:17.123456Z\",\"tsa\":[\"2022-03-14T23:16:17Z\",\"infinity\"],\"tsv\":\"'a' 'cat' 'fat'\",\"tsva\":\"{\\\"'a':1 'b':2\\\",NULL}\"}}}",
+  "key": "opencdc.StructuredData{id: int64(1)}",
+  "op": "create"
+ },
+ {
+  "after": "opencdc.StructuredData{d: string(\"infinity\"), ia: []interface {}[int32(7), int32(8), int32(9)], id: int64(1), iv: pgtype.Interval{Microseconds: int64(0), Days: int32(0), Months: int32(-1), Valid: bool(true)}, j: interface {}(6e756c6c), n: *big.Rat(7/1), nn: []interface {}[], ta: []interface {}[], ts: string(\"infinity\"), tsa: interface {}(nil), tsv: string(\"'z':9\"), tsva: string(\"[0:1]={'q','r'}\")}",
+  "before": "opencdc.StructuredData{d: time.Time(0000-01-01T00:00:00Z loc=UTC off=0), ia: []interface {}[int32(1), int32(2), int32(3), int32(4)], id: int64(1), iv: pgtype.Interval{Microseconds: int64(14706789000), Days: int32(3), Months: int32(14), Valid: bool(true)}, j: interface {}(7b2278223a2031323334353637383930313233343536373839307d), n: *big.Rat(123456789012345678901234567890123456789/1000000000), nn: []interface {}[pgtype.Numeric{Int: \u0026big.Int{}, Exp: int32(-1), NaN: bool(false), InfinityModifier: pgtype.InfinityModifier(0), Valid: bool(true)}, pgtype.Numeric{Int: \u0026big.Int{}, Exp: int32(0), NaN: bool(false), InfinityModifier: pgtype.InfinityModifier(0), Valid: bool(true)}, interface {}(nil)], ta: []interface {}[string(\"a\"), string(\"b c\"), interface {}(nil)], ts: time.Time(2022-03-14T23:16:17.123456Z loc=UTC off=0), tsa: []interface {}[time.Time(2022-03-14T23:16:17Z loc=UTC off=0), string(\"infinity\")], tsv: string(\"'a' 'cat' 'fat'\"), tsva: string(\"{\\\"'a':1 'b':2\\\",NULL}\")}",
+  "json": "{\"position\":null,\"operation\":\"update\",\"metadata\":null,\"key\":{\"id\":1},\"payload\":{\"before\":{\"d\":\"0000-01-01T00:00:00Z\",\"ia\":[1,2,3,4],\"id\":1,\"iv\":{\"Microseconds\":14706789000,\"Days\":3,\"Months\":14,\"Valid\":true},\"j\":\"eyJ4IjogMTIzNDU2Nzg5MDEyMzQ1Njc4OTB9\",\"n\":\"123456789012345678901234567890123456789/1000000000\",\"nn\":[1.5,2,null],\"ta\":[\"a\",\"b c\",null],\"ts\":\"2022-03-14T23:16:17.123456Z\",\"tsa\":[\"2022-03-14T23:16:17Z\",\"infinity\"],\"tsv\":\"'a' 'cat' 'fat'\",\"tsva\":\"{\\\"'a':1 'b':2\\\",NULL}\"},\"after\":{\"d\":\"infinity\",\"ia\":[7,8,9],\"id\":1,\"iv\":{\"Microseconds\":0,\"Days\":0,\"Months\":-1,\"Valid\":true},\"j\":\"bnVsbA==\",\"n\":\"7\",\"nn\":[],\"ta\":[],\"ts\":\"infinity\",\"tsa\":null,\"tsv\":\"'z':9\",\"tsva\":\"[0:1]={'q','r'}\"}}}",
+  "key": "opencdc.StructuredData{id: int64(1)}",
+  "op": "update"
+ },
+ {
+  "after": "opencdc.StructuredData{d: string(\"infinity\"), ia: []interface {}[int32(7), int32(8), int32(9)], id: int64(2), iv: pgtype.Interval{Microseconds: int64(0), Days: int32(0), Months: int32(-1), Valid: bool(true)}, j: interface {}(6e756c6c), n: *big.Rat(7/1), nn: []interface {}[], ta: []interface {}[], ts: string(\"infinity\"), tsa: interface {}(nil), tsv: string(\"'z':9\"), tsva: string(\"[0:1]={'q','r'}\")}",
+  "before": "opencdc.StructuredData{d: string(\"infinity\"), ia: []interface {}[int32(7), int32(8), int32(9)], id: int64(1), iv: pgtype.Interval{Microseconds: int64(0), Days: int32(0), Months: int32(-1), Valid: bool(true)}, j: interface {}(6e756c6c), n: *big.Rat(7/1), nn: []interface {}[], ta: []interface {}[], ts: string(\"infinity\"), tsa: interface {}(nil), tsv: string(\"'z':9\"), tsva: string(\"[0:1]={'q','r'}\")}",
+  "json": "{\"position\":null,\"operation\":\"update\",\"metadata\":null,\"key\":{\"id\":2},\"payload\":{\"before\":{\"d\":\"infinity\",\"ia\":[7,8,9],\"id\":1,\"iv\":{\"Microseconds\":0,\"Days\":0,\"Months\":-1,\"Valid\":true},\"j\":\"bnVsbA==\",\"n\":\"7\",\"nn\":[],\"ta\":[],\"ts\":\"infinity\",\"tsa\":null,\"tsv\":\"'z':9\",\"tsva\":\"[0:1]={'q','r'}\"},\"after\":{\"d\":\"infinity\",\"ia\":[7,8,9],\"id\":2,\"iv\":{\"Microseconds\":0,\"Days\":0,\"Months\":-1,\"Valid\":true},\"j\":\"bnVsbA==\",\"n\":\"7\",\"nn\":[],\"ta\":[],\"ts\":\"infinity\",\"tsa\":null,\"tsv\":\"'z':9\",\"tsva\":\"[0:1]={'q','r'}\"}}}",
+  "key": "opencdc.StructuredData{id: int64(2)}",
+  "op": "update"
+ },
+ {
+  "after": "opencdc.StructuredData{}",
+  "before": "opencdc.StructuredData{d: string(\"infinity\"), ia: []interface {}[int32(7), int32(8), int32(9)], id: int64(2), iv: pgtype.Interval{Microseconds: int64(0), Days: int32(0), Months: int32(-1), Valid: bool(true)}, j: interface {}(6e756c6c), n: *big.Rat(7/1), nn: []interface {}[], ta: []interface {}[], ts: string(\"infinity\"), tsa: interface {}(nil), tsv: string(\"'z':9\"), tsva: string(\"[0:1]={'q','r'}\")}",
+  "json": "{\"position\":null,\"operation\":\"delete\",\"metadata\":null,\"key\":{\"id\":2},\"payload\":{\"before\":{\"d\":\"infinity\",\"ia\":[7,8,9],\"id\":2,\"iv\":{\"Microseconds\":0,\"Days\":0,\"Months\":-1,\"Valid\":true},\"j\":\"bnVsbA==\",\"n\":\"7\",\"nn\":[],\"ta\":[],\"ts\":\"infinity\",\"tsa\":null,\"tsv\":\"'z':9\",\"tsva\":\"[0:1]={'q','r'}\"},\"after\":null}}",
+  "key": "opencdc.StructuredData{id: int64(2)}",
+  "op": "delete"
+ },
+ {
+  "after": "opencdc.StructuredData{d: interface {}(nil), ia: interface {}(nil), id: int64(3), iv: interface {}(nil), j: interface {}(nil), n: interface {}(nil), nn: interface {}(nil), ta: interface {}(nil), ts: interface {}(nil), tsa: interface {}(nil), tsv: interface {}(nil), tsva: interface {}(nil)}",
+  "before": "opencdc.StructuredData{}",
+  "json": "{\"position\":null,\"operation\":\"create\",\"metadata\":null,\"key\":{\"id\":3},\"payload\":{\"before\":null,\"after\":{\"d\":null,\"ia\":null,\"id\":3,\"iv\":null,\"j\":null,\"n\":null,\"nn\":null,\"ta\":null,\"ts\":null,\"tsa\":null,\"tsv\":null,\"tsva\":null}}}",
+  "key": "opencdc.StructuredData{id: int64(3)}",
+  "op": "create"
+ },
+ {
+  "after": "opencdc.StructuredData{d: interface {}(nil), ia: interface {}(nil), id: int64(3), iv: interface {}(nil), j: interface {}(nil), n: interface {}(nil), nn: interface {}(nil), ta: interface {}(nil), ts: interface {}(nil), tsa: interface {}(nil), tsv: string(\"\"), tsva: interface {}(nil)}",
+  "before": "opencdc.StructuredData{d: interface {}(nil), ia: interface {}(nil), id: int64(3), iv: interface {}(nil), j: interface {}(nil), n: interface {}(nil), nn: interface {}(nil), ta: interface {}(nil), ts: interface {}(nil), tsa: interface {}(nil), tsv: interface {}(nil), tsva: interface {}(nil)}",
+  "json": "{\"position\":null,\"operation\":\"update\",\"metadata\":null,\"key\":{\"id\":3},\"payload\":{\"before\":{\"d\":null,\"ia\":null,\"id\":3,\"iv\":null,\"j\":null,\"n\":null,\"nn\":null,\"ta\":null,\"ts\":null,\"tsa\":null,\"tsv\":null,\"tsva\":null},\"after\":{\"d\":null,\"ia\":null,\"id\":3,\"iv\":null,\"j\":null,\"n\":null,\"nn\":null,\"ta\":null,\"ts\":null,\"tsa\":null,\"tsv\":\"\",\"tsva\":null}}}",
+  "key": "opencdc.StructuredData{id: int64(3)}",
+  "op": "update"
+ },
+ {
+  "after": "opencdc.StructuredData{}",
+  "before": "opencdc.StructuredData{d: interface {}(nil), ia: interface {}(nil), id: int64(3), iv: interface {}(nil), j: interface {}(nil), n: interface {}(nil), nn: interface {}(nil), ta: interface {}(nil), ts: interface {}(nil), tsa: interface {}(nil), tsv: string(\"\"), tsva: interface {}(nil)}",
+  "json": "{\"position\":null,\"operation\":\"delete\",\"metadata\":null,\"key\":{\"id\":3},\"payload\":{\"before\":{\"d\":null,\"ia\":null,\"id\":3,\"iv\":null,\"j\":null,\"n\":null,\"nn\":null,\"ta\":null,\"ts\":null,\"tsa\":null,\"tsv\":\"\",\"tsva\":null},\"after\":null}}",
+  "key": "opencdc.StructuredData{id: int64(3)}",
+  "op": "delete"
+ }
+]
