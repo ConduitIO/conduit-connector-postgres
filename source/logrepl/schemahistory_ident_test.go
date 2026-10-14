@@ -16,7 +16,10 @@ package logrepl
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -126,4 +129,72 @@ func Test_HandleRelation_DriftAcrossRestart_SeparatorBytesInColumnName(t *testin
 	kind, marker := relate(ctx, t, h2, relMsg(after...), 200)
 	is.Equal(kind, driftAcrossRestart)
 	is.True(marker) // halt policy: a drift marker replaces the change
+}
+
+// legacyHash is the hash input used before #408, written out here so the tests
+// do not depend on the code under test: sorted "name US type US typmod" records
+// joined with RS.
+func legacyHash(cols ...*pglogrepl.RelationMessageColumn) string {
+	parts := make([]string, 0, len(cols))
+	for _, c := range cols {
+		parts = append(parts, fmt.Sprintf("%s\x1f%d\x1f%d", c.Name, c.DataType, c.TypeModifier))
+	}
+	slices.Sort(parts)
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x1e")))
+	return hex.EncodeToString(sum[:])
+}
+
+func positionWithHash(hash string) position.Position {
+	return position.Position{
+		Type:          position.TypeCDC,
+		SchemaHistory: position.SchemaHistories{"public.users": {{ColumnSetHash: hash, FirstSeenLSN: "0/64"}}},
+	}
+}
+
+// A position written by a build from before #408 holds the old-form hash. When
+// that hash is proven to be the shape now seen, the restart must not read it as
+// drift under any policy, and the hash is re-recorded so the next start
+// compares equal.
+func Test_LegacyHash_Matching_IsAcceptedAndRerecorded(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+
+	h := newHandlerWithPosition(t, positionWithHash(legacyHash(shapeV1...)), SchemaDriftPolicyHalt)
+	kind, marker := relate(ctx, t, h, relMsg(shapeV1...), 200)
+	is.Equal(kind, driftNone)
+	is.True(!marker)
+
+	hist := h.basePosition.SchemaHistory["public.users"]
+	is.Equal(len(hist), 1) // replaced in place, not appended
+	is.Equal(hist[0].ColumnSetHash, position.HashColumnSet(columnIdentities(relMsg(shapeV1...))))
+	is.Equal(hist[0].FirstSeenLSN, "0/64")
+
+	resumed, err := position.ParseSDKPosition(h.buildPosition(250))
+	is.NoErr(err)
+	h2 := newHandlerWithPosition(t, resumed, SchemaDriftPolicyHalt)
+	kind, marker = relate(ctx, t, h2, relMsg(shapeV1...), 300)
+	is.Equal(kind, driftNone)
+	is.True(!marker)
+}
+
+// A name holding an old separator byte is never accepted on the strength of the
+// old hash, even when that hash is the old hash of exactly this shape.
+func Test_LegacyHash_NameWithSeparatorByte_StillHalts(t *testing.T) {
+	is := is.New(t)
+	weird := []*pglogrepl.RelationMessageColumn{relCol("id", 23, -1), relCol("a\x1f25\x1f-1\x1eb", 25, -1)}
+
+	h := newHandlerWithPosition(t, positionWithHash(legacyHash(weird...)), SchemaDriftPolicyHalt)
+	kind, marker := relate(context.Background(), t, h, relMsg(weird...), 200)
+	is.Equal(kind, driftAcrossRestart)
+	is.True(marker)
+}
+
+// An old-form hash that is not this shape's is a real change.
+func Test_LegacyHash_NotMatching_IsDrift(t *testing.T) {
+	is := is.New(t)
+
+	h := newHandlerWithPosition(t, positionWithHash(legacyHash(shapeV1...)), SchemaDriftPolicyHalt)
+	kind, marker := relate(context.Background(), t, h, relMsg(shapeV2...), 200)
+	is.Equal(kind, driftAcrossRestart)
+	is.True(marker)
 }

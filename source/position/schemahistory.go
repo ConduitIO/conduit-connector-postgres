@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -83,15 +84,16 @@ type SchemaHistories map[string][]SchemaVersion
 // a column named like "a<0x1f>25<0x1f>-1<0x1e>b" (it equalled the two columns
 // "a" and "b"), which made a real schema change classify as no change. Each
 // record is therefore written self-delimiting: a uvarint name length, the name
-// bytes, then the data type (uvarint) and type modifier (zigzag varint). Concatenated self-delimiting records parse back to exactly one
-// sequence, and the canonical order makes that sequence a function of the set.
+// bytes, then the data type (uvarint) and type modifier (zigzag varint).
+// Concatenated self-delimiting records parse back to exactly one sequence, and
+// the canonical order makes that sequence a function of the set.
 //
 // The identity triple (name, dataType, typeModifier) is deliberately the same
 // one the RelationMessage diff uses. If the two disagreed, a shape could pass
 // the hash comparison while the diff reported drift, or vice versa.
 //
-// This encoding has not shipped in a release; no stored position carries a hash
-// in any other form (see the PR that introduced it).
+// The old separator-joined form is not in any release tag; positions written by
+// main builds before #408 hold the old form. MatchesLegacyHash verifies those.
 func HashColumnSet(cols []ColumnIdentity) string {
 	sorted := slices.Clone(cols)
 	slices.SortFunc(sorted, func(a, b ColumnIdentity) int {
@@ -112,6 +114,57 @@ func HashColumnSet(cols []ColumnIdentity) string {
 	sum := sha256.Sum256(buf)
 
 	return hex.EncodeToString(sum[:])
+}
+
+// legacyHashColumnSet is the hash input HashColumnSet used before #408: records
+// "name US type US typmod" sorted as strings and joined with RS. It is ambiguous
+// when a name contains US or RS, so it exists ONLY to verify hashes already
+// stored in positions by main builds (see MatchesLegacyHash); never write it.
+//
+// No release tag contains it, so it can be deleted once no position written by
+// a main build before #408 can still be resumed, i.e. after the first
+// connector release cut from a main that includes #408 has been out for a
+// deprecation period (two minor versions, per the repo's policy).
+func legacyHashColumnSet(cols []ColumnIdentity) string {
+	parts := make([]string, 0, len(cols))
+	for _, c := range cols {
+		parts = append(parts, fmt.Sprintf("%s\x1f%d\x1f%d", c.Name, c.DataType, c.TypeModifier))
+	}
+	slices.Sort(parts)
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x1e")))
+	return hex.EncodeToString(sum[:])
+}
+
+// MatchesLegacyHash reports whether hash, read from a stored position, is the
+// old-form hash of cols. It lets a position written before #408 be resumed
+// without reading the unchanged shape as drift.
+//
+// A match is accepted only when no name in cols contains the old separator
+// bytes (0x1f, 0x1e). Then the old input for cols parses unambiguously, so an
+// equal hash means the recorded shape was cols. Residual limit: the recorded
+// shape is not visible, only its hash, so a recorded shape whose names did
+// contain those bytes and imitated cols (the very collision #408 fixes) cannot
+// be told apart. That needs such a name to have existed in a main-build
+// position, and applies once, at the first restart after upgrading.
+func MatchesLegacyHash(cols []ColumnIdentity, hash string) bool {
+	for _, c := range cols {
+		if strings.ContainsAny(c.Name, "\x1f\x1e") {
+			return false
+		}
+	}
+	return legacyHashColumnSet(cols) == hash
+}
+
+// ReplaceLastSchemaHash swaps the hash of the most recently recorded shape of a
+// table, keeping its FirstSeenLSN. It is used to re-record a verified legacy
+// hash in the current encoding without adding a version to the history.
+func (p *Position) ReplaceLastSchemaHash(table, hash string) bool {
+	versions := p.SchemaHistory[table]
+	if len(versions) == 0 {
+		return false
+	}
+	versions[len(versions)-1].ColumnSetHash = hash
+	return true
 }
 
 // ColumnIdentity is the subset of a column that defines a table's shape.

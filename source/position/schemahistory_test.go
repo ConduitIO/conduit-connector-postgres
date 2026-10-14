@@ -250,9 +250,10 @@ func Test_SchemaHistory_DowngradeIsSafe(t *testing.T) {
 
 // Test_HashColumnSet_Injective pins that two different shapes never share a
 // hash because of the bytes in a column name. Postgres quoted identifiers may
-// contain any character except NUL, so a name can carry whatever bytes the hash
-// input uses as structure. The cases below were all equal under the old
-// separator-joined encoding.
+// contain any character except NUL, so a name can carry whatever bytes a hash
+// input might use as structure. The first two cases are regressions: they were
+// equal under the old separator-joined encoding and fail on the base commit.
+// The other three are extra coverage of the new encoding and pass on base.
 func Test_HashColumnSet_Injective(t *testing.T) {
 	tests := []struct {
 		name string
@@ -303,4 +304,32 @@ func Test_HashColumnSet_Golden(t *testing.T) {
 	is := is.New(t)
 	got := HashColumnSet(cols(ci("id", 23, -1), ci("email", 25, -1), ci("age", 23, -1)))
 	is.Equal(got, goldenHashIDEmailAge)
+}
+
+// legacyGolden is the old-form hash of {id int4, email text, age int4}, computed
+// independently of the code under test.
+const legacyGolden = "fff6c8f9555ab5f407ff1d30ea0db9c924fe291b6ff8ba725373d37461d22b46"
+
+func Test_MatchesLegacyHash(t *testing.T) {
+	is := is.New(t)
+	shape := cols(ci("id", 23, -1), ci("email", 25, -1), ci("age", 23, -1))
+
+	is.True(MatchesLegacyHash(shape, legacyGolden))
+	is.True(!MatchesLegacyHash(shape, HashColumnSet(shape))) // the new form is not the old form
+	is.True(!MatchesLegacyHash(cols(ci("id", 23, -1)), legacyGolden))
+
+	// A name with an old separator byte is never accepted, even when the old
+	// hash of that very shape is the one stored.
+	weird := cols(ci("id", 23, -1), ci("a\x1f25\x1f-1\x1eb", 25, -1))
+	is.True(!MatchesLegacyHash(weird, legacyHashColumnSet(weird)))
+	is.True(MatchesLegacyHash(cols(ci("a", 25, -1)), legacyHashColumnSet(cols(ci("a", 25, -1)))))
+}
+
+func Test_ReplaceLastSchemaHash(t *testing.T) {
+	is := is.New(t)
+	p := Position{SchemaHistory: SchemaHistories{"public.t": {{ColumnSetHash: "old1", FirstSeenLSN: "0/1"}, {ColumnSetHash: "old2", FirstSeenLSN: "0/2"}}}}
+	is.True(p.ReplaceLastSchemaHash("public.t", "new"))
+	is.Equal(p.SchemaHistory["public.t"][1], SchemaVersion{ColumnSetHash: "new", FirstSeenLSN: "0/2"})
+	is.Equal(p.SchemaHistory["public.t"][0].ColumnSetHash, "old1")
+	is.True(!p.ReplaceLastSchemaHash("public.none", "x"))
 }
