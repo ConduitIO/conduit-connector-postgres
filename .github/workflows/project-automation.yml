@@ -6,6 +6,6 @@ on:
 
 jobs:
   project-mgmt:
-    uses: ConduitIO/automation/.github/workflows/project-automation.yml@main
+    uses: ConduitIO/automation/.github/workflows/project-automation.yml@05229154103f2ac71bbf431daa286204d1dcfd16 # main
     secrets:
       project-automation-token: ${{ secrets.PROJECT_AUTOMATION }}
