@@ -15,10 +15,11 @@
 package position
 
 import (
+	"cmp"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
-	"fmt"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -73,22 +74,42 @@ type SchemaHistories map[string][]SchemaVersion
 //
 // Stability matters more than it looks: the hash is compared against one
 // computed by a DIFFERENT PROCESS on the other side of a restart, possibly by a
-// different build. So the input is sorted, and the field separator cannot occur
-// in a Postgres identifier, which rules out the classic collision where
-// ("a|b", "c") and ("a", "b|c") hash identically.
+// different build. So the columns are put in a canonical order before hashing.
+//
+// The hash input must also be injective: two different column sets must never
+// produce the same input. A quoted Postgres identifier may contain any byte
+// except NUL, so no separator byte is safe to join names with; an earlier
+// encoding joined fields with 0x1f and records with 0x1e and was ambiguous for
+// a column named like "a<0x1f>25<0x1f>-1<0x1e>b" (it equalled the two columns
+// "a" and "b"), which made a real schema change classify as no change. Each
+// record is therefore written self-delimiting: a uvarint name length, the name
+// bytes, then the data type (uvarint) and type modifier (zigzag varint). Concatenated self-delimiting records parse back to exactly one
+// sequence, and the canonical order makes that sequence a function of the set.
 //
 // The identity triple (name, dataType, typeModifier) is deliberately the same
 // one the RelationMessage diff uses. If the two disagreed, a shape could pass
 // the hash comparison while the diff reported drift, or vice versa.
+//
+// This encoding has not shipped in a release; no stored position carries a hash
+// in any other form (see the PR that introduced it).
 func HashColumnSet(cols []ColumnIdentity) string {
-	parts := make([]string, 0, len(cols))
-	for _, c := range cols {
-		// \x1f (unit separator) cannot appear in a Postgres identifier.
-		parts = append(parts, fmt.Sprintf("%s\x1f%d\x1f%d", c.Name, c.DataType, c.TypeModifier))
-	}
-	sort.Strings(parts)
+	sorted := slices.Clone(cols)
+	slices.SortFunc(sorted, func(a, b ColumnIdentity) int {
+		return cmp.Or(
+			strings.Compare(a.Name, b.Name),
+			cmp.Compare(a.DataType, b.DataType),
+			cmp.Compare(a.TypeModifier, b.TypeModifier),
+		)
+	})
 
-	sum := sha256.Sum256([]byte(strings.Join(parts, "\x1e")))
+	var buf []byte
+	for _, c := range sorted {
+		buf = binary.AppendUvarint(buf, uint64(len(c.Name)))
+		buf = append(buf, c.Name...)
+		buf = binary.AppendUvarint(buf, uint64(c.DataType))
+		buf = binary.AppendVarint(buf, int64(c.TypeModifier))
+	}
+	sum := sha256.Sum256(buf)
 
 	return hex.EncodeToString(sum[:])
 }
