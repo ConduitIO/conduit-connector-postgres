@@ -12,11 +12,29 @@ authentication, the connector does not use channel binding unless you ask for it
 `disable`, which is how the driver behaved in earlier releases. Channel binding
 (SCRAM-SHA-256-PLUS) fails against a server with an Ed25519 certificate and behind
 a proxy that terminates TLS and passes the SCRAM exchange through. Add
-`channel_binding=require` to the URL to require it; it is the only way to turn it on.
+`channel_binding=require` to the URL, or set `PGCHANNELBINDING=require` in the
+environment of the Conduit process, to require it. The driver reads
+`PGCHANNELBINDING` when the URL has no `channel_binding`. An explicit `prefer`,
+in the URL or in the environment, is also mapped to `disable`; `require` and
+`disable` are kept.
 
 ```
 postgres://user:pass@host:5432/db?sslmode=require&channel_binding=require
 ```
+
+### Upgrading from v0.14.x: connection string parsing
+
+This version uses pgx 5.11, which parses connection strings like libpq does.
+Most URLs are unaffected. Check yours if it relies on one of these (the full
+list is in the pgx 5.11.0 changelog):
+
+- `+` in a query value is literal, no longer a space; encode a space as `%20`.
+- If a query parameter is repeated, the last one wins (the first used to).
+- An IPv6 host in a URL needs brackets: `postgres://[::1]/db`.
+- In a `key=value` connection string a backslash escapes the next character,
+  so a Windows path must be written `sslcert=C:\\path\\to\\cert`.
+- Default locations of the client certificate, key and `.pgpass` file are
+  resolved from `$HOME` instead of the OS account's home directory.
 
 ## Source
 

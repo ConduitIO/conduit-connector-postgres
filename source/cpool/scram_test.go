@@ -30,16 +30,22 @@ func TestDefaultSCRAMCompat(t *testing.T) {
 	tests := []struct {
 		name string
 		url  string
+		env  string // PGCHANNELBINDING, read by pgx when the URL has no channel_binding
 		want string
 	}{
-		{"default", "postgres://u:p@localhost/db", "disable"},
-		{"explicit prefer maps too", "postgres://u:p@localhost/db?channel_binding=prefer", "disable"},
-		{"explicit disable", "postgres://u:p@localhost/db?channel_binding=disable", "disable"},
-		{"explicit require stays", "postgres://u:p@localhost/db?channel_binding=require", "require"},
+		{"default", "postgres://u:p@localhost/db", "", "disable"},
+		{"explicit prefer maps too", "postgres://u:p@localhost/db?channel_binding=prefer", "", "disable"},
+		{"explicit disable", "postgres://u:p@localhost/db?channel_binding=disable", "", "disable"},
+		{"explicit require stays", "postgres://u:p@localhost/db?channel_binding=require", "", "require"},
+		{"PGCHANNELBINDING=prefer maps too", "postgres://u:p@localhost/db", "prefer", "disable"},
+		{"PGCHANNELBINDING=disable", "postgres://u:p@localhost/db", "disable", "disable"},
+		{"PGCHANNELBINDING=require stays", "postgres://u:p@localhost/db", "require", "require"},
+		{"URL wins over PGCHANNELBINDING", "postgres://u:p@localhost/db?channel_binding=require", "disable", "require"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			is := is.New(t)
+			t.Setenv("PGCHANNELBINDING", tc.env)
 
 			cfg, err := pgx.ParseConfig(tc.url)
 			is.NoErr(err)

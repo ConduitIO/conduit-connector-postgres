@@ -64,11 +64,13 @@ func New(ctx context.Context, conninfo string) (*pgxpool.Pool, error) {
 // re-terminating proxy that passes SASL through fails with "channel binding
 // check failed". Mapping the default to "disable" restores what 5.7 did.
 //
-// "prefer" is mapped whether it is the default or was written in the URL; the
-// two cannot be told apart after parsing, and the explicit form was never
-// usable before (pgx 5.7 sent channel_binding to the server as a startup
-// parameter, which the server rejects). "require" and "disable" were chosen by
-// the user and are kept. Apply it to every configuration this connector parses
+// "prefer" is mapped whether it is the default, was written in the URL or came
+// from the PGCHANNELBINDING environment variable, which pgx 5.9 and later read
+// when the URL has no channel_binding; the sources cannot be told apart after
+// parsing, and the explicit forms were never usable before (pgx 5.7 sent
+// channel_binding to the server as a startup parameter, which the server
+// rejects). "require" and "disable" were chosen by the user, in the URL or in
+// PGCHANNELBINDING, and are kept. Apply it to every configuration this connector parses
 // (cpool.New, Destination.Open).
 func DefaultSCRAMCompat(cfg *pgconn.Config) {
 	if cfg.ChannelBinding == "prefer" {
