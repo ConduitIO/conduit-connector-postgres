@@ -50,6 +50,9 @@ type Config struct {
 	sdk.DefaultSourceMiddleware
 
 	// URL is the connection string for the Postgres database.
+	// With TLS, SCRAM authentication does not use channel binding by default
+	// (`channel_binding=disable`); add `channel_binding=require` to the URL to
+	// require SCRAM-SHA-256-PLUS.
 	URL string `json:"url" validate:"required"`
 
 	// Tables is a List of table names to read from, separated by a comma, e.g.:"table1,table2".

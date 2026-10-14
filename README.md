@@ -4,6 +4,20 @@ The PostgreSQL connector is a [Conduit](https://github.com/ConduitIO/conduit)
 plugin. It provides both, a source and a destination PostgresSQL connector.
 
 <!-- readmegen:description -->
+## Connection and SCRAM authentication
+
+Source and destination connect with the `url` setting. Over TLS with SCRAM
+authentication, the connector does not use channel binding unless you ask for it:
+`channel_binding=prefer`, the default of the pgx driver since 5.9, is mapped to
+`disable`, which is how the driver behaved in earlier releases. Channel binding
+(SCRAM-SHA-256-PLUS) fails against a server with an Ed25519 certificate and behind
+a proxy that terminates TLS and passes the SCRAM exchange through. Add
+`channel_binding=require` to the URL to require it; it is the only way to turn it on.
+
+```
+postgres://user:pass@host:5432/db?sslmode=require&channel_binding=require
+```
+
 ## Source
 
 The Postgres Source Connector connects to a database with the provided `url` and
@@ -406,7 +420,10 @@ pipelines:
           # Type: string
           # Required: yes
           tables: ""
-          # URL is the connection string for the Postgres database.
+          # URL is the connection string for the Postgres database. With TLS,
+          # SCRAM authentication does not use channel binding by default
+          # (`channel_binding=disable`); add `channel_binding=require` to the
+          # URL to require SCRAM-SHA-256-PLUS.
           # Type: string
           # Required: yes
           url: ""
@@ -517,7 +534,10 @@ pipelines:
         plugin: "postgres"
         type: destination
         settings:
-          # URL is the connection string for the Postgres database.
+          # URL is the connection string for the Postgres database. With TLS,
+          # SCRAM authentication does not use channel binding by default
+          # (`channel_binding=disable`); add `channel_binding=require` to the
+          # URL to require SCRAM-SHA-256-PLUS.
           # Type: string
           # Required: yes
           url: ""

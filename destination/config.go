@@ -33,6 +33,9 @@ type Config struct {
 	sdk.DefaultDestinationMiddleware
 
 	// URL is the connection string for the Postgres database.
+	// With TLS, SCRAM authentication does not use channel binding by default
+	// (`channel_binding=disable`); add `channel_binding=require` to the URL to
+	// require SCRAM-SHA-256-PLUS.
 	URL string `json:"url" validate:"required"`
 	// Table is used as the target table into which records are inserted.
 	Table string `json:"table" default:"{{ index .Metadata \"opencdc.collection\" }}"`

@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -37,6 +38,8 @@ func New(ctx context.Context, conninfo string) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("failed to parse pool config: %w", err)
 	}
 
+	DefaultSCRAMCompat(&config.ConnConfig.Config)
+
 	config.BeforeAcquire = beforeAcquireHook //nolint:staticcheck // pgx deprecated this in favor of PrepareConn, which takes precedence and has different semantics; migrating is a data-path change outside this toolchain PR
 	config.BeforeConnect = beforeConnectHook
 	config.AfterConnect = afterConnectHook
@@ -48,6 +51,29 @@ func New(ctx context.Context, conninfo string) (*pgxpool.Pool, error) {
 	}
 
 	return pool, nil
+}
+
+// DefaultSCRAMCompat keeps the SCRAM behavior of pgx 5.7 for a connection
+// configuration parsed by pgx 5.9 or later: main keeps pgx 5.7's SCRAM
+// behaviour by default; channel_binding=require is opt-in.
+//
+// pgx 5.9 defaults channel_binding to "prefer", which makes it use
+// SCRAM-SHA-256-PLUS whenever the connection is TLS and the server offers it.
+// That breaks authentication that worked on pgx 5.7: a server with an Ed25519
+// certificate fails with "SCRAM channel binding negotiation error", and a TLS
+// re-terminating proxy that passes SASL through fails with "channel binding
+// check failed". Mapping the default to "disable" restores what 5.7 did.
+//
+// "prefer" is mapped whether it is the default or was written in the URL; the
+// two cannot be told apart after parsing, and the explicit form was never
+// usable before (pgx 5.7 sent channel_binding to the server as a startup
+// parameter, which the server rejects). "require" and "disable" were chosen by
+// the user and are kept. Apply it to every configuration this connector parses
+// (cpool.New, Destination.Open).
+func DefaultSCRAMCompat(cfg *pgconn.Config) {
+	if cfg.ChannelBinding == "prefer" {
+		cfg.ChannelBinding = "disable"
+	}
 }
 
 func afterConnectHook(_ context.Context, conn *pgx.Conn) error {
