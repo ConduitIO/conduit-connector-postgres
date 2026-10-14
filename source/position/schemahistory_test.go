@@ -63,8 +63,8 @@ func Test_HashColumnSet_DistinguishesShapes(t *testing.T) {
 
 // Test_HashColumnSet_SeparatorCannotCollide guards the classic delimiter
 // collision: with a naive separator, ("a|b", "c") and ("a", "b|c") hash the
-// same. The separator used here cannot appear in a Postgres identifier, but the
-// property is worth pinning rather than trusting.
+// same. The encoding uses no separator at all (see HashColumnSet), and
+// Test_HashColumnSet_Injective covers names that imitate one.
 func Test_HashColumnSet_SeparatorCannotCollide(t *testing.T) {
 	is := is.New(t)
 
@@ -246,4 +246,90 @@ func Test_SchemaHistory_DowngradeIsSafe(t *testing.T) {
 	is.Equal(old.LastLSN, "0/ABC")
 	is.Equal(old.SnapshotLowWatermarkLSN, "0/100")
 	is.Equal(old.Type, TypeCDC)
+}
+
+// Test_HashColumnSet_Injective pins that two different shapes never share a
+// hash because of the bytes in a column name. Postgres quoted identifiers may
+// contain any character except NUL, so a name can carry whatever bytes a hash
+// input might use as structure. The first two cases are regressions: they were
+// equal under the old separator-joined encoding and fail on the base commit.
+// The other three are extra coverage of the new encoding and pass on base.
+func Test_HashColumnSet_Injective(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b []ColumnIdentity
+	}{
+		{
+			name: "name embeds the field and record separators",
+			a:    cols(ci("id", 23, -1), ci("a", 25, -1), ci("b", 25, -1)),
+			b:    cols(ci("id", 23, -1), ci("a\x1f25\x1f-1\x1eb", 25, -1)),
+		},
+		{
+			name: "name embeds only the record separator",
+			a:    cols(ci("a", 1, 1), ci("b", 2, 2)),
+			b:    cols(ci("a\x1f1\x1f1\x1eb", 2, 2)),
+		},
+		{
+			name: "name embeds a length-looking prefix",
+			a:    cols(ci("ab", 1, 1)),
+			b:    cols(ci("a", 1, 1), ci("b", 1, 1)),
+		},
+		{
+			name: "empty name versus no column",
+			a:    cols(ci("a", 1, 1)),
+			b:    cols(ci("a", 1, 1), ci("", 0, 0)),
+		},
+		{
+			name: "digits move between name and type",
+			a:    cols(ci("a1", 2, 3)),
+			b:    cols(ci("a", 12, 3)),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			is := is.New(t)
+			is.True(HashColumnSet(tt.a) != HashColumnSet(tt.b))
+		})
+	}
+}
+
+const goldenHashIDEmailAge = "739b1c4fe8bfb7943d88f51c0cc5cb0192dde5d5b139f94a7f2c95eadac521cf"
+
+// Test_HashColumnSet_Golden pins the exact hash of a fixed shape. The hash is
+// persisted in the position and compared by a later process, possibly a later
+// build, so a change to the encoding is a position-format change: it turns
+// every stored shape into apparent drift on the next start. If this test fails,
+// the change needs a versioned migration, not a new golden value.
+func Test_HashColumnSet_Golden(t *testing.T) {
+	is := is.New(t)
+	got := HashColumnSet(cols(ci("id", 23, -1), ci("email", 25, -1), ci("age", 23, -1)))
+	is.Equal(got, goldenHashIDEmailAge)
+}
+
+// legacyGolden is the old-form hash of {id int4, email text, age int4}, computed
+// independently of the code under test.
+const legacyGolden = "fff6c8f9555ab5f407ff1d30ea0db9c924fe291b6ff8ba725373d37461d22b46"
+
+func Test_MatchesLegacyHash(t *testing.T) {
+	is := is.New(t)
+	shape := cols(ci("id", 23, -1), ci("email", 25, -1), ci("age", 23, -1))
+
+	is.True(MatchesLegacyHash(shape, legacyGolden))
+	is.True(!MatchesLegacyHash(shape, HashColumnSet(shape))) // the new form is not the old form
+	is.True(!MatchesLegacyHash(cols(ci("id", 23, -1)), legacyGolden))
+
+	// A name with an old separator byte is never accepted, even when the old
+	// hash of that very shape is the one stored.
+	weird := cols(ci("id", 23, -1), ci("a\x1f25\x1f-1\x1eb", 25, -1))
+	is.True(!MatchesLegacyHash(weird, legacyHashColumnSet(weird)))
+	is.True(MatchesLegacyHash(cols(ci("a", 25, -1)), legacyHashColumnSet(cols(ci("a", 25, -1)))))
+}
+
+func Test_ReplaceLastSchemaHash(t *testing.T) {
+	is := is.New(t)
+	p := Position{SchemaHistory: SchemaHistories{"public.t": {{ColumnSetHash: "old1", FirstSeenLSN: "0/1"}, {ColumnSetHash: "old2", FirstSeenLSN: "0/2"}}}}
+	is.True(p.ReplaceLastSchemaHash("public.t", "new"))
+	is.Equal(p.SchemaHistory["public.t"][1], SchemaVersion{ColumnSetHash: "new", FirstSeenLSN: "0/2"})
+	is.Equal(p.SchemaHistory["public.t"][0].ColumnSetHash, "old1")
+	is.True(!p.ReplaceLastSchemaHash("public.none", "x"))
 }

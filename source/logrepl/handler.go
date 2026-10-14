@@ -887,6 +887,13 @@ func (h *CDCHandler) classifyDrift(
 		// Same shape as the last durable version: a re-sent or replayed
 		// Relation message, or no DDL at all. Must stay silent.
 		return driftNone, internal.SchemaDiff{}, prev, hash
+	case hadHistory && position.MatchesLegacyHash(columnIdentities(r), prev.ColumnSetHash):
+		// The durable hash is in the encoding used before #408 and is proven
+		// to be this very shape (MatchesLegacyHash). Re-record it in the
+		// current encoding in place, so the history keeps one entry with its
+		// FirstSeenLSN and the next start compares equal.
+		h.basePosition.ReplaceLastSchemaHash(key, hash)
+		return driftNone, internal.SchemaDiff{}, prev, hash
 	case !hadHistory:
 		// First shape ever recorded for this table — on a first run, or on the
 		// first run after upgrading from a position that predates the history.
