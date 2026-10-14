@@ -65,6 +65,11 @@ type SchemaVersion struct {
 	// FirstSeenLSN is the LSN at which this shape was first observed. Empty if
 	// the shape was recorded outside CDC (e.g. during snapshot).
 	FirstSeenLSN string `json:"first_seen_lsn,omitempty"`
+	// Columns is the number of columns of the shape. It is recorded with every
+	// new entry so a hash in the pre-#408 encoding can be verified against it
+	// (see MatchesLegacyHash). Zero means "not recorded": an entry written by a
+	// main build before this field existed, or a relation with no columns.
+	Columns int `json:"columns,omitempty"`
 }
 
 // SchemaHistories maps a table identity to its retained shapes, oldest first.
@@ -141,12 +146,22 @@ func legacyHashColumnSet(cols []ColumnIdentity) string {
 //
 // A match is accepted only when no name in cols contains the old separator
 // bytes (0x1f, 0x1e). Then the old input for cols parses unambiguously, so an
-// equal hash means the recorded shape was cols. Residual limit: the recorded
+// equal hash means the recorded shape was cols, with one gap: the recorded
 // shape is not visible, only its hash, so a recorded shape whose names did
 // contain those bytes and imitated cols (the very collision #408 fixes) cannot
-// be told apart. That needs such a name to have existed in a main-build
-// position, and applies once, at the first restart after upgrading.
-func MatchesLegacyHash(cols []ColumnIdentity, hash string) bool {
+// be told apart by the hash alone.
+//
+// storedColumns closes that gap when it is known. An imitating shape has fewer
+// columns than the shape it imitates (its separator-bearing name stands for
+// several), so when storedColumns is non-zero it must equal len(cols). It is
+// zero for entries written by main builds before the count was recorded; for
+// those only the guarded check applies, and nothing better is possible. That
+// residual needs a separator-bearing name to have existed in such a position
+// and applies once, at the first restart after upgrading.
+func MatchesLegacyHash(cols []ColumnIdentity, hash string, storedColumns int) bool {
+	if storedColumns != 0 && storedColumns != len(cols) {
+		return false
+	}
 	for _, c := range cols {
 		if strings.ContainsAny(c.Name, "\x1f\x1e") {
 			return false
@@ -156,14 +171,16 @@ func MatchesLegacyHash(cols []ColumnIdentity, hash string) bool {
 }
 
 // ReplaceLastSchemaHash swaps the hash of the most recently recorded shape of a
-// table, keeping its FirstSeenLSN. It is used to re-record a verified legacy
-// hash in the current encoding without adding a version to the history.
-func (p *Position) ReplaceLastSchemaHash(table, hash string) bool {
+// table, keeping its FirstSeenLSN, and records the column count. It is used to
+// re-record a verified legacy hash in the current encoding without adding a
+// version to the history.
+func (p *Position) ReplaceLastSchemaHash(table, hash string, columns int) bool {
 	versions := p.SchemaHistory[table]
 	if len(versions) == 0 {
 		return false
 	}
 	versions[len(versions)-1].ColumnSetHash = hash
+	versions[len(versions)-1].Columns = columns
 	return true
 }
 
@@ -229,7 +246,7 @@ func (h SchemaHistories) SetFirstSeenLSN(table, lsn string) bool {
 // carry the drift signal.
 //
 // It returns true if a new version was recorded.
-func (p *Position) RecordSchemaVersion(table, hash, lsn string) bool {
+func (p *Position) RecordSchemaVersion(table, hash, lsn string, columns int) bool {
 	if p.SchemaHistory == nil {
 		p.SchemaHistory = make(SchemaHistories)
 	}
@@ -242,6 +259,7 @@ func (p *Position) RecordSchemaVersion(table, hash, lsn string) bool {
 	versions = append(versions, SchemaVersion{
 		ColumnSetHash: hash,
 		FirstSeenLSN:  lsn,
+		Columns:       columns,
 	})
 
 	// Prune oldest-first: the newest shapes are the ones a drift decision is

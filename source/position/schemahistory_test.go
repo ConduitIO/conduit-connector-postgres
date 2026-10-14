@@ -17,6 +17,7 @@ package position
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/matryer/is"
@@ -87,14 +88,14 @@ func Test_RecordSchemaVersion_DedupesCurrentShape(t *testing.T) {
 	p := Position{}
 	h := HashColumnSet(cols(ci("id", 23, -1)))
 
-	is.True(p.RecordSchemaVersion("public.t", h, "0/1"))  // first: recorded
-	is.True(!p.RecordSchemaVersion("public.t", h, "0/2")) // same shape: not recorded
-	is.True(!p.RecordSchemaVersion("public.t", h, "0/3"))
+	is.True(p.RecordSchemaVersion("public.t", h, "0/1", 1))  // first: recorded
+	is.True(!p.RecordSchemaVersion("public.t", h, "0/2", 1)) // same shape: not recorded
+	is.True(!p.RecordSchemaVersion("public.t", h, "0/3", 1))
 	is.Equal(len(p.SchemaHistory["public.t"]), 1)
 
 	// A genuinely different shape IS recorded.
 	h2 := HashColumnSet(cols(ci("id", 23, -1), ci("new", 25, -1)))
-	is.True(p.RecordSchemaVersion("public.t", h2, "0/4"))
+	is.True(p.RecordSchemaVersion("public.t", h2, "0/4", 1))
 	is.Equal(len(p.SchemaHistory["public.t"]), 2)
 }
 
@@ -114,7 +115,7 @@ func Test_SetFirstSeenLSN(t *testing.T) {
 	is.True(!p.SetFirstSeenLSN("public.t", "0/42"))
 
 	// The relation-message record carries the 0/0 placeholder.
-	is.True(p.RecordSchemaVersion("public.t", h, "0/0"))
+	is.True(p.RecordSchemaVersion("public.t", h, "0/0", 1))
 	last, ok := p.LastSchemaVersion("public.t")
 	is.True(ok)
 	is.Equal(last.FirstSeenLSN, "0/0")
@@ -133,7 +134,7 @@ func Test_SetFirstSeenLSN(t *testing.T) {
 
 	// Only the LAST version is touched: the previous shape keeps its own LSN.
 	h2 := HashColumnSet(cols(ci("id", 23, -1), ci("new", 25, -1)))
-	is.True(p.RecordSchemaVersion("public.t", h2, "0/0"))
+	is.True(p.RecordSchemaVersion("public.t", h2, "0/0", 1))
 	is.True(p.SetFirstSeenLSN("public.t", "0/100"))
 	versions := p.SchemaHistory["public.t"]
 	is.Equal(versions[0].FirstSeenLSN, "0/42")
@@ -155,7 +156,7 @@ func Test_RecordSchemaVersion_PrunesOldestFirst(t *testing.T) {
 	for i := range 6 {
 		h := HashColumnSet(cols(ci(fmt.Sprintf("c%d", i), 23, -1)))
 		lastHash = h
-		p.RecordSchemaVersion("public.t", h, fmt.Sprintf("0/%d", i))
+		p.RecordSchemaVersion("public.t", h, fmt.Sprintf("0/%d", i), 1)
 	}
 
 	versions := p.SchemaHistory["public.t"]
@@ -180,7 +181,7 @@ func Test_SchemaHistory_SurvivesPositionRoundTrip(t *testing.T) {
 
 	p := Position{Type: TypeCDC, LastLSN: "0/ABC"}
 	h := HashColumnSet(cols(ci("id", 23, -1), ci("email", 25, -1)))
-	p.RecordSchemaVersion("public.users", h, "0/AAA")
+	p.RecordSchemaVersion("public.users", h, "0/AAA", 1)
 
 	parsed, err := ParseSDKPosition(p.ToSDKPosition())
 	is.NoErr(err)
@@ -189,6 +190,30 @@ func Test_SchemaHistory_SurvivesPositionRoundTrip(t *testing.T) {
 	is.True(ok)
 	is.Equal(got.ColumnSetHash, h)
 	is.Equal(got.FirstSeenLSN, "0/AAA")
+	is.Equal(got.Columns, 1) // the column count is part of the entry
+}
+
+// Test_SchemaHistory_ColumnsRoundTripAndAbsent pins the column count's wire
+// form: it round-trips, and an entry written without it (a main build before the
+// field existed) parses with Columns == 0, which means "not recorded".
+func Test_SchemaHistory_ColumnsRoundTripAndAbsent(t *testing.T) {
+	is := is.New(t)
+
+	p := Position{Type: TypeCDC}
+	p.RecordSchemaVersion("public.t", "h", "0/1", 7)
+	raw := p.ToSDKPosition()
+	is.True(strings.Contains(string(raw), `"columns":7`))
+	parsed, err := ParseSDKPosition(raw)
+	is.NoErr(err)
+	v, _ := parsed.LastSchemaVersion("public.t")
+	is.Equal(v.Columns, 7)
+
+	old, err := ParseSDKPosition([]byte(`{"type":2,"last_lsn":"0/10","schema_history":{"public.t":[{"hash":"h","first_seen_lsn":"0/1"}]}}`))
+	is.NoErr(err)
+	v, ok := old.LastSchemaVersion("public.t")
+	is.True(ok)
+	is.Equal(v.Columns, 0)
+	is.Equal(v.ColumnSetHash, "h")
 }
 
 // Test_SchemaHistory_AbsentOnLegacyPosition pins the compatibility contract: a
@@ -208,7 +233,7 @@ func Test_SchemaHistory_AbsentOnLegacyPosition(t *testing.T) {
 	is.True(!ok)
 
 	// Recording against a legacy position must work, not panic on a nil map.
-	is.True(p.RecordSchemaVersion("public.users", "abc", "0/1"))
+	is.True(p.RecordSchemaVersion("public.users", "abc", "0/1", 1))
 }
 
 // legacyPosition mirrors the Position struct as it existed BEFORE SchemaHistory
@@ -235,7 +260,7 @@ func Test_SchemaHistory_DowngradeIsSafe(t *testing.T) {
 	is := is.New(t)
 
 	p := Position{Type: TypeCDC, LastLSN: "0/ABC", SnapshotLowWatermarkLSN: "0/100"}
-	p.RecordSchemaVersion("public.users", "somehash", "0/AAA")
+	p.RecordSchemaVersion("public.users", "somehash", "0/AAA", 1)
 	encoded := p.ToSDKPosition()
 
 	var old legacyPosition
@@ -314,22 +339,27 @@ func Test_MatchesLegacyHash(t *testing.T) {
 	is := is.New(t)
 	shape := cols(ci("id", 23, -1), ci("email", 25, -1), ci("age", 23, -1))
 
-	is.True(MatchesLegacyHash(shape, legacyGolden))
-	is.True(!MatchesLegacyHash(shape, HashColumnSet(shape))) // the new form is not the old form
-	is.True(!MatchesLegacyHash(cols(ci("id", 23, -1)), legacyGolden))
+	is.True(MatchesLegacyHash(shape, legacyGolden, 0))
+	is.True(!MatchesLegacyHash(shape, HashColumnSet(shape), 0)) // the new form is not the old form
+	is.True(!MatchesLegacyHash(cols(ci("id", 23, -1)), legacyGolden, 0))
+
+	// A recorded column count must equal the current one; zero means unknown.
+	is.True(MatchesLegacyHash(shape, legacyGolden, 3))
+	is.True(!MatchesLegacyHash(shape, legacyGolden, 2))
+	is.True(!MatchesLegacyHash(shape, legacyGolden, 4))
 
 	// A name with an old separator byte is never accepted, even when the old
 	// hash of that very shape is the one stored.
 	weird := cols(ci("id", 23, -1), ci("a\x1f25\x1f-1\x1eb", 25, -1))
-	is.True(!MatchesLegacyHash(weird, legacyHashColumnSet(weird)))
-	is.True(MatchesLegacyHash(cols(ci("a", 25, -1)), legacyHashColumnSet(cols(ci("a", 25, -1)))))
+	is.True(!MatchesLegacyHash(weird, legacyHashColumnSet(weird), 0))
+	is.True(MatchesLegacyHash(cols(ci("a", 25, -1)), legacyHashColumnSet(cols(ci("a", 25, -1))), 0))
 }
 
 func Test_ReplaceLastSchemaHash(t *testing.T) {
 	is := is.New(t)
 	p := Position{SchemaHistory: SchemaHistories{"public.t": {{ColumnSetHash: "old1", FirstSeenLSN: "0/1"}, {ColumnSetHash: "old2", FirstSeenLSN: "0/2"}}}}
-	is.True(p.ReplaceLastSchemaHash("public.t", "new"))
-	is.Equal(p.SchemaHistory["public.t"][1], SchemaVersion{ColumnSetHash: "new", FirstSeenLSN: "0/2"})
+	is.True(p.ReplaceLastSchemaHash("public.t", "new", 3))
+	is.Equal(p.SchemaHistory["public.t"][1], SchemaVersion{ColumnSetHash: "new", FirstSeenLSN: "0/2", Columns: 3})
 	is.Equal(p.SchemaHistory["public.t"][0].ColumnSetHash, "old1")
-	is.True(!p.ReplaceLastSchemaHash("public.none", "x"))
+	is.True(!p.ReplaceLastSchemaHash("public.none", "x", 3))
 }

@@ -145,9 +145,15 @@ func legacyHash(cols ...*pglogrepl.RelationMessageColumn) string {
 }
 
 func positionWithHash(hash string) position.Position {
+	return positionWithHashAndColumns(hash, 0)
+}
+
+// positionWithHashAndColumns is positionWithHash with the recorded column count
+// (0: not recorded, as in a main-build position).
+func positionWithHashAndColumns(hash string, columns int) position.Position {
 	return position.Position{
 		Type:          position.TypeCDC,
-		SchemaHistory: position.SchemaHistories{"public.users": {{ColumnSetHash: hash, FirstSeenLSN: "0/64"}}},
+		SchemaHistory: position.SchemaHistories{"public.users": {{ColumnSetHash: hash, FirstSeenLSN: "0/64", Columns: columns}}},
 	}
 }
 
@@ -168,6 +174,7 @@ func Test_LegacyHash_Matching_IsAcceptedAndRerecorded(t *testing.T) {
 	is.Equal(len(hist), 1) // replaced in place, not appended
 	is.Equal(hist[0].ColumnSetHash, position.HashColumnSet(columnIdentities(relMsg(shapeV1...))))
 	is.Equal(hist[0].FirstSeenLSN, "0/64")
+	is.Equal(hist[0].Columns, len(shapeV1)) // the replacement carries the count
 
 	resumed, err := position.ParseSDKPosition(h.buildPosition(250))
 	is.NoErr(err)
@@ -197,4 +204,55 @@ func Test_LegacyHash_NotMatching_IsDrift(t *testing.T) {
 	kind, marker := relate(context.Background(), t, h, relMsg(shapeV2...), 200)
 	is.Equal(kind, driftAcrossRestart)
 	is.True(marker)
+}
+
+// The recorded column count closes the gap a hash alone leaves. The stored
+// shape {id, "a<US>25<US>-1<RS>b"} has the same old-form hash as {id, a, b}, and
+// the current names contain no separator byte, so the guarded check alone would
+// accept it as unchanged. Its recorded count (2) differs from the current one
+// (3), so it is drift.
+func Test_LegacyHash_ColumnCountRejectsImitatingShape(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+
+	imitating := []*pglogrepl.RelationMessageColumn{relCol("id", 23, -1), relCol("a\x1f25\x1f-1\x1eb", 25, -1)}
+	current := []*pglogrepl.RelationMessageColumn{relCol("id", 23, -1), relCol("a", 25, -1), relCol("b", 25, -1)}
+	is.Equal(legacyHash(imitating...), legacyHash(current...)) // the premise
+
+	h := newHandlerWithPosition(t, positionWithHashAndColumns(legacyHash(imitating...), len(imitating)), SchemaDriftPolicyHalt)
+	kind, marker := relate(ctx, t, h, relMsg(current...), 200)
+	is.Equal(kind, driftAcrossRestart)
+	is.True(marker)
+
+	// Without a recorded count (a main-build entry) nothing can tell them
+	// apart, so the guarded behaviour applies: accepted. Documented limit.
+	h2 := newHandlerWithPosition(t, positionWithHashAndColumns(legacyHash(imitating...), 0), SchemaDriftPolicyHalt)
+	kind, _ = relate(ctx, t, h2, relMsg(current...), 200)
+	is.Equal(kind, driftNone)
+}
+
+// A matching count is accepted, and every newly recorded entry carries the
+// count.
+func Test_LegacyHash_MatchingColumnCountAccepted_NewEntriesCarryCount(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+
+	h := newHandlerWithPosition(t, positionWithHashAndColumns(legacyHash(shapeV1...), len(shapeV1)), SchemaDriftPolicyHalt)
+	kind, marker := relate(ctx, t, h, relMsg(shapeV1...), 200)
+	is.Equal(kind, driftNone)
+	is.True(!marker)
+
+	fresh := newHandlerWithPosition(t, position.Position{Type: position.TypeCDC}, SchemaDriftPolicyHalt)
+	kind, _ = relate(ctx, t, fresh, relMsg(shapeV1...), 100)
+	is.Equal(kind, driftInitial)
+	is.Equal(fresh.basePosition.SchemaHistory["public.users"][0].Columns, len(shapeV1))
+
+	// A shape accepted after a change is recorded with its count too.
+	kind, _ = relate(ctx, t, fresh, relMsg(shapeV2...), 200)
+	is.True(kind != driftNone)
+	if fresh.driftMarkerPending() {
+		// halt policy: the version is committed with the marker
+		hist := fresh.basePosition.SchemaHistory["public.users"]
+		is.Equal(hist[len(hist)-1].Columns, len(shapeV2))
+	}
 }

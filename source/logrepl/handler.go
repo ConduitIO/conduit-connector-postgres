@@ -850,7 +850,7 @@ func (h *CDCHandler) decideDriftOnDelivery(ctx context.Context, relationID uint3
 		// Accepted shape (an unchanged or replayed shape, the first sighting,
 		// or an evolve-compatible change): commit it to the live history, so
 		// this change's position and every later one carry it.
-		h.basePosition.RecordSchemaVersion(relationKey(rel), hash, lsn.String())
+		h.basePosition.RecordSchemaVersion(relationKey(rel), hash, lsn.String(), len(rel.Columns))
 		// The accepted shape is the only diff base needed from here on.
 		h.seenShapes[relationID] = map[string]*pglogrepl.RelationMessage{hash: rel}
 		return kind, false
@@ -887,12 +887,12 @@ func (h *CDCHandler) classifyDrift(
 		// Same shape as the last durable version: a re-sent or replayed
 		// Relation message, or no DDL at all. Must stay silent.
 		return driftNone, internal.SchemaDiff{}, prev, hash
-	case hadHistory && position.MatchesLegacyHash(columnIdentities(r), prev.ColumnSetHash):
+	case hadHistory && position.MatchesLegacyHash(columnIdentities(r), prev.ColumnSetHash, prev.Columns):
 		// The durable hash is in the encoding used before #408 and is proven
 		// to be this very shape (MatchesLegacyHash). Re-record it in the
 		// current encoding in place, so the history keeps one entry with its
 		// FirstSeenLSN and the next start compares equal.
-		h.basePosition.ReplaceLastSchemaHash(key, hash)
+		h.basePosition.ReplaceLastSchemaHash(key, hash, len(r.Columns))
 		return driftNone, internal.SchemaDiff{}, prev, hash
 	case !hadHistory:
 		// First shape ever recorded for this table — on a first run, or on the
@@ -1004,7 +1004,7 @@ func (h *CDCHandler) emitDriftMarker(
 	chaospoint.Reach(chaospoint.DriftVersionRecorded)
 
 	key := relationKey(r)
-	h.basePosition.RecordSchemaVersion(key, hash, lsn.String())
+	h.basePosition.RecordSchemaVersion(key, hash, lsn.String(), len(r.Columns))
 	// The D5 error is built at the marker's LSN — the first delivered change
 	// that uses the new shape. The prev passed in is the PREVIOUS durable
 	// shape, so the message's "first seen at LSN" is real for both sides of
