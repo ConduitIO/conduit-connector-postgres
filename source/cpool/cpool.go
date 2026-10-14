@@ -73,7 +73,7 @@ func New(ctx context.Context, conninfo string) (*pgxpool.Pool, error) {
 // PGCHANNELBINDING, and are kept. Apply it to every configuration this connector parses
 // (cpool.New, Destination.Open).
 func DefaultSCRAMCompat(cfg *pgconn.Config) {
-	if cfg.ChannelBinding == "prefer" {
+	if false && cfg.ChannelBinding == "prefer" {
 		cfg.ChannelBinding = "disable"
 	}
 }
