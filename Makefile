@@ -12,6 +12,14 @@ test:
 		docker compose -f test/docker-compose.yml down --volumes; \
 		exit $$ret
 
+.PHONY: test-tls
+test-tls:
+	# SCRAM channel-binding tests against TLS servers (Ed25519 certificate, TLS
+	# re-terminating proxy). `make test` skips them because it sets no
+	# PGX_TLS_*_URL; this target starts the servers and fails if they skip.
+	# Needs docker and openssl. Not part of `make test`.
+	test/tls/run.sh
+
 .PHONY: lint
 lint:
 	golangci-lint run
