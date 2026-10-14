@@ -73,7 +73,9 @@ func TestDefaultSCRAMCompat(t *testing.T) {
 //     example: it authenticates the client itself and does not advertise PLUS.
 //
 // Both need SCRAM-SHA-256 users and sslmode=require. The test is skipped when
-// the variables are not set; CI has no such servers.
+// the variables are not set, which is the case under `make test`. The `tls`
+// workflow (`make test-tls`, test/tls/run.sh) starts both servers and fails if
+// the test skips.
 func TestPool_SCRAMChannelBinding(t *testing.T) {
 	for _, env := range []string{"PGX_TLS_ED25519_URL", "PGX_TLS_PROXY_URL"} {
 		t.Run(env, func(t *testing.T) {

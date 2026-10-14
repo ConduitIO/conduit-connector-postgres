@@ -24,7 +24,7 @@ import (
 
 // TestDestination_Open_SCRAMChannelBinding opens the destination against the
 // servers described in cpool.TestPool_SCRAMChannelBinding (PGX_TLS_ED25519_URL,
-// PGX_TLS_PROXY_URL). Skipped when they are not set.
+// PGX_TLS_PROXY_URL). Skipped when they are not set; `make test-tls` sets them.
 func TestDestination_Open_SCRAMChannelBinding(t *testing.T) {
 	for _, env := range []string{"PGX_TLS_ED25519_URL", "PGX_TLS_PROXY_URL"} {
 		t.Run(env, func(t *testing.T) {
