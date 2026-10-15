@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	"github.com/conduitio/conduit-connector-postgres/source/dbzoffset"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
@@ -270,4 +271,86 @@ func TestCDCIterator_ImportFloorHoldsAfterFirstAck(t *testing.T) {
 	var after pglogrepl.LSN
 	is.NoErr(pool.QueryRow(ctx, "SELECT confirmed_flush_lsn FROM pg_replication_slots WHERE slot_name = $1", slot).Scan(&after))
 	is.True(after >= f0)
+}
+
+// retreatSlot moves slot past the current WAL with other traffic, then has
+// another client report flush = to, moving confirmed_flush_lsn back below
+// restart_lsn. Servers before 14.19, 15.14, 16.10 and 17.6 accept that; on
+// later ones the test that needs it is skipped, because the state cannot
+// arise there.
+func retreatSlot(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table, slot string, to pglogrepl.LSN) {
+	t.Helper()
+	is := is.New(t)
+	for i := 0; i < 3; i++ {
+		_, err := pool.Exec(ctx, "SELECT pg_log_standby_snapshot()")
+		is.NoErr(err)
+		_, err = pool.Exec(ctx, fmt.Sprintf("INSERT INTO %q (key, column1) VALUES ('pad%d', 'x')", table, i))
+		is.NoErr(err)
+	}
+	for i := 0; i < 2; i++ {
+		_, err := pool.Exec(ctx, "SELECT pg_log_standby_snapshot()")
+		is.NoErr(err)
+		_, err = pool.Exec(ctx, "SELECT pg_replication_slot_advance($1, pg_current_wal_lsn())", slot)
+		is.NoErr(err)
+	}
+	conn, err := pool.Acquire(cpool.WithReplication(ctx))
+	is.NoErr(err)
+	is.NoErr(pglogrepl.StartReplication(ctx, conn.Conn().PgConn(), slot, 0, pglogrepl.StartReplicationOptions{
+		Mode:       pglogrepl.LogicalReplication,
+		PluginArgs: []string{`"proto_version" '1'`, fmt.Sprintf(`"publication_names" '%s'`, slot)},
+	}))
+	is.NoErr(pglogrepl.SendStandbyStatusUpdate(ctx, conn.Conn().PgConn(), pglogrepl.StandbyStatusUpdate{
+		WALWritePosition: to, WALFlushPosition: to, WALApplyPosition: to,
+	}))
+	// Let the walsender apply the update before the connection goes away.
+	var f pglogrepl.LSN
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		is.NoErr(pool.QueryRow(ctx, "SELECT confirmed_flush_lsn FROM pg_replication_slots WHERE slot_name = $1", slot).Scan(&f))
+		if f == to {
+			break
+		}
+	}
+	_ = conn.Conn().Close(ctx)
+	conn.Release()
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		var active bool
+		is.NoErr(pool.QueryRow(ctx, "SELECT active FROM pg_replication_slots WHERE slot_name = $1", slot).Scan(&active))
+		if !active {
+			break
+		}
+	}
+	var conf, restart pglogrepl.LSN
+	is.NoErr(pool.QueryRow(ctx, "SELECT confirmed_flush_lsn, restart_lsn FROM pg_replication_slots WHERE slot_name = $1", slot).Scan(&conf, &restart))
+	if restart <= conf {
+		var v int
+		is.NoErr(pool.QueryRow(ctx, "SELECT current_setting('server_version_num')::int").Scan(&v))
+		t.Skipf("server %d did not move confirmed_flush_lsn below restart_lsn (confirmed %s, restart %s): it has the no-retreat fix", v, conf, restart)
+	}
+}
+
+// Review SHOULD: a slot whose confirmed_flush_lsn another client moved back
+// below restart_lsn no longer holds the changes since Lc, yet passes F <= Lc.
+// The stream-start check must refuse it (slot_invalidated); without that
+// check the row committed after Lc is never delivered.
+func TestCDCIterator_ImportRefusesRetreatedSlot(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupTestTable(ctx, t, pool)
+	slot := test.RandomIdentifier(t)
+	test.CreatePublication(t, pool, slot, []string{table})
+	test.CreateReplicationSlot(t, pool, slot)
+	var f0 pglogrepl.LSN
+	is.NoErr(pool.QueryRow(ctx, "SELECT confirmed_flush_lsn FROM pg_replication_slots WHERE slot_name = $1", slot).Scan(&f0))
+	_, err := pool.Exec(ctx, fmt.Sprintf("INSERT INTO %q (key, column1) VALUES ('lost', 'x')", table))
+	is.NoErr(err)
+	retreatSlot(ctx, t, pool, table, slot, f0)
+
+	it, err := NewCDCIterator(ctx, pool, importConfig(table, slot, slot, importFor(f0)))
+	is.NoErr(err) // F == Lc: the read-time check cannot tell
+	defer func() { _ = it.Teardown(context.Background()) }()
+	startCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	err = it.StartSubscriber(startCtx)
+	is.Equal(dbzoffset.CodeOf(err), dbzoffset.CodeSlotInvalidated)
 }

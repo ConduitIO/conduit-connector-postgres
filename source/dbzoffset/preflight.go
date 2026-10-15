@@ -82,6 +82,13 @@ const (
 	fixSlotDatabase = "Fix `url`: the slot belongs to another database."
 	fixPublication  = "Repair the publication, then redo the cutover with a new fresh slot created after the repair. Never add tables to a publication that an existing slot will decode from: pgoutput reads the historic catalog and silently skips their earlier WAL."
 	fixNotCaptured  = "Remove those tables from this pipeline and add them in a separate pipeline with a snapshot."
+	// fixPublicationExtra also covers FOR ALL TABLES and FOR TABLES IN
+	// SCHEMA publications, whose membership cannot be trimmed table by
+	// table, and a publication cannot be changed under an existing slot (B3).
+	fixPublicationExtra = "Conduit's publication must list exactly the pipeline's tables: create a new publication " +
+		"with an explicit table list (CREATE PUBLICATION ... FOR TABLE ..., not FOR ALL TABLES or FOR TABLES IN " +
+		"SCHEMA), then redo the cutover with a new slot created after it. Tables Debezium did not capture go in a " +
+		"separate pipeline with a snapshot."
 )
 
 // Preflight runs the checks of D5 that need Postgres, in the S5 order, at
@@ -362,7 +369,7 @@ func checkPublication(ctx context.Context, q Querier, publication string, tables
 	if len(extra) > 0 {
 		sort.Strings(extra)
 		return newError(CodeTablesNotCaptured, "logrepl.publicationName",
-			"Remove those tables from Conduit's publication before the cutover (redo it with a new slot), or move them to a separate pipeline with a snapshot.",
+			fixPublicationExtra,
 			"publication %q streams %s, which Debezium did not capture", publication, strings.Join(extra, ", "))
 	}
 

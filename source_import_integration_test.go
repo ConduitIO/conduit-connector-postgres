@@ -29,6 +29,7 @@ import (
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/matryer/is"
 	"github.com/rs/zerolog"
 )
@@ -621,4 +622,76 @@ func TestImport_PublicationTableNotCapturedIsRefused(t *testing.T) {
 	_, err := f.open(t, setting, nil)
 	is.Equal(dbzoffset.CodeOf(err), dbzoffset.CodeTablesNotCaptured)
 	is.True(strings.Contains(err.Error(), other))
+}
+
+// Review SHOULD (preflight level): Conduit's slot was advanced by another
+// consumer and then moved back by another client below its restart_lsn
+// (servers before 14.19, 15.14, 16.10, 17.6 accept that). F <= Lc holds, so
+// only the restart_lsn > confirmed_flush_lsn check refuses it.
+func TestImport_RetreatedSlotIsRefused(t *testing.T) {
+	is := is.New(t)
+	f := newImportFixture(t)
+	commits, _ := f.workload(t)
+	// Move Conduit's slot well past the workload, then back to C.
+	for i := 0; i < 3; i++ {
+		f.exec(t, "SELECT pg_log_standby_snapshot()", fmt.Sprintf("INSERT INTO %s VALUES (%d, 'pad')", f.table, 900+i))
+	}
+	f.exec(t, "SELECT pg_log_standby_snapshot()",
+		fmt.Sprintf("SELECT pg_replication_slot_advance('%s', pg_current_wal_lsn())", f.slot),
+		"SELECT pg_log_standby_snapshot()",
+		fmt.Sprintf("SELECT pg_replication_slot_advance('%s', pg_current_wal_lsn())", f.slot))
+
+	rc, err := pgconn.Connect(f.ctx, test.RepmgrConnString+"&replication=database")
+	is.NoErr(err)
+	is.NoErr(pglogrepl.StartReplication(f.ctx, rc, f.slot, 0, pglogrepl.StartReplicationOptions{
+		Mode: pglogrepl.LogicalReplication, PluginArgs: []string{`"proto_version" '1'`, fmt.Sprintf(`"publication_names" '%s'`, f.pub)},
+	}))
+	is.NoErr(pglogrepl.SendStandbyStatusUpdate(f.ctx, rc, pglogrepl.StandbyStatusUpdate{
+		WALWritePosition: f.c, WALFlushPosition: f.c, WALApplyPosition: f.c,
+	}))
+	eventually(t, "the retreat to be applied", func() bool { return f.slotFlush(t, f.slot) == f.c })
+	_ = rc.Close(f.ctx)
+	eventually(t, "the walsender to exit", func() bool {
+		var active bool
+		_ = f.conn.QueryRow(f.ctx, "SELECT active FROM pg_replication_slots WHERE slot_name = $1", f.slot).Scan(&active)
+		return !active
+	})
+	var restart pglogrepl.LSN
+	is.NoErr(f.conn.QueryRow(f.ctx, "SELECT restart_lsn FROM pg_replication_slots WHERE slot_name = $1", f.slot).Scan(&restart))
+	if restart <= f.c {
+		t.Skipf("this server keeps restart_lsn (%s) at or below the retreated confirmed_flush_lsn (%s)", restart, f.c)
+	}
+
+	setting := f.setting(t, map[string]any{
+		"lsn_commit": uint64(commits[0].end), "lsn": uint64(commits[0].end), "messageType": "COMMIT",
+	}, nil)
+	_, err = f.open(t, setting, nil)
+	is.Equal(dbzoffset.CodeOf(err), dbzoffset.CodeSlotInvalidated)
+}
+
+// An untested Debezium line is refused unless the setting carries the
+// operator's override, and then the override is logged at WARN at Open.
+func TestImport_UntestedDebeziumVersion(t *testing.T) {
+	is := is.New(t)
+	f := newImportFixture(t)
+	commits, _ := f.workload(t)
+	offset := map[string]any{"lsn_commit": uint64(commits[0].end), "lsn": uint64(commits[0].end), "messageType": "COMMIT"}
+
+	// Without the override the setting does not even validate.
+	_, err := dbzoffset.ParseSetting(f.setting(t, offset, func(s *dbzoffset.Setting) { s.DebeziumVersion = "3.4.1.Final" }))
+	is.Equal(dbzoffset.CodeOf(err), dbzoffset.CodeDebeziumVersionUntested)
+
+	src, err := f.open(t, f.setting(t, offset, func(s *dbzoffset.Setting) {
+		s.DebeziumVersion = "3.4.1.Final"
+		s.AllowUntestedDebeziumVersion = true
+	}), nil)
+	is.NoErr(err)
+	is.NoErr(src.Teardown(context.Background()))
+	var warned bool
+	for _, line := range strings.Split(f.logs.String(), "\n") {
+		if strings.Contains(line, `"level":"warn"`) && strings.Contains(line, "allowUntestedDebeziumVersion") {
+			warned = true
+		}
+	}
+	is.True(warned)
 }
