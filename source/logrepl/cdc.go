@@ -18,9 +18,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-postgres/source/dbzoffset"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/types"
@@ -55,6 +57,10 @@ type CDCConfig struct {
 	// SchemaDriftPolicy is what the connector does on schema drift (halt by
 	// default). Validated via ParseSchemaDriftPolicy in Config.Validate.
 	SchemaDriftPolicy SchemaDriftPolicy
+	// Import is the Debezium offset import (#341), nil outside import mode.
+	// It is set only when the pipeline has no position; the caller has run
+	// dbzoffset.Preflight.
+	Import *dbzoffset.Import
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -75,24 +81,33 @@ type CDCIterator struct {
 	// recordsForNextRead contains records from the previous batch (returned by the CDCHandler),
 	// that weren't return by this iterator's ReadN method.
 	recordsForNextRead []opencdc.Record
+
+	// importDone is set by the first Ack in import mode, after which the
+	// version 2 position rules and the import plays no part.
+	importDone atomic.Bool
 }
 
 // NewCDCIterator initializes logical replication by creating the publication and subscription manager.
 func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCIterator, error) {
-	if err := internal.CreatePublication(
-		ctx,
-		pool,
-		c.PublicationName,
-		internal.CreatePublicationOptions{Tables: c.Tables},
-	); err != nil {
-		// If creating the publication fails with code 42710, this means
-		// the publication already exists.
-		if !internal.IsPgDuplicateErr(err) {
-			return nil, err
-		}
+	// Import mode never creates the publication (#341 S16): one created
+	// after the slot's start makes pgoutput skip the earlier WAL of its
+	// tables. The preflight checked that it exists and covers the tables.
+	if c.Import == nil {
+		if err := internal.CreatePublication(
+			ctx,
+			pool,
+			c.PublicationName,
+			internal.CreatePublicationOptions{Tables: c.Tables},
+		); err != nil {
+			// If creating the publication fails with code 42710, this means
+			// the publication already exists.
+			if !internal.IsPgDuplicateErr(err) {
+				return nil, err
+			}
 
-		sdk.Logger(ctx).Warn().
-			Msgf("Publication %q already exists.", c.PublicationName)
+			sdk.Logger(ctx).Warn().
+				Msgf("Publication %q already exists.", c.PublicationName)
+		}
 	}
 
 	// Using a buffered channel here so that the handler can send a batch
@@ -114,7 +129,13 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		c.SchemaDriftPolicy,
 	)
 
-	sub, err := internal.CreateSubscription(
+	newSub := internal.CreateSubscription
+	if c.Import != nil {
+		// Import mode never creates the slot: a slot created now would start
+		// at the current WAL and miss everything since Debezium's offset.
+		newSub = internal.OpenSubscription
+	}
+	sub, err := newSub(
 		ctx,
 		pool,
 		c.SlotName,
@@ -135,6 +156,9 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		// legacy point applies (see internal.ResumePoint). Set before Run.
 		sub.Resume = internal.ResumePoint{Key: key, LSN: c.LSN}
 	}
+	if c.Import != nil {
+		applyImport(ctx, sub, c.Import)
+	}
 	// The handler stamps each record's position with the subscription's
 	// current change key. Set before the subscription goroutine starts.
 	handler.changeKey = sub.CurrentChange
@@ -145,6 +169,42 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		sub:       sub,
 		handler:   handler,
 	}, nil
+}
+
+// applyImport replaces the subscription's resume point with the import's
+// (#341 D4, D6). The import writes no position: this is rebuilt from the
+// setting at every start with an empty position, so a crash before the
+// first ack rebuilds the same point (invariant 2).
+func applyImport(ctx context.Context, sub *internal.Subscription, imp *dbzoffset.Import) {
+	plan := imp.Plan
+	commitLSN, seq, _ := plan.ResumeKey() // ParseSetting guarantees Lc != 0
+	// Invariant 3 (base rule): skip every transaction whose commit LSN is
+	// below Lc, as the exact rule with the key (Lc-1, MaxUint64).
+	sub.Resume = internal.ResumePoint{
+		Key: internal.ChangeKey{CommitLSN: commitLSN, Seq: seq},
+		LSN: plan.SkipCommitsBelow,
+	}
+	sub.Import = dbzoffset.NewFilter(plan)
+	// Invariant 1 (D6): until the first ack, never report a flush position
+	// past Lc, so a crash before it can re-apply the same import.
+	sub.ImportCeiling = plan.SkipCommitsBelow
+	sub.ImportFloor = sub.ConfirmedFlushLSN
+
+	ev := sdk.Logger(ctx).Info().
+		Str("connector", imp.Setting.Connector).
+		Str("strategy", "fresh").
+		Stringer("lsn_commit", plan.SkipCommitsBelow).
+		Stringer("lsn", plan.Offset.LSN).
+		Str("message_type", string(plan.Offset.MessageType)).
+		Stringer("case", plan.Case).
+		Stringer("slot_confirmed_flush_lsn", sub.ConfirmedFlushLSN).
+		Stringer("slot_restart_lsn", sub.RestartLSN).
+		Str("expected_duplicates", plan.ExpectedDuplicates())
+	if plan.Partial != nil {
+		ev = ev.Uint32("partial_xid", plan.Partial.Xid).
+			Stringer("partial_skip_changes_below", plan.Partial.SkipChangesBelow)
+	}
+	ev.Msg("debezium offset import: resuming from Debezium's committed offset (skip commits below lsn_commit)")
 }
 
 // StartSubscriber starts the logical replication service in the background.
@@ -351,7 +411,7 @@ func (i *CDCIterator) appendRecordsWithLimit(dst []opencdc.Record, src []opencdc
 }
 
 // Ack forwards the acknowledgment to the subscription.
-func (i *CDCIterator) Ack(_ context.Context, sdkPos opencdc.Position) error {
+func (i *CDCIterator) Ack(ctx context.Context, sdkPos opencdc.Position) error {
 	pos, err := position.ParseSDKPosition(sdkPos)
 	if err != nil {
 		return err
@@ -376,6 +436,16 @@ func (i *CDCIterator) Ack(_ context.Context, sdkPos opencdc.Position) error {
 	}
 	key := internal.ChangeKey{CommitLSN: commit, Seq: pos.TxSeq}
 	i.sub.Ack(lsn, key)
+
+	// The engine calls Ack only after the position is durable, so this is
+	// the import's durable completion signal (#341 S8).
+	if i.config.Import != nil && i.importDone.CompareAndSwap(false, true) {
+		sdk.Logger(ctx).Info().
+			Stringer("tx_commit_lsn", commit).
+			Uint64("tx_seq", pos.TxSeq).
+			Str("last_lsn", pos.LastLSN).
+			Msgf("import complete at (%s, %d); remove logrepl.import.debeziumOffset", commit, pos.TxSeq)
+	}
 
 	// D3 step 3: arming is acked-gated, never sighting-gated — the halt
 	// surfaces only once the engine acked the marker (or anything past it),

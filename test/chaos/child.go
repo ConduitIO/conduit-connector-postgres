@@ -138,6 +138,10 @@ func runRealChild() {
 		"logrepl.withAvroSchema": "false",
 		"sdk.batch.size":         strconv.Itoa(batchSize),
 	}
+	if imp := os.Getenv(envImport); imp != "" {
+		cfg["snapshotMode"] = "never"
+		cfg["logrepl.import.debeziumOffset"] = imp
+	}
 	if batchSize > 0 {
 		// Required whenever sdk.batch.size > 0 - see
 		// SourceWithBatch's own warning in conduit-connector-sdk - and

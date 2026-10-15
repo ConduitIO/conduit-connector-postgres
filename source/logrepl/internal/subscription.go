@@ -24,6 +24,7 @@ import (
 
 	"github.com/conduitio/conduit-connector-postgres/internal/chaospoint"
 	"github.com/conduitio/conduit-connector-postgres/source/cpool"
+	"github.com/conduitio/conduit-connector-postgres/source/dbzoffset"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -57,6 +58,22 @@ type Subscription struct {
 	// TXSnapshotID is non-empty and otherwise carry the persisted watermark
 	// forward from the position.
 	RestartLSN pglogrepl.LSN
+
+	// ConfirmedFlushLSN is the slot's confirmed_flush_lsn as read at
+	// subscription creation (F0 in the offset-import design).
+	ConfirmedFlushLSN pglogrepl.LSN
+
+	// Import is the Debezium offset import's partial rule (#341 D4), nil
+	// outside import mode. Set before Run; used only on the Run goroutine.
+	Import *dbzoffset.Filter
+	// ImportCeiling is Lc in import mode, zero otherwise. Until the first
+	// ack of this run the reported flush position is capped at it, and
+	// floored at ImportFloor (#341 D6). Set before Run.
+	ImportCeiling pglogrepl.LSN
+	ImportFloor   pglogrepl.LSN
+	// importWarnAt is when the next "import pending first ack" warning is
+	// due. Only touched on the Run goroutine.
+	importWarnAt time.Time
 
 	pool *pgxpool.Pool
 
@@ -136,6 +153,8 @@ type Subscription struct {
 	// arrive on another goroutine, hence the mutex.
 	ackedMu sync.Mutex
 	acked   ChangeKey
+	// ackSeen is set by the first Ack of this run. Guarded by ackedMu.
+	ackSeen bool
 
 	// reportedFlush is the highest flush position sent to the server so far.
 	// The report never goes below it (see reportedPositions). Only touched on
@@ -155,6 +174,36 @@ func CreateSubscription(
 	startLSN pglogrepl.LSN,
 	h Handler,
 ) (*Subscription, error) {
+	return newSubscription(ctx, pool, slotName, publication, tables, startLSN, h, true)
+}
+
+// OpenSubscription is CreateSubscription for a slot that must already exist:
+// it never issues CREATE_REPLICATION_SLOT. Import mode uses it (#341, Nits:
+// "Slot creation in import mode"): a slot created at Open would start at the
+// current WAL and skip every change since Debezium's offset. A missing slot
+// fails with ErrMissingSlot.
+func OpenSubscription(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	slotName,
+	publication string,
+	tables []string,
+	startLSN pglogrepl.LSN,
+	h Handler,
+) (*Subscription, error) {
+	return newSubscription(ctx, pool, slotName, publication, tables, startLSN, h, false)
+}
+
+func newSubscription(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	slotName,
+	publication string,
+	tables []string,
+	startLSN pglogrepl.LSN,
+	h Handler,
+	createSlot bool,
+) (*Subscription, error) {
 	var err error
 
 	// Request a replication connection
@@ -168,25 +217,29 @@ func CreateSubscription(
 		}
 	}()
 
-	result, err := pglogrepl.CreateReplicationSlot(
-		ctx,
-		conn.Conn().PgConn(),
-		slotName,
-		pgOutputPlugin,
-		pglogrepl.CreateReplicationSlotOptions{
-			SnapshotAction: "EXPORT_SNAPSHOT",
-			Mode:           pglogrepl.LogicalReplication,
-		},
-	)
-	if err != nil {
-		// If creating the replication slot fails with code 42710, this means
-		// the replication slot already exists.
-		if !IsPgDuplicateErr(err) {
-			return nil, err
-		}
+	var result pglogrepl.CreateReplicationSlotResult
+	if createSlot {
+		result, err = pglogrepl.CreateReplicationSlot(
+			ctx,
+			conn.Conn().PgConn(),
+			slotName,
+			pgOutputPlugin,
+			pglogrepl.CreateReplicationSlotOptions{
+				SnapshotAction: "EXPORT_SNAPSHOT",
+				Mode:           pglogrepl.LogicalReplication,
+			},
+		)
+		if err != nil {
+			// If creating the replication slot fails with code 42710, this means
+			// the replication slot already exists.
+			if !IsPgDuplicateErr(err) {
+				return nil, err
+			}
+			err = nil
 
-		sdk.Logger(ctx).Warn().
-			Msgf("replication slot %q already exists", slotName)
+			sdk.Logger(ctx).Warn().
+				Msgf("replication slot %q already exists", slotName)
+		}
 	}
 
 	slotInfo, err := ReadReplicationSlot(ctx, pool, slotName)
@@ -211,15 +264,16 @@ func CreateSubscription(
 	}
 
 	return &Subscription{
-		SlotName:      slotName,
-		Publication:   publication,
-		Tables:        tables,
-		StartLSN:      startLSN,
-		Handler:       h,
-		StatusTimeout: 10 * time.Second,
-		TXSnapshotID:  result.SnapshotName,
-		Resume:        ResumePoint{LSN: startLSN},
-		RestartLSN:    slotInfo.RestartLSN,
+		SlotName:          slotName,
+		Publication:       publication,
+		Tables:            tables,
+		StartLSN:          startLSN,
+		Handler:           h,
+		StatusTimeout:     10 * time.Second,
+		TXSnapshotID:      result.SnapshotName,
+		Resume:            ResumePoint{LSN: startLSN},
+		RestartLSN:        slotInfo.RestartLSN,
+		ConfirmedFlushLSN: slotInfo.ConfirmedFlushLSN,
 
 		conn: conn,
 		pool: pool,
@@ -386,7 +440,12 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 	switch m := logicalMsg.(type) {
 	case *pglogrepl.BeginMessage:
 		s.change = ChangeKey{CommitLSN: m.FinalLSN}
+		if s.Import != nil {
+			s.Import.Begin(m.FinalLSN, m.Xid, m.CommitTime)
+		}
 	case *pglogrepl.InsertMessage, *pglogrepl.UpdateMessage, *pglogrepl.DeleteMessage, *pglogrepl.TruncateMessage:
+		// The ordinal is counted before any skip decision, so the records
+		// delivered after skipped changes carry their real keys (#341 D4).
 		s.change.Seq++
 		if s.Resume.Delivered(s.change) {
 			sdk.Logger(ctx).Trace().
@@ -395,6 +454,22 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 				Stringer("lsn", xld.WALStart).
 				Msg("skipping change delivered before the restart")
 			return nil
+		}
+		// Invariant 3 (#341 D4, partial rule): inside the transaction the
+		// Debezium offset was taken in, skip only changes below the offset's
+		// lsn, which Debezium emitted before the offset's record. Changes at
+		// that lsn and above are delivered.
+		if s.Import != nil && s.Import.Change(xld.WALStart) {
+			sdk.Logger(ctx).Trace().
+				Stringer("commit_lsn", s.change.CommitLSN).
+				Uint64("seq", s.change.Seq).
+				Stringer("lsn", xld.WALStart).
+				Msg("skipping change Debezium delivered before its offset")
+			return nil
+		}
+	case *pglogrepl.CommitMessage:
+		if s.Import != nil {
+			s.closeImportTransaction(ctx)
 		}
 	}
 
@@ -441,7 +516,32 @@ func (s *Subscription) Ack(lsn pglogrepl.LSN, key ChangeKey) {
 	atomic.StoreUint64((*uint64)(&s.walFlushed), uint64(lsn))
 	s.ackedMu.Lock()
 	s.acked = key
+	s.ackSeen = true
 	s.ackedMu.Unlock()
+}
+
+// FirstAckSeen reports whether this run has received an ack.
+func (s *Subscription) FirstAckSeen() bool {
+	s.ackedMu.Lock()
+	defer s.ackedMu.Unlock()
+	return s.ackSeen
+}
+
+// closeImportTransaction ends the current transaction for the import's
+// partial rule and logs the duplicate set when it closes (#341, Q5: a count
+// at INFO; no public metadata key).
+func (s *Subscription) closeImportTransaction(ctx context.Context) {
+	wasArmed := s.Import.Armed()
+	s.Import.Commit()
+	if wasArmed && !s.Import.Armed() {
+		st := s.Import.Stats()
+		sdk.Logger(ctx).Info().
+			Stringer("commit_lsn", st.MatchedCommitLSN).
+			Uint64("skipped_changes", st.ChangesSkipped).
+			Uint64("duplicates", st.DeliveredAtBoundary).
+			Msg("debezium offset import: the offset's transaction was streamed; " +
+				"its changes at the offset's LSN were delivered again (possible duplicates)")
+	}
 }
 
 // allAcked reports whether the last emitted record has been acked. Keys are
@@ -600,6 +700,15 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 	// Manage replication slot lag: when every emitted record has been acked,
 	// report the server's WAL end instead of the last acked record. The gate lives in reportedPositions.
 	write, flush := reportedPositions(s.walWritten, walFlushed, serverWALEnd, s.reportedFlush, s.allAcked())
+	if s.ImportCeiling != 0 && !s.FirstAckSeen() {
+		write, flush = capImportFlush(write, flush, s.ImportCeiling, s.ImportFloor)
+		if now := time.Now(); now.After(s.importWarnAt) {
+			s.importWarnAt = now.Add(time.Minute)
+			sdk.Logger(ctx).Warn().
+				Stringer("lsn_commit", s.ImportCeiling).
+				Msgf("import pending first ack; slot held at %s (commit one write to a table of this pipeline to complete the import)", s.ImportCeiling)
+		}
+	}
 
 	// Invariant 1 / DBZ-3 B0 kill point (chaospoint.StandbyStatusUpdate):
 	// walFlushed is loaded and the report is decided, but the wire send
@@ -671,6 +780,28 @@ func reportedPositions(walWritten, walFlushed, serverWALEnd, lastReported pglogr
 	// Invariant 2: the reported flush position never decreases.
 	flush = maxLSN(flush, lastReported)
 	write = maxLSN(walWritten, flush)
+	return write, flush
+}
+
+// capImportFlush applies the import's flush cap (#341 D6) before the first
+// ack of a run: flush = max(min(flush, ceiling), floor).
+//
+// Without the cap a keepalive could move confirmed_flush_lsn past Lc before
+// anything was acked. A crash then would leave the position empty, the import
+// would be applied again, and the slot check (F <= Lc) would refuse: a crash
+// would become a stuck pipeline. The floor is F0, the slot's
+// confirmed_flush_lsn at start (F0 <= Lc, checked at Open), so the report
+// never moves the slot backwards on servers before the fix "Don't retreat
+// slot's confirmed_flush LSN".
+//
+// Invariant 1: the cap only lowers what reportedPositions decided; the floor
+// raises it at most to a position the slot already had.
+func capImportFlush(write, flush, ceiling, floor pglogrepl.LSN) (pglogrepl.LSN, pglogrepl.LSN) {
+	if flush > ceiling {
+		flush = ceiling
+	}
+	flush = maxLSN(flush, floor)
+	write = maxLSN(write, flush)
 	return write, flush
 }
 

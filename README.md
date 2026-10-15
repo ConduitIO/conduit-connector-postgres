@@ -454,6 +454,17 @@ pipelines:
           # Type: bool
           # Required: no
           logrepl.autoCleanup: "true"
+          # LogreplImportDebeziumOffset starts the pipeline from a Debezium
+          # Postgres connector's committed offset instead of a snapshot. It is
+          # written by `conduit migrate kafka-connect --cutover`, not by hand.
+          # It applies only while the pipeline has no position: the first
+          # acknowledged record writes an ordinary position and the setting is
+          # ignored from then on (remove it once the import is complete).
+          # Requires snapshotMode "never" and cdcMode "logrepl", and an existing
+          # slot and publication, which import mode never creates.
+          # Type: string
+          # Required: no
+          logrepl.import.debeziumOffset: ""
           # LogreplPublicationName determines the publication name in case the
           # connector uses logical replication to listen to changes (see
           # CDCMode).

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/conduitio/conduit-connector-postgres/source/dbzoffset"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
@@ -93,6 +94,55 @@ type Config struct {
 	//     changes still halt.
 	// "dlq" is reserved for a future version and rejected at validation.
 	LogreplSchemaDriftPolicy logrepl.SchemaDriftPolicy `json:"logrepl.schemaDrift.policy" default:"halt"`
+
+	// LogreplImportDebeziumOffset starts the pipeline from a Debezium Postgres
+	// connector's committed offset instead of a snapshot. It is written by
+	// `conduit migrate kafka-connect --cutover`, not by hand. It applies only
+	// while the pipeline has no position: the first acknowledged record writes
+	// an ordinary position and the setting is ignored from then on (remove it
+	// once the import is complete). Requires snapshotMode "never" and cdcMode
+	// "logrepl", and an existing slot and publication, which import mode
+	// never creates.
+	LogreplImportDebeziumOffset string `json:"logrepl.import.debeziumOffset"`
+}
+
+// DebeziumImport parses LogreplImportDebeziumOffset. It returns nil and no
+// error when the setting is empty.
+func (c *Config) DebeziumImport() (*dbzoffset.Import, error) {
+	if c.LogreplImportDebeziumOffset == "" {
+		return nil, nil
+	}
+	imp, err := dbzoffset.ParseSetting(c.LogreplImportDebeziumOffset)
+	if err != nil {
+		return nil, err
+	}
+	return &imp, nil
+}
+
+// ValidateImport runs the offline import checks (D2, S10, Q4). Validate
+// calls it; Open calls it again, so an import never runs on a config that
+// skipped validation.
+func (c *Config) ValidateImport() error {
+	imp, err := c.DebeziumImport()
+	if err != nil || imp == nil {
+		return err
+	}
+	if c.SnapshotMode != SnapshotModeNever {
+		return &dbzoffset.Error{Code: dbzoffset.CodeSnapshotModeConflict, Path: "snapshotMode",
+			Message: fmt.Sprintf("snapshotMode is %q, but an import resumes from Debezium's offset with no snapshot", c.SnapshotMode),
+			Fix:     "Set `snapshotMode: never`."}
+	}
+	if c.CDCMode != CDCModeLogrepl {
+		return &dbzoffset.Error{Code: dbzoffset.CodeCDCModeConflict, Path: "cdcMode",
+			Message: fmt.Sprintf("cdcMode is %q; an import needs logical replication stated explicitly", c.CDCMode),
+			Fix:     "Set `cdcMode: logrepl`."}
+	}
+	if c.LogreplSlotName == imp.Setting.DebeziumSlotName {
+		return &dbzoffset.Error{Code: dbzoffset.CodeSlotReuseUnsupported, Path: "logrepl.slotName",
+			Message: fmt.Sprintf("logrepl.slotName %q is Debezium's slot; reusing it is not supported in this version", c.LogreplSlotName),
+			Fix:     "Use the fresh slot `conduit migrate kafka-connect --cutover` created (`--slot-strategy fresh`). Reusing Debezium's slot arrives in a later release."}
+	}
+	return nil
 }
 
 // Validate validates the provided config values.
@@ -111,6 +161,10 @@ func (c *Config) Validate(ctx context.Context) error {
 	// (postgres.schema_drift.policy.unsupported); the SDK default fills in
 	// "halt" when the param is absent.
 	if _, err := logrepl.ParseSchemaDriftPolicy(string(c.LogreplSchemaDriftPolicy)); err != nil {
+		errs = append(errs, err)
+	}
+
+	if err := c.ValidateImport(); err != nil {
 		errs = append(errs, err)
 	}
 
