@@ -79,6 +79,7 @@ func Format(oid uint32, v any) (any, error) {
 //     rule (a string, or an error under EncodingAvro). Every other element,
 //     NULLs included, is the pgtype.Numeric pgx decoded, so a numeric[] without
 //     such an element is emitted exactly as before.
+//   - uuid is its canonical text form; NULL is the untyped nil, never "".
 //   - arrays of the above are normalized element by element.
 //
 // Native values that time.Time cannot serialize to JSON (years before 0000 or
@@ -99,6 +100,11 @@ func FormatFor(enc Encoding, oid uint32, v any) (any, error) {
 
 func formatFor(enc Encoding, oid uint32, v any) (any, error) {
 	if oid == pgtype.UUIDOID {
+		// Invariant 6: a NULL uuid stays the untyped nil. "" is not a uuid and
+		// cannot be told from an empty value (#392).
+		if v == nil {
+			return nil, nil //nolint:nilnil // NULL is an untyped nil record value
+		}
 		return UUID.Format(v)
 	}
 

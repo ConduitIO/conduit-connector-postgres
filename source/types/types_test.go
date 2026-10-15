@@ -15,6 +15,7 @@
 package types
 
 import (
+	"fmt"
 	"math/big"
 	"testing"
 	"time"
@@ -79,7 +80,7 @@ func Test_Format(t *testing.T) {
 				pgtype.UUIDOID, pgtype.UUIDOID,
 			},
 			expect: []any{
-				"bd94ee0b-564f-4088-bf4e-8d5e626caf66", "",
+				"bd94ee0b-564f-4088-bf4e-8d5e626caf66", nil,
 			},
 		},
 	}
@@ -109,4 +110,38 @@ func pgxNumeric(t *testing.T, num string) pgtype.Numeric {
 	is.NoErr(plan.Scan([]byte(num), &n))
 
 	return n
+}
+
+// Test_FormatUUID_Null is the unit regression test for #392: a NULL uuid is the
+// untyped nil, in both encodings, never "" (which is not a uuid and cannot be
+// told from an empty value). NULL elements of a uuid[] are nil as well.
+func Test_FormatUUID_Null(t *testing.T) {
+	for _, enc := range []Encoding{EncodingNative, EncodingAvro} {
+		t.Run(fmt.Sprintf("encoding=%d", enc), func(t *testing.T) {
+			is := is.New(t)
+
+			v, err := FormatFor(enc, pgtype.UUIDOID, nil)
+			is.NoErr(err)
+			is.True(v == nil) // not "" and not a typed nil
+
+			v, err = FormatColumn(enc, pgtype.UUIDOID, -1, nil)
+			is.NoErr(err)
+			is.True(v == nil)
+
+			v, err = FormatFor(enc, pgtype.UUIDOID, [16]byte{0xbd, 0x94, 0xee, 0x0b, 0x56, 0x4f, 0x40, 0x88, 0xbf, 0x4e, 0x8d, 0x5e, 0x62, 0x6c, 0xaf, 0x66})
+			is.NoErr(err)
+			is.Equal(v, "bd94ee0b-564f-4088-bf4e-8d5e626caf66")
+
+			// uuid[]: a NULL element stays nil (the other elements are not
+			// touched by this fix).
+			v, err = FormatFor(enc, pgtype.UUIDArrayOID, []any{nil, nil})
+			is.NoErr(err)
+			is.Equal(v, []any{nil, nil})
+		})
+	}
+}
+
+func Test_UUIDFormatter_NullIsAnError(t *testing.T) {
+	_, err := UUID.Format(nil)
+	is.New(t).True(err != nil) // callers handle NULL, the formatter never invents ""
 }

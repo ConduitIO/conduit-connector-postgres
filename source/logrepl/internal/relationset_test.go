@@ -877,3 +877,44 @@ func TestRelationSetValues_NumericArrayNonFinite(t *testing.T) {
 		is.True(strings.Contains(err.Error(), `"v"`))
 	})
 }
+
+// TestRelationSetValues_UUIDNull is the CDC half of the regression test for
+// #392: a NULL uuid column is the untyped nil, never "", in both encodings. A
+// NULL uuid element of a uuid[] is nil too. A real uuid keeps its text.
+func TestRelationSetValues_UUIDNull(t *testing.T) {
+	for _, enc := range []types.Encoding{types.EncodingAvro, types.EncodingNative} {
+		t.Run(fmt.Sprintf("avro=%t", enc == types.EncodingAvro), func(t *testing.T) {
+			is := is.New(t)
+
+			rs := NewRelationSetWithEncoding(enc)
+			rs.Add(&pglogrepl.RelationMessage{
+				RelationID: 11, Namespace: "public", RelationName: "ids", ColumnNum: 3,
+				Columns: []*pglogrepl.RelationMessageColumn{
+					{Name: "id", DataType: pgtype.Int8OID, Flags: 1},
+					{Name: "v", DataType: pgtype.UUIDOID},
+					{Name: "arr", DataType: pgtype.UUIDArrayOID},
+				},
+			})
+			text := func(s string) *pglogrepl.TupleDataColumn {
+				return &pglogrepl.TupleDataColumn{DataType: pglogrepl.TupleDataTypeText, Data: []byte(s)}
+			}
+			null := &pglogrepl.TupleDataColumn{DataType: pglogrepl.TupleDataTypeNull}
+
+			values, err := rs.Values(11, &pglogrepl.TupleData{ColumnNum: 3, Columns: []*pglogrepl.TupleDataColumn{
+				text("1"), null, text("{NULL,NULL}"),
+			}})
+			is.NoErr(err)
+			got, present := values["v"]
+			is.True(present)
+			is.True(got == nil) // a NULL uuid is the untyped nil, not ""
+			is.Equal(values["arr"], []any{nil, nil})
+
+			values, err = rs.Values(11, &pglogrepl.TupleData{ColumnNum: 3, Columns: []*pglogrepl.TupleDataColumn{
+				text("2"), text("bd94ee0b-564f-4088-bf4e-8d5e626caf66"), null,
+			}})
+			is.NoErr(err)
+			is.Equal(values["v"], "bd94ee0b-564f-4088-bf4e-8d5e626caf66")
+			is.True(values["arr"] == nil)
+		})
+	}
+}
