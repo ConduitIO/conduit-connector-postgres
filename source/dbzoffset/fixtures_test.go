@@ -17,6 +17,7 @@ package dbzoffset
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,51 +69,80 @@ func loadFixtures(tb testing.TB) []fixture {
 	return out
 }
 
-// Each capture phase has one expected outcome. The phases are capture.sh's.
-func TestFixtures(t *testing.T) { //nolint:gocyclo // one flat table of expected outcomes per capture phase
+// TestFixtures runs every captured offset through ParseOffset and NewPlan.
+// The expectation comes from the design, keyed on what Debezium wrote:
+//   - an incremental_snapshot_* key: CodeIncrementalSnapshotInProgress;
+//   - a snapshot key (any value but false/null), or a snapshot phase:
+//     CodeSnapshotInProgress;
+//   - no lsn_commit: CodeOffsetUnsupported;
+//   - otherwise accepted, with the case its messageType implies, and a DML
+//     offset arms the partial rule for its own txId.
+func TestFixtures(t *testing.T) { //nolint:gocyclo // one flat table of expected outcomes
+	midTransaction := map[string]bool{}
 	for i, fx := range loadFixtures(t) {
-		t.Run(fx.Dir+"/"+fx.Phase, func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s/%d-%s", fx.Dir, i, fx.Phase), func(t *testing.T) {
+			var m map[string]json.RawMessage
+			if err := json.Unmarshal(fx.Offset, &m); err != nil {
+				t.Fatal(err)
+			}
+			present := func(k string) bool { v, ok := m[k]; return ok && string(v) != "null" }
+			incremental := false
+			for k := range m {
+				if strings.HasPrefix(k, "incremental_snapshot_") && present(k) {
+					incremental = true
+				}
+			}
+			snapshot := present("snapshot") && string(m["snapshot"]) != "false"
+
 			o, err := ParseOffset(fx.Offset)
 			got := CodeOf(err)
-			hasIncremental := strings.Contains(string(fx.Offset), `"incremental_snapshot_`) &&
-				!strings.Contains(string(fx.Offset), `"incremental_snapshot_collections":null`)
 			switch {
-			case fx.Phase == "snapshot" || fx.Phase == "snapshot_done":
-				if got != CodeSnapshotInProgress {
-					t.Fatalf("fixture %d: want %s, got %q (%v): %s", i, CodeSnapshotInProgress, got, err, fx.Offset)
-				}
-			case fx.Phase == "legacy_1x":
-				if got != CodeOffsetUnsupported {
-					t.Fatalf("fixture %d: want %s, got %q", i, CodeOffsetUnsupported, got)
-				}
-			case hasIncremental:
+			case incremental:
 				if got != CodeIncrementalSnapshotInProgress {
-					t.Fatalf("fixture %d: want %s, got %q: %s", i, CodeIncrementalSnapshotInProgress, got, fx.Offset)
+					t.Fatalf("want %s, got %q (%v): %s", CodeIncrementalSnapshotInProgress, got, err, fx.Offset)
+				}
+			case snapshot || fx.Phase == "snapshot" || fx.Phase == "snapshot_done":
+				if got != CodeSnapshotInProgress {
+					t.Fatalf("want %s, got %q (%v): %s", CodeSnapshotInProgress, got, err, fx.Offset)
+				}
+			case !present("lsn_commit"):
+				if got != CodeOffsetUnsupported {
+					t.Fatalf("want %s, got %q: %s", CodeOffsetUnsupported, got, fx.Offset)
 				}
 			default:
 				if err != nil {
-					t.Fatalf("fixture %d: a streaming offset was refused: %v", i, err)
+					t.Fatalf("a streaming offset was refused: %v", err)
 				}
 				p := NewPlan(o)
 				switch o.MessageType {
 				case MessageCommit:
 					if p.Case != CaseCommit || p.Partial != nil {
-						t.Fatalf("fixture %d: COMMIT offset planned as %s", i, p.Case)
+						t.Fatalf("COMMIT offset planned as %s", p.Case)
 					}
 				case MessageBegin:
 					if p.Case != CaseBegin {
-						t.Fatalf("fixture %d: BEGIN offset planned as %s", i, p.Case)
+						t.Fatalf("BEGIN offset planned as %s", p.Case)
 					}
 				case MessageInsert, MessageUpdate, MessageDelete, MessageTruncate:
 					if p.Case != CaseDML || p.Partial == nil || p.Partial.Xid != o.TxID {
-						t.Fatalf("fixture %d: DML offset not armed: %+v", i, p)
+						t.Fatalf("DML offset not armed: %+v", p)
+					}
+					if o.LSN > o.LSNCommit {
+						midTransaction[fx.Dir] = true
 					}
 				case MessageMessage:
 					if o.IsNonTransactionalMessage() != (p.Case == CaseCommit) {
-						t.Fatalf("fixture %d: MESSAGE offset planned as %s", i, p.Case)
+						t.Fatalf("MESSAGE offset planned as %s", p.Case)
 					}
 				}
 			}
 		})
+	}
+	// Every real capture has a workload phase that commits offsets in the
+	// middle of a large transaction: the partial rule's case.
+	for _, fx := range loadFixtures(t) {
+		if fx.Dir != "synthetic" && !midTransaction[fx.Dir] {
+			t.Errorf("%s: no mid-transaction DML offset captured", fx.Dir)
+		}
 	}
 }

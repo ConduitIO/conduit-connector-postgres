@@ -1,0 +1,3 @@
+debezium-connector-postgres-3.2.4.Final.jar
+PostgreSQL 16.15 (Debian 16.15-1.pgdg13+2) on aarch64-unknown-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+plugin.name=pgoutput

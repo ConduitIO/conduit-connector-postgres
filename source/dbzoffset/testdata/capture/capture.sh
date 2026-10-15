@@ -198,34 +198,54 @@ CREATE FUNCTION be8(b bytea, off int) RETURNS numeric LANGUAGE sql IMMUTABLE AS
 CREATE TABLE probe AS
   SELECT lsn, xid::text::bigint AS xid, chr(get_byte(data, 0)) AS t, data
   FROM pg_logical_slot_peek_binary_changes('probe', NULL, NULL,
-    'proto_version', '1', 'publication_names', 'dbz_publication');
+    'proto_version', '1', 'publication_names', 'dbz_publication', 'messages', 'true');
 CREATE TABLE commits AS
   SELECT xid, be8(data, 3) AS commit_lsn, be8(data, 11) AS end_lsn,
          be8(data, 19) + 946684800000000 AS ts_usec
   FROM probe WHERE t = 'C';
+-- Non-transactional logical messages (flags byte 0). Debezium sets
+-- lsn_commit to such a message's LSN (S1).
+CREATE TABLE ntx_messages AS
+  SELECT (lsn - '0/0'::pg_lsn) AS lsn FROM probe WHERE t = 'M' AND get_byte(data, 1) = 0;
 CREATE TABLE changes AS
   SELECT xid, (lsn - '0/0'::pg_lsn) AS lsn FROM probe WHERE t IN ('I', 'U', 'D', 'T');
+-- Importable offsets: streaming, no snapshot and no incremental-snapshot
+-- state (the parser refuses the others before any LSN rule applies).
+CREATE VIEW importable AS SELECT o FROM captured
+  WHERE o ? 'lsn_commit' AND NOT o ? 'snapshot'
+    AND NOT EXISTS (SELECT 1 FROM jsonb_object_keys(o) k WHERE k LIKE 'incremental_snapshot_%');
 SELECT 'offsets', count(*) FROM captured;
-SELECT 'streaming_offsets', count(*) FROM captured WHERE o ? 'lsn_commit' AND NOT o ? 'snapshot';
--- (a) every lsn_commit is the end of a commit record (or Debezium's start
--- point before it processed any commit on the probe's horizon).
-SELECT 'a_lsn_commit_is_commit_end', count(*) FILTER (WHERE EXISTS (
-         SELECT 1 FROM commits c WHERE c.end_lsn = (o->>'lsn_commit')::numeric)),
+SELECT 'importable_offsets', count(*) FROM importable;
+-- (a) every lsn_commit is the end of a commit record, or the LSN of a
+-- non-transactional message (S1).
+SELECT 'a_lsn_commit_is_commit_end_or_message', count(*) FILTER (WHERE EXISTS (
+         SELECT 1 FROM commits c WHERE c.end_lsn = (o->>'lsn_commit')::numeric) OR EXISTS (
+         SELECT 1 FROM ntx_messages m WHERE m.lsn = (o->>'lsn_commit')::numeric)),
        count(*)
-FROM captured WHERE o ? 'lsn_commit' AND NOT o ? 'snapshot';
+FROM importable;
 -- (b) a change offset's lsn is a change of txId, and ts_usec its commit time.
 SELECT 'b_lsn_is_change_of_txid', count(*) FILTER (WHERE EXISTS (
          SELECT 1 FROM changes ch WHERE ch.xid = (o->>'txId')::bigint AND ch.lsn = (o->>'lsn')::numeric)),
        count(*)
-FROM captured WHERE o->>'messageType' IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE') AND NOT o ? 'snapshot';
+FROM importable WHERE o->>'messageType' IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE');
 SELECT 'b_ts_usec_is_commit_time', count(*) FILTER (WHERE EXISTS (
          SELECT 1 FROM commits c WHERE c.xid = (o->>'txId')::bigint AND c.ts_usec = (o->>'ts_usec')::numeric)),
        count(*)
-FROM captured WHERE o->>'messageType' IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE') AND NOT o ? 'snapshot';
+FROM importable WHERE o->>'messageType' IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE');
+SELECT 'a_unmatched_lsn_commit', o->>'lsn_commit', o->>'messageType', o->>'txId'
+FROM importable WHERE NOT EXISTS (
+  SELECT 1 FROM commits c WHERE c.end_lsn = (o->>'lsn_commit')::numeric) AND NOT EXISTS (
+  SELECT 1 FROM ntx_messages m WHERE m.lsn = (o->>'lsn_commit')::numeric);
+SELECT 'probe_first_commit_end', min(end_lsn) FROM commits;
+SELECT 'b_ts_mismatch', o->>'txId', o->>'messageType', o->>'ts_usec', c.ts_usec, (o->>'ts_usec')::numeric - c.ts_usec
+FROM importable JOIN commits c ON c.xid = (o->>'txId')::bigint
+WHERE o->>'messageType' IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE')
+  AND c.ts_usec <> (o->>'ts_usec')::numeric
+LIMIT 8;
 -- COMMIT offsets: lsn == lsn_commit == the commit's end.
 SELECT 'commit_offset_lsn_is_end', count(*) FILTER (WHERE o->>'lsn' = o->>'lsn_commit' AND EXISTS (
          SELECT 1 FROM commits c WHERE c.end_lsn = (o->>'lsn')::numeric)),
        count(*)
-FROM captured WHERE o->>'messageType' = 'COMMIT';
+FROM importable WHERE o->>'messageType' = 'COMMIT';
 SQL
 cat "$out/verify.tsv"
