@@ -16,6 +16,9 @@ jobs:
         with:
           go-version-file: 'go.mod'
 
+      # Includes TestAcceptanceV2 (acceptance_v2_test.go), the SDK acceptance
+      # suite v2, against the compose Postgres. It is part of ./..., so there is
+      # no separate step: a failing case fails this job.
       - name: Test
         run: make test GOTEST_FLAGS="-v -count=1"
 
