@@ -54,7 +54,9 @@ func (t *table) row(tup *pglogrepl.TupleData, full map[string]any, placeholder s
 			out[tc.name] = nil
 		case tupleUnchanged:
 			if v, ok := full[tc.name]; ok {
-				out[tc.name] = v
+				// Invariant 6: a copy, so After does not share the value with
+				// Before (postgres#425).
+				out[tc.name] = cloneValue(v)
 				continue
 			}
 			v, err := tc.placeholderValue(placeholder)
@@ -125,7 +127,9 @@ func (t *table) key(row map[string]any) opencdc.Data {
 	k := make(opencdc.StructuredData, len(t.keyIdx))
 	for _, i := range t.keyIdx {
 		name := t.columns[i].name
-		k[name] = row[name]
+		// Invariant 6: the key owns its value; the row holds it too
+		// (postgres#425).
+		k[name] = cloneValue(row[name])
 	}
 	return k
 }
@@ -355,6 +359,22 @@ func twosComplement(n *big.Int) []byte {
 		b = append([]byte{0xff}, b...)
 	}
 	return b
+}
+
+// cloneValue deep-copies the containers a decoded value can hold ([]byte,
+// and []any for arrays); everything else is immutable.
+func cloneValue(v any) any {
+	switch x := v.(type) {
+	case []byte:
+		return bytes.Clone(x)
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = cloneValue(e)
+		}
+		return out
+	}
+	return v
 }
 
 // readTypeOnly reads one type into types, for a column the catalog no

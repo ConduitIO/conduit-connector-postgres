@@ -259,6 +259,38 @@ func TestBuilder_UnchangedToast(t *testing.T) {
 	})
 }
 
+// postgres#425: Key, Before and After own their values, so editing After
+// (as a processor does) changes neither of the others.
+func TestBuilder_RecordPartsOwnTheirValues(t *testing.T) {
+	is := is.New(t)
+	b, rel := fixture(t, 'f')
+	rel.Columns[0].DataType = 17 // a bytea key, so the key holds a slice
+	b.Relation(rel)
+	cat := catalogTable{columns: []catalogColumn{
+		{name: "id", typeOID: 17, notNull: true}, {name: "name", typeOID: 25, notNull: true},
+		{name: "qty", typeOID: 23, notNull: true}, {name: "note", typeOID: 25}, {name: "blob", typeOID: 17},
+		{name: "tags", typeOID: 1009}, {name: "at", typeOID: 1184, notNull: true},
+	}, keyColumns: []string{"id"}}
+	tb, err := newTable(rel, cat, testTypes(), &b.s)
+	is.NoErr(err)
+	b.tables[1] = tb
+	begin(b, 700)
+	old := tuple(text(`\x0a0b`), text("n"), text("1"), null, text(`\x0102`), text(`{a,b}`), text("2024-03-15 08:11:12+00"))
+	rec, err := b.Update(context.Background(), &pglogrepl.UpdateMessage{
+		RelationID: 1, OldTupleType: pglogrepl.UpdateMessageTupleTypeOld, OldTuple: old,
+		NewTuple: tuple(text(`\x0a0b`), text("m"), text("2"), null, unchanged, unchanged, text("2024-03-15 08:11:12+00")),
+	}, 0x100)
+	is.NoErr(err)
+	after := rec.Payload.After.(opencdc.StructuredData)
+	after["blob"].([]byte)[0] = 0xEE
+	after["tags"].([]any)[0] = "x"
+	after["id"].([]byte)[0] = 0xEE
+	before := rec.Payload.Before.(opencdc.StructuredData)
+	is.Equal(before["blob"], []byte{1, 2})
+	is.Equal(before["tags"], []any{"a", "b"})
+	is.Equal(rec.Key, opencdc.StructuredData{"id": []byte{0x0a, 0x0b}})
+}
+
 func TestBuilder_DeleteNeedsTheOldKey(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
