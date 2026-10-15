@@ -49,6 +49,16 @@ test-chaos:
 		docker compose -f test/docker-compose.chaos.yml down --volumes; \
 		exit $$ret
 
+.PHONY: test-debezium
+test-debezium:
+	# End-to-end test of the Debezium offset import against real Debezium
+	# (test/debezium). run.sh brings up a throwaway Postgres + Kafka + Kafka
+	# Connect stack in its own compose project on ephemeral ports and removes it
+	# with `down -v` on exit. Matrix: DBZ_VERSION (3.2, 2.7), PG_IMAGE,
+	# DBZ_PLUGIN (pgoutput, decoderbufs). Fails closed: a missing stack is an
+	# INFRA: failure from inside the test, never a skip.
+	test/debezium/run.sh
+
 .PHONY: lint
 lint:
 	golangci-lint run
