@@ -27,8 +27,10 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/conduitio/conduit-connector-postgres/source"
 	"github.com/conduitio/conduit-connector-postgres/source/cpool"
+	"github.com/conduitio/conduit-connector-postgres/source/dbzoffset"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -97,6 +99,11 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 		}
 	}
 
+	imp, err := s.debeziumImport(ctx, pos)
+	if err != nil {
+		return err
+	}
+
 	switch s.config.CDCMode {
 	case source.CDCModeAuto:
 		// TODO add logic that checks if the DB supports logical replication
@@ -113,6 +120,7 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 			WithAvroSchema:    s.config.WithAvroSchema,
 			BatchSize:         *s.config.BatchSize,
 			SchemaDriftPolicy: s.config.LogreplSchemaDriftPolicy,
+			Import:            imp,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create logical replication iterator: %w", err)
@@ -123,6 +131,62 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 		return fmt.Errorf("unsupported CDC mode %q", s.config.CDCMode)
 	}
 	return nil
+}
+
+// debeziumImport returns the Debezium offset import to apply, or nil (#341
+// D2). The import applies only to a pipeline with no position; with one, the
+// setting is ignored with a warning, so an import never moves an existing
+// position forward or back. Before returning it runs the preflight against
+// Postgres: every check must pass before replication starts.
+func (s *Source) debeziumImport(ctx context.Context, pos opencdc.Position) (*dbzoffset.Import, error) {
+	if s.config.LogreplImportDebeziumOffset == "" {
+		return nil, nil
+	}
+	// D2: with a position the setting plays no part, so it is not even
+	// validated again here.
+	if len(pos) > 0 {
+		sdk.Logger(ctx).Warn().Msg("import ignored: pipeline has a position; remove logrepl.import.debeziumOffset")
+		return nil, nil
+	}
+	if err := s.config.ValidateImport(); err != nil {
+		return nil, err
+	}
+	imp, err := s.config.DebeziumImport()
+	if err != nil {
+		return nil, err
+	}
+
+	sysID, err := s.identifySystem(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := dbzoffset.Preflight(ctx, s.pool, *imp, dbzoffset.Target{
+		SlotName:         s.config.LogreplSlotName,
+		PublicationName:  s.config.LogreplPublicationName,
+		Tables:           s.config.Tables,
+		SystemIdentifier: sysID,
+	}); err != nil {
+		return nil, err
+	}
+	for _, w := range imp.Warnings {
+		sdk.Logger(ctx).Warn().Msg("debezium offset import: " + w)
+	}
+	return imp, nil
+}
+
+// identifySystem reads the server's system identifier with IDENTIFY_SYSTEM
+// on a replication connection.
+func (s *Source) identifySystem(ctx context.Context) (string, error) {
+	conn, err := s.pool.Acquire(cpool.WithReplication(ctx))
+	if err != nil {
+		return "", fmt.Errorf("import preflight: could not open a replication connection: %w", err)
+	}
+	defer conn.Release()
+	res, err := pglogrepl.IdentifySystem(ctx, conn.Conn().PgConn())
+	if err != nil {
+		return "", fmt.Errorf("import preflight: IDENTIFY_SYSTEM failed: %w", err)
+	}
+	return res.SystemID, nil
 }
 
 func (s *Source) ReadN(ctx context.Context, n int) ([]opencdc.Record, error) {

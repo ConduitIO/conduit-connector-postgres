@@ -1,0 +1,73 @@
+name: debezium
+
+# Runs the Debezium offset import end-to-end test (test/debezium,
+# `make test-debezium`) against a real Debezium: Postgres 16, Kafka (KRaft),
+# Kafka Connect with Debezium 3.2 and the pgoutput plugin. It performs the
+# fresh-slot cutover (design D3) against a running connector, stops it
+# mid-transaction, imports its offset into this repo's source and diffs
+# Debezium's topics against the source's output: loss must be 0 and the
+# duplicates must stay inside the plan's S2 bound.
+#
+# THIS WORKFLOW CANNOT BE A REQUIRED CHECK. It is path-filtered for pull
+# requests (the stack is minutes of work for a change that cannot affect the
+# import), and a path-filtered workflow never reports on a pull request that
+# touches no matching path; a required context that never reports blocks every
+# such merge permanently. See the required contexts on `main` and chaos.yml
+# for the always-report/fail-closed pattern a required check would have to
+# use. Until this job is restructured that way, it is advisory on pull
+# requests, and the nightly run is what catches drift (a new Debezium image,
+# a Postgres minor).
+#
+# Fail closed everywhere: no continue-on-error, no retries. A flaky run is
+# fixed at its cause. The compose project is removed with `down -v` by
+# test/debezium/run.sh, pass or fail.
+#
+# Not covered here (see the design's matrix): Debezium 2.7, decoderbufs,
+# Postgres 14, 15 and 17, Debezium 1.9. Run them locally:
+#   DBZ_VERSION=2.7 make test-debezium
+#   DBZ_PLUGIN=decoderbufs make test-debezium
+on:
+  pull_request:
+    paths:
+      - 'source/**'
+      - 'test/debezium/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.github/workflows/debezium.yml'
+  schedule:
+    # Nightly, 05:37 UTC (off the hour, away from chaos.yml's 05:17).
+    - cron: '37 5 * * *'
+  workflow_dispatch:
+
+jobs:
+  debezium:
+    runs-on: ubuntu-latest
+    # The run is about ten minutes. Without this the 6h default applies, and a
+    # wedged stack would hold a runner long after every test had finished.
+    timeout-minutes: 30
+    env:
+      PG_IMAGE: quay.io/debezium/postgres:16
+      DBZ_VERSION: '3.2'
+      DBZ_PLUGIN: pgoutput
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Debezium offset import end to end
+        # The output is tee'd because a green `go test` is not enough evidence
+        # that the suite ran: everything is behind `-tags debezium`, and
+        # without the tag `go test` compiles an empty package and reports ok.
+        # Asserting the scenario by name distinguishes "passed" from "never
+        # ran".
+        run: |
+          set -o pipefail
+          make test-debezium GOTEST_FLAGS="-v -count=1" | tee debezium-output.txt
+          if ! grep -q -- '--- PASS: TestDebezium_FreshSlotCutover_MidTransaction' debezium-output.txt; then
+            echo "::error::the suite reported success without running TestDebezium_FreshSlotCutover_MidTransaction - the debezium build tag is probably not reaching go test, so no scenario executed" >&2
+            exit 1
+          fi

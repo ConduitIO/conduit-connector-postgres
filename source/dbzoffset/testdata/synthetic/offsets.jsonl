@@ -1,0 +1,13 @@
+{"phase":"snapshot","offset":{"lsn":23934816,"txId":745,"ts_usec":1760000000000000,"snapshot":"INITIAL","last_snapshot_record":false,"snapshot_completed":false}}
+{"phase":"snapshot","offset":{"lsn":23934816,"txId":745,"ts_usec":1760000000000000,"snapshot":"INITIAL","last_snapshot_record":true,"snapshot_completed":false}}
+{"phase":"snapshot","offset":{"lsn":23934816,"txId":745,"ts_usec":1760000000000000,"snapshot":true,"last_snapshot_record":false}}
+{"phase":"snapshot_done","offset":{"lsn":23934816,"txId":745,"ts_usec":1760000000000000,"last_snapshot_record":true}}
+{"phase":"single","offset":{"lsn_proc":24023128,"lsn_commit":24023064,"lsn":24023128,"txId":748,"ts_usec":1760000001000000,"messageType":"INSERT"}}
+{"phase":"large","offset":{"lsn_proc":24100000,"lsn_commit":24023400,"lsn":24100000,"txId":751,"ts_usec":1760000002000000,"messageType":"INSERT"}}
+{"phase":"copy","offset":{"lsn_proc":25000000,"lsn_commit":24900000,"lsn":25000000,"txId":752,"ts_usec":1760000003000000,"messageType":"INSERT","lsn_events_processed":37}}
+{"phase":"truncate","offset":{"lsn_proc":25100000,"lsn_commit":25000500,"lsn":25100000,"txId":755,"ts_usec":1760000004000000,"messageType":"TRUNCATE","lsn_events_processed":1}}
+{"phase":"message","offset":{"lsn_proc":25200000,"lsn_commit":25200000,"lsn":25200000,"ts_usec":1760000005000000,"messageType":"MESSAGE"}}
+{"phase":"incremental","offset":{"lsn_proc":25300000,"lsn_commit":25300000,"lsn":25300000,"txId":760,"ts_usec":1760000006000000,"messageType":"INSERT","incremental_snapshot_correlation_id":null,"incremental_snapshot_maximum_key":"aced0005","incremental_snapshot_collections":"[{\"incremental_snapshot_collections_id\":\"public.big\"}]","incremental_snapshot_primary_key":"aced0005"}}
+{"phase":"heartbeat","offset":{"lsn_proc":25400000,"lsn_commit":25400000,"lsn":25400000,"txId":762,"ts_usec":1760000007000000,"messageType":"COMMIT"}}
+{"phase":"txmetadata","offset":{"lsn_proc":25500000,"lsn_commit":25400000,"lsn":25500000,"txId":763,"ts_usec":1760000008000000,"messageType":"BEGIN","transaction_id":null}}
+{"phase":"legacy_1x","offset":{"lsn_proc":25600000,"lsn":25600000,"txId":764,"ts_usec":1760000009000000}}

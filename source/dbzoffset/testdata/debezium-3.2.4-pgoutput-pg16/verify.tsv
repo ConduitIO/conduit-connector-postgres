@@ -1,0 +1,7 @@
+offsets|54
+importable_offsets|24
+a_lsn_commit_is_commit_end_or_message|24|24
+b_lsn_is_change_of_txid|21|21
+b_ts_usec_is_commit_time|21|21
+probe_first_commit_end|59120200
+commit_offset_lsn_is_end|3|3

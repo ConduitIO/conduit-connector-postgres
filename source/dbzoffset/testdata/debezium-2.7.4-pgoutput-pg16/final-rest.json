@@ -1,0 +1,1 @@
+{"offsets":[{"partition":{"server":"dbserver1"},"offset":{"transaction_id":"1161","lsn_proc":68478120,"messageType":"COMMIT","lsn_commit":68478120,"lsn":68478120,"transaction_data_collection_order_public.customers":2,"txId":1161,"ts_usec":1792058883529522}}]}

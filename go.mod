@@ -18,6 +18,8 @@ require (
 	gopkg.in/tomb.v2 v2.0.0-20161208151619-d5d1b5820637
 )
 
+require pgregory.net/rapid v1.3.0
+
 require (
 	github.com/bufbuild/protocompile v0.14.2-0.20260127163740-a85d2ef77713 // indirect
 	github.com/petermattis/goid v0.0.0-20250319124200-ccd6737f222a // indirect

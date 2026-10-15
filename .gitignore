@@ -2,3 +2,4 @@
 /conduit-connector-postgres
 .DS_Store
 .idea/
+**/testdata/rapid/

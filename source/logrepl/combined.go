@@ -23,6 +23,7 @@ import (
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/internal/chaospoint"
+	"github.com/conduitio/conduit-connector-postgres/source/dbzoffset"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/snapshot"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -82,6 +83,10 @@ type Config struct {
 	WithAvroSchema    bool
 	BatchSize         int
 	SchemaDriftPolicy SchemaDriftPolicy
+	// Import is the Debezium offset import (#341), set only for a pipeline
+	// with no position, after dbzoffset.Preflight passed. WithSnapshot is
+	// false with it.
+	Import *dbzoffset.Import
 }
 
 // Validate performs validation tasks on the config.
@@ -96,6 +101,9 @@ func (c Config) Validate() error {
 
 	if _, err := ParseSchemaDriftPolicy(string(c.SchemaDriftPolicy)); err != nil {
 		errs = append(errs, err)
+	}
+	if c.Import != nil && c.WithSnapshot {
+		errs = append(errs, errors.New("an offset import cannot be combined with a snapshot"))
 	}
 
 	return errors.Join(errs...)
@@ -271,6 +279,7 @@ func (c *CombinedIterator) initCDCIterator(ctx context.Context, pos position.Pos
 		// and every subsequent CDC restart.
 		StartPosition:     pos,
 		SchemaDriftPolicy: c.conf.SchemaDriftPolicy,
+		Import:            c.conf.Import,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create CDC iterator: %w", err)
