@@ -368,6 +368,30 @@ specification:
 
     If there is no key, the record will be simply appended.
 
+    ### Keys, columns and acknowledgements
+
+    - **Upsert key.** With a structured record key (or a raw key that is a JSON object),
+      a create, update or snapshot record is `INSERT ... ON CONFLICT (<key columns>) DO
+      UPDATE SET` every other field of the record. The key columns must carry a primary
+      key or unique constraint, otherwise Postgres rejects the statement. When a record has
+      no field besides its key columns (a table whose columns are all key columns), the
+      statement is `ON CONFLICT DO NOTHING`, so a redelivery is a no-op.
+    - **Columns.** Each record is written with exactly its own fields. A field the table has
+      no column for fails the write; the destination does not create or alter tables. A
+      field the record lacks is not written: an insert gets the column default, an existing
+      row keeps its value. A create, update or snapshot record without fields fails with
+      `postgres.destination.payload_empty`.
+    - **Deletes** need a key and delete the rows matching every key column.
+    - **Raw JSON** keys and payloads are decoded with exact integers: a whole number is an
+      `int64` (or `uint64`), never a rounded float. Other numbers are `float64`.
+    - **Names** of the table and columns are quoted as Postgres identifiers, so reserved
+      words, upper case and double quotes work. The table name is one identifier: a dot is
+      part of the name, not a schema separator.
+    - **Acknowledgements.** A write is one implicit transaction. If any statement or the
+      commit fails, nothing from that write is stored and no record of it is acknowledged;
+      the records are redelivered (at-least-once). Keyed upserts make redelivery
+      idempotent; keyless inserts append again.
+
     ### Numeric columns
 
     Decimal values (`big.Rat`) are sent to Postgres as exact decimal strings, and
