@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
 )
@@ -104,6 +105,14 @@ const (
 func Preflight(ctx context.Context, q Querier, imp Import, t Target) (SlotState, error) {
 	lc := imp.Offset.LSNCommit
 
+	// Q4: v0.21 never reuses Debezium's slot. Checked here too, so the CLI's
+	// dry run, which shares Preflight, refuses what the connector refuses.
+	if t.SlotName == imp.Setting.DebeziumSlotName {
+		return SlotState{}, newError(CodeSlotReuseUnsupported, "logrepl.slotName",
+			"Use the fresh slot `conduit migrate kafka-connect --cutover` created (`--slot-strategy fresh`). Reusing Debezium's slot arrives in a later release.",
+			"logrepl.slotName %q is Debezium's slot", t.SlotName)
+	}
+
 	// 5.
 	var inRecovery bool
 	var current pglogrepl.LSN
@@ -133,13 +142,21 @@ func Preflight(ctx context.Context, q Querier, imp Import, t Target) (SlotState,
 		return SlotState{}, err
 	}
 
+	// Resolve the pipeline's table names the way the connector does (one
+	// quoted identifier, through the session's search_path), so the checks
+	// below compare the tables the pipeline will actually read.
+	resolved, err := resolveTables(ctx, q, t.Tables)
+	if err != nil {
+		return SlotState{}, err
+	}
+
 	// 10.
-	if err := checkPublication(ctx, q, t); err != nil {
+	if err := checkPublication(ctx, q, t.PublicationName, resolved); err != nil {
 		return SlotState{}, err
 	}
 
 	// 11.
-	if err := checkTablesCaptured(imp.Setting.Tables, t.Tables); err != nil {
+	if err := checkTablesCaptured(imp.Setting.Tables, resolved); err != nil {
 		return SlotState{}, err
 	}
 
@@ -234,14 +251,19 @@ func checkIdentity(ctx context.Context, q Querier, imp Import, t Target) error {
 	case r.database != db:
 		return newError(CodeDatabaseMismatch, path, fixDBMismatch,
 			"Debezium's replication slot %q belongs to database %q, not %q", name, r.database, db)
-	case r.confirmed == nil || *r.confirmed < imp.ConsistentPoint:
-		return newError(CodeDatabaseMismatch, path, fixDBMismatch,
-			"Debezium's replication slot %q has confirmed_flush_lsn %v, below Conduit's consistent point %s: "+
-				"it never passed the cutover point on this server", name, lsnOrNull(r.confirmed), imp.ConsistentPoint)
 	case r.active:
 		// D3: Debezium must be stopped before Conduit reads (fresh mode).
 		return newError(CodeSlotActive, path, "Stop the Debezium connector (`PUT /connectors/{name}/stop`) and wait for its slot to become inactive.",
 			"Debezium's replication slot %q is still in use (%s)", name, r.activeHolder())
+	case r.plugin != imp.Setting.Plugin:
+		// S4: the partial rule's proof rests on the plugin Debezium used.
+		// The slot is the ground truth; the setting must agree with it.
+		return newError(CodePluginUnsupported, SettingPath+".plugin", fixPluginUnsupported,
+			"the setting says Debezium used plugin %q, but its slot %q uses %q", imp.Setting.Plugin, name, r.plugin)
+	case r.confirmed == nil || *r.confirmed < imp.ConsistentPoint:
+		return newError(CodeDatabaseMismatch, path, fixDBMismatch,
+			"Debezium's replication slot %q has confirmed_flush_lsn %v, below Conduit's consistent point %s: "+
+				"it never passed the cutover point on this server", name, lsnOrNull(r.confirmed), imp.ConsistentPoint)
 	}
 	return nil
 }
@@ -253,7 +275,8 @@ func lsnOrNull(l *pglogrepl.LSN) string {
 	return l.String()
 }
 
-// qualify gives a table name its schema, "public" when it has none.
+// qualify gives a Debezium table name its schema, "public" when it has none.
+// The CLI writes Debezium's list schema-qualified.
 func qualify(table string) string {
 	if strings.Contains(table, ".") {
 		return table
@@ -261,42 +284,62 @@ func qualify(table string) string {
 	return "public." + table
 }
 
-func checkPublication(ctx context.Context, q Querier, t Target) error {
+// resolveTables maps the pipeline's table names to "schema.table" as
+// Postgres resolves them. The connector quotes each name as one identifier
+// (internal.WrapSQLIdent), so resolution follows the session's search_path.
+func resolveTables(ctx context.Context, q Querier, tables []string) ([]string, error) {
+	out := make([]string, 0, len(tables))
+	for _, tbl := range tables {
+		var name *string
+		if err := q.QueryRow(ctx, `SELECT n.nspname || '.' || c.relname FROM pg_class c
+			JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = to_regclass($1)`,
+			internal.WrapSQLIdent(tbl)).Scan(&name); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("import preflight: failed to resolve table %q: %w", tbl, err)
+		}
+		if name == nil {
+			return nil, newError(CodeTablesNotCaptured, "tables", fixNotCaptured, "table %q does not exist", tbl)
+		}
+		out = append(out, *name)
+	}
+	return out, nil
+}
+
+func checkPublication(ctx context.Context, q Querier, publication string, tables []string) error {
 	var exists bool
-	if err := q.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = $1)", t.PublicationName).Scan(&exists); err != nil {
-		return fmt.Errorf("import preflight: failed to read publication %q: %w", t.PublicationName, err)
+	if err := q.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = $1)", publication).Scan(&exists); err != nil {
+		return fmt.Errorf("import preflight: failed to read publication %q: %w", publication, err)
 	}
 	if !exists {
 		return newError(CodePublicationMismatch, "logrepl.publicationName", fixPublication,
-			"publication %q does not exist; import mode never creates one", t.PublicationName)
+			"publication %q does not exist; import mode never creates one", publication)
 	}
-	rows, err := q.Query(ctx, "SELECT schemaname || '.' || tablename FROM pg_publication_tables WHERE pubname = $1", t.PublicationName)
+	rows, err := q.Query(ctx, "SELECT schemaname || '.' || tablename FROM pg_publication_tables WHERE pubname = $1", publication)
 	if err != nil {
-		return fmt.Errorf("import preflight: failed to read publication %q: %w", t.PublicationName, err)
+		return fmt.Errorf("import preflight: failed to read publication %q: %w", publication, err)
 	}
 	covered := map[string]bool{}
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
 			rows.Close()
-			return fmt.Errorf("import preflight: failed to read publication %q: %w", t.PublicationName, err)
+			return fmt.Errorf("import preflight: failed to read publication %q: %w", publication, err)
 		}
 		covered[name] = true
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("import preflight: failed to read publication %q: %w", t.PublicationName, err)
+		return fmt.Errorf("import preflight: failed to read publication %q: %w", publication, err)
 	}
 	var missing []string
-	for _, tbl := range t.Tables {
-		if !covered[qualify(tbl)] {
-			missing = append(missing, qualify(tbl))
+	for _, tbl := range tables {
+		if !covered[tbl] {
+			missing = append(missing, tbl)
 		}
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
 		return newError(CodePublicationMismatch, "logrepl.publicationName", fixPublication,
-			"publication %q does not cover the pipeline's tables %s", t.PublicationName, strings.Join(missing, ", "))
+			"publication %q does not cover the pipeline's tables %s", publication, strings.Join(missing, ", "))
 	}
 	return nil
 }
@@ -308,8 +351,8 @@ func checkTablesCaptured(captured, pipeline []string) error {
 	}
 	var missing []string
 	for _, p := range pipeline {
-		if !set[qualify(p)] {
-			missing = append(missing, qualify(p))
+		if !set[p] {
+			missing = append(missing, p)
 		}
 	}
 	if len(missing) > 0 {

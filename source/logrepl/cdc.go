@@ -157,7 +157,10 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		sub.Resume = internal.ResumePoint{Key: key, LSN: c.LSN}
 	}
 	if c.Import != nil {
-		applyImport(ctx, sub, c.Import)
+		if err := applyImport(ctx, sub, c.Import); err != nil {
+			_ = sub.Teardown(ctx)
+			return nil, err
+		}
 	}
 	// The handler stamps each record's position with the subscription's
 	// current change key. Set before the subscription goroutine starts.
@@ -175,8 +178,20 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 // (#341 D4, D6). The import writes no position: this is rebuilt from the
 // setting at every start with an empty position, so a crash before the
 // first ack rebuilds the same point (invariant 2).
-func applyImport(ctx context.Context, sub *internal.Subscription, imp *dbzoffset.Import) {
+func applyImport(ctx context.Context, sub *internal.Subscription, imp *dbzoffset.Import) error {
 	plan := imp.Plan
+	// Invariant 3 (D5 check 5): Postgres decodes from the slot's
+	// confirmed_flush_lsn. The preflight checked F <= Lc; the slot was read
+	// again by OpenSubscription, and is checked again once streaming holds
+	// it (Subscription.checkImportSlot).
+	if sub.ConfirmedFlushLSN > plan.SkipCommitsBelow {
+		return &dbzoffset.Error{
+			Code: dbzoffset.CodeSlotAhead, Path: "logrepl.slotName",
+			Message: fmt.Sprintf("replication slot %q moved to confirmed_flush_lsn %s, past Debezium's lsn_commit %s",
+				sub.SlotName, sub.ConfirmedFlushLSN, plan.SkipCommitsBelow),
+			Fix: "Something else consumed Conduit's slot. Stop it, go back to Debezium with the manual runbook (`conduit migrate kafka-connect --check-rollback`), then cut over again.",
+		}
+	}
 	commitLSN, seq, _ := plan.ResumeKey() // ParseSetting guarantees Lc != 0
 	// Invariant 3 (base rule): skip every transaction whose commit LSN is
 	// below Lc, as the exact rule with the key (Lc-1, MaxUint64).
@@ -205,6 +220,7 @@ func applyImport(ctx context.Context, sub *internal.Subscription, imp *dbzoffset
 			Stringer("partial_skip_changes_below", plan.Partial.SkipChangesBelow)
 	}
 	ev.Msg("debezium offset import: resuming from Debezium's committed offset (skip commits below lsn_commit)")
+	return nil
 }
 
 // StartSubscriber starts the logical replication service in the background.

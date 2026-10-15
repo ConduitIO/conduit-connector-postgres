@@ -316,6 +316,12 @@ func (s *Subscription) Run(ctx context.Context) error {
 	}
 	s.replicating = true
 
+	if err := s.checkImportSlot(lctx); err != nil {
+		s.startErr, s.doneErr = err, err
+		close(s.ready) // ready to fail.
+		return err
+	}
+
 	s.walWritten = s.StartLSN
 	s.walFlushed = s.StartLSN
 
@@ -700,6 +706,15 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 	// Manage replication slot lag: when every emitted record has been acked,
 	// report the server's WAL end instead of the last acked record. The gate lives in reportedPositions.
 	write, flush := reportedPositions(s.walWritten, walFlushed, serverWALEnd, s.reportedFlush, s.allAcked())
+	if s.ImportCeiling != 0 && s.FirstAckSeen() {
+		// D6: import mode floors every report at F0, also after the first
+		// ack. The first acked change can sit below F0 (its transaction
+		// began before it), and before "Don't retreat slot's confirmed_flush
+		// LSN" (14.19, 15.14, 16.10, 17.6) a lower report moves the slot back:
+		// more duplicates, never loss, but avoidable.
+		flush = maxLSN(flush, s.ImportFloor)
+		write = maxLSN(write, flush)
+	}
 	if s.ImportCeiling != 0 && !s.FirstAckSeen() {
 		write, flush = capImportFlush(write, flush, s.ImportCeiling, s.ImportFloor)
 		if now := time.Now(); now.After(s.importWarnAt) {
@@ -781,6 +796,33 @@ func reportedPositions(walWritten, walFlushed, serverWALEnd, lastReported pglogr
 	flush = maxLSN(flush, lastReported)
 	write = maxLSN(walWritten, flush)
 	return write, flush
+}
+
+// checkImportSlot re-reads the slot once START_REPLICATION holds it (the
+// slot is active from then on, so nothing else can move it). In import mode
+// its confirmed_flush_lsn must still be at or below Lc: Postgres decodes from
+// there, and with F > Lc the transactions committing in [Lc, F) would never
+// be sent, nor covered by Debezium's offset (D5 check 5). The preflight
+// checked this before the subscription was created; this closes the window
+// between that check and the stream start.
+func (s *Subscription) checkImportSlot(ctx context.Context) error {
+	if s.ImportCeiling == 0 {
+		return nil
+	}
+	slot, err := ReadReplicationSlot(ctx, s.pool, s.SlotName)
+	if err != nil {
+		return err
+	}
+	if slot.ConfirmedFlushLSN > s.ImportCeiling {
+		// Invariant 3.
+		return &dbzoffset.Error{
+			Code: dbzoffset.CodeSlotAhead, Path: "logrepl.slotName",
+			Message: fmt.Sprintf("replication slot %q moved to confirmed_flush_lsn %s after the preflight, past Debezium's lsn_commit %s",
+				s.SlotName, slot.ConfirmedFlushLSN, s.ImportCeiling),
+			Fix: "Something else consumed Conduit's slot. Stop it, go back to Debezium with the manual runbook (`conduit migrate kafka-connect --check-rollback`), then cut over again.",
+		}
+	}
+	return nil
 }
 
 // capImportFlush applies the import's flush cap (#341 D6) before the first
