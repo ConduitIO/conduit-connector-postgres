@@ -75,6 +75,10 @@ const (
 	// CodePluginUnsupported: Debezium's decoding plugin is absent, wal2json,
 	// wal2json_streaming or unknown (S4).
 	CodePluginUnsupported Code = "postgres.import.plugin_unsupported"
+	// CodeDebeziumVersionUntested: the offset was written by a Debezium line
+	// whose offsets were not captured and verified for this connector, and
+	// the setting does not carry allowUntestedDebeziumVersion.
+	CodeDebeziumVersionUntested Code = "postgres.import.debezium_version_untested"
 	// CodeServerUnpatched: the server is below the first minor release with
 	// the partial-decoding fix (B1).
 	CodeServerUnpatched Code = "postgres.import.server_unpatched"

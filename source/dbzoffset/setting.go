@@ -65,6 +65,11 @@ type Setting struct {
 	// were captured and checked against Postgres; other 1.x to 3.x lines are
 	// accepted with a warning (Import.Warnings), anything else is refused.
 	DebeziumVersion string `json:"debeziumVersion"`
+	// AllowUntestedDebeziumVersion is the operator's explicit override for a
+	// Debezium 1.x to 3.x line outside VerifiedDebeziumLines. The CLI writes
+	// it only when the operator asked for it; the connector logs a WARN at
+	// every start that uses it. It never admits a major outside 1 to 3.
+	AllowUntestedDebeziumVersion bool `json:"allowUntestedDebeziumVersion,omitempty"`
 	// DebeziumSlotName names Debezium's replication slot, which the connector
 	// checks at Open (S13).
 	DebeziumSlotName string `json:"debeziumSlotName"`
@@ -116,7 +121,8 @@ type Import struct {
 
 // VerifiedDebeziumLines are the Debezium major.minor lines whose offsets are
 // in testdata (captured from a running connector and checked against
-// Postgres).
+// Postgres). Other lines are refused unless the setting carries
+// allowUntestedDebeziumVersion.
 var VerifiedDebeziumLines = []string{"2.7", "3.2"}
 
 // ParseSetting parses and validates the value of
@@ -178,7 +184,7 @@ func ParseSetting(raw string) (Import, error) {
 		return Import{}, newError(CodeOffsetInvalid, SettingPath+".identity.conduitPublication", fixReexport,
 			"identity.conduitPublication is required")
 	}
-	warning, err := checkDebeziumVersion(s.DebeziumVersion)
+	warning, err := checkDebeziumVersion(s.DebeziumVersion, s.AllowUntestedDebeziumVersion)
 	if err != nil {
 		return Import{}, err
 	}
@@ -224,21 +230,24 @@ func ParseSetting(raw string) (Import, error) {
 	return imp, nil
 }
 
-var debeziumVersionRE = regexp.MustCompile(`^([0-9]+)\.([0-9]+)\.([0-9]+)(\..+)?$`)
+// debeziumVersionRE accepts Debezium's version strings: X.Y.Z with an
+// optional qualifier (".Final", ".CR1", ".Beta2", "-SNAPSHOT").
+var debeziumVersionRE = regexp.MustCompile(`^([0-9]+)\.([0-9]+)\.([0-9]+)([.-][A-Za-z0-9][A-Za-z0-9.-]*)?$`)
 
-// checkDebeziumVersion returns a warning for a Debezium line whose offsets
-// were not captured, and refuses versions this build knows nothing about.
-func checkDebeziumVersion(v string) (string, error) {
+// checkDebeziumVersion admits the verified lines, admits another 1.x to 3.x
+// line only with the operator's override (returning a warning), and refuses
+// everything else.
+func checkDebeziumVersion(v string, allowUntested bool) (string, error) {
 	path := SettingPath + ".debeziumVersion"
-	m := debeziumVersionRE.FindStringSubmatch(strings.TrimSpace(v))
+	m := debeziumVersionRE.FindStringSubmatch(v)
 	if m == nil {
 		return "", newError(CodeOffsetInvalid, path, fixReexport,
-			"debeziumVersion %q is not a Debezium version such as \"3.2.4.Final\"", v)
+			"debeziumVersion %q is not a Debezium version (X.Y.Z with an optional qualifier, such as \"3.2.4.Final\" or \"3.3.0-SNAPSHOT\")", v)
 	}
 	major, _ := strconv.Atoi(m[1])
 	if major < 1 || major > 3 {
 		return "", newError(CodeOffsetUnsupported, path,
-			"This connector build reads offsets of Debezium 1.x to 3.x. Upgrade the connector to a build that lists your Debezium version, or re-snapshot.",
+			"This connector build reads offsets of Debezium 1.x to 3.x. Use a connector build that lists your Debezium version, or re-snapshot.",
 			"Debezium %s is not a version this connector build knows the offset format of", v)
 	}
 	line := m[1] + "." + m[2]
@@ -247,8 +256,15 @@ func checkDebeziumVersion(v string) (string, error) {
 			return "", nil
 		}
 	}
-	return fmt.Sprintf("Debezium %s: offsets of the %s line were not captured and verified for this connector "+
-		"(verified: %s); the offset passed every check, but review the dry run's resume point before cutting over",
+	if !allowUntested {
+		return "", newError(CodeDebeziumVersionUntested, path,
+			fmt.Sprintf("Run Debezium %s for the cutover, or, after reviewing the dry run's resume point, re-run the cutover with the explicit override (the setting's allowUntestedDebeziumVersion: true). Otherwise re-snapshot.",
+				strings.Join(VerifiedDebeziumLines, " or ")),
+			"offsets of Debezium %s (the %s line) were not captured and verified for this connector (verified: %s)",
+			v, line, strings.Join(VerifiedDebeziumLines, ", "))
+	}
+	return fmt.Sprintf("Debezium %s: the %s line was not captured and verified for this connector (verified: %s); "+
+		"importing on the operator's explicit override (allowUntestedDebeziumVersion)",
 		v, line, strings.Join(VerifiedDebeziumLines, ", ")), nil
 }
 

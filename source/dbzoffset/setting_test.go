@@ -16,6 +16,7 @@ package dbzoffset
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -200,23 +201,66 @@ func asError(err error, target **Error) bool {
 	return ok
 }
 
-func TestParseSetting_DebeziumVersionWarnings(t *testing.T) {
+func TestParseSetting_DebeziumVersionAllowlist(t *testing.T) {
 	for _, tc := range []struct {
-		version string
-		warn    bool
+		version  string
+		override bool
+		want     Code // "" means accepted
+		warn     bool
 	}{
-		{"3.2.4.Final", false},
-		{"3.2.0", false},
-		{"2.7.4.Final", false},
-		{"3.4.1.Final", true},
-		{"2.5.0.Final", true},
-		{"1.9.7.Final", true},
+		{version: "3.2.4.Final"},
+		{version: "3.2.0"},
+		{version: "2.7.4.Final"},
+		{version: "3.2.5-SNAPSHOT"},
+		{version: "3.2.0.CR1"},
+		{version: "3.4.1.Final", want: CodeDebeziumVersionUntested},
+		{version: "3.3.0-SNAPSHOT", want: CodeDebeziumVersionUntested},
+		{version: "2.5.0.Final", want: CodeDebeziumVersionUntested},
+		{version: "1.9.7.Final", want: CodeDebeziumVersionUntested},
+		{version: "3.4.1.Final", override: true, warn: true},
+		{version: "1.9.7.Final", override: true, warn: true},
+		{version: "4.0.0.Final", want: CodeOffsetUnsupported},
+		{version: "4.0.0.Final", override: true, want: CodeOffsetUnsupported},
+		{version: "0.10.0.Final", want: CodeOffsetUnsupported},
+		{version: " 3.2.4.Final ", want: CodeOffsetInvalid},
+		{version: "latest", want: CodeOffsetInvalid},
 	} {
-		t.Run(tc.version, func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s/override=%v", tc.version, tc.override), func(t *testing.T) {
 			is := is.New(t)
-			imp, err := ParseSetting(withField(t, "debeziumVersion", tc.version))
-			is.NoErr(err)
-			is.Equal(len(imp.Warnings) > 0, tc.warn)
+			raw := withField(t, "debeziumVersion", tc.version)
+			if tc.override {
+				var m map[string]any
+				is.NoErr(json.Unmarshal([]byte(raw), &m))
+				m["allowUntestedDebeziumVersion"] = true
+				b, err := json.Marshal(m)
+				is.NoErr(err)
+				raw = string(b)
+			}
+			imp, err := ParseSetting(raw)
+			is.Equal(CodeOf(err), tc.want)
+			if tc.want == "" {
+				is.Equal(len(imp.Warnings) > 0, tc.warn)
+			}
+		})
+	}
+}
+
+// encoding/json matches struct fields case-insensitively, so keys that
+// differ only in case are duplicates (review NIT): the last would win.
+func TestParseSetting_CaseVariantDuplicateKeys(t *testing.T) {
+	for name, raw := range map[string]string{
+		"offset/Offset": strings.Replace(designExample, `"offset":`,
+			`"offset": {"lsn_commit": 999999999999, "lsn": 999999999999, "messageType": "COMMIT"}, "Offset":`, 1),
+		"tables/TABLES": strings.Replace(designExample, `"tables":`, `"tables": ["public.other"], "TABLES":`, 1),
+		"conduitPublication/ConduitPublication": strings.Replace(designExample, `"conduitPublication":`,
+			`"conduitPublication": "v1:x", "ConduitPublication":`, 1),
+		"lsn_commit/LSN_COMMIT in the offset": strings.Replace(designExample, `"lsn_commit": 24023064`,
+			`"lsn_commit": 24023064, "LSN_COMMIT": 1`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			is := is.New(t)
+			_, err := ParseSetting(raw)
+			is.Equal(CodeOf(err), CodeOffsetInvalid)
 		})
 	}
 }

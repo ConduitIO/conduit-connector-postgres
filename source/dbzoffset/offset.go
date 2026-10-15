@@ -312,6 +312,7 @@ func decodeObject(raw []byte) (map[string]json.RawMessage, error) {
 		return nil, fmt.Errorf("expected an object, got %v", tok)
 	}
 	fields := make(map[string]json.RawMessage)
+	foldedKeys := make(map[string]string)
 	for dec.More() {
 		tok, err := dec.Token()
 		if err != nil {
@@ -328,6 +329,11 @@ func decodeObject(raw []byte) (map[string]json.RawMessage, error) {
 		if _, dup := fields[key]; dup {
 			return nil, fmt.Errorf("duplicate key %q", key)
 		}
+		folded := strings.ToLower(key)
+		if prev, dup := foldedKeys[folded]; dup {
+			return nil, fmt.Errorf("keys %q and %q differ only in case", prev, key)
+		}
+		foldedKeys[folded] = key
 		fields[key] = v
 	}
 	if _, err := dec.Token(); err != nil { // the closing '}'
@@ -419,7 +425,9 @@ func walkJSON(dec *json.Decoder) error {
 	}
 	switch d {
 	case '{':
-		seen := map[string]bool{}
+		// encoding/json matches struct fields case-insensitively, so keys
+		// that differ only in case are duplicates too ("offset", "Offset").
+		seen := map[string]string{}
 		for dec.More() {
 			kt, err := dec.Token()
 			if err != nil {
@@ -429,10 +437,13 @@ func walkJSON(dec *json.Decoder) error {
 			if !ok {
 				return fmt.Errorf("expected a key, got %v", kt)
 			}
-			if seen[key] {
-				return fmt.Errorf("duplicate key %q", key)
+			if prev, dup := seen[strings.ToLower(key)]; dup {
+				if prev == key {
+					return fmt.Errorf("duplicate key %q", key)
+				}
+				return fmt.Errorf("keys %q and %q differ only in case", prev, key)
 			}
-			seen[key] = true
+			seen[strings.ToLower(key)] = key
 			if err := walkJSON(dec); err != nil {
 				return err
 			}
