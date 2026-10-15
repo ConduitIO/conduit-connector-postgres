@@ -417,8 +417,7 @@ Postgres 17.5:
 - `time`, `inet`: rejected.
 
 Every accepted conversion to a non-numeric type is a silent coercion if the
-schema maps a numeric field to the wrong column, so check the mapping.
-<!-- /readmegen:description -->
+schema maps a numeric field to the wrong column, so check the mapping.<!-- /readmegen:description -->
 
 ## Source Configuration Parameters
 
