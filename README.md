@@ -432,6 +432,28 @@ position. Conduit's classic engine refuses that; the arch-v2 engine lets a
 processor rewrite positions, so there a processor could forge a marker. The
 forged record would be skipped, which a processor with that power could do to
 any record anyway.
+### Column type changes on a running pipeline
+
+The destination describes every statement before it runs it (pgx's
+`describe_exec` query mode), so after `ALTER TABLE ... ALTER COLUMN ... TYPE`
+the next write is typed for the new column. A value the new type cannot hold
+fails the write instead of being converted.
+
+This costs throughput. On one dedicated machine (benchi
+`destination-exec-mode`: keyed upserts into a two-column table) the
+destination wrote 35% fewer rows per second than with cached statements at
+`sdk.batch.size: 1`, the default, and 16% fewer at 1000. If the tables a
+pipeline writes never change type while it runs, add
+`default_query_exec_mode=cache_statement` to the `url` to reuse prepared
+statements as before; the same benchmark measured no difference from the
+previous release with it. **Risk:** with `cache_statement` (or
+`cache_describe`) a statement keeps the parameter types it was prepared with,
+so after an `ALTER COLUMN ... TYPE` Postgres converts values into the new
+type without an error, for example 5/2 into an integer column stored as 3,
+until the destination restarts. The destination logs a warning at start when
+the URL selects a cache mode. `exec` and `simple_protocol`, which never cache
+parameter types (PgBouncer in transaction mode needs one of them), are kept
+when the URL sets them.
 
 ### Numeric columns
 
@@ -459,10 +481,10 @@ Postgres converts the string, and the examples below were checked on
 Postgres 17.5:
 
 - `integer`, `smallint`, `bigint`: stored if the value is whole. A fractional
-  value is rejected, except on a destination that was already running when the
-  column was changed to an integer type: the cached prepared statement still
-  types the parameter as `numeric`, so 5/2 is silently rounded to 3
-  (see #367).
+  value is rejected, also on a destination that was already running when the
+  column was changed to an integer type (see "Column type changes on a running
+  pipeline"). With `default_query_exec_mode=cache_statement` in the URL, such a
+  destination rounds 5/2 to 3 instead (#367).
 - `real`, `float8`: stored as the nearest binary float.
 - `money`: rounded to the locale's fraction digits (1/3 is stored as `$0.33`).
 - `oid`: stored if the value is a whole number (7 is stored as `7`).
@@ -631,7 +653,13 @@ pipelines:
           # URL is the connection string for the Postgres database. With TLS,
           # SCRAM authentication does not use channel binding by default
           # (`channel_binding=disable`); add `channel_binding=require` to the
-          # URL to require SCRAM-SHA-256-PLUS.
+          # URL to require SCRAM-SHA-256-PLUS. The destination describes each
+          # statement before it runs it, so a column type change on a running
+          # pipeline is seen by the next write. Add
+          # `default_query_exec_mode=cache_statement` to reuse prepared
+          # statements for speed, at the risk that after an ALTER COLUMN ...
+          # TYPE values are converted into the new type without an error until a
+          # restart (#367).
           # Type: string
           # Required: yes
           url: ""
