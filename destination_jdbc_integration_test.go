@@ -290,3 +290,83 @@ func TestDestination_Write_JSONNumbersAreExact(t *testing.T) {
 		opencdc.RawData(`{"id":2}`), opencdc.RawData(`{"id":2,"i":1.5}`))})
 	is.True(err != nil) // a fraction is never truncated into an integer column
 }
+
+// squirrel turns a slice in a delete's WHERE into IN (...): {"id":[1,2]}
+// deleted two rows, a composite key with a list deleted every match, and an
+// empty list became 1=0, a no-op that was acked. Key values must be scalars.
+func TestDestination_Delete_NonScalarKeyValueFails(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	table := test.RandomIdentifier(t)
+	_, err := conn.Exec(ctx, fmt.Sprintf(`CREATE TABLE %s (a bigint, b bigint, v text, PRIMARY KEY (a, b))`, table))
+	is.NoErr(err)
+	_, err = conn.Exec(ctx, fmt.Sprintf(`INSERT INTO %s VALUES (1, 1, 'x'), (1, 2, 'y'), (1, 3, 'z')`, table))
+	is.NoErr(err)
+
+	d := openJDBCTestDestination(t, is)
+	for name, key := range map[string]opencdc.Data{
+		"raw list":          opencdc.RawData(`{"a":1,"b":[1,2]}`),
+		"structured list":   opencdc.StructuredData{"a": 1, "b": []any{1, 2, 3}},
+		"typed list":        opencdc.StructuredData{"a": 1, "b": []int64{1, 2}},
+		"empty list":        opencdc.RawData(`{"a":1,"b":[]}`),
+		"object":            opencdc.RawData(`{"a":1,"b":{"x":1}}`),
+		"list in first col": opencdc.StructuredData{"a": []any{1}, "b": 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			is := is.New(t)
+			n, err := d.Write(ctx, []opencdc.Record{jdbcTestRecord(table, opencdc.OperationDelete, key, nil)})
+			is.True(err != nil)
+			is.True(strings.Contains(err.Error(), ErrorCodeDestinationKeyValueNotScalar))
+			is.Equal(n, 0)
+			var count int
+			is.NoErr(conn.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM %s`, table)).Scan(&count))
+			is.Equal(count, 3)
+		})
+	}
+}
+
+// A null key value never conflicts, so a keyed upsert on a nullable unique
+// column appended a new row on every redelivery. Non-scalar key values are
+// refused for upserts too.
+func TestDestination_Upsert_KeyValueMustBeScalar(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	table := test.RandomIdentifier(t)
+	_, err := conn.Exec(ctx, fmt.Sprintf(`CREATE TABLE %s (email text UNIQUE, v text)`, table))
+	is.NoErr(err)
+
+	d := openJDBCTestDestination(t, is)
+	for name, tc := range map[string]struct {
+		key  opencdc.StructuredData
+		code string
+	}{
+		"null":   {opencdc.StructuredData{"email": nil}, ErrorCodeDestinationKeyColumnMissing},
+		"list":   {opencdc.StructuredData{"email": []any{"a@x"}}, ErrorCodeDestinationKeyValueNotScalar},
+		"object": {opencdc.StructuredData{"email": map[string]any{"a": 1}}, ErrorCodeDestinationKeyValueNotScalar},
+	} {
+		t.Run(name, func(t *testing.T) {
+			is := is.New(t)
+			rec := jdbcTestRecord(table, opencdc.OperationCreate, tc.key, opencdc.StructuredData{"email": "a@x", "v": "a"})
+			for i := 0; i < 2; i++ { // the second write is a redelivery
+				n, err := d.Write(ctx, []opencdc.Record{rec})
+				is.True(err != nil)
+				is.True(strings.Contains(err.Error(), tc.code))
+				is.Equal(n, 0)
+			}
+			var count int
+			is.NoErr(conn.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM %s`, table)).Scan(&count))
+			is.Equal(count, 0)
+		})
+	}
+
+	// A bytea key is a scalar.
+	btable := test.RandomIdentifier(t)
+	_, err = conn.Exec(ctx, fmt.Sprintf(`CREATE TABLE %s (id bytea PRIMARY KEY, v text)`, btable))
+	is.NoErr(err)
+	n, err := d.Write(ctx, []opencdc.Record{jdbcTestRecord(btable, opencdc.OperationCreate,
+		opencdc.StructuredData{"id": []byte{1, 2}}, opencdc.StructuredData{"v": "a"})})
+	is.NoErr(err)
+	is.Equal(n, 1)
+}

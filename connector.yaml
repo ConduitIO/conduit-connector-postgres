@@ -381,9 +381,12 @@ specification:
       field the record lacks is not written: an insert gets the column default, an existing
       row keeps its value. A create, update or snapshot record without fields fails with
       `postgres.destination.payload_empty`.
-    - **Deletes** need a key and delete the rows matching every key column. A null key value
-      fails with `postgres.destination.key_column_missing` (it would match every row with a
-      NULL in that column).
+    - **Key values** must be one non-null scalar per key column, for upserts and deletes. A
+      null value fails with `postgres.destination.key_column_missing` (a delete would match
+      every row with a NULL there, an upsert would append a new row on every redelivery), and
+      a list or object fails with `postgres.destination.key_value_not_scalar` (a delete would
+      match several rows or none).
+    - **Deletes** need a key and delete the rows matching every key column.
     - **Raw JSON** keys and payloads are decoded without going through `float64`: an integer
       literal is an `int64` (or `uint64`), and any other number keeps its literal, so
       `numeric`, `text` and `json`/`jsonb` columns store it exactly. Integer columns take a

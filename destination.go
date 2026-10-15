@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"maps"
 	"math/big"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -371,6 +372,9 @@ func (d *Destination) upsert(ctx context.Context, r opencdc.Record, b *pgx.Batch
 	if err := checkIdentifiers(tableName, key, payload); err != nil {
 		return err
 	}
+	if err := checkKeyValues(r.Operation, tableName, key); err != nil {
+		return err
+	}
 	query, args, err := d.formatUpsertQuery(key, payload, tableName)
 	if err != nil {
 		return fmt.Errorf("error formatting query: %w", err)
@@ -395,15 +399,11 @@ func (d *Destination) remove(ctx context.Context, r opencdc.Record, b *pgx.Batch
 	if err := checkIdentifiers(tableName, key, nil); err != nil {
 		return err
 	}
+	if err := checkKeyValues(r.Operation, tableName, key); err != nil {
+		return err
+	}
 	where := make(sq.Eq)
 	for col, val := range key {
-		if val == nil {
-			// squirrel turns a nil value into IS NULL, which matches every
-			// row with a NULL in that column, not one row.
-			return fmt.Errorf("%s: the delete record's key has a null value for column %q of table %q, "+
-				"so it cannot be matched to one row. Fix: send delete records with a non-null value for every key column",
-				ErrorCodeDestinationKeyColumnMissing, col, tableName)
-		}
 		where[quoteIdent(col)] = val
 	}
 
@@ -485,6 +485,34 @@ func (d *Destination) formatUpsertQuery(
 	return stmt.ToSql()
 }
 
+// checkKeyValues fails unless every key value is a single non-null scalar.
+//
+// Invariant 6: a key identifies one row. In a delete, squirrel turns a nil
+// value into IS NULL (every row with a NULL there) and a slice into IN (...)
+// (several rows; an empty slice into 1=0, a silent no-op). In an upsert, a
+// null key value never conflicts, so every redelivery of the record appends
+// another row on a nullable unique column. []byte is a scalar (bytea).
+func checkKeyValues(op opencdc.Operation, table string, key opencdc.StructuredData) error {
+	for col, val := range key {
+		if val == nil {
+			return fmt.Errorf("%s: the %s record's key has a null value for column %q of table %q, "+
+				"so it cannot identify one row. Fix: send records with a non-null value for every key column",
+				ErrorCodeDestinationKeyColumnMissing, op, col, table)
+		}
+		if _, isBytes := val.([]byte); isBytes {
+			continue
+		}
+		switch reflect.ValueOf(val).Kind() {
+		case reflect.Slice, reflect.Array, reflect.Map:
+			return fmt.Errorf("%s: the %s record's key has a %T value for column %q of table %q, "+
+				"which would match several rows or none. Fix: send one scalar value per key column",
+				ErrorCodeDestinationKeyValueNotScalar, op, val, col, table)
+		default:
+		}
+	}
+	return nil
+}
+
 // maxIdentifierBytes is NAMEDATALEN-1 of a default Postgres build. Postgres
 // truncates longer identifiers to this length with only a NOTICE, so a longer
 // field name would write into whichever column has the truncated name.
@@ -530,10 +558,12 @@ func checkIdentifiers(table string, key, payload opencdc.StructuredData) error {
 // quoteIdent quotes a table or column name as a Postgres identifier: double
 // quotes around it, and every double quote inside it doubled. The names come
 // from records (payload field names, the record key, the table template), so
-// they must never change the SQL text. Callers check the names with
-// checkIdentifiers first: Sanitize strips NUL bytes, which would alias names. internal.WrapSQLIdent (strconv.Quote)
+// they must never change the SQL text. internal.WrapSQLIdent (strconv.Quote)
 // escapes a double quote as \", which Postgres does not understand, so a name
 // with a double quote broke the statement.
+//
+// Callers check the names with checkIdentifiers first: Sanitize strips NUL
+// bytes, which would alias names.
 func quoteIdent(name string) string {
 	return pgx.Identifier{name}.Sanitize()
 }
@@ -762,3 +792,7 @@ const ErrorCodeDestinationInvalidIdentifier = "postgres.destination.invalid_iden
 // ErrorCodeDestinationKeyColumnMissing prefixes the error for a delete whose key
 // has no usable value for a key column.
 const ErrorCodeDestinationKeyColumnMissing = "postgres.destination.key_column_missing"
+
+// ErrorCodeDestinationKeyValueNotScalar prefixes the error for a key value that
+// is a list or an object.
+const ErrorCodeDestinationKeyValueNotScalar = "postgres.destination.key_value_not_scalar"
