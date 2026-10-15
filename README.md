@@ -417,8 +417,7 @@ Postgres 17.5:
 - `time`, `inet`: rejected.
 
 Every accepted conversion to a non-numeric type is a silent coercion if the
-schema maps a numeric field to the wrong column, so check the mapping.
-<!-- /readmegen:description -->
+schema maps a numeric field to the wrong column, so check the mapping.<!-- /readmegen:description -->
 
 ## Source Configuration Parameters
 
@@ -586,7 +585,7 @@ pipelines:
           sdk.rate.perSecond: "0"
           # The format of the output record. See the Conduit documentation for a
           # full list of supported formats
-          # (https://conduit.io/docs/using/connectors/configuration-parameters/output-format).
+          # (https://conduitdata.io/docs/using/connectors/configuration-parameters/output-format).
           # Type: string
           # Required: no
           sdk.record.format: "opencdc/json"
