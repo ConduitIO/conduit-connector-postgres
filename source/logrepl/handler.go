@@ -30,6 +30,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/schema"
+	"github.com/conduitio/conduit-connector-postgres/source/types"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	sdkschema "github.com/conduitio/conduit-connector-sdk/schema"
 	"github.com/jackc/pglogrepl"
@@ -418,7 +419,9 @@ func (h *CDCHandler) handleUpdate(
 	if msg.OldTupleType == pglogrepl.UpdateMessageTupleTypeOld {
 		for col, oldVal := range oldValues {
 			if _, ok := newValues[col]; !ok {
-				newValues[col] = oldVal
+				// Invariant 6: a copy, so After does not share the value with
+				// Before (#425).
+				newValues[col] = types.CloneValue(oldVal)
 			}
 		}
 	}
@@ -525,7 +528,9 @@ func (h *CDCHandler) buildRecordKey(values map[string]any, table string) opencdc
 	key := make(opencdc.StructuredData)
 	for k, v := range values {
 		if keyColumn == k {
-			key[k] = v
+			// Invariant 6: the key owns its value; the payload holds the same
+			// column (#425).
+			key[k] = types.CloneValue(v)
 			break // TODO add support for composite keys
 		}
 	}

@@ -31,6 +31,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
 	"gopkg.in/tomb.v2"
@@ -575,6 +576,20 @@ func Test_FetchWorker_buildRecordData(t *testing.T) {
 
 	is.Equal(len(key), 1)
 	is.Equal(key["id"], 1)
+}
+
+// Test_FetchWorker_buildRecordData_KeyOwnsItsValue is the snapshot half of
+// #425: the key column's value is in Key and in the payload, and editing it
+// in the payload must not change the key.
+func Test_FetchWorker_buildRecordData_KeyOwnsItsValue(t *testing.T) {
+	is := is.New(t)
+	fields := []pgconn.FieldDescription{{Name: "id", DataTypeOID: pgtype.ByteaOID}}
+	key, payload, err := (&FetchWorker{
+		conf: FetchConfig{Table: "mytable", Key: "id"},
+	}).buildRecordData(fields, []any{[]byte{1, 2}})
+	is.NoErr(err)
+	payload["id"].([]byte)[0] = 0xEE
+	is.Equal(key["id"], []byte{1, 2})
 }
 
 func Test_FetchWorker_updateSnapshotEnd(t *testing.T) {
