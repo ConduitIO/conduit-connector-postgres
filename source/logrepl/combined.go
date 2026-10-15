@@ -24,6 +24,7 @@ import (
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/internal/chaospoint"
 	"github.com/conduitio/conduit-connector-postgres/source/dbzoffset"
+	"github.com/conduitio/conduit-connector-postgres/source/debezium"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/snapshot"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -87,16 +88,25 @@ type Config struct {
 	// with no position, after dbzoffset.Preflight passed. WithSnapshot is
 	// false with it.
 	Import *dbzoffset.Import
+	// Debezium switches the CDC records to the Debezium mode, nil in the
+	// default mode. The source validated it; it is never combined with a
+	// snapshot in this version.
+	Debezium *debezium.Settings
 }
 
 // Validate performs validation tasks on the config.
 func (c Config) Validate() error {
 	var errs []error
-	// make sure we have all table keys
+	// make sure we have all table keys; the Debezium mode keys on the
+	// catalog's primary key per relation instead (composite and absent keys
+	// included)
 	for _, tableName := range c.Tables {
-		if c.TableKeys[tableName] == "" {
+		if c.Debezium == nil && c.TableKeys[tableName] == "" {
 			errs = append(errs, fmt.Errorf("missing key for table %q", tableName))
 		}
+	}
+	if c.Debezium != nil && c.WithSnapshot {
+		errs = append(errs, errors.New("the Debezium mode cannot snapshot in this version"))
 	}
 
 	if _, err := ParseSchemaDriftPolicy(string(c.SchemaDriftPolicy)); err != nil {
@@ -280,6 +290,7 @@ func (c *CombinedIterator) initCDCIterator(ctx context.Context, pos position.Pos
 		StartPosition:     pos,
 		SchemaDriftPolicy: c.conf.SchemaDriftPolicy,
 		Import:            c.conf.Import,
+		Debezium:          c.conf.Debezium,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create CDC iterator: %w", err)

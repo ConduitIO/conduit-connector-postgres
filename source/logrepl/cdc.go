@@ -23,6 +23,7 @@ import (
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/dbzoffset"
+	"github.com/conduitio/conduit-connector-postgres/source/debezium"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/types"
@@ -61,6 +62,9 @@ type CDCConfig struct {
 	// It is set only when the pipeline has no position; the caller has run
 	// dbzoffset.Preflight.
 	Import *dbzoffset.Import
+	// Debezium switches the handler to Debezium-mode records, nil in the
+	// default mode.
+	Debezium *debezium.Settings
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -129,6 +133,12 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		c.SchemaDriftPolicy,
 	)
 
+	if c.Debezium != nil {
+		// Gated: the default mode builds records from pgx values and opens
+		// no catalog connection.
+		handler.dbz = debezium.NewBuilder(*c.Debezium, pool)
+	}
+
 	newSub := internal.CreateSubscription
 	if c.Import != nil {
 		// Import mode never creates the slot: a slot created now would start
@@ -170,6 +180,10 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 			_ = sub.Teardown(ctx)
 			return nil, err
 		}
+	}
+	if c.Debezium != nil {
+		sub.SessionParams = debezium.ReplicationSessionParams()
+		sub.OnSkip = handler.dbz.Skipped
 	}
 	// The handler stamps each record's position with the subscription's
 	// current change key. Set before the subscription goroutine starts.

@@ -19,6 +19,7 @@ package postgres
 import (
 	_ "embed"
 
+	"github.com/conduitio/conduit-connector-postgres/source/debezium"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
@@ -32,3 +33,11 @@ var Connector = sdk.Connector{
 	NewSource:        NewSource,
 	NewDestination:   NewDestination,
 }
+
+// MarkStandalone records that this process runs the connector as a
+// standalone plugin (cmd/connector). The source then refuses
+// debezium.enabled with debezium.config_invalid: records crossing the plugin
+// boundary are protobuf Structs, which turn int64 into float64 and bytes
+// into base64 strings, so the Debezium mode's typed values would not survive
+// (decision 18). The built-in connector never calls it.
+func MarkStandalone() { debezium.MarkStandalone() }

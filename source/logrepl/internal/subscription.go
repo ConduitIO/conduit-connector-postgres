@@ -63,6 +63,16 @@ type Subscription struct {
 	// subscription creation (F0 in the offset-import design).
 	ConfirmedFlushLSN pglogrepl.LSN
 
+	// OnSkip, when set, is called for every change the resume point or the
+	// import's partial rule skips, before it is dropped. The Debezium mode
+	// uses it to keep numbering a transaction's events across the skipped
+	// part (provide.transaction.metadata). An error stops the subscription.
+	// Set before Run; called on the subscription goroutine.
+	OnSkip func(ctx context.Context, m pglogrepl.Message, lsn pglogrepl.LSN) error
+	// SessionParams are run-time parameters for the streaming replication
+	// connection, nil outside the Debezium mode, which pins the settings that
+	// change pgoutput's text form of values. Set before Run.
+	SessionParams map[string]string
 	// Import is the Debezium offset import's partial rule (#341 D4), nil
 	// outside import mode. Set before Run; used only on the Run goroutine.
 	Import *dbzoffset.Filter
@@ -468,7 +478,7 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 				Uint64("seq", s.change.Seq).
 				Stringer("lsn", xld.WALStart).
 				Msg("skipping change delivered before the restart")
-			return nil
+			return s.onSkip(ctx, logicalMsg, xld.WALStart)
 		}
 		// Invariant 3 (#341 D4, partial rule): inside the transaction the
 		// Debezium offset was taken in, skip only changes below the offset's
@@ -480,7 +490,7 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 				Uint64("seq", s.change.Seq).
 				Stringer("lsn", xld.WALStart).
 				Msg("skipping change Debezium delivered before its offset")
-			return nil
+			return s.onSkip(ctx, logicalMsg, xld.WALStart)
 		}
 	case *pglogrepl.CommitMessage:
 		if s.Import != nil {
@@ -512,6 +522,16 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 		s.emitted = s.change
 	}
 
+	return nil
+}
+
+func (s *Subscription) onSkip(ctx context.Context, m pglogrepl.Message, lsn pglogrepl.LSN) error {
+	if s.OnSkip == nil {
+		return nil
+	}
+	if err := s.OnSkip(ctx, m, lsn); err != nil {
+		return fmt.Errorf("handler error on a skipped change: %w", err)
+	}
 	return nil
 }
 
@@ -653,7 +673,7 @@ func (s *Subscription) startReplication(ctx context.Context) error {
 		s.beforeAcquire()
 	}
 
-	conn, err := s.pool.Acquire(cpool.WithReplication(ctx))
+	conn, err := s.pool.Acquire(cpool.WithReplication(cpool.WithSessionParams(ctx, s.SessionParams)))
 	if err != nil {
 		return fmt.Errorf("could not establish replication connection: %w", err)
 	}

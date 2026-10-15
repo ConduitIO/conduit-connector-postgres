@@ -20,5 +20,13 @@ import (
 )
 
 func main() {
-	sdk.Serve(postgres.Connector)
+	run(sdk.Serve)
+}
+
+// run marks the process as a standalone plugin, then serves the connector.
+// The mark must come first: it is what makes the source refuse the Debezium
+// mode, which needs the built-in connector (decision 18).
+func run(serve func(sdk.Connector)) {
+	postgres.MarkStandalone()
+	serve(postgres.Connector)
 }

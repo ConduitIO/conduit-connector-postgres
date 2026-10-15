@@ -28,6 +28,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source"
 	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	"github.com/conduitio/conduit-connector-postgres/source/dbzoffset"
+	"github.com/conduitio/conduit-connector-postgres/source/debezium"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
@@ -86,8 +87,22 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 			Msg("Successfully detected tables")
 	}
 
+	dbz, err := s.debeziumSettings(ctx)
+	if err != nil {
+		return err
+	}
+
 	// ensure we have keys for all tables
 	for _, tableName := range s.config.Tables {
+		if dbz != nil {
+			// The Debezium mode keys on each relation's primary key from the
+			// catalog (composite and absent keys included), and refuses an
+			// identity that cannot carry it.
+			if err := debezium.CheckTable(ctx, s.pool, tableName); err != nil {
+				return err
+			}
+			continue
+		}
 		s.tableKeys[tableName], err = s.getPrimaryKey(ctx, tableName)
 		if err != nil {
 			return fmt.Errorf("failed to find primary key for table %s: %w", tableName, err)
@@ -102,6 +117,13 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 	imp, err := s.debeziumImport(ctx, pos)
 	if err != nil {
 		return err
+	}
+
+	driftPolicy := s.config.LogreplSchemaDriftPolicy
+	if dbz != nil {
+		// debezium.schema.drift replaces logrepl.schemaDrift.policy in this
+		// mode (default evolve, as Debezium does not halt on DDL).
+		driftPolicy = logrepl.SchemaDriftPolicy(dbz.SchemaDrift)
 	}
 
 	switch s.config.CDCMode {
@@ -119,8 +141,9 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 			WithSnapshot:      s.config.SnapshotMode == source.SnapshotModeInitial,
 			WithAvroSchema:    s.config.WithAvroSchema,
 			BatchSize:         *s.config.BatchSize,
-			SchemaDriftPolicy: s.config.LogreplSchemaDriftPolicy,
+			SchemaDriftPolicy: driftPolicy,
 			Import:            imp,
+			Debezium:          dbz,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create logical replication iterator: %w", err)
@@ -131,6 +154,25 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 		return fmt.Errorf("unsupported CDC mode %q", s.config.CDCMode)
 	}
 	return nil
+}
+
+// debeziumSettings returns the Debezium mode's settings, or nil in the
+// default mode. It validates them again, so Open never runs the mode on a
+// config that skipped validation, and a standalone build refuses it here
+// too (decision 18).
+func (s *Source) debeziumSettings(ctx context.Context) (*debezium.Settings, error) {
+	if err := s.config.ValidateDebezium(); err != nil {
+		return nil, err
+	}
+	d := s.config.Debezium.Settings()
+	if !d.Enabled {
+		return nil, nil
+	}
+	sdk.Logger(ctx).Info().
+		Str("compat", d.Compat).
+		Str("topic_prefix", d.TopicPrefix).
+		Msg("Debezium mode: records carry Debezium-typed values for the debezium.encode processor")
+	return &d, nil
 }
 
 // debeziumImport returns the Debezium offset import to apply, or nil (#341

@@ -331,6 +331,62 @@ which names the table, the column, the value and the row's key. To continue:
   the replication slot to get past it, that loses the position. A constraint
   only keeps new bad values out.
 
+### Debezium-compatible output (preview)
+
+With `debezium.enabled: true` the source emits records for Conduit's
+`debezium.encode` processor, which writes the bytes a Debezium Postgres
+connector writes for the same changes (design:
+ConduitIO/conduit `docs/design-documents/20261012-debezium-compatible-output.md`).
+The records themselves are not Debezium messages: they carry Debezium-typed
+values (every column, `null` for SQL NULL) and `debezium.*` metadata
+(`debezium.topic`, `debezium.op`, `debezium.descriptor`, `debezium.old_key`,
+`debezium.source.*`, `debezium.tx.*`). `opencdc.collection` is
+`<schema>.<table>` in this mode.
+
+What this version does:
+
+- **Built-in connector only.** A standalone build refuses the mode with
+  `debezium.config_invalid`: records crossing the plugin boundary turn int64
+  into float64 and bytes into base64.
+- **Change data capture only.** Set `snapshotMode: never`, or resume from a
+  Debezium offset with `logrepl.import.debeziumOffset`. The snapshot (`op: r`)
+  comes in a later version. Logical decoding messages are not emitted, and
+  truncates are skipped (Debezium's default, `skipped.operations=t`).
+- **Debezium's default handling modes only** (`decimal.handling.mode=precise`,
+  `time.precision.mode=adaptive`, `binary.handling.mode=bytes`,
+  `interval.handling.mode=numeric`, `hstore.handling.mode=json`). Any other
+  value fails validation with `debezium.config_invalid`. A type the mode does
+  not map stops the pipeline with `debezium.unsupported_type`; a value the
+  Debezium type cannot hold (`NaN` in a numeric, an infinite date or
+  timestamp) stops it with `debezium.value_out_of_range`. Nothing is rounded
+  or replaced.
+- **Keys.** The record key is the primary key's columns in key order;
+  tables without one have a null key. Composite keys work. A primary-key
+  change is one record (`debezium.op=u` with the old key in
+  `debezium.old_key`), which the processor writes as delete, tombstone and
+  create, as Debezium does.
+- **Before images follow Debezium.** Under `REPLICA IDENTITY FULL` updates
+  and deletes carry the old row. Under `DEFAULT` updates carry none, and
+  deletes and primary-key changes carry the key with every other `NOT NULL`
+  column set to its literal default or its type's zero, as Debezium writes
+  them. Unchanged TOAST values hold `debezium.unavailable.value.placeholder`.
+  A table whose `REPLICA IDENTITY USING INDEX` does not contain the primary
+  key is refused at start and while streaming with
+  `debezium.replica_identity_index_not_key`.
+- **Positions are the default mode's.** The mode changes what a record holds,
+  not where it is in the WAL: acks, restarts and the exact mid-transaction
+  resume work as in the default mode, and the transaction orders continue
+  across a restart.
+- **Schema drift.** `debezium.schema.drift` (default `evolve`) replaces
+  `logrepl.schemaDrift.policy` in this mode. A narrowing change still halts
+  with a drift marker. The marker carries no `debezium.*` metadata, and the
+  `debezium.encode` processor does not pass markers through yet, so such a
+  halt stops at the processor.
+- **Tables are named relative to the `search_path`**, as in the default
+  mode; tables outside it cannot be selected.
+- `source.sequence` starts with `null` for the first transaction after each
+  start, where Debezium restores the previous commit's LSN from its offset.
+
 ### Limitations
 
 - **`TRUNCATE` is not propagated.** OpenCDC has no truncate operation, so a
@@ -484,6 +540,89 @@ pipelines:
           # Type: string
           # Required: no
           cdcMode: "auto"
+          # BinaryHandlingMode is Debezium's binary.handling.mode. Only "bytes"
+          # is supported in this version.
+          # Type: string
+          # Required: no
+          debezium.binary.handling.mode: "bytes"
+          # Compat is the Debezium version boundary the output emulates: "2.6"
+          # (Debezium 2.6 to 2.7) or "3.5" (3.5 and later).
+          # Type: string
+          # Required: no
+          debezium.compat: "3.5"
+          # DecimalHandlingMode is Debezium's decimal.handling.mode. Only
+          # "precise" is supported in this version.
+          # Type: string
+          # Required: no
+          debezium.decimal.handling.mode: "precise"
+          # Enabled switches the output mode. Off by default; with it off the
+          # connector's output is unchanged.
+          # Type: bool
+          # Required: no
+          debezium.enabled: "false"
+          # FormatVersion is the revision of Conduit's emulation; only 1 exists.
+          # Type: int
+          # Required: no
+          debezium.format.version: "1"
+          # HstoreHandlingMode is Debezium's hstore.handling.mode. Only "json"
+          # is supported in this version.
+          # Type: string
+          # Required: no
+          debezium.hstore.handling.mode: "json"
+          # IntervalHandlingMode is Debezium's interval.handling.mode. Only
+          # "numeric" is supported in this version.
+          # Type: string
+          # Required: no
+          debezium.interval.handling.mode: "numeric"
+          # MoneyFractionDigits is Debezium's money.fraction.digits, the scale
+          # of money columns.
+          # Type: int
+          # Required: no
+          debezium.money.fraction.digits: "2"
+          # ProvideTransactionMetadata is Debezium's
+          # provide.transaction.metadata: fill each event's transaction block.
+          # The transaction topic is not produced.
+          # Type: bool
+          # Required: no
+          debezium.provide.transaction.metadata: "false"
+          # SchemaDrift is the schema drift policy in this mode, used instead of
+          # logrepl.schemaDrift.policy: "evolve" (default; additive changes
+          # pass, narrowing ones halt) or "halt".
+          # Type: string
+          # Required: no
+          debezium.schema.drift: "evolve"
+          # SkippedOperations is Debezium's skipped.operations. Only "t" (skip
+          # truncates, Debezium's default) is supported in this version.
+          # Type: string
+          # Required: no
+          debezium.skipped.operations: "t"
+          # TimePrecisionMode is Debezium's time.precision.mode. Only "adaptive"
+          # is supported in this version.
+          # Type: string
+          # Required: no
+          debezium.time.precision.mode: "adaptive"
+          # TopicDelimiter is Debezium's topic.delimiter.
+          # Type: string
+          # Required: no
+          debezium.topic.delimiter: "."
+          # TopicPrefix is Debezium's topic.prefix: the first part of every
+          # topic name, source.name, and the schema names. Required when
+          # enabled.
+          # Type: string
+          # Required: no
+          debezium.topic.prefix: ""
+          # UnavailableValuePlaceholder is Debezium's
+          # unavailable.value.placeholder, written for unchanged TOAST values.
+          # Type: string
+          # Required: no
+          debezium.unavailable.value.placeholder: "__debezium_unavailable_value"
+          # Version is the source.version value. Empty means the release the
+          # output was verified against for the compat level (2.7.4.Final for
+          # 2.6, 3.7.0.Final for 3.5). `conduit migrate kafka-connect` sets the
+          # version of the connector it replaces.
+          # Type: string
+          # Required: no
+          debezium.version: ""
           # LogreplAutoCleanup determines if the replication slot and
           # publication should be removed when the connector is deleted.
           # Type: bool
