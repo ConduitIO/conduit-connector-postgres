@@ -1,34 +1,47 @@
 # Results
 
-## 2026-10-15, local, stopped: no claim
+## 2026-10-15, EC2 c7i.2xlarge: the run of record
 
-Machine: Apple Silicon laptop, Docker Desktop (linux/arm64 VM), shared with
-other agent lanes. Binaries: `bd44a41` (cache, twice) and `8e12206`
-(describe).
+| | |
+| --- | --- |
+| Instance | c7i.2xlarge, on demand, dedicated to this run, us-west-1a (8 vCPU, Intel Xeon Platinum 8488C) |
+| Software | Amazon Linux 2023 (`ami-0bc4193249c3c9538`), Docker 25.0.16, Compose 2.39.4, Go 1.26.9, benchi v0.4.1, Conduit v0.20.2, Postgres 17 (data on tmpfs) |
+| Commits | base `bd44a41` (cache and cache-aa), option 1 `589a259` (describe), option 2 `44a6097` (opt-out; same code as `95e843e`) |
+| Binaries | `binaries.sha256`: `main` and `main2` are byte-identical |
+| Method | 4 rounds × 4 arms per batch size, Latin-square order, 1 warmup discarded, a 60 s window per run (measured 60.6 s) after the pipeline writes and 15 s more |
+| Host load | 1-minute load median 3.5, max 4.1, over the whole run (`loadavg.log`); nothing else ran on the instance |
+| Teardown | `teardown-verify.txt`: every resource NotFound or terminated, nothing else carries the run's tag |
+| Cost | about 54 minutes at $0.4452/h on demand, about $0.40 (EBS and S3 under a cent) |
 
-The run was stopped in round 2. The host load went from about 11 to 38 when
-another lane's test run started on the same machine, which contaminates every
-run from then on (see conduit's `benchi/METHODOLOGY.md`: never benchmark next
-to other work). Only batch size 1 was reached. Batch size 1000 was not run.
+Raw data: `runs/20261015-ec2-c7i.2xlarge/` (`runs.csv` row counts, `rates.csv` rows per second, `environment.txt`).
 
-Rows written in the 60 s window (rows after minus rows before):
+Rows per second, the median of 4 runs (min to max):
 
-| run | arm | rows | rows/s | load before → after |
+| Arm | batch size 1 | vs cache | batch size 1000 | vs cache |
 | --- | --- | --- | --- | --- |
-| warmup | cache | 633,773 | 10,563 | 5.5 → 5.2 |
-| r1 | cache | 640,916 | 10,682 | 5.2 → 11.2 |
-| r1 | describe | 293,551 | 4,893 | 11.2 → 13.4 |
-| r1 | cache-aa | 574,083 | 9,568 | 13.4 → 11.1 |
-| r2 | describe | 310,943 | 5,182 | 11.1 → 11.4 |
-| r2 | cache-aa | 197,955 | (excluded) | 11.4 → 38.4 |
+| cache (base) | 8,413 (8,314 to 8,447) | | 18,591 (18,559 to 18,626) | |
+| cache-aa (base again) | 8,368 (8,352 to 8,423) | −0.5% | 18,534 (17,701 to 18,577) | −0.3% |
+| describe (option 1) | 5,437 (5,401 to 5,479) | **−35.4%** | 15,699 (15,657 to 16,268) | **−15.6%** |
+| opt-out (option 2, `cache_statement` URL) | 8,389 (8,373 to 8,413) | −0.3% | 18,089 (17,654 to 18,545) | −2.7% |
 
-The last row is excluded. Its pre-test count was 0, so the pipeline had not
-started writing when the window opened, and the load reached 38 during the
-run.
+Per-round A/A deltas (cache-aa against cache in the same round): batch 1:
+−0.9%, +1.3%, −0.9%, −0.3%; batch 1000: −4.9%, −0.3%, −0.3%, −0.1%. The
+coefficient of variation is at most 0.7% at batch 1 and 2.8% at batch 1000.
 
-What this supports: nothing past a direction. With one usable A/A pair (10,682
-vs 9,568, about 11% apart) the noise floor is not known. The two describe runs
-are less than half of the cache runs at batch size 1, which is the expected
-direction: one extra round trip per record. That is not a measured cost, and
-the batch-1000 cost is unknown. A clean run needs an idle machine, or the
-dedicated benchmark host (conduit#3014).
+What this supports:
+
+- **describe_exec costs throughput** beyond the noise floor and beyond the 10%
+  regression gate at both batch sizes: about a third at batch size 1, the
+  default, and about a sixth at 1000. The ranges do not overlap the cache arms.
+- **The opt-out recovers it.** Option 2 with an explicit `cache_statement` URL
+  is within the A/A spread of the base at both batch sizes (−0.3% and −2.7%,
+  against an A/A run that was 4.9% off once).
+- Only one pipeline shape was measured (generator, then one keyed upsert per
+  record into a two-column table, on one machine). Other shapes and tables
+  were not measured.
+
+## 2026-10-15, local laptop, stopped: no claim
+
+A first local run was stopped in round 2 when the shared host's load went
+from about 11 to 38. Its numbers are kept in the git history of this file;
+they are not used.
