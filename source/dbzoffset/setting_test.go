@@ -31,11 +31,13 @@ const designExample = `{
   "database": "inventory",
   "systemIdentifier": "7412345678901234567",
   "plugin": "pgoutput",
+  "debeziumVersion": "3.2.4.Final",
   "debeziumSlotName": "debezium",
   "publicationName": "dbz_publication",
   "tables": ["public.orders", "public.customers"],
   "identity": {"conduitSlotConsistentPoint": "0/16E0000",
-               "debeziumSlotFlushAtWait": "0/16E2000"},
+               "debeziumSlotFlushAtWait": "0/16E2000",
+               "conduitPublication": "v1:0123456789abcdef"},
   "offset": {"lsn_proc": 24023128, "lsn_commit": 24023064, "lsn": 24023128,
              "txId": 555, "ts_usec": 1760000000000000, "messageType": "INSERT"}
 }`
@@ -99,6 +101,19 @@ func TestParseSetting_Refusals(t *testing.T) {
 		{"empty", func(*testing.T) string { return "" }, CodeOffsetInvalid, SettingPath},
 		{"unknown field", func(t *testing.T) string { return withField(t, "resume", "slotOnly") }, CodeOffsetInvalid, SettingPath},
 		{"trailing data", func(*testing.T) string { return designExample + " {}" }, CodeOffsetInvalid, SettingPath},
+		{"trailing brace", func(*testing.T) string { return designExample + "}" }, CodeOffsetInvalid, SettingPath},
+		{"trailing bracket", func(*testing.T) string { return designExample + "]" }, CodeOffsetInvalid, SettingPath},
+		{"duplicate offset key", func(*testing.T) string {
+			return strings.Replace(designExample, `"offset":`,
+				`"offset": {"lsn_commit": 999999999999, "lsn": 999999999999, "messageType": "COMMIT"}, "offset":`, 1)
+		}, CodeOffsetInvalid, SettingPath},
+		{"duplicate tables key", func(*testing.T) string {
+			return strings.Replace(designExample, `"tables":`, `"tables": ["public.other"], "tables":`, 1)
+		}, CodeOffsetInvalid, SettingPath},
+		{"duplicate nested key", func(*testing.T) string {
+			return strings.Replace(designExample, `"conduitSlotConsistentPoint": "0/16E0000",`,
+				`"conduitSlotConsistentPoint": "0/1", "conduitSlotConsistentPoint": "0/16E0000",`, 1)
+		}, CodeOffsetInvalid, SettingPath},
 		{"wrong format", func(t *testing.T) string { return withField(t, "format", "debezium-postgres/v2") }, CodeOffsetInvalid, SettingPath + ".format"},
 		{"no format", func(t *testing.T) string { return withField(t, "format", nil) }, CodeOffsetInvalid, SettingPath + ".format"},
 		{"no database", func(t *testing.T) string { return withField(t, "database", nil) }, CodeOffsetInvalid, SettingPath + ".database"},
@@ -120,6 +135,12 @@ func TestParseSetting_Refusals(t *testing.T) {
 			return withField(t, "identity", map[string]string{"conduitSlotConsistentPoint": "0/16E0000", "debeziumSlotFlushAtWait": "0/16D0000"})
 		}, CodeOffsetInvalid, SettingPath + ".identity"},
 		{"no offset", func(t *testing.T) string { return withField(t, "offset", nil) }, CodeOffsetInvalid, SettingPath + ".offset"},
+		{"no debezium version", func(t *testing.T) string { return withField(t, "debeziumVersion", nil) }, CodeOffsetInvalid, SettingPath + ".debeziumVersion"},
+		{"bad debezium version", func(t *testing.T) string { return withField(t, "debeziumVersion", "latest") }, CodeOffsetInvalid, SettingPath + ".debeziumVersion"},
+		{"future debezium major", func(t *testing.T) string { return withField(t, "debeziumVersion", "4.0.0.Final") }, CodeOffsetUnsupported, SettingPath + ".debeziumVersion"},
+		{"no publication identity", func(t *testing.T) string {
+			return withField(t, "identity", map[string]string{"conduitSlotConsistentPoint": "0/16E0000", "debeziumSlotFlushAtWait": "0/16E2000"})
+		}, CodeOffsetInvalid, SettingPath + ".identity.conduitPublication"},
 		{"snapshot offset", func(t *testing.T) string {
 			return withField(t, "offset", map[string]any{"lsn": 100, "snapshot": "INITIAL", "last_snapshot_record": false})
 		}, CodeSnapshotInProgress, SettingPath + ".offset.snapshot"},
@@ -177,4 +198,25 @@ func asError(err error, target **Error) bool {
 		*target = e
 	}
 	return ok
+}
+
+func TestParseSetting_DebeziumVersionWarnings(t *testing.T) {
+	for _, tc := range []struct {
+		version string
+		warn    bool
+	}{
+		{"3.2.4.Final", false},
+		{"3.2.0", false},
+		{"2.7.4.Final", false},
+		{"3.4.1.Final", true},
+		{"2.5.0.Final", true},
+		{"1.9.7.Final", true},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			is := is.New(t)
+			imp, err := ParseSetting(withField(t, "debeziumVersion", tc.version))
+			is.NoErr(err)
+			is.Equal(len(imp.Warnings) > 0, tc.warn)
+		})
+	}
 }

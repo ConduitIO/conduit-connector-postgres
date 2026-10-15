@@ -17,6 +17,8 @@ package dbzoffset
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -57,10 +59,19 @@ type Setting struct {
 	// config leaves it unset. Only pgoutput and decoderbufs are importable
 	// (S4).
 	Plugin string `json:"plugin"`
-	// DebeziumSlotName and PublicationName name Debezium's replication slot
-	// and publication.
+	// DebeziumVersion is the Debezium Postgres connector version that wrote
+	// the offset, as Kafka Connect reports it (`GET /connector-plugins`, for
+	// example "3.2.4.Final"). Offsets of the lines in VerifiedDebeziumLines
+	// were captured and checked against Postgres; other 1.x to 3.x lines are
+	// accepted with a warning (Import.Warnings), anything else is refused.
+	DebeziumVersion string `json:"debeziumVersion"`
+	// DebeziumSlotName names Debezium's replication slot, which the connector
+	// checks at Open (S13).
 	DebeziumSlotName string `json:"debeziumSlotName"`
-	PublicationName  string `json:"publicationName"`
+	// PublicationName is Debezium's publication. The connector does not read
+	// it; it is kept for the dry run and for the CLI's lossy-config checks
+	// (S2). Conduit's own publication is logrepl.publicationName.
+	PublicationName string `json:"publicationName"`
 	// Tables is Debezium's capture list, with its include/exclude regexes
 	// resolved against the catalog, as schema-qualified names.
 	Tables []string `json:"tables"`
@@ -78,6 +89,12 @@ type Identity struct {
 	// DebeziumSlotFlushAtWait is the confirmed_flush_lsn the CLI saw on
 	// Debezium's slot on this server once it had reached C. It is at least C.
 	DebeziumSlotFlushAtWait string `json:"debeziumSlotFlushAtWait"`
+	// ConduitPublication is the identity of Conduit's publication when the
+	// CLI created Conduit's slot (PublicationIdentity). pgoutput reads
+	// publication membership through the historic catalog, so a table added
+	// to the publication after the slot's start silently loses its earlier
+	// WAL (B3). The connector refuses to import if the identity changed.
+	ConduitPublication string `json:"conduitPublication"`
 }
 
 // Import is a parsed and validated setting.
@@ -91,7 +108,16 @@ type Import struct {
 	DebeziumFlushAtWait pglogrepl.LSN
 	// Plan is the resume point computed from Offset.
 	Plan Plan
+	// Warnings are conditions that do not block the import but that the
+	// operator should see; the connector logs them at Open and the CLI
+	// prints them.
+	Warnings []string
 }
+
+// VerifiedDebeziumLines are the Debezium major.minor lines whose offsets are
+// in testdata (captured from a running connector and checked against
+// Postgres).
+var VerifiedDebeziumLines = []string{"2.7", "3.2"}
 
 // ParseSetting parses and validates the value of
 // `logrepl.import.debeziumOffset`, then computes the resume point. It is the
@@ -107,6 +133,13 @@ type Import struct {
 // Unknown fields are refused: Format is versioned, and a field this build
 // does not understand could carry a rule it would silently skip.
 func ParseSetting(raw string) (Import, error) {
+	// encoding/json keeps the last of duplicate keys and Decode ignores a
+	// trailing '}' or ']' left in the stream; a setting with either cannot
+	// be interpreted, so it is refused before decoding.
+	if err := checkStrictJSON([]byte(raw)); err != nil {
+		return Import{}, newError(CodeOffsetInvalid, SettingPath, fixReexport,
+			"the setting is not valid JSON for format %q: %v", FormatV1, err)
+	}
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.DisallowUnknownFields()
 	var s Setting
@@ -123,30 +156,8 @@ func ParseSetting(raw string) (Import, error) {
 		return Import{}, newError(CodeOffsetInvalid, SettingPath+".format", fixReexport,
 			"format is %q; this connector build reads only %q", s.Format, FormatV1)
 	}
-	for _, f := range []struct{ name, value string }{
-		{"database", s.Database},
-		{"systemIdentifier", s.SystemIdentifier},
-		{"debeziumSlotName", s.DebeziumSlotName},
-		{"publicationName", s.PublicationName},
-	} {
-		if strings.TrimSpace(f.value) == "" {
-			return Import{}, newError(CodeOffsetInvalid, SettingPath+"."+f.name, fixReexport,
-				"%q is required", f.name)
-		}
-	}
-	if _, err := strconv.ParseUint(s.SystemIdentifier, 10, 64); err != nil {
-		return Import{}, newError(CodeOffsetInvalid, SettingPath+".systemIdentifier", fixReexport,
-			"systemIdentifier %q is not a decimal system identifier", s.SystemIdentifier)
-	}
-	if len(s.Tables) == 0 {
-		return Import{}, newError(CodeOffsetInvalid, SettingPath+".tables", fixReexport,
-			"tables is empty; it must list the tables Debezium captured")
-	}
-	for i, t := range s.Tables {
-		if strings.TrimSpace(t) == "" {
-			return Import{}, newError(CodeOffsetInvalid, SettingPath+".tables", fixReexport,
-				"tables[%d] is empty", i)
-		}
+	if err := checkRequiredFields(s); err != nil {
+		return Import{}, err
 	}
 
 	c, err := parseIdentityLSN(s.Identity.ConduitSlotConsistentPoint, "conduitSlotConsistentPoint")
@@ -163,6 +174,14 @@ func ParseSetting(raw string) (Import, error) {
 			"identity.debeziumSlotFlushAtWait %s is below identity.conduitSlotConsistentPoint %s", fw, c)
 	}
 
+	if strings.TrimSpace(s.Identity.ConduitPublication) == "" {
+		return Import{}, newError(CodeOffsetInvalid, SettingPath+".identity.conduitPublication", fixReexport,
+			"identity.conduitPublication is required")
+	}
+	warning, err := checkDebeziumVersion(s.DebeziumVersion)
+	if err != nil {
+		return Import{}, err
+	}
 	if len(bytes.TrimSpace(s.Offset)) == 0 {
 		return Import{}, newError(CodeOffsetInvalid, SettingPath+".offset", fixReexport, "offset is required")
 	}
@@ -192,13 +211,45 @@ func ParseSetting(raw string) (Import, error) {
 				"committed in between are covered by neither", o.LSNCommit, c)
 	}
 
-	return Import{
+	imp := Import{
 		Setting:             s,
 		Offset:              o,
 		ConsistentPoint:     c,
 		DebeziumFlushAtWait: fw,
 		Plan:                NewPlan(o),
-	}, nil
+	}
+	if warning != "" {
+		imp.Warnings = append(imp.Warnings, warning)
+	}
+	return imp, nil
+}
+
+var debeziumVersionRE = regexp.MustCompile(`^([0-9]+)\.([0-9]+)\.([0-9]+)(\..+)?$`)
+
+// checkDebeziumVersion returns a warning for a Debezium line whose offsets
+// were not captured, and refuses versions this build knows nothing about.
+func checkDebeziumVersion(v string) (string, error) {
+	path := SettingPath + ".debeziumVersion"
+	m := debeziumVersionRE.FindStringSubmatch(strings.TrimSpace(v))
+	if m == nil {
+		return "", newError(CodeOffsetInvalid, path, fixReexport,
+			"debeziumVersion %q is not a Debezium version such as \"3.2.4.Final\"", v)
+	}
+	major, _ := strconv.Atoi(m[1])
+	if major < 1 || major > 3 {
+		return "", newError(CodeOffsetUnsupported, path,
+			"This connector build reads offsets of Debezium 1.x to 3.x. Upgrade the connector to a build that lists your Debezium version, or re-snapshot.",
+			"Debezium %s is not a version this connector build knows the offset format of", v)
+	}
+	line := m[1] + "." + m[2]
+	for _, l := range VerifiedDebeziumLines {
+		if l == line {
+			return "", nil
+		}
+	}
+	return fmt.Sprintf("Debezium %s: offsets of the %s line were not captured and verified for this connector "+
+		"(verified: %s); the offset passed every check, but review the dry run's resume point before cutting over",
+		v, line, strings.Join(VerifiedDebeziumLines, ", ")), nil
 }
 
 // Encode returns the setting as the JSON string the connector reads. The CLI
@@ -223,4 +274,36 @@ func parseIdentityLSN(v, name string) (pglogrepl.LSN, error) {
 			"identity.%s %q is not an LSN in X/Y notation", name, v)
 	}
 	return lsn, nil
+}
+
+// checkRequiredFields checks the presence and shape of the setting's plain
+// fields.
+func checkRequiredFields(s Setting) error {
+	for _, f := range []struct{ name, value string }{
+		{"database", s.Database},
+		{"systemIdentifier", s.SystemIdentifier},
+		{"debeziumSlotName", s.DebeziumSlotName},
+		{"publicationName", s.PublicationName},
+	} {
+		if strings.TrimSpace(f.value) == "" {
+			return newError(CodeOffsetInvalid, SettingPath+"."+f.name, fixReexport,
+				"%q is required", f.name)
+		}
+	}
+	if _, err := strconv.ParseUint(s.SystemIdentifier, 10, 64); err != nil {
+		return newError(CodeOffsetInvalid, SettingPath+".systemIdentifier", fixReexport,
+			"systemIdentifier %q is not a decimal system identifier", s.SystemIdentifier)
+	}
+	if len(s.Tables) == 0 {
+		return newError(CodeOffsetInvalid, SettingPath+".tables", fixReexport,
+			"tables is empty; it must list the tables Debezium captured")
+	}
+	for i, t := range s.Tables {
+		if strings.TrimSpace(t) == "" {
+			return newError(CodeOffsetInvalid, SettingPath+".tables", fixReexport,
+				"tables[%d] is empty", i)
+		}
+	}
+
+	return nil
 }

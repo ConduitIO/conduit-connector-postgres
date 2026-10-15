@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -143,6 +144,47 @@ func TestFixtures(t *testing.T) { //nolint:gocyclo // one flat table of expected
 	for _, fx := range loadFixtures(t) {
 		if fx.Dir != "synthetic" && !midTransaction[fx.Dir] {
 			t.Errorf("%s: no mid-transaction DML offset captured", fx.Dir)
+		}
+	}
+}
+
+// TestFixtures_VerifyTSV pins the evidence: every check capture.sh ran
+// against the probe slot matched every importable offset, in every capture.
+func TestFixtures_VerifyTSV(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("testdata", "debezium-*", "verify.tsv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no verify.tsv under testdata/debezium-*")
+	}
+	required := []string{
+		"a_lsn_commit_is_commit_end_or_message", "b_lsn_is_change_of_txid",
+		"b_ts_usec_is_commit_time", "commit_offset_lsn_is_end",
+	}
+	for _, path := range files {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen := map[string]bool{}
+		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			f := strings.Split(line, "|")
+			if len(f) != 3 {
+				continue // counts and diagnostics, not checks
+			}
+			if _, err := strconv.Atoi(f[1]); err != nil {
+				continue
+			}
+			seen[f[0]] = true
+			if f[1] != f[2] || f[2] == "0" {
+				t.Errorf("%s: check %s matched %s of %s", path, f[0], f[1], f[2])
+			}
+		}
+		for _, r := range required {
+			if !seen[r] {
+				t.Errorf("%s: check %s missing", path, r)
+			}
 		}
 	}
 }

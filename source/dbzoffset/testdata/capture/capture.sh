@@ -164,6 +164,14 @@ wait_for 120 'keys | map(startswith("incremental_snapshot_")) | any' || true
 wait_for 300 'keys | map(startswith("incremental_snapshot_")) | any | not' || true
 sleep 2
 
+echo blocking >"$phase_file"
+# A blocking snapshot (Debezium 2.5+): streaming pauses while it runs, and
+# the offsets committed meanwhile carry snapshot = "BLOCKING" (D7 refuses them).
+psql -c "INSERT INTO debezium_signal VALUES ('sig-2', 'execute-snapshot', '{\"data-collections\": [\"public.big\"], \"type\": \"blocking\"}')"
+wait_for 120 '.snapshot == "BLOCKING"' || true
+wait_for 300 'has("snapshot") | not' || true
+sleep 2
+
 echo heartbeat >"$phase_file"
 put_config '{"heartbeat.interval.ms": "200"}'
 sleep 5

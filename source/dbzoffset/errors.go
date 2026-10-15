@@ -96,8 +96,8 @@ const (
 	fixReexport = "Re-export the offset with `conduit migrate kafka-connect --dry-run`; " +
 		"the setting is written by the CLI and is not meant to be edited by hand."
 	fixOffsetUnsupported = "This offset has no `lsn_commit`. Run the connector on a Debezium version that " +
-		"writes it (every 2.x and 3.x release; the fixture set lists the 1.x builds that do), let it commit " +
-		"an offset after at least one transaction, then retry."
+		"writes it (Debezium 2.x or 3.x; this connector's fixtures cover 2.7 and 3.2), let it commit an " +
+		"offset after at least one transaction, then retry."
 	fixSnapshotRunning  = "Let the Debezium snapshot finish and Debezium commit a streaming offset, then retry."
 	fixSnapshotNoStream = "Debezium needs a committed transaction followed by a later record. Write two " +
 		"separate transactions to a captured table, or set `heartbeat.action.query` to an insert or update on " +

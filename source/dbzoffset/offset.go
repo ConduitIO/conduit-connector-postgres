@@ -391,3 +391,61 @@ func optionalBool(fields map[string]json.RawMessage, key string) (bool, error) {
 	}
 	return b, nil
 }
+
+// checkStrictJSON reports an error when raw is not exactly one JSON value
+// with no duplicate object keys at any depth.
+func checkStrictJSON(raw []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := walkJSON(dec); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return errors.New("unexpected data after the JSON value")
+	}
+	return nil
+}
+
+// walkJSON consumes one value from dec, checking every object for
+// duplicate keys.
+func walkJSON(dec *json.Decoder) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	d, ok := tok.(json.Delim)
+	if !ok {
+		return nil // a scalar
+	}
+	switch d {
+	case '{':
+		seen := map[string]bool{}
+		for dec.More() {
+			kt, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := kt.(string)
+			if !ok {
+				return fmt.Errorf("expected a key, got %v", kt)
+			}
+			if seen[key] {
+				return fmt.Errorf("duplicate key %q", key)
+			}
+			seen[key] = true
+			if err := walkJSON(dec); err != nil {
+				return err
+			}
+		}
+	case '[':
+		for dec.More() {
+			if err := walkJSON(dec); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("unexpected %v", d)
+	}
+	_, err = dec.Token() // the closing delimiter
+	return err
+}
