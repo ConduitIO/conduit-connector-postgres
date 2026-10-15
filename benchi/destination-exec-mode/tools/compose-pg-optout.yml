@@ -1,0 +1,16 @@
+# Tool "pg-optout": Conduit v0.20.2 with the standalone postgres connector from
+# ../bin/optout (built by run.sh; option 2: describe_exec by default, run with an explicit cache_statement URL).
+services:
+  conduit:
+    image: ghcr.io/conduitio/conduit:v0.20.2
+    container_name: pgbench367-conduit
+    command: ["/app/conduit", "run", "--connectors.path", "/app/connectors", "--pipelines.path", "/app/pipelines"]
+    volumes:
+      - ../bin/optout:/app/connectors:ro
+      - ../${BENCH_PIPELINE_OPTOUT:?set BENCH_PIPELINE_OPTOUT}:/app/pipelines/pipeline.yml:ro
+    networks:
+      - benchi
+
+networks:
+  benchi:
+    external: true

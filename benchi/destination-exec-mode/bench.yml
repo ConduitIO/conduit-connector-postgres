@@ -1,17 +1,19 @@
 # benchi config for #367: the destination's pgx query exec mode.
 #
 # Compares Postgres destination throughput between the cached-statement mode
-# (main before #367, pgx's default) and describe_exec (the fix), with an A/A
-# control: a second, separately built main binary that should measure the same
-# as the first. See README.md for the method and how to run it.
+# (main before #367, pgx's default), describe_exec (option 1, the fix) and
+# option 2 (describe_exec by default, run here with an explicit cache_statement
+# URL, the opt-out), with an A/A control: a second, separately built main
+# binary that should measure the same as the first. See README.md.
 #
 # Ground truth, not engine metrics (see conduit's benchi/METHODOLOGY.md): the
 # pre-test and post-test hooks count the rows in the target table, and the run
 # script divides the difference by the test duration. No Conduit metrics port
 # is published, so nothing binds a host port.
 #
-# The pipeline file (batch size) comes from BENCH_PIPELINE, interpolated by
-# docker compose; run.sh sets it.
+# The pipeline file (batch size) comes from BENCH_PIPELINE (and
+# BENCH_PIPELINE_OPTOUT for the opt-out arm, whose URL selects
+# cache_statement), interpolated by docker compose; run.sh sets both.
 
 infrastructure:
   postgres:
@@ -24,6 +26,8 @@ tools:
     compose: ./tools/compose-pg-cache-aa.yml
   pg-describe:
     compose: ./tools/compose-pg-describe.yml
+  pg-optout:
+    compose: ./tools/compose-pg-optout.yml
 
 metrics:
   docker:
@@ -38,9 +42,15 @@ tests:
     duration: 60s
     steps:
       pre-test:
+        # benchi runs the steps in order, so the 60s window starts when this
+        # hook returns: wait until the pipeline writes (at most 120s), warm
+        # up for 15s, then count. Pipeline startup stays out of every arm.
         - name: rows-before
           container: pgbench367-postgres
-          run: psql -U bench -d bench -tAc "SELECT 'ROWS_BEFORE=' || count(*) FROM bench"
+          run: >-
+            n=0; until [ "$(psql -U bench -d bench -tAc 'SELECT count(*) FROM bench')" -gt 0 ] || [ $n -ge 120 ];
+            do n=$((n+1)); sleep 1; done; sleep 15;
+            psql -U bench -d bench -tAc "SELECT 'ROWS_BEFORE=' || count(*) FROM bench"
       post-test:
         - name: rows-after
           container: pgbench367-postgres

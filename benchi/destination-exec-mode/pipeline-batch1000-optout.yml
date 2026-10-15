@@ -1,0 +1,30 @@
+version: "2.2"
+pipelines:
+  - id: destination-exec-mode
+    status: running
+    connectors:
+      - id: gen
+        type: source
+        plugin: builtin:generator
+        settings:
+          format.type: structured
+          format.options.id: int
+          format.options.name: string
+          operations: create
+      - id: pg
+        type: destination
+        plugin: standalone:postgres
+        settings:
+          url: postgres://bench:bench@pgbench367-postgres:5432/bench?sslmode=disable&default_query_exec_mode=cache_statement
+          table: bench
+          sdk.batch.size: "1000"
+          sdk.schema.extract.key.enabled: "false"
+          sdk.batch.delay: "100ms"
+    processors:
+      # A structured key, so the destination takes the keyed upsert path
+      # (INSERT ... ON CONFLICT (id) DO UPDATE), the JDBC sink case.
+      - id: key
+        plugin: field.set
+        settings:
+          field: .Key
+          value: '{"id":{{ .Payload.After.id }}}'

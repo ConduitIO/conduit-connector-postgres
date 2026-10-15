@@ -1,0 +1,126 @@
+#!/bin/bash
+# conduit-connector-postgres #367 exec-mode benchmark: instance bootstrap.
+# Rendered by the launcher in this directory (main.go), after the pattern of
+# Conduit's benchi/archv2-gate kit. It holds no credentials: S3 uploads use
+# the instance role, whose only S3 permission is PutObject under the run's
+# prefix.
+#
+# The hard runtime cap is scheduled first, before anything that can fail, and
+# the instance is launched with InstanceInitiatedShutdownBehavior=terminate, so
+# a halt at the cap or at the end of the run terminates it.
+shutdown -h +{{.MaxMinutes}}
+
+cat > /etc/pg367-bench.env <<'ENV'
+BUCKET={{.Bucket}}
+PREFIX={{.Prefix}}
+REGION={{.Region}}
+BASE_SHA={{.BaseSHA}}
+FIX_SHA={{.FixSHA}}
+OPTOUT_SHA={{.OptoutSHA}}
+GO_VERSION={{.GoVersion}}
+GO_SHA256={{.GoSHA256}}
+ROUNDS={{.Rounds}}
+BENCHI_VERSION={{.BenchiVersion}}
+ENV
+
+cat > /opt/pg367-bench.sh <<'SCRIPT'
+#!/bin/bash
+set -uo pipefail
+source /etc/pg367-bench.env
+export HOME=/root AWS_DEFAULT_REGION="$REGION"
+LOG=/var/log/pg367-bench.log
+exec >>"$LOG" 2>&1
+S3="s3://$BUCKET/$PREFIX"
+W=/opt/bench
+OUT=$W/out
+mkdir -p "$OUT"
+
+upload() {
+  aws s3 cp --quiet --recursive "$OUT" "$S3/" || true
+  aws s3 cp --quiet "$LOG" "$S3/bootstrap.log" || true
+}
+status() {
+  echo "$(date -u +%FT%TZ) $*" | tee -a "$OUT/status.txt"
+  aws s3 cp --quiet "$OUT/status.txt" "$S3/status.txt" || true
+  aws s3 cp --quiet "$LOG" "$S3/bootstrap.log" || true
+}
+finish() {
+  kill ${SAMPLER_LOAD:-} ${SAMPLER_VMSTAT:-} ${UPLOADER:-} 2>/dev/null || true
+  upload
+  status "DONE, halting (instance terminates on halt)"
+  shutdown -h now
+  exit 0
+}
+fail() { status "FAILED: $*"; finish; }
+
+status "bootstrap start"
+dnf install -y docker git util-linux >/dev/null || fail "dnf install"
+systemctl enable --now docker || fail "start docker"
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+  "https://github.com/docker/compose/releases/download/v2.39.4/docker-compose-linux-x86_64" || fail "download compose"
+chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose
+
+curl -fsSL -o /tmp/go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" || fail "download go"
+echo "${GO_SHA256}  /tmp/go.tgz" | sha256sum -c - || fail "go tarball checksum mismatch"
+tar -C /usr/local -xzf /tmp/go.tgz || fail "untar go"
+export PATH=/usr/local/go/bin:/root/go/bin:$PATH GOPATH=/root/go GOCACHE=/root/.cache/go-build GOTOOLCHAIN=local
+GOBIN=/root/go/bin go install "github.com/conduitio/benchi/cmd/benchi@${BENCHI_VERSION}" || fail "install benchi"
+status "docker $(docker version --format '{{"{{"}}.Server.Version{{"}}"}}'), $(docker compose version --short), $(go version), benchi ${BENCHI_VERSION}"
+
+git clone -q https://github.com/ConduitIO/conduit-connector-postgres.git "$W/pg" || fail "git clone"
+cd "$W/pg" || fail "cd clone"
+git fetch -q origin '+refs/heads/fix/destination-describe-exec*:refs/remotes/origin/fix/destination-describe-exec*' || fail "fetch branches"
+for sha in "$BASE_SHA" "$FIX_SHA" "$OPTOUT_SHA"; do
+  git cat-file -e "${sha}^{commit}" || fail "commit $sha not found"
+done
+# The benchmark config and run.sh come from the opt-out commit, which carries
+# the four-arm version of both.
+git checkout -q --detach "$OPTOUT_SHA" || fail "checkout $OPTOUT_SHA"
+docker pull -q ghcr.io/conduitio/conduit:v0.20.2 || fail "pull conduit"
+docker pull -q postgres:17 || fail "pull postgres"
+status "cloned and pulled"
+
+{
+  echo "## instance"
+  TOK=$(curl -fsS -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' http://169.254.169.254/latest/api/token)
+  for k in instance-id instance-type ami-id placement/availability-zone; do
+    echo "$k: $(curl -fsS -H "X-aws-ec2-metadata-token: $TOK" "http://169.254.169.254/latest/meta-data/$k")"
+  done
+  echo "## commits"; echo "base: $BASE_SHA"; echo "fix (option 1): $FIX_SHA"; echo "optout (option 2): $OPTOUT_SHA"
+  echo "## images"; docker images --no-trunc
+  echo "## uname"; uname -a
+  echo "## os"; cat /etc/os-release
+  echo "## lscpu"; lscpu
+  echo "## meminfo"; head -5 /proc/meminfo
+  echo "## clocksource"; cat /sys/devices/system/clocksource/clocksource0/current_clocksource
+  echo "## disk"; df -h /; lsblk
+  echo "## docker info"; docker info
+  echo "## go"; go version
+  echo "## benchi"; benchi -v
+} > "$OUT/environment.txt" 2>&1
+upload
+
+cat > "$W/sampler.sh" <<'SAMPLER'
+#!/bin/bash
+while :; do echo "$(date -u +%FT%TZ) $(cat /proc/loadavg)"; sleep 5; done
+SAMPLER
+nohup bash "$W/sampler.sh" > "$OUT/loadavg.log" 2>&1 &
+SAMPLER_LOAD=$!
+nohup vmstat -t -w 5 > "$OUT/vmstat.log" 2>&1 &
+SAMPLER_VMSTAT=$!
+( while sleep 300; do upload; done ) &
+UPLOADER=$!
+
+sync; echo 3 > /proc/sys/vm/drop_caches
+status "quiet 60s before the run"
+sleep 60
+status "run start (rounds $ROUNDS)"
+BASE_REF=$BASE_SHA FIX_REF=$FIX_SHA OPTOUT_REF=$OPTOUT_SHA BENCHI=/root/go/bin/benchi OUT="$OUT/results" \
+  bash benchi/destination-exec-mode/run.sh "$ROUNDS" > "$OUT/run.log" 2>&1
+status "run exit $?"
+finish
+SCRIPT
+chmod 0755 /opt/pg367-bench.sh
+
+systemd-run --unit=pg367-bench --description="pg367 exec-mode benchmark" /opt/pg367-bench.sh
