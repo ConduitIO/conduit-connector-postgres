@@ -105,6 +105,16 @@ type Config struct {
 	// never creates. Requires Conduit v0.19.0 or later, which acks a record
 	// only after its position is persisted.
 	LogreplImportDebeziumOffset string `json:"logrepl.import.debeziumOffset"`
+
+	// LogreplRequireExistingSlot decides whether Open may create the
+	// replication slot and the publication. Unset (the default): refuse when
+	// the pipeline already has a position, because a new slot starts at the
+	// current WAL and silently skips every change since the old one; create
+	// them as before for a new pipeline. "true": always refuse (what
+	// `conduit migrate kafka-connect` writes). "false": always allow, and log
+	// postgres.logrepl.slot_recreated when a slot is created for a pipeline
+	// with a position.
+	LogreplRequireExistingSlot *bool `json:"logrepl.requireExistingSlot"`
 }
 
 // DebeziumImport parses LogreplImportDebeziumOffset. It returns nil and no

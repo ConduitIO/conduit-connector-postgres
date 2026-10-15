@@ -87,6 +87,10 @@ type Config struct {
 	// with no position, after dbzoffset.Preflight passed. WithSnapshot is
 	// false with it.
 	Import *dbzoffset.Import
+	// RequireExistingSlot makes the CDC iterator open the slot without ever
+	// creating it, and skip creating the publication (S13). The caller has
+	// run CheckExistingSlot.
+	RequireExistingSlot bool
 }
 
 // Validate performs validation tasks on the config.
@@ -280,6 +284,7 @@ func (c *CombinedIterator) initCDCIterator(ctx context.Context, pos position.Pos
 		StartPosition:     pos,
 		SchemaDriftPolicy: c.conf.SchemaDriftPolicy,
 		Import:            c.conf.Import,
+		RequireExisting:   c.conf.RequireExistingSlot,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create CDC iterator: %w", err)

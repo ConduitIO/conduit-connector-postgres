@@ -103,6 +103,10 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 	if err != nil {
 		return err
 	}
+	requireExisting, err := s.checkExistingSlot(ctx, pos, imp != nil)
+	if err != nil {
+		return err
+	}
 
 	switch s.config.CDCMode {
 	case source.CDCModeAuto:
@@ -111,16 +115,17 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 		fallthrough
 	case source.CDCModeLogrepl:
 		i, err := logrepl.NewCombinedIterator(ctx, s.pool, logrepl.Config{
-			Position:          pos,
-			SlotName:          s.config.LogreplSlotName,
-			PublicationName:   s.config.LogreplPublicationName,
-			Tables:            s.config.Tables,
-			TableKeys:         s.tableKeys,
-			WithSnapshot:      s.config.SnapshotMode == source.SnapshotModeInitial,
-			WithAvroSchema:    s.config.WithAvroSchema,
-			BatchSize:         *s.config.BatchSize,
-			SchemaDriftPolicy: s.config.LogreplSchemaDriftPolicy,
-			Import:            imp,
+			Position:            pos,
+			SlotName:            s.config.LogreplSlotName,
+			PublicationName:     s.config.LogreplPublicationName,
+			Tables:              s.config.Tables,
+			TableKeys:           s.tableKeys,
+			WithSnapshot:        s.config.SnapshotMode == source.SnapshotModeInitial,
+			WithAvroSchema:      s.config.WithAvroSchema,
+			BatchSize:           *s.config.BatchSize,
+			SchemaDriftPolicy:   s.config.LogreplSchemaDriftPolicy,
+			Import:              imp,
+			RequireExistingSlot: requireExisting,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create logical replication iterator: %w", err)
@@ -169,6 +174,36 @@ func (s *Source) debeziumImport(ctx context.Context, pos opencdc.Position) (*dbz
 		return nil, err
 	}
 	return imp, nil
+}
+
+// checkExistingSlot applies logrepl.requireExistingSlot (S13). It returns
+// whether the slot and the publication must already exist; when they must,
+// it has checked that they do. An import always requires them and runs its
+// own preflight, so it is not checked again here.
+func (s *Source) checkExistingSlot(ctx context.Context, pos opencdc.Position, importing bool) (bool, error) {
+	if importing {
+		return true, nil
+	}
+	if logrepl.MustUseExistingSlot(s.config.LogreplRequireExistingSlot, len(pos) > 0) {
+		// Invariant 3: a position means a slot existed; never silently
+		// replace it with one that starts at the current WAL.
+		return true, logrepl.CheckExistingSlot(ctx, s.pool, s.config.LogreplSlotName, s.config.LogreplPublicationName)
+	}
+	if len(pos) > 0 {
+		exists, err := logrepl.SlotExists(ctx, s.pool, s.config.LogreplSlotName)
+		if err != nil {
+			return false, fmt.Errorf("failed to read replication slot %q: %w", s.config.LogreplSlotName, err)
+		}
+		if !exists {
+			sdk.Logger(ctx).Warn().
+				Str("code", logrepl.ErrorCodeSlotRecreated).
+				Str("slot", s.config.LogreplSlotName).
+				Msgf("%s: creating replication slot %q for a pipeline that already has a position "+
+					"(logrepl.requireExistingSlot: false); every change since the old slot's position is skipped",
+					logrepl.ErrorCodeSlotRecreated, s.config.LogreplSlotName)
+		}
+	}
+	return false, nil
 }
 
 // identifySystem reads the server's system identifier with IDENTIFY_SYSTEM

@@ -473,6 +473,17 @@ pipelines:
           # Type: string
           # Required: no
           logrepl.publicationName: "conduitpub"
+          # LogreplRequireExistingSlot decides whether Open may create the
+          # replication slot and the publication. Unset (the default): refuse
+          # when the pipeline already has a position, because a new slot starts
+          # at the current WAL and silently skips every change since the old
+          # one; create them as before for a new pipeline. "true": always refuse
+          # (what `conduit migrate kafka-connect` writes). "false": always
+          # allow, and log postgres.logrepl.slot_recreated when a slot is
+          # created for a pipeline with a position.
+          # Type: bool
+          # Required: no
+          logrepl.requireExistingSlot: "false"
           # LogreplSchemaDriftPolicy determines how the connector handles schema
           # drift (a DDL that changes a table's shape during CDC; DBZ-3 B1): -
           # "halt" (default): emit a drift marker record, checkpoint before it,

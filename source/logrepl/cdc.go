@@ -61,6 +61,9 @@ type CDCConfig struct {
 	// It is set only when the pipeline has no position; the caller has run
 	// dbzoffset.Preflight.
 	Import *dbzoffset.Import
+	// RequireExisting: never create the slot or the publication (S13).
+	// Import mode implies it.
+	RequireExisting bool
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -92,7 +95,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	// Import mode never creates the publication (#341 S16): one created
 	// after the slot's start makes pgoutput skip the earlier WAL of its
 	// tables. The preflight checked that it exists and covers the tables.
-	if c.Import == nil {
+	if c.Import == nil && !c.RequireExisting {
 		if err := internal.CreatePublication(
 			ctx,
 			pool,
@@ -130,7 +133,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	)
 
 	newSub := internal.CreateSubscription
-	if c.Import != nil {
+	if c.Import != nil || c.RequireExisting {
 		// Import mode never creates the slot: a slot created now would start
 		// at the current WAL and miss everything since Debezium's offset.
 		newSub = internal.OpenSubscription
