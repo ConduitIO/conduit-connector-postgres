@@ -2,7 +2,7 @@ version: "1.0"
 specification:
   name: postgres
   summary: Conduit connector for PostgreSQL
-  description: |
+  description: |-
     ## Connection and SCRAM authentication
 
     Source and destination connect with the `url` setting. Over TLS with SCRAM
