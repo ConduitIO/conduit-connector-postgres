@@ -262,6 +262,7 @@ snapshot and CDC.
 | `timestamptz` | The instant, in UTC (`Z`). | `timestamp-micros`. |
 | `date` | Midnight UTC of the date. | `date`. |
 | `tsvector` | Postgres text form, `'a':1 'cat':3A,4B`. | `string`, same text. |
+| `float4`, `float8` `NaN`, `Infinity`, `-Infinity` | The strings `"NaN"`, `"Infinity"` and `"-Infinity"`, because JSON cannot hold them. The same for the elements of `float4[]` and `float8[]`. Finite values are numbers. | `float` and `double` hold them as they are. |
 | `infinity`, `-infinity` | The strings `infinity` and `-infinity`. | The source halts with error code `postgres.source.temporal_not_representable`. |
 | Years before 1 BC or after 9999 AD | Postgres text, for example `0044-03-15 12:00:00 BC`. | As above, up to what 64-bit microseconds hold; beyond that the same error. |
 | Arrays, ranges, multiranges of these | Element and bound values as above. | Not supported by the Avro schema. |

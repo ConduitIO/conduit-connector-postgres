@@ -17,6 +17,7 @@ package internal
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/big"
 	"net"
 	"net/netip"
@@ -875,5 +876,87 @@ func TestRelationSetValues_NumericArrayNonFinite(t *testing.T) {
 		is.True(strings.HasPrefix(err.Error(), "postgres.source.numeric_not_representable: "))
 		is.True(strings.Contains(err.Error(), `"Infinity"`))
 		is.True(strings.Contains(err.Error(), `"v"`))
+	})
+}
+
+// TestRelationSetValues_FloatNonFinite is the CDC half of the regression test
+// for #376. pgoutput sends float NaN and infinities as the text "NaN",
+// "Infinity" and "-Infinity". Without an Avro schema they used to reach the
+// payload as Go floats, which JSON cannot hold (opencdc.Record.Bytes panics);
+// they are now those strings. With an Avro schema they stay floats. The tuple is
+// built by hand, so it needs no Postgres.
+func TestRelationSetValues_FloatNonFinite(t *testing.T) {
+	rel := &pglogrepl.RelationMessage{
+		RelationID: 13, Namespace: "public", RelationName: "measures", ColumnNum: 5,
+		Columns: []*pglogrepl.RelationMessageColumn{
+			{Name: "id", DataType: pgtype.Int8OID, Flags: 1},
+			{Name: "f4", DataType: pgtype.Float4OID},
+			{Name: "f8", DataType: pgtype.Float8OID},
+			{Name: "f4a", DataType: pgtype.Float4ArrayOID},
+			{Name: "f8a", DataType: pgtype.Float8ArrayOID},
+		},
+	}
+	text := func(s string) *pglogrepl.TupleDataColumn {
+		return &pglogrepl.TupleDataColumn{DataType: pglogrepl.TupleDataTypeText, Data: []byte(s)}
+	}
+	null := &pglogrepl.TupleDataColumn{DataType: pglogrepl.TupleDataTypeNull}
+
+	t.Run("native", func(t *testing.T) {
+		for _, tc := range []string{"NaN", "Infinity", "-Infinity"} {
+			is := is.New(t)
+			rs := NewRelationSetWithEncoding(types.EncodingNative)
+			rs.Add(rel)
+			values, err := rs.Values(13, &pglogrepl.TupleData{ColumnNum: 5, Columns: []*pglogrepl.TupleDataColumn{
+				text("1"), text(tc), text(tc), text("{" + tc + ",1.5,NULL}"), text("{" + tc + ",1.5,NULL}"),
+			}})
+			is.NoErr(err)
+			is.Equal(values["f4"], tc)
+			is.Equal(values["f8"], tc)
+			is.Equal(values["f4a"], []any{tc, float32(1.5), nil})
+			is.Equal(values["f8a"], []any{tc, 1.5, nil})
+
+			rec := opencdc.Record{Payload: opencdc.Change{After: opencdc.StructuredData(values)}}
+			is.True(len(rec.Bytes()) > 0) // Bytes panics on a Go NaN or infinity
+		}
+	})
+	t.Run("native finite and NULL are unchanged", func(t *testing.T) {
+		is := is.New(t)
+		rs := NewRelationSetWithEncoding(types.EncodingNative)
+		rs.Add(rel)
+		values, err := rs.Values(13, &pglogrepl.TupleData{ColumnNum: 5, Columns: []*pglogrepl.TupleDataColumn{
+			text("1"), text("1.5"), null, null, text("{2.5}"),
+		}})
+		is.NoErr(err)
+		is.Equal(values["f4"], float32(1.5))
+		is.True(values["f8"] == nil)
+		is.True(values["f4a"] == nil)
+		is.Equal(values["f8a"], []any{2.5})
+	})
+	t.Run("avro keeps floats, which Avro encodes", func(t *testing.T) {
+		is := is.New(t)
+		rs := NewRelationSetWithEncoding(types.EncodingAvro)
+		rs.Add(rel)
+		values, err := rs.Values(13, &pglogrepl.TupleData{ColumnNum: 5, Columns: []*pglogrepl.TupleDataColumn{
+			text("1"), text("NaN"), text("-Infinity"), null, null,
+		}})
+		is.NoErr(err)
+		f4, ok := values["f4"].(float32)
+		is.True(ok)
+		is.True(math.IsNaN(float64(f4)))
+		f8, ok := values["f8"].(float64)
+		is.True(ok)
+		is.True(math.IsInf(f8, -1))
+
+		// The Avro schema of float4/float8 is float/double: encode and decode.
+		sch, err := schema.Avro.ExtractLogrepl("measures_payload", rel, "f4", "f8")
+		is.NoErr(err)
+		serde, err := cavro.Parse([]byte(sch.String()))
+		is.NoErr(err)
+		b, err := serde.Marshal(map[string]any{"f4": values["f4"], "f8": values["f8"]})
+		is.NoErr(err)
+		var back map[string]any
+		is.NoErr(serde.Unmarshal(b, &back))
+		is.True(math.IsNaN(float64(back["f4"].(float32))))
+		is.True(math.IsInf(back["f8"].(float64), -1))
 	})
 }

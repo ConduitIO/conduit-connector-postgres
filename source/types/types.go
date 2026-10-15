@@ -79,6 +79,10 @@ func Format(oid uint32, v any) (any, error) {
 //     rule (a string, or an error under EncodingAvro). Every other element,
 //     NULLs included, is the pgtype.Numeric pgx decoded, so a numeric[] without
 //     such an element is emitted exactly as before.
+//   - float4 and float8 NaN, Infinity and -Infinity are the strings "NaN",
+//     "Infinity" and "-Infinity" (EncodingNative; JSON cannot hold them) and
+//     unchanged under EncodingAvro, whose float and double can. The same applies
+//     to the elements of float4[] and float8[]. Finite values keep their Go type.
 //   - arrays of the above are normalized element by element.
 //
 // Native values that time.Time cannot serialize to JSON (years before 0000 or
@@ -117,6 +121,9 @@ func formatFor(enc Encoding, oid uint32, v any) (any, error) {
 	if oid == pgtype.NumericArrayOID {
 		return formatNumericArray(enc, v)
 	}
+	if enc == EncodingNative && (oid == pgtype.Float4ArrayOID || oid == pgtype.Float8ArrayOID) {
+		return formatFloatArray(v)
+	}
 	switch oid {
 	case pgtype.TSVectorOID:
 		return formatTSVector(v)
@@ -125,6 +132,11 @@ func formatFor(enc Encoding, oid uint32, v any) (any, error) {
 	}
 
 	switch t := v.(type) {
+	case float32, float64:
+		if enc == EncodingNative {
+			return formatFloat(t), nil
+		}
+		return t, nil
 	case pgtype.Numeric:
 		return formatNumeric(enc, t)
 	case *pgtype.Numeric:
