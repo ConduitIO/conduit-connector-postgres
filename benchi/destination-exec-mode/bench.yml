@@ -1,0 +1,47 @@
+# benchi config for #367: the destination's pgx query exec mode.
+#
+# Compares Postgres destination throughput between the cached-statement mode
+# (main before #367, pgx's default) and describe_exec (the fix), with an A/A
+# control: a second, separately built main binary that should measure the same
+# as the first. See README.md for the method and how to run it.
+#
+# Ground truth, not engine metrics (see conduit's benchi/METHODOLOGY.md): the
+# pre-test and post-test hooks count the rows in the target table, and the run
+# script divides the difference by the test duration. No Conduit metrics port
+# is published, so nothing binds a host port.
+#
+# The pipeline file (batch size) comes from BENCH_PIPELINE, interpolated by
+# docker compose; run.sh sets it.
+
+infrastructure:
+  postgres:
+    compose: ./infra/compose-postgres.yml
+
+tools:
+  pg-cache:
+    compose: ./tools/compose-pg-cache.yml
+  pg-cache-aa:
+    compose: ./tools/compose-pg-cache-aa.yml
+  pg-describe:
+    compose: ./tools/compose-pg-describe.yml
+
+metrics:
+  docker:
+    collector: docker
+    settings:
+      containers:
+        - "pgbench367-conduit"
+        - "pgbench367-postgres"
+
+tests:
+  - name: destination-exec-mode
+    duration: 60s
+    steps:
+      pre-test:
+        - name: rows-before
+          container: pgbench367-postgres
+          run: psql -U bench -d bench -tAc "SELECT 'ROWS_BEFORE=' || count(*) FROM bench"
+      post-test:
+        - name: rows-after
+          container: pgbench367-postgres
+          run: psql -U bench -d bench -tAc "SELECT 'ROWS_AFTER=' || count(*) FROM bench"

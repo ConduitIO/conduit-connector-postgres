@@ -1,0 +1,26 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: pgbench367-postgres
+    environment:
+      POSTGRES_USER: bench
+      POSTGRES_PASSWORD: bench
+      POSTGRES_DB: bench
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    # Data on tmpfs: benchi tears the stack down without removing volumes, and
+    # the image declares its data directory a volume, so every run would leave
+    # an anonymous volume behind. Both arms see the same storage.
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "bench", "-d", "bench"]
+      interval: 1s
+      timeout: 5s
+      retries: 60
+    networks:
+      - benchi
+
+networks:
+  benchi:
+    external: true
