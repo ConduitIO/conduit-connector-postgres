@@ -109,3 +109,49 @@ func TestHandleUpdate_RecordPartsOwnTheirValues(t *testing.T) {
 		})
 	}
 }
+
+// The key column is in Key and in After (insert) or Before (delete); editing
+// the payload must not change the key (#425).
+func TestHandleInsertDelete_KeyOwnsItsValue(t *testing.T) {
+	ctx := context.Background()
+	newHandler := func(name string) (*CDCHandler, chan []opencdc.Record) {
+		rs := internal.NewRelationSet()
+		rs.Add(&pglogrepl.RelationMessage{RelationID: 1, RelationName: name, ColumnNum: 2, ReplicaIdentity: 'f',
+			Columns: []*pglogrepl.RelationMessageColumn{
+				{Name: "id", DataType: pgtype.ByteaOID, Flags: 1},
+				{Name: "c", DataType: pgtype.Int4ArrayOID},
+			}})
+		ch := make(chan []opencdc.Record, 1)
+		return NewCDCHandler(ctx, rs, map[string]string{name: "id"}, ch, false, 1, time.Hour, position.Position{}, SchemaDriftPolicyHalt), ch
+	}
+	row := func() *pglogrepl.TupleData { return tuple(txt(`\x0a0b`), txt("{1,2}")) }
+
+	t.Run("insert", func(t *testing.T) {
+		h, ch := newHandler("own_ins")
+		if err := h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 1, Tuple: row()}, 0x100); err != nil {
+			t.Fatal(err)
+		}
+		r := (<-ch)[0]
+		want := fmt.Sprint(r.Key)
+		if !mutate(r.Payload.After.(opencdc.StructuredData)["id"]) {
+			t.Fatal("After.id has no container to edit")
+		}
+		if got := fmt.Sprint(r.Key); got != want {
+			t.Errorf("editing After changed Key: %s -> %s", want, got)
+		}
+	})
+	t.Run("delete", func(t *testing.T) {
+		h, ch := newHandler("own_del")
+		if err := h.handleDelete(ctx, &pglogrepl.DeleteMessage{RelationID: 1, OldTupleType: pglogrepl.DeleteMessageTupleTypeOld, OldTuple: row()}, 0x100); err != nil {
+			t.Fatal(err)
+		}
+		r := (<-ch)[0]
+		want := fmt.Sprint(r.Key)
+		if !mutate(r.Payload.Before.(opencdc.StructuredData)["id"]) {
+			t.Fatal("Before.id has no container to edit")
+		}
+		if got := fmt.Sprint(r.Key); got != want {
+			t.Errorf("editing Before changed Key: %s -> %s", want, got)
+		}
+	})
+}
