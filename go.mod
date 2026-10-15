@@ -18,6 +18,8 @@ require (
 	gopkg.in/tomb.v2 v2.0.0-20161208151619-d5d1b5820637
 )
 
+require pgregory.net/rapid v1.3.0
+
 require (
 	dario.cat/mergo v1.0.1 // indirect
 	github.com/Masterminds/goutils v1.1.1 // indirect
