@@ -368,6 +368,42 @@ specification:
 
     If there is no key, the record will be simply appended.
 
+    ### Keys, columns and acknowledgements
+
+    - **Upsert key.** With a structured record key (or a raw key that is a JSON object),
+      a create, update or snapshot record is `INSERT ... ON CONFLICT (<key columns>) DO
+      UPDATE SET` every other field of the record. The key columns must carry a primary
+      key or unique constraint, otherwise Postgres rejects the statement. When a record has
+      no field besides its key columns (a table whose columns are all key columns), the
+      statement is `ON CONFLICT DO NOTHING`, so a redelivery is a no-op.
+    - **Columns.** Each record is written with exactly its own fields. A field the table has
+      no column for fails the write; the destination does not create or alter tables. A
+      field the record lacks is not written: an insert gets the column default, an existing
+      row keeps its value. A create, update or snapshot record without fields fails with
+      `postgres.destination.payload_empty`.
+    - **Key values** must be one non-null scalar per key column, for upserts and deletes. A
+      null value fails with `postgres.destination.key_column_missing` (a delete would match
+      every row with a NULL there, an upsert would append a new row on every redelivery), and
+      a list or object fails with `postgres.destination.key_value_not_scalar` (a delete would
+      match several rows or none).
+    - **Deletes** need a key and delete the rows matching every key column.
+    - **Raw JSON** keys and payloads are decoded without going through `float64`: an integer
+      literal is an `int64` (or `uint64`), and any other number keeps its literal, so
+      `numeric`, `text` and `json`/`jsonb` columns store it exactly. Integer columns take a
+      whole value in any form (`1e3`, `7.0`) and reject a fraction; `real` and `float8`
+      columns store the nearest float. Structured data that arrives over the plugin protocol
+      has already passed through a double (ConduitIO/conduit#3100), so integers above 2^53
+      sent that way are rounded before the destination sees them.
+    - **Names** of the table and columns are quoted as Postgres identifiers, so reserved
+      words, upper case and double quotes work. A name with a NUL byte or longer than 63 bytes
+      fails with `postgres.destination.invalid_identifier`, because Postgres would address a
+      different table or column. The table name is one identifier: a dot is part of the name,
+      not a schema separator.
+    - **Acknowledgements.** A write is one implicit transaction. If any statement or the
+      commit fails, nothing from that write is stored and no record of it is acknowledged;
+      the records are redelivered (at-least-once). Keyed upserts make redelivery
+      idempotent; keyless inserts append again.
+
     ### Numeric columns
 
     Decimal values (`big.Rat`) are sent to Postgres as exact decimal strings, and

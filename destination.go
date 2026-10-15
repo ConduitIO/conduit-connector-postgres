@@ -15,13 +15,16 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
 	"math/big"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +37,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Destination struct {
@@ -351,13 +355,26 @@ func (d *Destination) handleDelete(ctx context.Context, r opencdc.Record, b *pgx
 }
 
 func (d *Destination) upsert(ctx context.Context, r opencdc.Record, b *pgx.Batch) error {
-	payload := r.Payload.After.(opencdc.StructuredData)
-	key := r.Key.(opencdc.StructuredData)
+	payload, _ := r.Payload.After.(opencdc.StructuredData) // ensureStructuredData made it structured
+	key, _ := r.Key.(opencdc.StructuredData)
 	tableName, err := d.getTableName(r)
 	if err != nil {
 		return fmt.Errorf("failed to get table name for upsert: %w", err)
 	}
+	if len(payload) == 0 {
+		// An empty row would be an INSERT of only the key (or of nothing),
+		// acked as if the record had been applied (invariant 6).
+		return fmt.Errorf("%s: %s record for table %q has no fields in .Payload.After. "+
+			"Fix: make sure create, update and snapshot records carry the row in .Payload.After",
+			ErrorCodeDestinationPayloadEmpty, r.Operation, tableName)
+	}
 
+	if err := checkIdentifiers(tableName, key, payload); err != nil {
+		return err
+	}
+	if err := checkKeyValues(r.Operation, tableName, key); err != nil {
+		return err
+	}
 	query, args, err := d.formatUpsertQuery(key, payload, tableName)
 	if err != nil {
 		return fmt.Errorf("error formatting query: %w", err)
@@ -373,19 +390,25 @@ func (d *Destination) upsert(ctx context.Context, r opencdc.Record, b *pgx.Batch
 }
 
 func (d *Destination) remove(ctx context.Context, r opencdc.Record, b *pgx.Batch) error {
-	key := r.Key.(opencdc.StructuredData)
+	key, _ := r.Key.(opencdc.StructuredData) // hasKey checked it
 	tableName, err := d.getTableName(r)
 	if err != nil {
 		return fmt.Errorf("failed to get table name for delete: %w", err)
 	}
 
+	if err := checkIdentifiers(tableName, key, nil); err != nil {
+		return err
+	}
+	if err := checkKeyValues(r.Operation, tableName, key); err != nil {
+		return err
+	}
 	where := make(sq.Eq)
 	for col, val := range key {
-		where[internal.WrapSQLIdent(col)] = val
+		where[quoteIdent(col)] = val
 	}
 
 	query, args, err := d.stmtBuilder.
-		Delete(internal.WrapSQLIdent(tableName)).
+		Delete(quoteIdent(tableName)).
 		Where(where).
 		ToSql()
 	if err != nil {
@@ -402,74 +425,147 @@ func (d *Destination) remove(ctx context.Context, r opencdc.Record, b *pgx.Batch
 	return nil
 }
 
-// formatUpsertQuery manually formats the UPSERT and ON CONFLICT query statements.
-// The `ON CONFLICT` portion of this query needs to specify the constraint
-// name.
-// * In our case, we can only rely on the record.Key's parsed key value.
-// * If other schema constraints prevent a write, this won't upsert on
-// that conflict.
+// formatUpsertQuery builds the INSERT for one record. With a key it is an
+// upsert on the key columns: ON CONFLICT (key) DO UPDATE SET every other column
+// of the record, or DO NOTHING when the record has no other column (a table
+// whose columns are all key columns; an empty SET list is a syntax error).
+//
+// The key columns come from the record key, the other columns from the
+// payload, and a payload field that is also a key column is written once, with
+// the key's value. Neither map is modified: the record belongs to the caller
+// (#343). Columns are sorted so that a record shape always gives the same SQL
+// text.
 func (d *Destination) formatUpsertQuery(
 	key, payload opencdc.StructuredData,
 	tableName string,
 ) (string, []interface{}, error) {
-	colArgs, valArgs := d.formatColumnsAndValues(key, payload)
+	keyColumns := slices.Sorted(maps.Keys(key))
+	var otherColumns []string
+	for field := range payload {
+		if _, isKey := key[field]; !isKey {
+			otherColumns = append(otherColumns, field)
+		}
+	}
+	slices.Sort(otherColumns)
+
+	colArgs := make([]string, 0, len(keyColumns)+len(otherColumns))
+	valArgs := make([]interface{}, 0, len(keyColumns)+len(otherColumns))
+	for _, col := range keyColumns {
+		colArgs = append(colArgs, quoteIdent(col))
+		valArgs = append(valArgs, d.formatValue(key[col]))
+	}
+	for _, col := range otherColumns {
+		colArgs = append(colArgs, quoteIdent(col))
+		valArgs = append(valArgs, d.formatValue(payload[col]))
+	}
 
 	stmt := d.stmtBuilder.
-		Insert(internal.WrapSQLIdent(tableName)).
+		Insert(quoteIdent(tableName)).
 		Columns(colArgs...).
 		Values(valArgs...)
 
-	if len(key) > 0 {
-		keyColumns := slices.Collect(maps.Keys(key))
-		for i := range keyColumns {
-			keyColumns[i] = internal.WrapSQLIdent(keyColumns[i])
+	if len(keyColumns) > 0 {
+		quotedKeys := make([]string, len(keyColumns))
+		for i, col := range keyColumns {
+			quotedKeys[i] = quoteIdent(col)
 		}
-
-		var setOnConflict []string
-		for column := range payload {
-			// tuples form a comma separated list, so they need a comma at the end.
-			// `EXCLUDED` references the new record's values. This will overwrite
-			// every column's value except for the key columns.
-			wrappedCol := internal.WrapSQLIdent(column)
-			tuple := fmt.Sprintf("%s=EXCLUDED.%s", wrappedCol, wrappedCol)
-			// add the tuple to the query string
-			setOnConflict = append(setOnConflict, tuple)
+		action := "DO NOTHING"
+		if len(otherColumns) > 0 {
+			setOnConflict := make([]string, len(otherColumns))
+			for i, col := range otherColumns {
+				// EXCLUDED is the row proposed for insertion: every column but
+				// the key columns is overwritten with the record's value.
+				setOnConflict[i] = fmt.Sprintf("%s=EXCLUDED.%s", quoteIdent(col), quoteIdent(col))
+			}
+			action = "DO UPDATE SET " + strings.Join(setOnConflict, ",")
 		}
-
-		upsertQuery := fmt.Sprintf(
-			"ON CONFLICT (%s) DO UPDATE SET %s",
-			strings.Join(keyColumns, ","),
-			strings.Join(setOnConflict, ","),
-		)
-
-		stmt = stmt.Suffix(upsertQuery)
+		stmt = stmt.Suffix(fmt.Sprintf("ON CONFLICT (%s) %s", strings.Join(quotedKeys, ","), action))
 	}
 
 	return stmt.ToSql()
 }
 
-// formatColumnsAndValues turns the key and payload into a slice of ordered
-// columns and values for upserting into Postgres.
-func (d *Destination) formatColumnsAndValues(
-	key, payload opencdc.StructuredData,
-) ([]string, []interface{}) {
-	var colArgs []string
-	var valArgs []interface{}
-
-	// range over both the key and payload values in order to format the
-	// query for args and values in proper order
-	for key, val := range key {
-		colArgs = append(colArgs, internal.WrapSQLIdent(key))
-		valArgs = append(valArgs, d.formatValue(val))
-		delete(payload, key) // NB: Delete Key from payload arguments
+// checkKeyValues fails unless every key value is a single non-null scalar.
+//
+// Invariant 6: a key identifies one row. In a delete, squirrel turns a nil
+// value into IS NULL (every row with a NULL there) and a slice into IN (...)
+// (several rows; an empty slice into 1=0, a silent no-op). In an upsert, a
+// null key value never conflicts, so every redelivery of the record appends
+// another row on a nullable unique column. []byte is a scalar (bytea).
+func checkKeyValues(op opencdc.Operation, table string, key opencdc.StructuredData) error {
+	for col, val := range key {
+		if val == nil {
+			return fmt.Errorf("%s: the %s record's key has a null value for column %q of table %q, "+
+				"so it cannot identify one row. Fix: send records with a non-null value for every key column",
+				ErrorCodeDestinationKeyColumnMissing, op, col, table)
+		}
+		if _, isBytes := val.([]byte); isBytes {
+			continue
+		}
+		switch reflect.ValueOf(val).Kind() {
+		case reflect.Slice, reflect.Array, reflect.Map:
+			return fmt.Errorf("%s: the %s record's key has a %T value for column %q of table %q, "+
+				"which would match several rows or none. Fix: send one scalar value per key column",
+				ErrorCodeDestinationKeyValueNotScalar, op, val, col, table)
+		default:
+		}
 	}
+	return nil
+}
 
-	for field, val := range payload {
-		colArgs = append(colArgs, internal.WrapSQLIdent(field))
-		valArgs = append(valArgs, d.formatValue(val))
+// maxIdentifierBytes is NAMEDATALEN-1 of a default Postgres build. Postgres
+// truncates longer identifiers to this length with only a NOTICE, so a longer
+// field name would write into whichever column has the truncated name.
+const maxIdentifierBytes = 63
+
+// checkIdentifiers fails for a table or column name that Postgres would not
+// take literally: one with a NUL byte (pgx.Identifier.Sanitize strips it, so
+// "v\x00" would write into column v) or one longer than maxIdentifierBytes
+// (Postgres truncates it). Both would silently alias another column or table.
+func checkIdentifiers(table string, key, payload opencdc.StructuredData) error {
+	check := func(kind, name string) error {
+		switch {
+		case strings.IndexByte(name, 0) >= 0:
+			return fmt.Errorf("%s: %s name %q contains a NUL byte, which Postgres identifiers cannot hold. "+
+				"Fix: rename the field (or the table template result) before the destination",
+				ErrorCodeDestinationInvalidIdentifier, kind, name)
+		case len(name) > maxIdentifierBytes:
+			return fmt.Errorf("%s: %s name %q is %d bytes long, Postgres would truncate it to %d bytes and "+
+				"address a different column or table. Fix: rename it to at most %d bytes before the destination",
+				ErrorCodeDestinationInvalidIdentifier, kind, name, len(name), maxIdentifierBytes, maxIdentifierBytes)
+		case name == "":
+			return fmt.Errorf("%s: empty %s name. Fix: set the table template or the field name",
+				ErrorCodeDestinationInvalidIdentifier, kind)
+		}
+		return nil
 	}
+	if err := check("table", table); err != nil {
+		return err
+	}
+	for name := range key {
+		if err := check("column", name); err != nil {
+			return err
+		}
+	}
+	for name := range payload {
+		if err := check("column", name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	return colArgs, valArgs
+// quoteIdent quotes a table or column name as a Postgres identifier: double
+// quotes around it, and every double quote inside it doubled. The names come
+// from records (payload field names, the record key, the table template), so
+// they must never change the SQL text. internal.WrapSQLIdent (strconv.Quote)
+// escapes a double quote as \", which Postgres does not understand, so a name
+// with a double quote broke the statement.
+//
+// Callers check the names with checkIdentifiers first: Sanitize strips NUL
+// bytes, which would alias names.
+func quoteIdent(name string) string {
+	return pgx.Identifier{name}.Sanitize()
 }
 
 func (d *Destination) hasKey(e opencdc.Record) bool {
@@ -506,12 +602,19 @@ func (d *Destination) structuredDataFormatter(data opencdc.Data) (opencdc.Struct
 		if len(raw) == 0 {
 			return opencdc.StructuredData{}, nil
 		}
-		m := make(map[string]interface{})
-		err := json.Unmarshal(raw, &m)
-		if err != nil {
+		// Invariant 6: numbers are decoded exactly. Through float64, int8 max
+		// was stored as int8 min on amd64 and every integer above 2^53 was
+		// rounded (#402), and a delete key matched a different row.
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		var m map[string]interface{}
+		if err := dec.Decode(&m); err != nil {
 			return nil, fmt.Errorf("failed to JSON unmarshal raw data: %w", err)
 		}
-		return m, nil
+		if dec.More() {
+			return nil, fmt.Errorf("failed to JSON unmarshal raw data: more than one JSON value")
+		}
+		return exactNumbers(m).(map[string]interface{}), nil
 	case nil:
 		return opencdc.StructuredData{}, nil
 	default:
@@ -578,3 +681,127 @@ func interruptOnDone(ctx context.Context, conn *pgx.Conn) (stop func() (fired bo
 		return fired // exited happens-before this read
 	}
 }
+
+// ErrorCodeDestinationPayloadEmpty prefixes the error for a create, update or
+// snapshot record without fields.
+const ErrorCodeDestinationPayloadEmpty = "postgres.destination.payload_empty"
+
+// exactNumbers replaces the json.Number values in v (a decoded JSON value) with
+// an int64 or uint64 when the number is an integer literal in range, and with a
+// jsonNumber otherwise, which keeps the literal so that numeric, text and jsonb
+// columns store it exactly.
+func exactNumbers(v interface{}) interface{} {
+	switch v := v.(type) {
+	case map[string]interface{}:
+		for k, e := range v {
+			v[k] = exactNumbers(e)
+		}
+		return v
+	case []interface{}:
+		for i, e := range v {
+			v[i] = exactNumbers(e)
+		}
+		return v
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return i
+		}
+		if u, err := strconv.ParseUint(v.String(), 10, 64); err == nil {
+			return u
+		}
+		return jsonNumber(v)
+	default:
+		return v
+	}
+}
+
+// jsonNumber is a JSON number literal that is not an int64 or uint64 literal
+// (a fraction, an exponent, or an integer beyond uint64). It implements the
+// pgx valuer interfaces so that each column type gets it exactly or fails:
+//
+//   - numeric: the exact decimal value (12345678901234567.89 stays exact);
+//   - int2/int4/int8: the integer if the value is whole and in range ("1e3",
+//     "1.0"), an error otherwise;
+//   - float4/float8: the nearest float, as before;
+//   - text and jsonb: the literal itself.
+//
+// Before, every such number became a float64, which rounded numeric values with
+// more than about 15 significant digits.
+type jsonNumber string
+
+var (
+	_ pgtype.NumericValuer = jsonNumber("")
+	_ pgtype.Int64Valuer   = jsonNumber("")
+	_ pgtype.Float64Valuer = jsonNumber("")
+	_ pgtype.TextValuer    = jsonNumber("")
+	_ json.Marshaler       = jsonNumber("")
+)
+
+func (n jsonNumber) rat() (*big.Rat, error) {
+	// big.Rat builds a number with as many digits as the exponent (1e1000000
+	// takes milliseconds and hundreds of kilobytes per value); no int64 needs
+	// an exponent above 20.
+	if i := strings.IndexAny(string(n), "eE"); i >= 0 {
+		exp, err := strconv.Atoi(strings.TrimPrefix(string(n)[i+1:], "+"))
+		if err != nil || exp < -400 || exp > 400 {
+			return nil, fmt.Errorf("JSON number %q has an exponent outside -400..400", string(n))
+		}
+	}
+	r, ok := new(big.Rat).SetString(string(n))
+	if !ok {
+		return nil, fmt.Errorf("invalid JSON number %q", string(n))
+	}
+	return r, nil
+}
+
+// NumericValue returns the exact decimal value.
+func (n jsonNumber) NumericValue() (pgtype.Numeric, error) {
+	var num pgtype.Numeric
+	if err := num.Scan(string(n)); err != nil {
+		return pgtype.Numeric{}, fmt.Errorf("JSON number %q as numeric: %w", string(n), err)
+	}
+	return num, nil
+}
+
+// Int64Value returns the value if it is a whole number in the int64 range.
+func (n jsonNumber) Int64Value() (pgtype.Int8, error) {
+	r, err := n.rat()
+	if err != nil {
+		return pgtype.Int8{}, err
+	}
+	if !r.IsInt() || !r.Num().IsInt64() {
+		return pgtype.Int8{}, fmt.Errorf("JSON number %q is not a whole number in the int64 range", string(n))
+	}
+	return pgtype.Int8{Int64: r.Num().Int64(), Valid: true}, nil
+}
+
+// Float64Value returns the nearest float64.
+func (n jsonNumber) Float64Value() (pgtype.Float8, error) {
+	f, err := strconv.ParseFloat(string(n), 64)
+	if err != nil {
+		return pgtype.Float8{}, fmt.Errorf("JSON number %q as float: %w", string(n), err)
+	}
+	return pgtype.Float8{Float64: f, Valid: true}, nil
+}
+
+// TextValue returns the literal.
+func (n jsonNumber) TextValue() (pgtype.Text, error) {
+	return pgtype.Text{String: string(n), Valid: true}, nil
+}
+
+// MarshalJSON writes the literal as a JSON number, for json and jsonb columns.
+func (n jsonNumber) MarshalJSON() ([]byte, error) {
+	return []byte(n), nil
+}
+
+// ErrorCodeDestinationInvalidIdentifier prefixes the error for a table or
+// column name that Postgres would not take literally.
+const ErrorCodeDestinationInvalidIdentifier = "postgres.destination.invalid_identifier"
+
+// ErrorCodeDestinationKeyColumnMissing prefixes the error for a delete whose key
+// has no usable value for a key column.
+const ErrorCodeDestinationKeyColumnMissing = "postgres.destination.key_column_missing"
+
+// ErrorCodeDestinationKeyValueNotScalar prefixes the error for a key value that
+// is a list or an object.
+const ErrorCodeDestinationKeyValueNotScalar = "postgres.destination.key_value_not_scalar"
