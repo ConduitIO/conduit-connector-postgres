@@ -100,6 +100,7 @@ func TestDriftMarker_SurvivesTransportAndIsRecognized(t *testing.T) {
 	marker := recs[0]
 	is.Equal(marker.Metadata[logrepl.MetadataSchemaDrift], "true") // got the real marker
 	is.True(isDriftMarker(marker))                                 // as emitted
+	is.True(hasMarkerPosition(marker))                             // with the source-only signal
 
 	// opencdc record <-> proto, through the wire encoding.
 	pb := &opencdcv1.Record{}
@@ -111,6 +112,7 @@ func TestDriftMarker_SurvivesTransportAndIsRecognized(t *testing.T) {
 	var viaProto opencdc.Record
 	is.NoErr(viaProto.FromProto(pb2))
 	is.True(isDriftMarker(viaProto)) // after the opencdc proto round trip
+	is.True(hasMarkerPosition(viaProto))
 
 	// connector-protocol destination Run request, as Conduit sends it to a
 	// destination plugin and the plugin's server decodes it.
@@ -126,6 +128,7 @@ func TestDriftMarker_SurvivesTransportAndIsRecognized(t *testing.T) {
 	is.NoErr(err)
 	is.Equal(len(got.Records), 1)
 	is.True(isDriftMarker(got.Records[0])) // after the destination transport
+	is.True(hasMarkerPosition(got.Records[0]))
 
 	// And the destination treats the decoded marker as an acked no-op.
 	ctxD, d, tableName, dconn := openDriftTestDestination(t)

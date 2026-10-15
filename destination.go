@@ -35,6 +35,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
+	"github.com/conduitio/conduit-connector-postgres/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -163,11 +164,23 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 		// acked (Write returns the full count), so the marker's position
 		// checkpoint flows end to end.
 		//
-		// Invariant 3: only a record shaped exactly like the source's marker
-		// may be skipped. The metadata key alone is not proof: it is plain,
-		// user-reachable metadata, and acking a keyed, payload-bearing record
-		// without writing it is silent data loss.
+		// Invariant 3: only a marker this connector's source produced may be
+		// skipped. The metadata key is plain, user-reachable metadata, so it
+		// is not proof; the proof is the marker's shape plus its position,
+		// which only the source writes and Conduit does not let a processor
+		// change (docs/design-documents/20261015-drift-marker-source-signal.md).
 		if isDriftMarker(rec) {
+			if !hasMarkerPosition(rec) {
+				// Marker-shaped, but not provably a marker: it cannot be
+				// written as a row (FM6) and must not be acked unwritten.
+				return 0, fmt.Errorf("%s: a record carries %s=true and the drift marker's shape (a create "+
+					"with no key and no payload), but its position was not written by this connector's source "+
+					"as a marker for table %q, so it is neither written nor acknowledged. Drift markers lose "+
+					"their position when they pass through another system (Kafka, a file): drop them before "+
+					"that hop with a filter processor on the %s metadata, or remove the metadata if it was "+
+					"set by mistake", ErrorCodeDriftMarkerUnverified, logrepl.MetadataSchemaDrift,
+					rec.Metadata[logrepl.MetadataSchemaDriftTable], logrepl.MetadataSchemaDrift)
+			}
 			sdk.Logger(ctx).Debug().
 				Str("table", rec.Metadata[logrepl.MetadataSchemaDriftTable]).
 				Msg("skipping schema-drift marker record at the destination (FM6 no-op)")
@@ -228,6 +241,22 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 		return 0, fmt.Errorf("failed to commit batch: %w", err)
 	}
 	return len(recs), nil
+}
+
+// ErrorCodeDriftMarkerUnverified prefixes the error Write returns for a
+// record that looks like a schema-drift marker but whose position does not
+// prove this connector's source produced it.
+const ErrorCodeDriftMarkerUnverified = "postgres.destination.drift_marker_unverified"
+
+// hasMarkerPosition reports whether rec's position is a CDC position this
+// connector's source wrote for a schema-drift marker of the table the
+// metadata names.
+func hasMarkerPosition(rec opencdc.Record) bool {
+	p, err := position.ParseSDKPosition(rec.Position)
+	if err != nil || p.Type != position.TypeCDC || p.SchemaDriftMarker == "" {
+		return false
+	}
+	return p.SchemaDriftMarker == rec.Metadata[logrepl.MetadataSchemaDriftTable]
 }
 
 // hasDriftMetadata reports whether rec carries postgres.schema.drift=true.

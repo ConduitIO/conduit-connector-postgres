@@ -637,7 +637,23 @@ func (h *CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 
 // buildPositionAt is buildPosition with an explicit change key. A key that is
 // not Known leaves the position without one (the legacy resume rule).
+// buildMarkerPosition is buildPositionAt for a schema-drift marker: the same
+// resume point, plus SchemaDriftMarker naming the drifted table, which the
+// destination checks before it skips the marker (invariant 3: only records
+// this source produced as markers are acked without a write).
+func (h *CDCHandler) buildMarkerPosition(lsn pglogrepl.LSN, key internal.ChangeKey, table string) opencdc.Position {
+	p := h.positionAt(lsn, key)
+	p.SchemaDriftMarker = table
+	return p.ToSDKPosition()
+}
+
 func (h *CDCHandler) buildPositionAt(lsn pglogrepl.LSN, key internal.ChangeKey) opencdc.Position {
+	return h.positionAt(lsn, key).ToSDKPosition()
+}
+
+// positionAt builds a fresh CDC position. Only the DBZ-3 fields are carried
+// forward from basePosition; SchemaDriftMarker never is.
+func (h *CDCHandler) positionAt(lsn pglogrepl.LSN, key internal.ChangeKey) position.Position {
 	var commit string
 	var seq uint64
 	if key.Known() {
@@ -650,7 +666,7 @@ func (h *CDCHandler) buildPositionAt(lsn pglogrepl.LSN, key internal.ChangeKey) 
 		TxSeq:                   seq,
 		SnapshotLowWatermarkLSN: h.basePosition.SnapshotLowWatermarkLSN,
 		SchemaHistory:           h.basePosition.SchemaHistory,
-	}.ToSDKPosition()
+	}
 }
 
 // currentChangeKey returns the key of the change being handled (its
@@ -1038,7 +1054,7 @@ func (h *CDCHandler) emitDriftMarker(
 	// predecessor), so it stays closed until the deciding change itself is
 	// delivered and acked after the restart.
 	markerKey := h.currentChangeKey()
-	rec := sdk.Util.Source.NewRecordCreate(h.buildPositionAt(lsn, markerKey.Predecessor()), metadata, nil, nil)
+	rec := sdk.Util.Source.NewRecordCreate(h.buildMarkerPosition(lsn, markerKey.Predecessor(), key), metadata, nil, nil)
 
 	mp, perr := position.ParseSDKPosition(rec.Position)
 	if perr != nil {
