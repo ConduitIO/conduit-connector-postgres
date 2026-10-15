@@ -1,0 +1,33 @@
+name: property-nightly
+
+# The long run of the property tests (pgregory.net/rapid). The test job runs
+# every property at RAPID_CHECKS=100 on every PR; this runs the same tests
+# with many more cases, where the extra time would slow every PR down. The
+# properties need no database, so this job starts none.
+#
+# A failure prints the -rapid.seed that replays it locally.
+
+on:
+  schedule:
+    - cron: '43 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  property:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Property tests, long run
+        env:
+          RAPID_CHECKS: "20000"
+        run: go test -race -count=1 -timeout 30m -run 'Property' ./...
