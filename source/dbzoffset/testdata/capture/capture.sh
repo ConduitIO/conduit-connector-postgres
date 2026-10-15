@@ -70,6 +70,10 @@ CREATE TABLE debezium_signal (id varchar(64) PRIMARY KEY, type varchar(32) NOT N
 INSERT INTO big SELECT g, md5(g::text) FROM generate_series(1, 200000) g;
 CREATE PUBLICATION dbz_publication FOR TABLE orders, customers, big, debezium_signal;
 SELECT 1 FROM pg_create_logical_replication_slot('probe', 'pgoutput');
+-- test_decoding sees every commit, including transactions with no change
+-- to a published table, which pgoutput (PG 15+) does not send but
+-- decoderbufs does: Debezium's lsn_commit can be the end of one of those.
+SELECT 1 FROM pg_create_logical_replication_slot('probe_all', 'test_decoding');
 SQL
 
 phase_file=$out/.phase
@@ -168,7 +172,7 @@ echo blocking >"$phase_file"
 # A blocking snapshot (Debezium 2.5+): streaming pauses while it runs, and
 # the offsets committed meanwhile carry snapshot = "BLOCKING" (D7 refuses them).
 psql -c "INSERT INTO debezium_signal VALUES ('sig-2', 'execute-snapshot', '{\"data-collections\": [\"public.big\"], \"type\": \"blocking\"}')"
-wait_for 120 '.snapshot == "BLOCKING"' || true
+wait_for 120 '.snapshot == "BLOCKING" or .snapshot == true' || true
 wait_for 300 'has("snapshot") | not' || true
 sleep 2
 
@@ -215,6 +219,12 @@ CREATE TABLE commits AS
 -- lsn_commit to such a message's LSN (S1).
 CREATE TABLE ntx_messages AS
   SELECT (lsn - '0/0'::pg_lsn) AS lsn FROM probe WHERE t = 'M' AND get_byte(data, 1) = 0;
+-- Every commit's end, from test_decoding (its COMMIT row's lsn is the
+-- commit record's end).
+CREATE TABLE all_commit_ends AS
+  SELECT (lsn - '0/0'::pg_lsn) AS end_lsn
+  FROM pg_logical_slot_peek_changes('probe_all', NULL, NULL, 'skip-empty-xacts', '0')
+  WHERE data LIKE 'COMMIT%';
 CREATE TABLE changes AS
   SELECT xid, (lsn - '0/0'::pg_lsn) AS lsn FROM probe WHERE t IN ('I', 'U', 'D', 'T');
 -- Importable offsets: streaming, no snapshot and no incremental-snapshot
@@ -224,10 +234,11 @@ CREATE VIEW importable AS SELECT o FROM captured
     AND NOT EXISTS (SELECT 1 FROM jsonb_object_keys(o) k WHERE k LIKE 'incremental_snapshot_%');
 SELECT 'offsets', count(*) FROM captured;
 SELECT 'importable_offsets', count(*) FROM importable;
--- (a) every lsn_commit is the end of a commit record, or the LSN of a
+-- (a) every lsn_commit is the end of a commit record (of any transaction,
+-- including ones with no published change), or the LSN of a
 -- non-transactional message (S1).
 SELECT 'a_lsn_commit_is_commit_end_or_message', count(*) FILTER (WHERE EXISTS (
-         SELECT 1 FROM commits c WHERE c.end_lsn = (o->>'lsn_commit')::numeric) OR EXISTS (
+         SELECT 1 FROM all_commit_ends c WHERE c.end_lsn = (o->>'lsn_commit')::numeric) OR EXISTS (
          SELECT 1 FROM ntx_messages m WHERE m.lsn = (o->>'lsn_commit')::numeric)),
        count(*)
 FROM importable;
@@ -242,7 +253,7 @@ SELECT 'b_ts_usec_is_commit_time', count(*) FILTER (WHERE EXISTS (
 FROM importable WHERE o->>'messageType' IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE');
 SELECT 'a_unmatched_lsn_commit', o->>'lsn_commit', o->>'messageType', o->>'txId'
 FROM importable WHERE NOT EXISTS (
-  SELECT 1 FROM commits c WHERE c.end_lsn = (o->>'lsn_commit')::numeric) AND NOT EXISTS (
+  SELECT 1 FROM all_commit_ends c WHERE c.end_lsn = (o->>'lsn_commit')::numeric) AND NOT EXISTS (
   SELECT 1 FROM ntx_messages m WHERE m.lsn = (o->>'lsn_commit')::numeric);
 SELECT 'probe_first_commit_end', min(end_lsn) FROM commits;
 SELECT 'b_ts_mismatch', o->>'txId', o->>'messageType', o->>'ts_usec', c.ts_usec, (o->>'ts_usec')::numeric - c.ts_usec
@@ -252,7 +263,7 @@ WHERE o->>'messageType' IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE')
 LIMIT 8;
 -- COMMIT offsets: lsn == lsn_commit == the commit's end.
 SELECT 'commit_offset_lsn_is_end', count(*) FILTER (WHERE o->>'lsn' = o->>'lsn_commit' AND EXISTS (
-         SELECT 1 FROM commits c WHERE c.end_lsn = (o->>'lsn')::numeric)),
+         SELECT 1 FROM all_commit_ends c WHERE c.end_lsn = (o->>'lsn')::numeric)),
        count(*)
 FROM importable WHERE o->>'messageType' = 'COMMIT';
 SQL

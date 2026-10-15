@@ -140,10 +140,23 @@ func TestFixtures(t *testing.T) { //nolint:gocyclo // one flat table of expected
 		})
 	}
 	// Every real capture has a workload phase that commits offsets in the
-	// middle of a large transaction: the partial rule's case.
+	// middle of a large transaction (the partial rule's case), and offsets
+	// committed during a blocking snapshot (D7 refuses them).
+	blocking := map[string]bool{}
 	for _, fx := range loadFixtures(t) {
-		if fx.Dir != "synthetic" && !midTransaction[fx.Dir] {
+		if fx.Phase == "blocking" && CodeOf(func() error { _, err := ParseOffset(fx.Offset); return err }()) == CodeSnapshotInProgress {
+			blocking[fx.Dir] = true
+		}
+	}
+	for _, fx := range loadFixtures(t) {
+		if fx.Dir == "synthetic" {
+			continue
+		}
+		if !midTransaction[fx.Dir] {
 			t.Errorf("%s: no mid-transaction DML offset captured", fx.Dir)
+		}
+		if !blocking[fx.Dir] {
+			t.Errorf("%s: no blocking-snapshot offset captured", fx.Dir)
 		}
 	}
 }

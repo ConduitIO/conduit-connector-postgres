@@ -14,13 +14,17 @@ Every `*/offsets.jsonl` holds one JSON object per line, `{"phase": ..., "offset"
 The captured directories come from `capture/capture.sh`. That script runs a
 workload in phases (snapshot, single rows, a 60k-row transaction, COPY,
 update/delete, multi-table TRUNCATE, a non-transactional logical message, an
-incremental snapshot, heartbeats, transaction metadata, stop). It records
+incremental snapshot, a blocking snapshot, heartbeats, transaction metadata,
+stop). It records
 every distinct offset that `GET /connectors/{name}/offsets` returned, tagged
 with the phase.
 
 `verify.tsv` in each directory checks the design's LSN assumptions against
-Postgres itself, through a pgoutput "probe" slot created before Debezium
-started. Each row is `check|matched|total`, over the importable offsets
+Postgres itself, through two probe slots created before Debezium started: a
+pgoutput slot on Debezium's publication, and a test_decoding slot that sees
+every commit, including transactions with no published change (pgoutput on
+PG 15+ does not send those, decoderbufs does, and Debezium's `lsn_commit` can
+be the end of one). Each row is `check|matched|total`, over the importable offsets
 (streaming offsets with no snapshot or incremental-snapshot state):
 
 - `a_lsn_commit_is_commit_end_or_message`: `lsn_commit` is the end of a
@@ -39,6 +43,12 @@ started. Each row is `check|matched|total`, over the importable offsets
 Every check matched every offset in all four captures.
 
 Also observed:
+
+- Blocking snapshots (`execute-snapshot`, `"type": "blocking"`): Debezium 3.2
+  commits offsets with `snapshot: "BLOCKING"` and a `lsn_commit`; Debezium 2.7
+  commits `snapshot: true` with no `lsn_commit` at all. Both are refused with
+  `snapshot_in_progress`, and the capture asserts at least one in each
+  directory.
 
 - Offsets of the first change of a transaction often have `lsn == lsn_commit`,
   because the change record starts where the previous commit record ended.
