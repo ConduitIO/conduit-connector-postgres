@@ -87,6 +87,7 @@ func (d *Destination) Open(ctx context.Context) error {
 	// main keeps pgx 5.7's SCRAM behaviour; channel_binding=require stays
 	// opt-in. See cpool.DefaultSCRAMCompat.
 	cpool.DefaultSCRAMCompat(&connConfig.Config)
+	setDestinationQueryExecMode(connConfig)
 
 	conn, err := pgx.ConnectConfig(ctx, connConfig)
 	if err != nil {
@@ -100,6 +101,29 @@ func (d *Destination) Open(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// setDestinationQueryExecMode makes the destination describe every statement
+// before executing it, instead of reusing a cached prepared statement.
+//
+// Invariant 6: a cached statement keeps the parameter types Postgres inferred
+// when it was prepared. After ALTER COLUMN ... TYPE on a running pipeline the
+// destination kept sending parameters typed for the old column, and Postgres
+// converted them by assignment without an error: 5/2 into a column that had
+// become integer was stored as 3 (#367). Describing each statement costs a
+// round trip per distinct statement in a batch (pgx pipelines the describes of
+// a batch); see benchi/destination-exec-mode for the measured cost.
+//
+// The modes that never cache parameter types, exec and simple_protocol, are
+// kept when the URL asks for them (default_query_exec_mode); PgBouncer in
+// transaction mode needs one of them. Both cache modes are replaced: both keep
+// the old types.
+func setDestinationQueryExecMode(cfg *pgx.ConnConfig) {
+	switch cfg.DefaultQueryExecMode {
+	case pgx.QueryExecModeExec, pgx.QueryExecModeSimpleProtocol, pgx.QueryExecModeDescribeExec:
+	default:
+		cfg.DefaultQueryExecMode = pgx.QueryExecModeDescribeExec
+	}
 }
 
 // Write routes incoming records to their appropriate handler based on the
