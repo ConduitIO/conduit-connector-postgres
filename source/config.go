@@ -102,7 +102,8 @@ type Config struct {
 	// an ordinary position and the setting is ignored from then on (remove it
 	// once the import is complete). Requires snapshotMode "never" and cdcMode
 	// "logrepl", and an existing slot and publication, which import mode
-	// never creates.
+	// never creates. Requires Conduit v0.19.0 or later, which acks a record
+	// only after its position is persisted.
 	LogreplImportDebeziumOffset string `json:"logrepl.import.debeziumOffset"`
 }
 

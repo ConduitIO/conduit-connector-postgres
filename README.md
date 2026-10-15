@@ -461,7 +461,9 @@ pipelines:
           # acknowledged record writes an ordinary position and the setting is
           # ignored from then on (remove it once the import is complete).
           # Requires snapshotMode "never" and cdcMode "logrepl", and an existing
-          # slot and publication, which import mode never creates.
+          # slot and publication, which import mode never creates. Requires
+          # Conduit v0.19.0 or later, which acks a record only after its
+          # position is persisted.
           # Type: string
           # Required: no
           logrepl.import.debeziumOffset: ""

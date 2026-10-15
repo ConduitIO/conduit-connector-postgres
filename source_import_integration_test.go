@@ -328,6 +328,11 @@ func TestImport_ResumesMidTransaction(t *testing.T) {
 	for _, r := range recs {
 		is.NoErr(src.Ack(f.ctx, r.Position))
 	}
+	// After the first ack the cap is lifted: once everything is acked the
+	// slot moves past Lc (the CLI's durable import-complete signal, S8).
+	eventually(t, "the slot to pass lsn_commit after the acks", func() bool {
+		return f.slotFlush(t, f.slot) > a.end
+	})
 	is.NoErr(src.Teardown(context.Background()))
 	is.True(strings.Contains(f.logs.String(), "import complete at"))
 
@@ -400,7 +405,7 @@ func TestImport_Refusals(t *testing.T) {
 			return f.setting(t, offset, nil), func() { f.exec(t, "ALTER PUBLICATION "+f.pub+" ADD TABLE "+f.table) }
 		}, dbzoffset.CodePublicationMismatch},
 		{"lsn_commit equal to C is allowed", func(t *testing.T) (string, func()) {
-			// Lc below the slot's F: the slot no longer re-sends (Lc, F].
+			// Lc == C == F: the boundary, allowed (F <= Lc).
 			return f.setting(t, map[string]any{"lsn_commit": uint64(f.c), "lsn": uint64(f.c), "messageType": "COMMIT"}, func(s *dbzoffset.Setting) {
 				s.Identity.ConduitSlotConsistentPoint = f.c.String()
 			}), func() {}
@@ -471,7 +476,6 @@ func TestImport_FlushCapHoldsSlotUntilFirstAck(t *testing.T) {
 	}, nil)
 	src, err := f.open(t, setting, nil)
 	is.NoErr(err)
-	defer func() { _ = src.Teardown(context.Background()) }()
 
 	// WAL the pipeline does not capture, so the server's WAL end moves on.
 	other := f.table + "_other"
@@ -491,4 +495,58 @@ func TestImport_FlushCapHoldsSlotUntilFirstAck(t *testing.T) {
 	time.Sleep(12 * time.Second)
 	noMoreRecords(f.ctx, t, src)
 	is.True(f.slotFlush(t, f.slot) <= last.end)
+	// The final status update at shutdown is capped too.
+	is.NoErr(src.Teardown(context.Background()))
+	is.True(f.slotFlush(t, f.slot) <= last.end)
+}
+
+// T begins before P commits, so T's first change has an LSN below Lc (P's
+// commit end). Debezium's offset after T's second change: lsn_commit is P's
+// end, lsn is T's second change. Conduit must skip P whole and T's first
+// change (below L, below Lc), and deliver T's second and third changes.
+func TestImport_InterleavedTransactionPrefixBelowLc(t *testing.T) {
+	is := is.New(t)
+	f := newImportFixture(t)
+	tb := f.table
+	tTx, err := f.conn.Begin(f.ctx)
+	is.NoErr(err)
+	_, err = tTx.Exec(f.ctx, fmt.Sprintf("INSERT INTO %s VALUES (100, 't1')", tb))
+	is.NoErr(err)
+	other := test.ConnectSimple(f.ctx, t, test.RepmgrConnString)
+	_, err = other.Exec(f.ctx, fmt.Sprintf("INSERT INTO %s VALUES (1, 'p')", tb)) // P commits first
+	is.NoErr(err)
+	_, err = tTx.Exec(f.ctx, fmt.Sprintf("INSERT INTO %s VALUES (101, 't2')", tb))
+	is.NoErr(err)
+	_, err = tTx.Exec(f.ctx, fmt.Sprintf("INSERT INTO %s VALUES (102, 't3')", tb))
+	is.NoErr(err)
+	is.NoErr(tTx.Commit(f.ctx))
+
+	var commits, changes []probeMsg
+	var tBegin probeMsg
+	for _, m := range peekSlot(f.ctx, t, f.conn, f.dbzSlot, f.pub) {
+		switch m.typ {
+		case 'C':
+			commits = append(commits, m)
+		case 'I':
+			changes = append(changes, m)
+		case 'B':
+			tBegin = m // the last BEGIN is T's
+		}
+	}
+	is.Equal(len(commits), 2) // P, then T
+	is.Equal(len(changes), 4) // P's row, then T's three rows
+	p := commits[0]
+	t1, t2 := changes[1], changes[2]
+	is.True(t1.lsn < p.end) // the interleaving this test is about
+
+	setting := f.setting(t, map[string]any{
+		"lsn_commit": uint64(p.end), "lsn": uint64(t2.lsn), "txId": t2.xid,
+		"ts_usec": tBegin.commitTs.UnixMicro(), "messageType": "INSERT",
+	}, nil)
+	src, err := f.open(t, setting, nil)
+	is.NoErr(err)
+	ids, _ := readIDs(f.ctx, t, src, 2)
+	is.Equal(ids, []string{"101", "102"})
+	noMoreRecords(f.ctx, t, src)
+	is.NoErr(src.Teardown(context.Background()))
 }

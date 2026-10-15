@@ -139,16 +139,21 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 // position forward or back. Before returning it runs the preflight against
 // Postgres: every check must pass before replication starts.
 func (s *Source) debeziumImport(ctx context.Context, pos opencdc.Position) (*dbzoffset.Import, error) {
+	if s.config.LogreplImportDebeziumOffset == "" {
+		return nil, nil
+	}
+	// D2: with a position the setting plays no part, so it is not even
+	// validated again here.
+	if len(pos) > 0 {
+		sdk.Logger(ctx).Warn().Msg("import ignored: pipeline has a position; remove logrepl.import.debeziumOffset")
+		return nil, nil
+	}
 	if err := s.config.ValidateImport(); err != nil {
 		return nil, err
 	}
 	imp, err := s.config.DebeziumImport()
-	if err != nil || imp == nil {
+	if err != nil {
 		return nil, err
-	}
-	if len(pos) > 0 {
-		sdk.Logger(ctx).Warn().Msg("import ignored: pipeline has a position; remove logrepl.import.debeziumOffset")
-		return nil, nil
 	}
 
 	sysID, err := s.identifySystem(ctx)
