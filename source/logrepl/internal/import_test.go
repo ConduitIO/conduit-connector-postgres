@@ -135,7 +135,7 @@ func TestSubscription_ImportPartialRule(t *testing.T) {
 
 // The base rule through the exact resume rule with (Lc-1, MaxUint64) is
 // SkipsTransaction, for every commit LSN and seq.
-func TestImport_ResumeKeyEqualsBaseRule(t *testing.T) {
+func TestImport_PropertyResumeKeyEqualsBaseRule(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		lc := pglogrepl.LSN(rapid.Uint64Range(1, math.MaxUint64).Draw(t, "lc"))
 		plan := dbzoffset.NewPlan(dbzoffset.Offset{LSNCommit: lc})
@@ -178,7 +178,7 @@ func TestCapImportFlush(t *testing.T) {
 // Invariant 1 under the cap: for any state, the capped report is at most
 // what reportedPositions would report, and at most Lc unless F0 says the
 // slot was already there.
-func TestCapImportFlush_NeverRaises(t *testing.T) {
+func TestCapImportFlush_PropertyNeverRaises(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		ceiling := pglogrepl.LSN(rapid.Uint64Range(1, 1<<40).Draw(t, "lc"))
 		floor := pglogrepl.LSN(rapid.Uint64Range(0, uint64(ceiling)).Draw(t, "f0"))
