@@ -17,6 +17,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -665,8 +666,56 @@ func TestImport_RetreatedSlotIsRefused(t *testing.T) {
 	setting := f.setting(t, map[string]any{
 		"lsn_commit": uint64(commits[0].end), "lsn": uint64(commits[0].end), "messageType": "COMMIT",
 	}, nil)
+	// The preflight itself refuses (the CLI dry run runs exactly this), not
+	// only the later stream-start check.
+	_, err = f.preflight(t, setting)
+	is.Equal(dbzoffset.CodeOf(err), dbzoffset.CodeSlotInvalidated)
 	_, err = f.open(t, setting, nil)
 	is.Equal(dbzoffset.CodeOf(err), dbzoffset.CodeSlotInvalidated)
+}
+
+// preflight runs dbzoffset.Preflight for Conduit's slot and publication,
+// as the connector's Open and the CLI's dry run do.
+func (f *importFixture) preflight(t *testing.T, setting string) (dbzoffset.SlotState, error) {
+	t.Helper()
+	imp, err := dbzoffset.ParseSetting(setting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dbzoffset.Preflight(f.ctx, f.conn, imp, dbzoffset.Target{
+		SlotName: f.slot, PublicationName: f.pub, Tables: []string{f.table}, SystemIdentifier: f.sysID,
+	})
+}
+
+// A FOR ALL TABLES publication streams tables Debezium did not capture, and
+// its membership cannot be trimmed table by table: the fix text must give
+// the remedy that works (a new publication with an explicit table list).
+func TestImport_AllTablesPublicationIsRefusedWithAWorkableFix(t *testing.T) {
+	is := is.New(t)
+	f := newImportFixture(t)
+	commits, _ := f.workload(t)
+	other := f.table + "_uncaptured"
+	f.exec(t, "CREATE TABLE "+other+" (id int primary key)")
+	defer f.exec(t, "DROP TABLE "+other)
+	allPub := f.pub + "_all"
+	f.exec(t, "CREATE PUBLICATION "+allPub+" FOR ALL TABLES")
+	defer f.exec(t, "DROP PUBLICATION "+allPub)
+	id, err := dbzoffset.PublicationIdentity(f.ctx, f.conn, allPub)
+	is.NoErr(err)
+	setting := f.setting(t, map[string]any{
+		"lsn_commit": uint64(commits[0].end), "lsn": uint64(commits[0].end), "messageType": "COMMIT",
+	}, func(s *dbzoffset.Setting) { s.Identity.ConduitPublication = id })
+	imp, err := dbzoffset.ParseSetting(setting)
+	is.NoErr(err)
+	_, err = dbzoffset.Preflight(f.ctx, f.conn, imp, dbzoffset.Target{
+		SlotName: f.slot, PublicationName: allPub, Tables: []string{f.table}, SystemIdentifier: f.sysID,
+	})
+	is.Equal(dbzoffset.CodeOf(err), dbzoffset.CodeTablesNotCaptured)
+	var e *dbzoffset.Error
+	is.True(errors.As(err, &e))
+	is.True(strings.Contains(e.Fix, "explicit table list"))
+	is.True(strings.Contains(e.Fix, "not FOR ALL TABLES or FOR TABLES IN SCHEMA"))
+	is.True(strings.Contains(e.Fix, "new slot"))
 }
 
 // An untested Debezium line is refused unless the setting carries the

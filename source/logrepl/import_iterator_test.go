@@ -116,6 +116,8 @@ func TestCDCIterator_ImportRefusesSlotMovedBeforeStreaming(t *testing.T) {
 	defer cancel()
 	err = it.StartSubscriber(startCtx)
 	is.Equal(dbzoffset.CodeOf(err), dbzoffset.CodeSlotAhead)
+	_ = it.Teardown(context.Background())
+	waitSlotInactive(ctx, t, pool, slot)
 }
 
 // Regression test for the #413 review blocker: when the stream-start check
@@ -348,9 +350,28 @@ func TestCDCIterator_ImportRefusesRetreatedSlot(t *testing.T) {
 
 	it, err := NewCDCIterator(ctx, pool, importConfig(table, slot, slot, importFor(f0)))
 	is.NoErr(err) // F == Lc: the read-time check cannot tell
-	defer func() { _ = it.Teardown(context.Background()) }()
 	startCtx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	err = it.StartSubscriber(startCtx)
 	is.Equal(dbzoffset.CodeOf(err), dbzoffset.CodeSlotInvalidated)
+	_ = it.Teardown(context.Background())
+	waitSlotInactive(ctx, t, pool, slot)
+}
+
+// waitSlotInactive waits for the walsender of a refused stream to exit, so
+// the test's cleanup can drop the slot (dropping an active slot fails).
+func waitSlotInactive(ctx context.Context, t *testing.T, pool *pgxpool.Pool, slot string) {
+	t.Helper()
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		var active bool
+		if err := pool.QueryRow(ctx, "SELECT active FROM pg_replication_slots WHERE slot_name = $1", slot).Scan(&active); err != nil {
+			t.Fatal(err)
+		}
+		if !active {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("slot %q still active 30 s after the refusal", slot)
+		}
+	}
 }
