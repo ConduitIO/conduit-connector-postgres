@@ -1,9 +1,11 @@
 name: property-nightly
 
 # The long run of the property tests (pgregory.net/rapid). The test job runs
-# every property at RAPID_CHECKS=100 on every PR; this runs the same tests
-# with many more cases, where the extra time would slow every PR down. The
-# properties need no database, so this job starts none.
+# every rapid test at RAPID_CHECKS=100 on every PR. This job reruns, with many
+# more cases, the tests whose name contains "Property" (the -run filter
+# below), so name every rapid test that way; a rapid test with another name
+# still runs on PRs but never gets the long run. The properties need no
+# database, so this job starts none.
 #
 # A failure prints the -rapid.seed that replays it locally.
 

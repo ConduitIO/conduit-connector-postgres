@@ -21,7 +21,8 @@ jobs:
       # no separate step: a failing case fails this job.
       - name: Test
         # Property tests (pgregory.net/rapid) run a small, fixed number of
-        # cases here. The nightly property workflow runs many more.
+        # cases here. property-nightly.yml reruns the ones named *Property*
+        # with many more.
         env:
           RAPID_CHECKS: "100"
         run: make test GOTEST_FLAGS="-v -count=1"
