@@ -314,13 +314,22 @@ func (s *Subscription) Run(ctx context.Context) error {
 		close(s.ready) // ready to fail.
 		return err
 	}
-	s.replicating = true
-
+	// Invariant 3 (import mode): refuse a slot that moved past Lc before
+	// anything is sent on the stream. This runs before replicating is set,
+	// so doneReplication sends no final standby status update: on servers
+	// before "Don't retreat slot's confirmed_flush LSN" (14.19, 15.14, 16.10,
+	// 17.6) that update would move confirmed_flush_lsn back, the next start
+	// would pass every check, and the changes committed between Lc and where
+	// the slot had moved would be lost (found by the #413 review). The
+	// connection is closed, not returned to the pool, because it is in COPY
+	// mode.
 	if err := s.checkImportSlot(lctx); err != nil {
+		s.closeConnForRefusal()
 		s.startErr, s.doneErr = err, err
 		close(s.ready) // ready to fail.
 		return err
 	}
+	s.replicating = true
 
 	s.walWritten = s.StartLSN
 	s.walFlushed = s.StartLSN
@@ -805,6 +814,10 @@ func reportedPositions(walWritten, walFlushed, serverWALEnd, lastReported pglogr
 // be sent, nor covered by Debezium's offset (D5 check 5). The preflight
 // checked this before the subscription was created; this closes the window
 // between that check and the stream start.
+//
+// It also takes the flush floor (F0, D6) from this read, made while the
+// stream holds the slot, so the floor is what the server will decode from,
+// never a value read before the slot could still move.
 func (s *Subscription) checkImportSlot(ctx context.Context) error {
 	if s.ImportCeiling == 0 {
 		return nil
@@ -813,6 +826,18 @@ func (s *Subscription) checkImportSlot(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if slot.RestartLSN > slot.ConfirmedFlushLSN {
+		// A slot never needs WAL only from past the point it confirmed. This
+		// shape means confirmed_flush_lsn was moved back (a retreat), and the
+		// slot no longer proves what it holds.
+		return &dbzoffset.Error{
+			Code: dbzoffset.CodeSlotInvalidated, Path: "logrepl.slotName",
+			Message: fmt.Sprintf("replication slot %q has restart_lsn %s past its confirmed_flush_lsn %s; its confirmed position was moved back",
+				s.SlotName, slot.RestartLSN, slot.ConfirmedFlushLSN),
+			Fix: "The slot cannot prove which changes it still holds. Go back to Debezium with the manual runbook (`conduit migrate kafka-connect --check-rollback`) and cut over again with a new slot, or re-snapshot.",
+		}
+	}
+	s.ImportFloor = slot.ConfirmedFlushLSN
 	if slot.ConfirmedFlushLSN > s.ImportCeiling {
 		// Invariant 3.
 		return &dbzoffset.Error{
@@ -823,6 +848,21 @@ func (s *Subscription) checkImportSlot(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// closeConnForRefusal closes the replication connection after
+// START_REPLICATION succeeded but the stream is refused. Nothing more is
+// sent on it (no status update, no CopyDone), and a closed connection is
+// discarded by the pool instead of being reused in COPY mode.
+func (s *Subscription) closeConnForRefusal() {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if s.conn == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), closeReplicationTimeout)
+	defer cancel()
+	_ = s.conn.Conn().Close(ctx)
 }
 
 // capImportFlush applies the import's flush cap (#341 D6) before the first

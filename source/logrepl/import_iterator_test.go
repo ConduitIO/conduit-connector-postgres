@@ -117,3 +117,84 @@ func TestCDCIterator_ImportRefusesSlotMovedBeforeStreaming(t *testing.T) {
 	err = it.StartSubscriber(startCtx)
 	is.Equal(dbzoffset.CodeOf(err), dbzoffset.CodeSlotAhead)
 }
+
+// Regression test for the #413 review blocker: when the stream-start check
+// refused a slot that had moved past Lc, the final standby status update
+// moved confirmed_flush_lsn back to F0 (servers before 14.19, 15.14, 16.10
+// and 17.6 accept a lower flush position). The next start then passed every
+// check and lost the rows committed between Lc and where the slot had moved.
+// The refusal must leave the slot exactly where it was, and so refuse again.
+func TestCDCIterator_ImportRefusalDoesNotMoveTheSlotBack(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupTestTable(ctx, t, pool)
+	slot := test.RandomIdentifier(t)
+	test.CreatePublication(t, pool, slot, []string{table})
+	test.CreateReplicationSlot(t, pool, slot)
+
+	readSlot := func() (pglogrepl.LSN, pglogrepl.LSN) {
+		var f, r pglogrepl.LSN
+		is.NoErr(pool.QueryRow(ctx, "SELECT confirmed_flush_lsn, restart_lsn FROM pg_replication_slots WHERE slot_name = $1", slot).Scan(&f, &r))
+		return f, r
+	}
+	f0, _ := readSlot()
+
+	it, err := NewCDCIterator(ctx, pool, importConfig(table, slot, slot, importFor(f0)))
+	is.NoErr(err)
+
+	// A row committed after Lc, then another consumer advances the slot past
+	// it (with running_xacts records so restart_lsn can move as well).
+	_, err = pool.Exec(ctx, fmt.Sprintf("INSERT INTO %q (key, column1) VALUES ('lost', 'x')", table))
+	is.NoErr(err)
+	for i := 0; i < 3; i++ {
+		_, err = pool.Exec(ctx, "SELECT pg_log_standby_snapshot()")
+		is.NoErr(err)
+		_, err = pool.Exec(ctx, fmt.Sprintf("INSERT INTO %q (key, column1) VALUES ('pad%d', 'x')", table, i))
+		is.NoErr(err)
+	}
+	for i := 0; i < 2; i++ {
+		_, err = pool.Exec(ctx, "SELECT pg_log_standby_snapshot()")
+		is.NoErr(err)
+		_, err = pool.Exec(ctx, "SELECT pg_replication_slot_advance($1, pg_current_wal_lsn())", slot)
+		is.NoErr(err)
+	}
+	moved, _ := readSlot()
+	is.True(moved > f0)
+
+	startCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	err = it.StartSubscriber(startCtx)
+	cancel()
+	is.Equal(dbzoffset.CodeOf(err), dbzoffset.CodeSlotAhead)
+	is.NoErr(ignoreStartErr(it.Teardown(context.Background())))
+
+	// The walsender has gone (the slot is inactive) and confirmed_flush_lsn
+	// is where the other consumer left it.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var active bool
+		is.NoErr(pool.QueryRow(ctx, "SELECT active FROM pg_replication_slots WHERE slot_name = $1", slot).Scan(&active))
+		if !active {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the walsender did not exit after the refusal")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	after, _ := readSlot()
+	is.Equal(after, moved) // not moved back
+
+	// So a restart with the same setting is refused again.
+	_, err = NewCDCIterator(ctx, pool, importConfig(table, slot, slot, importFor(f0)))
+	is.Equal(dbzoffset.CodeOf(err), dbzoffset.CodeSlotAhead)
+}
+
+// ignoreStartErr drops the refusal error Teardown reports again: it is the
+// one the test already asserted.
+func ignoreStartErr(err error) error {
+	if dbzoffset.CodeOf(err) != "" {
+		return nil
+	}
+	return err
+}

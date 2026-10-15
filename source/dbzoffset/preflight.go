@@ -76,6 +76,7 @@ const (
 	fixSlotActive   = "Stop the other consumer of the slot."
 	fixInvalidated  = "The slot lost its WAL. Re-snapshot (a new pipeline with `snapshotMode: initial`)."
 	fixSlotAhead    = "Something consumed Conduit's slot past Debezium's offset. Go back to Debezium with the manual runbook (`conduit migrate kafka-connect --check-rollback`): Debezium's slot still holds everything from its offset. Then cut over again. If Debezium's slot is lost, re-snapshot."
+	fixRetreated    = "The slot cannot prove which changes it still holds. Go back to Debezium with the manual runbook (`conduit migrate kafka-connect --check-rollback`) and cut over again with a new slot, or re-snapshot."
 	fixSlotDatabase = "Fix `url`: the slot belongs to another database."
 	fixPublication  = "Repair the publication, then redo the cutover with a new fresh slot created after the repair. Never add tables to a publication that an existing slot will decode from: pgoutput reads the historic catalog and silently skips their earlier WAL."
 	fixNotCaptured  = "Remove those tables from this pipeline and add them in a separate pipeline with a snapshot."
@@ -396,6 +397,13 @@ func checkConduitSlot(ctx context.Context, q Querier, lc pglogrepl.LSN, name str
 	case r.confirmed == nil || r.restart == nil:
 		return SlotState{}, newError(CodeSlotInvalidated, path, fixInvalidated,
 			"replication slot %q has no confirmed_flush_lsn or restart_lsn", name)
+	case *r.restart > *r.confirmed:
+		// A slot whose confirmed_flush_lsn was moved back below its
+		// restart_lsn (possible before 14.19, 15.14, 16.10, 17.6) no longer
+		// proves which changes it holds.
+		return SlotState{}, newError(CodeSlotInvalidated, path, fixRetreated,
+			"replication slot %q has restart_lsn %s past its confirmed_flush_lsn %s; its confirmed position was moved back",
+			name, *r.restart, *r.confirmed)
 	case *r.confirmed > lc:
 		// Invariant 3 (D5 check 5): Postgres re-sends only transactions
 		// committing at or past F. With F > Lc, the changes in (Lc, F] are
