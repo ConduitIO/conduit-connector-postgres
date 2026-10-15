@@ -62,8 +62,10 @@ type Setting struct {
 	// DebeziumVersion is the Debezium Postgres connector version that wrote
 	// the offset, as Kafka Connect reports it (`GET /connector-plugins`, for
 	// example "3.2.4.Final"). Offsets of the lines in VerifiedDebeziumLines
-	// were captured and checked against Postgres; other 1.x to 3.x lines are
-	// accepted with a warning (Import.Warnings), anything else is refused.
+	// were captured and checked against Postgres. Other 1.x to 3.x lines are
+	// refused (CodeDebeziumVersionUntested) unless
+	// AllowUntestedDebeziumVersion is set, and then accepted with a warning
+	// (Import.Warnings); any other major is always refused.
 	DebeziumVersion string `json:"debeziumVersion"`
 	// AllowUntestedDebeziumVersion is the operator's explicit override for a
 	// Debezium 1.x to 3.x line outside VerifiedDebeziumLines. The CLI writes

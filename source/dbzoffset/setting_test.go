@@ -256,6 +256,13 @@ func TestParseSetting_CaseVariantDuplicateKeys(t *testing.T) {
 			`"conduitPublication": "v1:x", "ConduitPublication":`, 1),
 		"lsn_commit/LSN_COMMIT in the offset": strings.Replace(designExample, `"lsn_commit": 24023064`,
 			`"lsn_commit": 24023064, "LSN_COMMIT": 1`, 1),
+		// encoding/json folds U+017F (long s) onto "s".
+		"offset/offſet": strings.Replace(designExample, `"offset":`,
+			`"offset": {"lsn_commit": 999999999999, "lsn": 999999999999, "messageType": "COMMIT"}, "offſet":`, 1),
+		"tables/TABLEſ": strings.Replace(designExample, `"tables":`, `"tables": ["public.other"], "TABLEſ":`, 1),
+		"lsn_commit/lſn_commit in the offset": strings.Replace(designExample, `"lsn_commit": 24023064`,
+			`"lsn_commit": 24023064, "lſn_commit": 1`, 1),
+		"non-ASCII key alone": strings.Replace(designExample, `"connector":`, `"connectoř": "x", "connector":`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			is := is.New(t)

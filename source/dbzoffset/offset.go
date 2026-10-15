@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jackc/pglogrepl"
 )
@@ -329,7 +330,10 @@ func decodeObject(raw []byte) (map[string]json.RawMessage, error) {
 		if _, dup := fields[key]; dup {
 			return nil, fmt.Errorf("duplicate key %q", key)
 		}
-		folded := strings.ToLower(key)
+		folded, err := foldKey(key)
+		if err != nil {
+			return nil, err
+		}
 		if prev, dup := foldedKeys[folded]; dup {
 			return nil, fmt.Errorf("keys %q and %q differ only in case", prev, key)
 		}
@@ -437,13 +441,17 @@ func walkJSON(dec *json.Decoder) error {
 			if !ok {
 				return fmt.Errorf("expected a key, got %v", kt)
 			}
-			if prev, dup := seen[strings.ToLower(key)]; dup {
+			folded, err := foldKey(key)
+			if err != nil {
+				return err
+			}
+			if prev, dup := seen[folded]; dup {
 				if prev == key {
 					return fmt.Errorf("duplicate key %q", key)
 				}
 				return fmt.Errorf("keys %q and %q differ only in case", prev, key)
 			}
-			seen[strings.ToLower(key)] = key
+			seen[folded] = key
 			if err := walkJSON(dec); err != nil {
 				return err
 			}
@@ -459,4 +467,18 @@ func walkJSON(dec *json.Decoder) error {
 	}
 	_, err = dec.Token() // the closing delimiter
 	return err
+}
+
+// foldKey returns the key case-folded for duplicate detection. Keys must be
+// ASCII: every key Debezium or the CLI writes is, and encoding/json's
+// case-insensitive field matching also folds some non-ASCII letters onto
+// ASCII ones (U+017F "ſ" matches "s", U+212A "K" matches "k"), so a
+// non-ASCII key could alias a field without looking like a duplicate.
+func foldKey(key string) (string, error) {
+	for i := 0; i < len(key); i++ {
+		if key[i] >= utf8.RuneSelf {
+			return "", fmt.Errorf("key %q is not ASCII", key)
+		}
+	}
+	return strings.ToLower(key), nil
 }
