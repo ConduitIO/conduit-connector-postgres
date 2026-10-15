@@ -33,7 +33,7 @@ const (
 	// version does not map yet.
 	CodeUnsupportedType Code = "debezium.unsupported_type"
 	// CodeValueOutOfRange: a value the Debezium type cannot hold (NaN in
-	// precise decimals, infinite dates, out-of-range timestamps).
+	// precise decimals, timestamps outside epoch microseconds).
 	CodeValueOutOfRange Code = "debezium.value_out_of_range"
 	// CodeCatalogSkew: the catalog's columns disagree with the Relation
 	// message's for the same column (a DDL raced the catalog read).
@@ -46,6 +46,9 @@ const (
 	// (design D19).
 	CodeReplicaIdentityIndexNotKey Code = "debezium.replica_identity_index_not_key"
 )
+
+// fixCatalogSkew is the Fix of every CodeCatalogSkew error.
+const fixCatalogSkew = "The change was written before a DDL that changed this table, so the catalog no longer describes it. After three reads the pipeline stops. If the DDL ran while the connector was stopped or behind, every restart replays the same change and stops again; see \"Catalog skew\" in the connector README."
 
 // Error is a coded failure. Its message starts with the code, as every
 // coded error in this connector does.

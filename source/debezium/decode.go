@@ -96,6 +96,9 @@ func (c *column) decode(text string) (any, error) {
 	case kindTimeTZ:
 		return decodeTimeTZ(c, text)
 	case kindTimestamp, kindMicroTimestamp:
+		if v, ok := c.infinity(text); ok {
+			return v, nil
+		}
 		t, err := parseTimestamp(text, false)
 		if err != nil {
 			return nil, timestampErr(c, text, err)
@@ -109,6 +112,11 @@ func (c *column) decode(text string) (any, error) {
 		}
 		return us, nil
 	case kindTimestampTZ:
+		if text == textInfinity || text == textNegInfinity {
+			// Debezium writes the Postgres text for infinite timestamptz, in
+			// 2.7 and 3.7 alike (captured).
+			return text, nil
+		}
 		t, err := parseTimestamp(text, true)
 		if err != nil {
 			return nil, timestampErr(c, text, err)
@@ -193,11 +201,49 @@ func rescale(c *column, text, s string) (any, error) {
 	return ip + "." + fp, nil
 }
 
+// infinitySentinels are the values Debezium writes for an infinite date or
+// timestamp, by compat level and kind, as captured from Debezium 2.7.4 and
+// 3.7.0 with the default handling modes ([+infinity, -infinity]). They come
+// from pgjdbc's DATE_POSITIVE_INFINITY and DATE_NEGATIVE_INFINITY read as
+// milliseconds or microseconds, and differ between the versions. 2.7's
+// +infinity date (-2147472692) is negative; that is Debezium's value, and
+// mirrored as such.
+var infinitySentinels = map[string]map[kind][2]any{
+	Compat26: {
+		kindDate:           {int32(-2147472692), int32(-2147472691)},
+		kindTimestamp:      {int64(9223372036825200), int64(-9223372036832400)},
+		kindMicroTimestamp: {int64(9223372036825200000), int64(-9223372036832400000)},
+	},
+	Compat35: {
+		kindDate:           {int32(2146033979), int32(-2147472691)},
+		kindTimestamp:      {int64(9223372036825200000), int64(-9223372036832400000)},
+		kindMicroTimestamp: {int64(math.MaxInt64), int64(math.MinInt64)},
+	},
+}
+
+// infinity returns Debezium's value for an infinite date or timestamp.
+func (c *column) infinity(text string) (any, bool) {
+	var i int
+	switch text {
+	case textInfinity:
+		i = 0
+	case textNegInfinity:
+		i = 1
+	default:
+		return nil, false
+	}
+	s, ok := infinitySentinels[c.compat][c.kind]
+	if !ok {
+		return nil, false
+	}
+	return s[i], true
+}
+
 // decodeDate is io.debezium.time.Date: days since the epoch, proleptic
 // Gregorian (LocalDate.toEpochDay).
 func decodeDate(c *column, text string) (any, error) {
-	if text == textInfinity || text == textNegInfinity {
-		return nil, outOfRange(c, text, "Debezium cannot represent an infinite date")
+	if v, ok := c.infinity(text); ok {
+		return v, nil
 	}
 	t, err := parseDatePart(text)
 	if err != nil {
@@ -345,7 +391,7 @@ var errInfinite = fmt.Errorf("infinite timestamp")
 
 func timestampErr(c *column, text string, err error) error {
 	if err == errInfinite { //nolint:errorlint // sentinel compared by identity
-		return outOfRange(c, text, "Debezium cannot represent an infinite timestamp in this mode")
+		return outOfRange(c, text, fmt.Sprintf("no infinity value is known for debezium.compat %q", c.compat))
 	}
 	return badText(c, text, err)
 }
@@ -633,7 +679,7 @@ func badText(c *column, text string, err error) error {
 func outOfRange(c *column, text, why string) error {
 	return &Error{Code: CodeValueOutOfRange,
 		Message: fmt.Sprintf("column %q (%s): value %q cannot be represented: %s", c.name, c.typeName, truncate(text), why),
-		Fix:     "Debezium fails on this value too. Change the value, or run the table in the default output mode."}
+		Fix:     "The Debezium mode stops on this value rather than guess how Debezium writes it (it is not in the captured goldens). Change the value, or run the table in the default output mode."}
 }
 
 func truncate(s string) string {

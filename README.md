@@ -357,9 +357,12 @@ What this version does:
   `interval.handling.mode=numeric`, `hstore.handling.mode=json`). Any other
   value fails validation with `debezium.config_invalid`. A type the mode does
   not map stops the pipeline with `debezium.unsupported_type`; a value the
-  Debezium type cannot hold (`NaN` in a numeric, an infinite date or
-  timestamp) stops it with `debezium.value_out_of_range`. Nothing is rounded
-  or replaced.
+  Debezium type cannot hold (`NaN` or infinity in a numeric, an array with
+  more than one dimension) stops it with `debezium.value_out_of_range` or
+  `debezium.unsupported_type`. Nothing is rounded or replaced. Infinite
+  dates and timestamps are written as Debezium writes them: `infinity` and
+  `-infinity` for `timestamptz`, and Debezium's sentinel numbers for `date`
+  and `timestamp`, which differ between `debezium.compat` 2.6 and 3.5.
 - **Keys.** The record key is the primary key's columns in key order;
   tables without one have a null key. Composite keys work. A primary-key
   change is one record (`debezium.op=u` with the old key in
@@ -377,11 +380,23 @@ What this version does:
   not where it is in the WAL: acks, restarts and the exact mid-transaction
   resume work as in the default mode, and the transaction orders continue
   across a restart.
-- **Schema drift.** `debezium.schema.drift` (default `evolve`) replaces
-  `logrepl.schemaDrift.policy` in this mode. A narrowing change still halts
-  with a drift marker. The marker carries no `debezium.*` metadata, and the
-  `debezium.encode` processor does not pass markers through yet, so such a
-  halt stops at the processor.
+- **Schema drift.** `debezium.schema.drift` replaces
+  `logrepl.schemaDrift.policy` in this mode; only `evolve` is accepted for
+  now. A narrowing change still halts with a drift marker. The marker
+  carries no `debezium.*` metadata, and the `debezium.encode` processor does
+  not pass markers through yet, so such a halt stops at the processor and a
+  restart cannot approve it. `halt` is refused until that is fixed.
+- **Catalog skew (`debezium.catalog_skew`).** Symptom: the pipeline stops
+  with `debezium.catalog_skew` naming a table and column. Cause: the change
+  being read was written before a DDL on that table (most often
+  `ALTER COLUMN ... TYPE`, or a primary key change) that ran while the
+  connector was stopped or behind; pgoutput describes the change with the
+  old shape and the catalog has the new one. The connector reads the catalog
+  three times, then stops rather than decode the old value as the new type.
+  Every restart replays the same change, so it stops again. Remedy: run the
+  table in the default mode until the slot is past the DDL, or recreate the
+  pipeline (a new slot) after the DDL. A DDL that races the catalog read
+  while streaming clears on the retry.
 - **Tables are named relative to the `search_path`**, as in the default
   mode; tables outside it cannot be selected.
 - `source.sequence` starts with `null` for the first transaction after each
@@ -586,8 +601,9 @@ pipelines:
           # Required: no
           debezium.provide.transaction.metadata: "false"
           # SchemaDrift is the schema drift policy in this mode, used instead of
-          # logrepl.schemaDrift.policy: "evolve" (default; additive changes
-          # pass, narrowing ones halt) or "halt".
+          # logrepl.schemaDrift.policy. Only "evolve" (additive changes pass,
+          # narrowing ones halt) is supported in this version; "halt" is refused
+          # until the debezium.encode processor passes drift markers through.
           # Type: string
           # Required: no
           debezium.schema.drift: "evolve"

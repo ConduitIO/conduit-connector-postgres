@@ -119,9 +119,6 @@ func TestDecode_Refused(t *testing.T) {
 		{pgNumeric, "NaN", CodeValueOutOfRange},
 		{pgNumeric, "Infinity", CodeValueOutOfRange},
 		{pgNumeric, "-Infinity", CodeValueOutOfRange},
-		{pgDate, "infinity", CodeValueOutOfRange},
-		{pgTimestamp, "-infinity", CodeValueOutOfRange},
-		{pgTimestamptz, "infinity", CodeValueOutOfRange},
 		{pgInt4Array, "{{1,2},{3,4}}", CodeUnsupportedType},
 	} {
 		t.Run(tc.typ+" "+tc.in, func(t *testing.T) {
@@ -129,6 +126,50 @@ func TestDecode_Refused(t *testing.T) {
 			_, err := col(t, tc.typ, -1).decode(tc.in)
 			is.Equal(CodeOf(err), tc.code)
 		})
+	}
+}
+
+// Infinite, BC and five-digit-year temporal values, with what Debezium wrote
+// for them in a capture of the golden workload extended with them
+// (testdata/debezium/sql/03-temporal.sql; the events are in the
+// golden/<version>/*/temporal.jsonl files). The infinity sentinels differ
+// between the versions.
+func TestDecode_TemporalEdges(t *testing.T) {
+	type tc struct {
+		typ    string
+		typmod int32
+		in     string
+		v26    any
+		v35    any
+	}
+	for _, c := range []tc{
+		{pgTimestamp, -1, "infinity", int64(9223372036825200000), int64(math.MaxInt64)},
+		{pgTimestamp, -1, "-infinity", int64(-9223372036832400000), int64(math.MinInt64)},
+		{pgTimestamp, 3, "infinity", int64(9223372036825200), int64(9223372036825200000)},
+		{pgTimestamp, 3, "-infinity", int64(-9223372036832400), int64(-9223372036832400000)},
+		{pgTimestamptz, -1, "infinity", "infinity", "infinity"},
+		{pgTimestamptz, -1, "-infinity", "-infinity", "-infinity"},
+		{pgDate, -1, "infinity", int32(-2147472692), int32(2146033979)},
+		{pgDate, -1, "-infinity", int32(-2147472691), int32(-2147472691)},
+		{pgTimestamp, -1, "0044-03-15 12:00:00.123456 BC", int64(-63517780799876544), int64(-63517780799876544)},
+		{pgTimestamp, 3, "0044-03-15 12:00:00.123 BC", int64(-63517780799877), int64(-63517780799877)},
+		{pgTimestamptz, -1, "0044-03-15 12:00:00.123456+00 BC", "-0043-03-15T12:00:00.123456Z", "-0043-03-15T12:00:00.123456Z"},
+		{pgDate, -1, "0044-03-15 BC", int32(-735160), int32(-735160)},
+		{pgTimestamp, -1, "10000-01-01 00:00:00.5", int64(253402300800500000), int64(253402300800500000)},
+		{pgTimestamp, 3, "10000-01-01 00:00:00.5", int64(253402300800500), int64(253402300800500)},
+		{pgTimestamptz, -1, "10000-01-01 00:00:00.5+00", "+10000-01-01T00:00:00.500000Z", "+10000-01-01T00:00:00.500000Z"},
+		{pgDate, -1, "10000-01-01", int32(2932897), int32(2932897)},
+	} {
+		for compat, want := range map[string]any{Compat26: c.v26, Compat35: c.v35} {
+			t.Run(fmt.Sprintf("%s %s(%d) %s", compat, c.typ, c.typmod, c.in), func(t *testing.T) {
+				is := is.New(t)
+				col, err := newColumn("c", &PGType{Name: c.typ}, c.typmod, columnOptions{compat: compat})
+				is.NoErr(err)
+				got, err := col.decode(c.in)
+				is.NoErr(err)
+				is.Equal(got, want)
+			})
+		}
 	}
 }
 

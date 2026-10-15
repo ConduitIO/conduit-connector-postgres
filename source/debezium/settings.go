@@ -16,6 +16,7 @@ package debezium
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -76,8 +77,24 @@ var standalone atomic.Bool
 // does.
 func MarkStandalone() { standalone.Store(true) }
 
-// IsStandalone reports whether MarkStandalone was called.
-func IsStandalone() bool { return standalone.Load() }
+// pluginCookieEnv is the go-plugin handshake variable Conduit sets for every
+// standalone plugin process it launches
+// (conduit-connector-protocol/pconnector.HandshakeConfig). A built-in
+// connector runs in the Conduit process, which never has it.
+const pluginCookieEnv = "CONDUIT_PLUGIN_MAGIC_COOKIE"
+
+// IsStandalone reports whether this process is a standalone plugin: either
+// MarkStandalone was called (cmd/connector), or the plugin handshake
+// variable is set. The second covers standalone builds that do not go
+// through cmd/connector, so the decision-18 guard does not depend on an
+// entry point remembering to opt in. Only the variable's presence is read.
+func IsStandalone() bool {
+	if standalone.Load() {
+		return true
+	}
+	v, ok := os.LookupEnv(pluginCookieEnv)
+	return ok && v != ""
+}
 
 // The handling modes this version supports (Debezium's defaults).
 const (
@@ -88,7 +105,6 @@ const (
 	modeJSON     = "json"
 	modeNone     = "none"
 	driftEvolve  = "evolve"
-	driftHalt    = "halt"
 )
 
 var topicPrefixRE = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
@@ -171,8 +187,12 @@ func (s Settings) Validate() error {
 	if len(ops) != 1 || !ops["t"] {
 		problems = append(problems, fmt.Sprintf("debezium.skipped.operations %q is not supported in this version (supported: t)", s.SkippedOperations))
 	}
-	if s.SchemaDrift != driftEvolve && s.SchemaDrift != driftHalt {
-		problems = append(problems, fmt.Sprintf("debezium.schema.drift %q is not supported (supported: evolve, halt)", s.SchemaDrift))
+	// halt is refused until debezium.encode passes drift markers through: a
+	// marker carries no debezium.* metadata, so the encoder fails it and the
+	// approving restart can never get past it. evolve still halts on a
+	// narrowing change, with the same limitation, documented.
+	if s.SchemaDrift != driftEvolve {
+		problems = append(problems, fmt.Sprintf("debezium.schema.drift %q is not supported in this version (supported: evolve; halt arrives once the debezium.encode processor passes drift markers through)", s.SchemaDrift))
 	}
 	if len(problems) > 0 {
 		return configErr(strings.Join(problems, "; "), "Change the listed settings; the Debezium mode documentation lists what this version supports.")

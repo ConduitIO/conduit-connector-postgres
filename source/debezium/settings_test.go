@@ -79,6 +79,19 @@ func TestSettings_StandaloneRefused(t *testing.T) {
 	is.NoErr(DefaultSettings().Validate()) // the default mode still works standalone
 }
 
+// Decision 18 without the entry point's cooperation: every standalone plugin
+// Conduit launches gets the go-plugin handshake variable.
+func TestSettings_StandaloneByPluginCookie(t *testing.T) {
+	is := is.New(t)
+	is.True(!IsStandalone())
+	t.Setenv(pluginCookieEnv, "x")
+	is.True(IsStandalone())
+	is.Equal(CodeOf(testSettings().Validate()), CodeConfigInvalid)
+	t.Setenv(pluginCookieEnv, "")
+	is.True(!IsStandalone()) // an empty value is not a handshake
+	is.NoErr(testSettings().Validate())
+}
+
 func TestSettings_SourceVersion(t *testing.T) {
 	is := is.New(t)
 	s := testSettings()

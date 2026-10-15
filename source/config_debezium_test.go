@@ -55,7 +55,7 @@ func TestConfig_ValidateDebezium(t *testing.T) {
 		}, ""},
 		{"compat 2.6", func(c *Config) { c.Debezium.Compat = "2.6" }, ""},
 		{"compat unknown", func(c *Config) { c.Debezium.Compat = "1.9" }, debezium.CodeConfigInvalid},
-		{"drift halt", func(c *Config) { c.Debezium.SchemaDrift = "halt" }, ""},
+		{"drift halt", func(c *Config) { c.Debezium.SchemaDrift = "halt" }, debezium.CodeConfigInvalid},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -61,7 +61,7 @@ import (
 // on is a boolean setting's "true".
 const on = "true"
 
-const goldenTables = "customers,types,toasty,composite,full_ident,default_ident,nopk,numkey,uuidkey,defaults,sentinel"
+const goldenTables = "customers,types,toasty,composite,full_ident,default_ident,nopk,numkey,uuidkey,defaults,temporal,sentinel"
 
 // goldenEvent is one Kafka message of a capture.
 type goldenEvent struct {
@@ -131,7 +131,8 @@ func runGoldenWorkload(t *testing.T, compat string) []opencdc.Record {
 	// override, so it is set on the connection.
 	url := strings.Replace(test.RepmgrConnString, "/meroxadb?", "/"+name+"?search_path=golden,public&", 1)
 	db := test.ConnectSimple(ctx, t, url)
-	for _, stmt := range sqlStatements(t, "testdata/debezium/sql/01-schema.sql") {
+	schema, stream := goldenStatements(t)
+	for _, stmt := range schema {
 		if _, err := db.Exec(ctx, stmt); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
 		}
@@ -170,7 +171,7 @@ func runGoldenWorkload(t *testing.T, compat string) []opencdc.Record {
 
 	// Statement by statement: a multi-statement simple query would run the
 	// statements outside BEGIN/COMMIT as one implicit transaction.
-	for _, stmt := range sqlStatements(t, "testdata/debezium/sql/02-stream.sql") {
+	for _, stmt := range stream {
 		if _, err := db.Exec(ctx, stmt); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
 		}
@@ -196,6 +197,33 @@ func runGoldenWorkload(t *testing.T, compat string) []opencdc.Record {
 			return recs
 		}
 	}
+}
+
+// goldenStatements returns the workload's schema statements (01 and the
+// CREATE of 03) and its stream statements (02, with 03's inserts before the
+// sentinel insert, as in the capture).
+func goldenStatements(t *testing.T) (schema, stream []string) {
+	t.Helper()
+	var temporalDML []string
+	for _, stmt := range sqlStatements(t, "testdata/debezium/sql/03-temporal.sql") {
+		if !strings.HasPrefix(stmt, "CREATE") {
+			temporalDML = append(temporalDML, stmt)
+		}
+	}
+	schema = sqlStatements(t, "testdata/debezium/sql/01-schema.sql")
+	for _, stmt := range sqlStatements(t, "testdata/debezium/sql/03-temporal.sql") {
+		if strings.HasPrefix(stmt, "CREATE") {
+			schema = append(schema, stmt)
+		}
+	}
+	// The temporal inserts go right before the sentinel, as in the capture.
+	stream = sqlStatements(t, "testdata/debezium/sql/02-stream.sql")
+	last := stream[len(stream)-1]
+	if !strings.Contains(last, "golden.sentinel") {
+		t.Fatalf("02-stream.sql no longer ends with the sentinel insert: %s", last)
+	}
+	stream = append(append(stream[:len(stream)-1:len(stream)-1], temporalDML...), last)
+	return schema, stream
 }
 
 // sqlStatements splits a script at semicolons that end a line, dropping
@@ -229,8 +257,9 @@ func sqlStatements(t *testing.T, path string) []string {
 
 func compareGolden(t *testing.T, version string, recs []opencdc.Record) {
 	t.Helper()
-	want := goldenEvents(t, "testdata/debezium/golden/"+version+"/json-numeric/events.jsonl", false)
-	wantTx := goldenEvents(t, "testdata/debezium/golden/"+version+"/json-txmeta/events.jsonl", true)
+	dir := "testdata/debezium/golden/" + version
+	want := append(goldenEvents(t, dir+"/json-numeric/events.jsonl", false), goldenEvents(t, dir+"/json-numeric/temporal.jsonl", false)...)
+	wantTx := append(goldenEvents(t, dir+"/json-txmeta/events.jsonl", true), goldenEvents(t, dir+"/json-txmeta/temporal.jsonl", true)...)
 
 	var got []event
 	for i, r := range recs {

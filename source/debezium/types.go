@@ -106,8 +106,9 @@ type column struct {
 	elem      *column // arrays
 	schema    *Schema
 	typeName  string
-	precision int // time, timestamp
-	scale     int // numeric(p,s)
+	precision int    // time, timestamp
+	scale     int    // numeric(p,s)
+	compat    string // debezium.compat, for the infinity sentinels
 }
 
 // typmod helpers. Postgres stores (precision << 16 | scale) + 4 for numeric,
@@ -127,7 +128,7 @@ func numericTypmod(typmod int32) (precision, scale int, ok bool) {
 //
 //nolint:gocyclo // one branch per Postgres type; the table is the point
 func newColumn(name string, t *PGType, typmod int32, opts columnOptions) (*column, error) {
-	c := &column{name: name, typeName: t.Name}
+	c := &column{name: name, typeName: t.Name, compat: opts.compat}
 	s := &Schema{}
 	switch {
 	case t.Kind == 'e':
@@ -238,6 +239,9 @@ func timePrecision(typmod int32) int {
 
 type columnOptions struct {
 	moneyFractionDigits int
+	// compat selects the infinity sentinels, which differ between the
+	// Debezium versions (see infinitySentinels).
+	compat string
 }
 
 func unsupportedType(col, typeName string) error {

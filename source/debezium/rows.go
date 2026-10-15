@@ -115,7 +115,7 @@ func (t *table) oldRow(tup *pglogrepl.TupleData, kind uint8, placeholder string)
 func (t *table) columnCountSkew(got int) error {
 	return &Error{Code: CodeCatalogSkew,
 		Message: fmt.Sprintf("table %s.%s: the tuple has %d columns, the relation shape %d", t.schemaName, t.tableName, got, len(t.columns)),
-		Fix:     "Restart the pipeline; if it recurs, report it with the table's DDL history."}
+		Fix:     fixCatalogSkew}
 }
 
 // key is the record key: the key columns of row in key order, or nil for a
@@ -144,6 +144,11 @@ func (t *table) keyChanged(oldTup, newTup *pglogrepl.TupleData) bool {
 	}
 	for _, i := range t.keyIdx {
 		o, n := oldTup.Columns[i], newTup.Columns[i]
+		if n.DataType == tupleUnchanged {
+			// Unchanged in the new tuple, as Update reads it (backfilled
+			// from the old row): not a key change.
+			continue
+		}
 		if o.DataType != n.DataType || !bytes.Equal(o.Data, n.Data) {
 			return true
 		}

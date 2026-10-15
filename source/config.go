@@ -165,8 +165,9 @@ type DebeziumConfig struct {
 	// supported in this version.
 	HstoreHandlingMode string `json:"hstore.handling.mode" default:"json"`
 	// SchemaDrift is the schema drift policy in this mode, used instead of
-	// logrepl.schemaDrift.policy: "evolve" (default; additive changes pass,
-	// narrowing ones halt) or "halt".
+	// logrepl.schemaDrift.policy. Only "evolve" (additive changes pass,
+	// narrowing ones halt) is supported in this version; "halt" is refused
+	// until the debezium.encode processor passes drift markers through.
 	SchemaDrift string `json:"schema.drift" default:"evolve"`
 }
 

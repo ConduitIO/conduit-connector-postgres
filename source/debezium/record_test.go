@@ -429,11 +429,17 @@ func TestBuilder_SkippedChangesKeepTheNumbering(t *testing.T) {
 		RelationID: 1, OldTupleType: pglogrepl.UpdateMessageTupleTypeOld,
 		OldTuple: fullRow("2", "a"), NewTuple: fullRow("2", "b"),
 	}, 0x300))
+	// A key column sent as unchanged in the new tuple is not a key change,
+	// as Update reads it.
+	is.NoErr(b.Skipped(ctx, &pglogrepl.UpdateMessage{
+		RelationID: 1, OldTupleType: pglogrepl.UpdateMessageTupleTypeOld,
+		OldTuple: fullRow("2", "b"), NewTuple: tuple(unchanged, text("c"), text("1"), null, null, null, text("2024-03-15 08:11:12+00")),
+	}, 0x320))
 	is.NoErr(b.Skipped(ctx, &pglogrepl.TruncateMessage{RelationIDs: []uint32{1}}, 0x350)) // not an event
 	rec, err := b.Insert(ctx, &pglogrepl.InsertMessage{RelationID: 1, Tuple: fullRow("3", "c")}, 0x400)
 	is.NoErr(err)
-	is.Equal(rec.Metadata[MetaTxTotal], "5")
-	is.Equal(rec.Metadata[MetaTxCollOrder], "5")
+	is.Equal(rec.Metadata[MetaTxTotal], "6")
+	is.Equal(rec.Metadata[MetaTxCollOrder], "6")
 }
 
 // Property: the VariableScaleDecimal bytes are Java's BigInteger.toByteArray:

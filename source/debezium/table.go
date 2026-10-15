@@ -73,13 +73,13 @@ func newTable(rel *pglogrepl.RelationMessage, cat catalogTable, types map[uint32
 			return nil, &Error{Code: CodeCatalogSkew,
 				Message: fmt.Sprintf("table %s.%s column %q: the catalog has type %d, the change stream %d",
 					rel.Namespace, rel.RelationName, rc.Name, cc.typeOID, rc.DataType),
-				Fix: "A DDL changed the column while the connector read the catalog; the read is retried, and a restart resolves it."}
+				Fix: fixCatalogSkew}
 		}
 		pt, ok := types[rc.DataType]
 		if !ok {
 			return nil, unsupportedType(rc.Name, fmt.Sprintf("oid %d", rc.DataType))
 		}
-		col, err := newColumn(rc.Name, pt, rc.TypeModifier, columnOptions{moneyFractionDigits: s.MoneyFractionDigits})
+		col, err := newColumn(rc.Name, pt, rc.TypeModifier, columnOptions{moneyFractionDigits: s.MoneyFractionDigits, compat: s.Compat})
 		if err != nil {
 			return nil, fmt.Errorf("table %s.%s: %w", rel.Namespace, rel.RelationName, err)
 		}
@@ -109,7 +109,7 @@ func newTable(rel *pglogrepl.RelationMessage, cat catalogTable, types map[uint32
 			if !ok {
 				return nil, &Error{Code: CodeCatalogSkew,
 					Message: fmt.Sprintf("table %s.%s: key column %q is not in the change stream's shape", rel.Namespace, rel.RelationName, k),
-					Fix:     "A DDL changed the primary key; the read is retried, and a restart resolves it."}
+					Fix:     fixCatalogSkew}
 			}
 			ks := t.columns[i].schema.clone()
 			ks.Optional, ks.Default = false, nil
