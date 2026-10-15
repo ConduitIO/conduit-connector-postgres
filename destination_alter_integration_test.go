@@ -59,24 +59,29 @@ func TestDestination_Write_ColumnTypeChangedWhileRunning(t *testing.T) {
 	is.Equal(count, 0)
 }
 
-// The mode is describe_exec unless the URL asks for one that never caches
-// parameter types (exec, simple_protocol), which PgBouncer in transaction mode
-// needs.
+// The mode is describe_exec unless the URL sets default_query_exec_mode; an
+// explicit cache mode is kept and reported, so Open can warn.
 func TestDestinationQueryExecMode(t *testing.T) {
-	for url, want := range map[string]pgx.QueryExecMode{
-		"postgres://u@h/db": pgx.QueryExecModeDescribeExec,
-		"postgres://u@h/db?default_query_exec_mode=cache_statement": pgx.QueryExecModeDescribeExec,
-		"postgres://u@h/db?default_query_exec_mode=cache_describe":  pgx.QueryExecModeDescribeExec,
-		"postgres://u@h/db?default_query_exec_mode=exec":            pgx.QueryExecModeExec,
-		"postgres://u@h/db?default_query_exec_mode=simple_protocol": pgx.QueryExecModeSimpleProtocol,
-		"postgres://u@h/db?default_query_exec_mode=describe_exec":   pgx.QueryExecModeDescribeExec,
+	for url, want := range map[string]struct {
+		mode   pgx.QueryExecMode
+		caches bool
+	}{
+		"postgres://u@h/db":                                         {pgx.QueryExecModeDescribeExec, false},
+		"postgres://u@h/db?sslmode=disable":                         {pgx.QueryExecModeDescribeExec, false},
+		"postgres://u@h/db?default_query_exec_mode=cache_statement": {pgx.QueryExecModeCacheStatement, true},
+		"postgres://u@h/db?default_query_exec_mode=cache_describe":  {pgx.QueryExecModeCacheDescribe, true},
+		"postgres://u@h/db?default_query_exec_mode=exec":            {pgx.QueryExecModeExec, false},
+		"postgres://u@h/db?default_query_exec_mode=simple_protocol": {pgx.QueryExecModeSimpleProtocol, false},
+		"host=h user=u dbname=db":                                   {pgx.QueryExecModeDescribeExec, false},
+		"host=h user=u default_query_exec_mode=cache_statement":     {pgx.QueryExecModeCacheStatement, true},
 	} {
 		t.Run(url, func(t *testing.T) {
 			is := is.New(t)
 			cfg, err := pgx.ParseConfig(url)
 			is.NoErr(err)
-			setDestinationQueryExecMode(cfg)
-			is.Equal(cfg.DefaultQueryExecMode, want)
+			caches := setDestinationQueryExecMode(cfg, url)
+			is.Equal(cfg.DefaultQueryExecMode, want.mode)
+			is.Equal(caches, want.caches)
 		})
 	}
 }

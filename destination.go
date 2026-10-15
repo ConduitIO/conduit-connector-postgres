@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"maps"
 	"math/big"
+	"net/url"
 	"reflect"
 	"slices"
 	"strconv"
@@ -88,7 +89,13 @@ func (d *Destination) Open(ctx context.Context) error {
 	// main keeps pgx 5.7's SCRAM behaviour; channel_binding=require stays
 	// opt-in. See cpool.DefaultSCRAMCompat.
 	cpool.DefaultSCRAMCompat(&connConfig.Config)
-	setDestinationQueryExecMode(connConfig)
+	if setDestinationQueryExecMode(connConfig, d.config.URL) {
+		sdk.Logger(ctx).Warn().
+			Str("default_query_exec_mode", connConfig.DefaultQueryExecMode.String()).
+			Msg("the url selects a query exec mode that caches statement parameter types: after ALTER COLUMN ... TYPE " +
+				"on a running pipeline, values can be converted into the new type without an error until the destination " +
+				"restarts (conduit-connector-postgres#367)")
+	}
 
 	conn, err := pgx.ConnectConfig(ctx, connConfig)
 	if err != nil {
@@ -105,26 +112,44 @@ func (d *Destination) Open(ctx context.Context) error {
 }
 
 // setDestinationQueryExecMode makes the destination describe every statement
-// before executing it, instead of reusing a cached prepared statement.
+// before executing it, instead of reusing a cached prepared statement, unless
+// the URL sets default_query_exec_mode itself. It reports whether the mode in
+// use caches parameter types (an explicit cache_statement or cache_describe).
 //
 // Invariant 6: a cached statement keeps the parameter types Postgres inferred
 // when it was prepared. After ALTER COLUMN ... TYPE on a running pipeline the
 // destination kept sending parameters typed for the old column, and Postgres
 // converted them by assignment without an error: 5/2 into a column that had
 // become integer was stored as 3 (#367). Describing each statement costs a
-// round trip per distinct statement in a batch (pgx pipelines the describes of
-// a batch); see benchi/destination-exec-mode for the measured cost.
-//
-// The modes that never cache parameter types, exec and simple_protocol, are
-// kept when the URL asks for them (default_query_exec_mode); PgBouncer in
-// transaction mode needs one of them. Both cache modes are replaced: both keep
-// the old types.
-func setDestinationQueryExecMode(cfg *pgx.ConnConfig) {
-	switch cfg.DefaultQueryExecMode {
-	case pgx.QueryExecModeExec, pgx.QueryExecModeSimpleProtocol, pgx.QueryExecModeDescribeExec:
-	default:
+// round trip per statement (see benchi/destination-exec-mode for the measured
+// cost), so a URL may opt back into a cache mode, with a warning.
+func setDestinationQueryExecMode(cfg *pgx.ConnConfig, rawURL string) (cachesTypes bool) {
+	if !explicitQueryExecMode(rawURL) {
 		cfg.DefaultQueryExecMode = pgx.QueryExecModeDescribeExec
+		return false
 	}
+	switch cfg.DefaultQueryExecMode {
+	case pgx.QueryExecModeCacheStatement, pgx.QueryExecModeCacheDescribe:
+		return true
+	default:
+		return false
+	}
+}
+
+// explicitQueryExecMode reports whether a connection string (URL or keyword/
+// value form) sets default_query_exec_mode. pgx's parsed config cannot tell an
+// explicit cache_statement from its default.
+func explicitQueryExecMode(connString string) bool {
+	if u, err := url.Parse(connString); err == nil && (u.Scheme == "postgres" || u.Scheme == "postgresql") {
+		_, ok := u.Query()["default_query_exec_mode"]
+		return ok
+	}
+	for _, field := range strings.Fields(connString) {
+		if k, _, ok := strings.Cut(field, "="); ok && strings.TrimSpace(k) == "default_query_exec_mode" {
+			return true
+		}
+	}
+	return false
 }
 
 // Write routes incoming records to their appropriate handler based on the
