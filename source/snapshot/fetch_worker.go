@@ -416,7 +416,9 @@ func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values [
 				return key, payload, fmt.Errorf("failed to format key %q: %w", f.conf.Key, err)
 			}
 
-			key[f.conf.Key] = k
+			// Invariant 6: the key owns its value; FormatColumn can hand back
+			// the scanned value itself, which the payload gets too (#425).
+			key[f.conf.Key] = types.CloneValue(k)
 		}
 
 		v, err := types.FormatColumn(types.EncodingFor(f.conf.WithAvroSchema), fd.DataTypeOID, fd.TypeModifier, values[i])
