@@ -79,29 +79,15 @@ func TestSource_NumericUnconstrainedAvro(t *testing.T) {
 				rec, err := readOne(ctx, t, s)
 				is.NoErr(err)
 				got := payloadValue(ctx, t, rec, true)
-				// What Postgres prints for the stored value.
+				// What Postgres prints for the stored value. The zeros 0.000,
+				// 0.00000 and 0.0 keep their display scale on both paths (#391).
 				var want string
 				is.NoErr(conn.QueryRow(ctx, fmt.Sprintf("SELECT v::text FROM %s", table)).Scan(&want))
-				if path == "snapshot" && isZeroText(want) {
-					// Known issue (#391): the snapshot reads in pgx's binary format,
-					// which does not carry the display scale of a zero, so 0.000
-					// arrives as "0" while CDC gives "0.000". Numerically equal.
-					want = "0"
-				}
 				is.Equal(got, want) // exact text, including scale
 				fmt.Printf("UNC %s %q -> %q\n", path, truncate(v), truncate(fmt.Sprint(got)))
 			})
 		}
 	}
-}
-
-// isZeroText reports whether the Postgres text of a numeric is a finite zero
-// such as 0, 0.000 or 0.0.
-func isZeroText(s string) bool {
-	if s == "" || strings.Trim(s, "0.-") != "" {
-		return false
-	}
-	return strings.Contains(s, "0")
 }
 
 func truncate(s string) string {
@@ -121,6 +107,7 @@ func TestNumericUnconstrained_RoundTrip(t *testing.T) {
 	vals := []string{
 		"1.50", "10000", "12345.678", "-99999999999999999999.5",
 		"123456789012345678901234567890.123456789", long, "NaN", "Infinity", "-Infinity",
+		"0.000", "0.00000", // display scale of a zero, same on both paths (#391)
 	}
 
 	for _, dstType := range []string{"numeric", "numeric(900,70)", "text"} {

@@ -293,10 +293,9 @@ upgrade registers a new schema version for the table; consumers must read the
 field as a string. This connector's destination writes the string to a `numeric`
 column exactly.
 
-**Known issue:** a zero with a display scale reads as `0` in the snapshot and as
-`0.000` (its stored text) in change data capture. The values are numerically
-equal; only the text differs. Tracked in
-[#391](https://github.com/ConduitIO/conduit-connector-postgres/issues/391).
+A zero keeps its display scale on both paths: `0.000` is `"0.000"` in the snapshot
+and in change data capture. Earlier versions delivered `"0"`
+([#391](https://github.com/ConduitIO/conduit-connector-postgres/issues/391)).
 
 So the Go type of an unconstrained `numeric` depends on the setting: a `string`
 with `logrepl.withAvroSchema: true`, a `big.Rat` with `false`. Changing a column

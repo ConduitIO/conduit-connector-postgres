@@ -15,6 +15,7 @@
 package types
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/big"
@@ -258,4 +259,43 @@ func formatNumericText(v any) (any, error) {
 		return nil, fmt.Errorf("unexpected %T for a numeric value", driverVal)
 	}
 	return text, nil
+}
+
+// numericBinaryHeaderLen is the size of the header of Postgres' binary numeric:
+// ndigits, weight, sign and dscale, each a 16-bit integer.
+const numericBinaryHeaderLen = 8
+
+// maxNumericDisplayScale is the largest display scale Postgres stores.
+const maxNumericDisplayScale = 16383
+
+// WithZeroDisplayScale restores the display scale of a numeric zero that pgx
+// decoded from the binary wire format.
+//
+// Postgres keeps the display scale of a value (0.000 has dscale 3) and prints it
+// (CDC delivers "0.000"). The binary form carries it in the header too, but pgx
+// returns every zero as Int=0, Exp=0 and drops it, so a snapshot, which reads in
+// binary, delivered "0" for the same value (#391). raw is the column's bytes as
+// received (pgx.Rows.RawValues) and v the value pgx decoded from them. Anything
+// but a finite, valid zero with a positive dscale is returned unchanged,
+// including non-numeric values and raw bytes that are too short, so a malformed
+// header can never change a value.
+//
+// The scale of non-zero values is not touched: pgx applies dscale to them.
+func WithZeroDisplayScale(raw []byte, v any) any {
+	n, ok := v.(pgtype.Numeric)
+	if !ok || !n.Valid || n.NaN || n.InfinityModifier != pgtype.Finite ||
+		n.Int == nil || n.Int.Sign() != 0 || len(raw) < numericBinaryHeaderLen {
+		return v
+	}
+	if ndigits := binary.BigEndian.Uint16(raw[0:2]); ndigits != 0 {
+		return v // not a zero on the wire, do not second-guess pgx
+	}
+	// Postgres allows a display scale of 0 to 16383; anything else (including
+	// the values a signed read would see as negative) is not a header to trust.
+	dscale := binary.BigEndian.Uint16(raw[6:8])
+	if dscale == 0 || dscale > maxNumericDisplayScale {
+		return v
+	}
+	n.Exp = -int32(dscale)
+	return n
 }

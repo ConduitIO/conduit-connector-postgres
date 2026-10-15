@@ -34,6 +34,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -286,12 +287,29 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 	fields := rows.FieldDescriptions()
 	var nread int
 
+	// The columns whose binary value loses the display scale of a zero (#391).
+	var numericCols []int
+	for i, fd := range fields {
+		if fd.DataTypeOID == pgtype.NumericOID && fd.Format == pgtype.BinaryFormatCode {
+			numericCols = append(numericCols, i)
+		}
+	}
+
 	var toBeSent []FetchData
 
 	for rows.Next() {
 		values, err := rows.Values()
 		if err != nil {
 			return 0, fmt.Errorf("failed to get values: %w", err)
+		}
+
+		// Invariant 6: the snapshot must deliver the same text as CDC. pgx
+		// decodes the zero 0.000 as 0; put the display scale back (#391).
+		if len(numericCols) > 0 {
+			raw := rows.RawValues()
+			for _, i := range numericCols {
+				values[i] = types.WithZeroDisplayScale(raw[i], values[i])
+			}
 		}
 
 		err = f.extractSchemas(ctx, fields)

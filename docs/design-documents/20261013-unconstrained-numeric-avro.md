@@ -125,17 +125,19 @@ use it with the field's type modifier. Key columns too.
 
 - With `withAvroSchema` off, an unconstrained numeric is a `big.Rat` as before:
   the Go type of the column depends on the setting.
-- Known issue (#391): a zero with a display scale is `"0"` in the snapshot and
-  `"0.000"` in CDC. pgx's binary format, which the snapshot uses, does not carry
-  the display scale of a zero (`0.000`, `0.00000` and `-0.0`, stored as `0.0`,
-  all arrive as `0`). The values are numerically equal. Non-zero values keep
-  their scale on both paths. An earlier revision of this change fetched `numeric`
-  in text format to remove the difference. That was dropped: pgx applies the
-  result-format map by OID and gives every unmapped OID the text format, so the
-  whole snapshot switched to text. Output then depended on DateStyle,
-  IntervalStyle, bytea_output, extra_float_digits and TimeZone, float4/float8
-  were silently rounded or failed to parse, and a 1M-row snapshot lost 10 to 21%
-  throughput. #391 tracks a fix that keeps the binary format.
+- A zero keeps its display scale in the snapshot (#391, fixed). The snapshot
+  reads in pgx's binary format. Its header carries the display scale (dscale),
+  but pgx returns every zero as `0` and drops it, so `0.000`, `0.00000` and `0.0`
+  (what `-0.0` is stored as) arrived as `"0"` while CDC gave the stored text.
+  The snapshot now reads dscale from the raw bytes of a numeric column that
+  decoded to zero (`types.WithZeroDisplayScale`) and keeps the binary format for
+  every column. Non-zero values keep their scale on both paths, as pgx applies
+  dscale to them. An earlier revision of this change fetched `numeric` in text
+  format. That was dropped: pgx applies the result-format map by OID and gives
+  every unmapped OID the text format, so the whole snapshot switched to text.
+  Output then depended on DateStyle, IntervalStyle, bytea_output,
+  extra_float_digits and TimeZone, float4/float8 were silently rounded or failed
+  to parse, and a 1M-row snapshot lost 10 to 21% throughput.
 - Rows written before the upgrade through the old schema were rounded by the
   destination: v0.20.0's built-in postgres destination wrote `2.50` as `3`.
   #365/#366 fix that for new rows only; existing rows stay wrong and need a
