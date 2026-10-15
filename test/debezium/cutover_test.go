@@ -148,6 +148,7 @@ type cutover struct {
 	flushAtStop                        pglogrepl.LSN
 	bigRows                            int
 	setting                            string
+	conduitPubID, dbzVersion           string
 }
 
 type lockedBuffer struct {
@@ -374,6 +375,14 @@ func (co *cutover) prepareCutover() {
 	if err := co.conn.QueryRow(co.ctx, "SELECT lsn FROM pg_create_logical_replication_slot($1, 'pgoutput')", co.conduitSlot).Scan(&co.c); err != nil {
 		co.fatalf("create Conduit's slot: %v", err)
 	}
+	// As the CLI does: record the publication's identity right after the
+	// slot exists (identity.conduitPublication, B3).
+	pubID, err := dbzoffset.PublicationIdentity(co.ctx, co.conn, co.conduitPub)
+	if err != nil {
+		co.fatalf("publication identity: %v", err)
+	}
+	co.conduitPubID = pubID
+	co.dbzVersion = co.debeziumVersion()
 
 	// Two separate transactions at least, then more until both conditions hold.
 	for i := 0; i < 2; i++ {
@@ -555,12 +564,14 @@ func (co *cutover) buildSetting() string {
 		Database:         dbName,
 		SystemIdentifier: co.sysID,
 		Plugin:           co.st.plugin,
+		DebeziumVersion:  co.dbzVersion,
 		DebeziumSlotName: co.dbzSlot,
 		PublicationName:  co.dbzPub,
 		Tables:           []string{"public." + co.tables[0], "public." + co.tables[1]},
 		Identity: dbzoffset.Identity{
 			ConduitSlotConsistentPoint: co.c.String(),
 			DebeziumSlotFlushAtWait:    co.flushAtWait.String(),
+			ConduitPublication:         co.conduitPubID,
 		},
 		Offset: co.offsetRaw,
 	}
@@ -814,4 +825,27 @@ func sample(in []string) string {
 		return strings.Join(in[:20], ", ") + fmt.Sprintf(", ... (%d more)", len(in)-20)
 	}
 	return strings.Join(in, ", ")
+}
+
+// debeziumVersion reads the Postgres connector's version from Kafka Connect,
+// as the CLI does (`GET /connector-plugins`).
+func (co *cutover) debeziumVersion() string {
+	body, err := co.st.rest(co.ctx, http.MethodGet, "/connector-plugins", nil)
+	if err != nil {
+		co.fatalf("GET /connector-plugins: %v", err)
+	}
+	var plugins []struct {
+		Class   string `json:"class"`
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(body, &plugins); err != nil {
+		co.fatalf("decode /connector-plugins: %v", err)
+	}
+	for _, p := range plugins {
+		if p.Class == "io.debezium.connector.postgresql.PostgresConnector" {
+			return p.Version
+		}
+	}
+	co.fatalf("the Debezium Postgres connector is not installed: %s", body)
+	return ""
 }
