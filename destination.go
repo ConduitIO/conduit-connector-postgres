@@ -738,6 +738,15 @@ var (
 )
 
 func (n jsonNumber) rat() (*big.Rat, error) {
+	// big.Rat builds a number with as many digits as the exponent (1e1000000
+	// takes milliseconds and hundreds of kilobytes per value); no int64 needs
+	// an exponent above 20.
+	if i := strings.IndexAny(string(n), "eE"); i >= 0 {
+		exp, err := strconv.Atoi(strings.TrimPrefix(string(n)[i+1:], "+"))
+		if err != nil || exp < -400 || exp > 400 {
+			return nil, fmt.Errorf("JSON number %q has an exponent outside -400..400", string(n))
+		}
+	}
 	r, ok := new(big.Rat).SetString(string(n))
 	if !ok {
 		return nil, fmt.Errorf("invalid JSON number %q", string(n))

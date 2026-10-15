@@ -370,3 +370,14 @@ func TestDestination_Upsert_KeyValueMustBeScalar(t *testing.T) {
 	is.NoErr(err)
 	is.Equal(n, 1)
 }
+
+// An integer column refuses a number with a huge exponent quickly instead of
+// building it with big.Rat.
+func TestJSONNumber_HugeExponentIsRefused(t *testing.T) {
+	is := is.New(t)
+	_, err := jsonNumber("1e1000000").Int64Value()
+	is.True(err != nil)
+	v, err := jsonNumber("1e3").Int64Value()
+	is.NoErr(err)
+	is.Equal(v.Int64, int64(1000))
+}
