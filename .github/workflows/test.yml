@@ -19,6 +19,12 @@ jobs:
       # Includes TestAcceptanceV2 (acceptance_v2_test.go), the SDK acceptance
       # suite v2, against the compose Postgres. It is part of ./..., so there is
       # no separate step: a failing case fails this job.
+      - name: Property tests are named for the nightly run
+        # property-nightly.yml selects its long run with -run Property; this
+        # fails when a rapid test would be left out. See
+        # .github/scripts/check-property-names/main.go for the rule.
+        run: go run ./.github/scripts/check-property-names
+
       - name: Test
         # Property tests (pgregory.net/rapid) run a small, fixed number of
         # cases here. property-nightly.yml reruns the ones named *Property*
