@@ -15,6 +15,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,7 @@ import (
 	"maps"
 	"math/big"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -351,11 +353,18 @@ func (d *Destination) handleDelete(ctx context.Context, r opencdc.Record, b *pgx
 }
 
 func (d *Destination) upsert(ctx context.Context, r opencdc.Record, b *pgx.Batch) error {
-	payload := r.Payload.After.(opencdc.StructuredData)
-	key := r.Key.(opencdc.StructuredData)
+	payload, _ := r.Payload.After.(opencdc.StructuredData) // ensureStructuredData made it structured
+	key, _ := r.Key.(opencdc.StructuredData)
 	tableName, err := d.getTableName(r)
 	if err != nil {
 		return fmt.Errorf("failed to get table name for upsert: %w", err)
+	}
+	if len(payload) == 0 {
+		// An empty row would be an INSERT of only the key (or of nothing),
+		// acked as if the record had been applied (invariant 6).
+		return fmt.Errorf("%s: %s record for table %q has no fields in .Payload.After. "+
+			"Fix: make sure create, update and snapshot records carry the row in .Payload.After",
+			ErrorCodeDestinationPayloadEmpty, r.Operation, tableName)
 	}
 
 	query, args, err := d.formatUpsertQuery(key, payload, tableName)
@@ -373,7 +382,7 @@ func (d *Destination) upsert(ctx context.Context, r opencdc.Record, b *pgx.Batch
 }
 
 func (d *Destination) remove(ctx context.Context, r opencdc.Record, b *pgx.Batch) error {
-	key := r.Key.(opencdc.StructuredData)
+	key, _ := r.Key.(opencdc.StructuredData) // hasKey checked it
 	tableName, err := d.getTableName(r)
 	if err != nil {
 		return fmt.Errorf("failed to get table name for delete: %w", err)
@@ -381,11 +390,11 @@ func (d *Destination) remove(ctx context.Context, r opencdc.Record, b *pgx.Batch
 
 	where := make(sq.Eq)
 	for col, val := range key {
-		where[internal.WrapSQLIdent(col)] = val
+		where[quoteIdent(col)] = val
 	}
 
 	query, args, err := d.stmtBuilder.
-		Delete(internal.WrapSQLIdent(tableName)).
+		Delete(quoteIdent(tableName)).
 		Where(where).
 		ToSql()
 	if err != nil {
@@ -402,74 +411,74 @@ func (d *Destination) remove(ctx context.Context, r opencdc.Record, b *pgx.Batch
 	return nil
 }
 
-// formatUpsertQuery manually formats the UPSERT and ON CONFLICT query statements.
-// The `ON CONFLICT` portion of this query needs to specify the constraint
-// name.
-// * In our case, we can only rely on the record.Key's parsed key value.
-// * If other schema constraints prevent a write, this won't upsert on
-// that conflict.
+// formatUpsertQuery builds the INSERT for one record. With a key it is an
+// upsert on the key columns: ON CONFLICT (key) DO UPDATE SET every other column
+// of the record, or DO NOTHING when the record has no other column (a table
+// whose columns are all key columns; an empty SET list is a syntax error).
+//
+// The key columns come from the record key, the other columns from the
+// payload, and a payload field that is also a key column is written once, with
+// the key's value. Neither map is modified: the record belongs to the caller
+// (#343). Columns are sorted so that a record shape always gives the same SQL
+// text.
 func (d *Destination) formatUpsertQuery(
 	key, payload opencdc.StructuredData,
 	tableName string,
 ) (string, []interface{}, error) {
-	colArgs, valArgs := d.formatColumnsAndValues(key, payload)
+	keyColumns := slices.Sorted(maps.Keys(key))
+	var otherColumns []string
+	for field := range payload {
+		if _, isKey := key[field]; !isKey {
+			otherColumns = append(otherColumns, field)
+		}
+	}
+	slices.Sort(otherColumns)
+
+	colArgs := make([]string, 0, len(keyColumns)+len(otherColumns))
+	valArgs := make([]interface{}, 0, len(keyColumns)+len(otherColumns))
+	for _, col := range keyColumns {
+		colArgs = append(colArgs, quoteIdent(col))
+		valArgs = append(valArgs, d.formatValue(key[col]))
+	}
+	for _, col := range otherColumns {
+		colArgs = append(colArgs, quoteIdent(col))
+		valArgs = append(valArgs, d.formatValue(payload[col]))
+	}
 
 	stmt := d.stmtBuilder.
-		Insert(internal.WrapSQLIdent(tableName)).
+		Insert(quoteIdent(tableName)).
 		Columns(colArgs...).
 		Values(valArgs...)
 
-	if len(key) > 0 {
-		keyColumns := slices.Collect(maps.Keys(key))
-		for i := range keyColumns {
-			keyColumns[i] = internal.WrapSQLIdent(keyColumns[i])
+	if len(keyColumns) > 0 {
+		quotedKeys := make([]string, len(keyColumns))
+		for i, col := range keyColumns {
+			quotedKeys[i] = quoteIdent(col)
 		}
-
-		var setOnConflict []string
-		for column := range payload {
-			// tuples form a comma separated list, so they need a comma at the end.
-			// `EXCLUDED` references the new record's values. This will overwrite
-			// every column's value except for the key columns.
-			wrappedCol := internal.WrapSQLIdent(column)
-			tuple := fmt.Sprintf("%s=EXCLUDED.%s", wrappedCol, wrappedCol)
-			// add the tuple to the query string
-			setOnConflict = append(setOnConflict, tuple)
+		action := "DO NOTHING"
+		if len(otherColumns) > 0 {
+			setOnConflict := make([]string, len(otherColumns))
+			for i, col := range otherColumns {
+				// EXCLUDED is the row proposed for insertion: every column but
+				// the key columns is overwritten with the record's value.
+				setOnConflict[i] = fmt.Sprintf("%s=EXCLUDED.%s", quoteIdent(col), quoteIdent(col))
+			}
+			action = "DO UPDATE SET " + strings.Join(setOnConflict, ",")
 		}
-
-		upsertQuery := fmt.Sprintf(
-			"ON CONFLICT (%s) DO UPDATE SET %s",
-			strings.Join(keyColumns, ","),
-			strings.Join(setOnConflict, ","),
-		)
-
-		stmt = stmt.Suffix(upsertQuery)
+		stmt = stmt.Suffix(fmt.Sprintf("ON CONFLICT (%s) %s", strings.Join(quotedKeys, ","), action))
 	}
 
 	return stmt.ToSql()
 }
 
-// formatColumnsAndValues turns the key and payload into a slice of ordered
-// columns and values for upserting into Postgres.
-func (d *Destination) formatColumnsAndValues(
-	key, payload opencdc.StructuredData,
-) ([]string, []interface{}) {
-	var colArgs []string
-	var valArgs []interface{}
-
-	// range over both the key and payload values in order to format the
-	// query for args and values in proper order
-	for key, val := range key {
-		colArgs = append(colArgs, internal.WrapSQLIdent(key))
-		valArgs = append(valArgs, d.formatValue(val))
-		delete(payload, key) // NB: Delete Key from payload arguments
-	}
-
-	for field, val := range payload {
-		colArgs = append(colArgs, internal.WrapSQLIdent(field))
-		valArgs = append(valArgs, d.formatValue(val))
-	}
-
-	return colArgs, valArgs
+// quoteIdent quotes a table or column name as a Postgres identifier: double
+// quotes around it, and every double quote inside it doubled. The names come
+// from records (payload field names, the record key, the table template), so
+// they must never change the SQL text. internal.WrapSQLIdent (strconv.Quote)
+// escapes a double quote as \", which Postgres does not understand, so a name
+// with a double quote broke the statement.
+func quoteIdent(name string) string {
+	return pgx.Identifier{name}.Sanitize()
 }
 
 func (d *Destination) hasKey(e opencdc.Record) bool {
@@ -506,12 +515,19 @@ func (d *Destination) structuredDataFormatter(data opencdc.Data) (opencdc.Struct
 		if len(raw) == 0 {
 			return opencdc.StructuredData{}, nil
 		}
-		m := make(map[string]interface{})
-		err := json.Unmarshal(raw, &m)
-		if err != nil {
+		// Invariant 6: numbers are decoded exactly. Through float64, int8 max
+		// was stored as int8 min on amd64 and every integer above 2^53 was
+		// rounded (#402), and a delete key matched a different row.
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		var m map[string]interface{}
+		if err := dec.Decode(&m); err != nil {
 			return nil, fmt.Errorf("failed to JSON unmarshal raw data: %w", err)
 		}
-		return m, nil
+		if dec.More() {
+			return nil, fmt.Errorf("failed to JSON unmarshal raw data: more than one JSON value")
+		}
+		return exactNumbers(m).(map[string]interface{}), nil
 	case nil:
 		return opencdc.StructuredData{}, nil
 	default:
@@ -576,5 +592,40 @@ func interruptOnDone(ctx context.Context, conn *pgx.Conn) (stop func() (fired bo
 		close(done)
 		<-exited
 		return fired // exited happens-before this read
+	}
+}
+
+// ErrorCodeDestinationPayloadEmpty prefixes the error for a create, update or
+// snapshot record without fields.
+const ErrorCodeDestinationPayloadEmpty = "postgres.destination.payload_empty"
+
+// exactNumbers replaces the json.Number values in v (a decoded JSON value) with
+// an int64 or uint64 when the number is an integer in range, and with a
+// float64 otherwise, which is what json.Unmarshal produced before.
+func exactNumbers(v interface{}) interface{} {
+	switch v := v.(type) {
+	case map[string]interface{}:
+		for k, e := range v {
+			v[k] = exactNumbers(e)
+		}
+		return v
+	case []interface{}:
+		for i, e := range v {
+			v[i] = exactNumbers(e)
+		}
+		return v
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return i
+		}
+		if u, err := strconv.ParseUint(v.String(), 10, 64); err == nil {
+			return u
+		}
+		if f, err := v.Float64(); err == nil {
+			return f
+		}
+		return v.String()
+	default:
+		return v
 	}
 }
