@@ -113,12 +113,16 @@ type Position struct {
 	TxSeq uint64 `json:"tx_seq,omitempty"`
 
 	// SchemaDriftMarker is set only on the position of a schema-drift marker
-	// record, to the drifted table as "namespace.table". It is the
-	// source-only proof the destination needs before it skips and acks a
-	// marker without writing it: Conduit does not let a processor change a
-	// record's position, and records from other systems carry their own
-	// positions. It plays no part in resuming, and the source never carries
-	// it forward to a later position.
+	// record, to the drifted table as "namespace.table". It is the proof the
+	// destination needs before it skips and acks a marker without writing
+	// it. Records from other systems carry their own positions, and the
+	// classic engine refuses a processor that changes a record's position
+	// (pkg/lifecycle/stream/processor.go). The arch-v2 engine lets a
+	// processor rewrite positions (pkg/lifecycle-poc/funnel/batch.go), so
+	// there a processor could forge the field; the record it forges is then
+	// skipped, which a processor with that power could do to any record
+	// anyway. It plays no part in resuming, and the source never carries it
+	// forward to a later position.
 	SchemaDriftMarker string `json:"schema_drift_marker,omitempty"`
 }
 

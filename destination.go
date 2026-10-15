@@ -154,6 +154,7 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 
 	b := &pgx.Batch{}
 	var skipped, strayDrift int
+	var modifiedMarkers []string
 	for _, rec := range recs {
 		// Schema-drift markers (postgres.schema.drift, source/logrepl) are
 		// keyless, payload-less OperationCreate records that carry the approval
@@ -166,20 +167,18 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 		//
 		// Invariant 3: only a marker this connector's source produced may be
 		// skipped. The metadata key is plain, user-reachable metadata, so it
-		// is not proof; the proof is the marker's shape plus its position,
-		// which only the source writes and Conduit does not let a processor
-		// change (docs/design-documents/20261015-drift-marker-source-signal.md).
-		if isDriftMarker(rec) {
-			if !hasMarkerPosition(rec) {
-				// Marker-shaped, but not provably a marker: it cannot be
-				// written as a row (FM6) and must not be acked unwritten.
-				return 0, fmt.Errorf("%s: a record carries %s=true and the drift marker's shape (a create "+
-					"with no key and no payload), but its position was not written by this connector's source "+
-					"as a marker for table %q, so it is neither written nor acknowledged. Drift markers lose "+
-					"their position when they pass through another system (Kafka, a file): drop them before "+
-					"that hop with a filter processor on the %s metadata, or remove the metadata if it was "+
-					"set by mistake", ErrorCodeDriftMarkerUnverified, logrepl.MetadataSchemaDrift,
-					rec.Metadata[logrepl.MetadataSchemaDriftTable], logrepl.MetadataSchemaDrift)
+		// is not proof; the proof is the position, which only the source
+		// writes. The classic engine refuses a processor that changes a
+		// record's position; the arch-v2 engine lets a processor rewrite it,
+		// so there a processor could forge one, as it could already drop or
+		// rewrite any record (docs/design-documents/20261015-drift-marker-source-signal.md).
+		skip, added, err := driftMarkerDisposition(rec)
+		if err != nil {
+			return 0, err
+		}
+		if skip {
+			if added != "" {
+				modifiedMarkers = append(modifiedMarkers, added)
 			}
 			sdk.Logger(ctx).Debug().
 				Str("table", rec.Metadata[logrepl.MetadataSchemaDriftTable]).
@@ -190,7 +189,6 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 		if hasDriftMetadata(rec) {
 			strayDrift++
 		}
-		var err error
 		rec, err = d.ensureStructuredData(rec)
 		if err != nil {
 			return 0, fmt.Errorf("failed to clean record: %w", err)
@@ -212,14 +210,7 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 		}
 	}
 
-	if strayDrift > 0 {
-		// Once per batch, not per record: a processor that stamps the key on
-		// every record would otherwise flood the log.
-		sdk.Logger(ctx).Warn().
-			Int("records", strayDrift).
-			Str("metadata_key", logrepl.MetadataSchemaDrift).
-			Msg("records carry schema-drift metadata but do not match the drift-marker shape; writing them as normal records")
-	}
+	logDriftWarnings(ctx, modifiedMarkers, strayDrift)
 
 	br := d.conn.SendBatch(ctx, b)
 
@@ -243,6 +234,66 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 	return len(recs), nil
 }
 
+// logDriftWarnings reports, once per batch, proven markers a processor added
+// data to and records that carry the drift metadata without being markers.
+// Once per batch, not per record: a processor that stamps the key on every
+// record would otherwise flood the log.
+func logDriftWarnings(ctx context.Context, modifiedMarkers []string, strayDrift int) {
+	if len(modifiedMarkers) > 0 {
+		sdk.Logger(ctx).Warn().
+			Strs("markers", modifiedMarkers).
+			Msg("schema-drift markers proven by their position carried data a processor added; " +
+				"they were skipped as markers, and the added fields were not written")
+	}
+	if strayDrift > 0 {
+		// Once per batch, not per record: a processor that stamps the key on
+		// every record would otherwise flood the log.
+		sdk.Logger(ctx).Warn().
+			Int("records", strayDrift).
+			Str("metadata_key", logrepl.MetadataSchemaDrift).
+			Msg("records carry schema-drift metadata but no drift-marker position, and have a key or payload; writing them as normal records")
+	}
+}
+
+// driftMarkerDisposition decides what Write does with a record that may be a
+// schema-drift marker: skip it (a marker proven by its position; added
+// describes data a processor added to it, if any), refuse it (marker-shaped
+// but unproven), or neither (write it as an ordinary record).
+//
+// Invariant 3: only a marker this connector's source produced may be
+// skipped. The metadata key is plain, user-reachable metadata, so it is not
+// proof; the proof is the position, which only the source writes. The
+// classic engine refuses a processor that changes a record's position; the
+// arch-v2 engine lets a processor rewrite it, so there a processor could
+// forge one, as it could already filter any record
+// (docs/design-documents/20261015-drift-marker-source-signal.md).
+func driftMarkerDisposition(rec opencdc.Record) (skip bool, added string, err error) {
+	if !hasDriftMetadata(rec) {
+		return false, "", nil
+	}
+	if hasMarkerPosition(rec) {
+		// A proven marker is never a row. If a processor added data to it
+		// (a tenant column, a key), writing it would insert a wrong row; it
+		// is still skipped, and the added fields are named.
+		if !isDriftMarker(rec) {
+			added = markerAdditions(rec)
+		}
+		return true, added, nil
+	}
+	if isDriftMarker(rec) {
+		// Marker-shaped, but not provably a marker: it cannot be written as a
+		// row (FM6) and must not be acked unwritten.
+		return false, "", fmt.Errorf("%s: a record carries %s=true and the drift marker's shape (a create "+
+			"with no key and no payload), but its position was not written by this connector's source "+
+			"as a marker for table %q, so it is neither written nor acknowledged. Drift markers lose "+
+			"their position when they pass through another system (Kafka, a file): drop them before "+
+			"that hop with a filter processor on the %s metadata, or remove the metadata if it was "+
+			"set by mistake", ErrorCodeDriftMarkerUnverified, logrepl.MetadataSchemaDrift,
+			rec.Metadata[logrepl.MetadataSchemaDriftTable], logrepl.MetadataSchemaDrift)
+	}
+	return false, "", nil
+}
+
 // ErrorCodeDriftMarkerUnverified prefixes the error Write returns for a
 // record that looks like a schema-drift marker but whose position does not
 // prove this connector's source produced it.
@@ -250,13 +301,75 @@ const ErrorCodeDriftMarkerUnverified = "postgres.destination.drift_marker_unveri
 
 // hasMarkerPosition reports whether rec's position is a CDC position this
 // connector's source wrote for a schema-drift marker of the table the
-// metadata names.
+// metadata names: exact (case-sensitive) keys as the source writes them, a
+// parseable last_lsn, a change key (tx_commit_lsn with tx_seq or tx_seq_m),
+// and schema_drift_marker equal to postgres.schema.drift.table.
+//
+// encoding/json matches keys case-insensitively, so the raw keys are checked
+// first: {"TYPE":2,...} or a key differing only in case is not this source's
+// position.
 func hasMarkerPosition(rec opencdc.Record) bool {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Position, &raw); err != nil {
+		return false
+	}
+	known := []string{"version", "type", "last_lsn", "tx_commit_lsn", "tx_seq", "tx_seq_m", "schema_drift_marker",
+		"snapshots", "snapshot_low_watermark_lsn", "schema_history"}
+	for k := range raw {
+		for _, want := range known {
+			if k != want && strings.EqualFold(k, want) {
+				return false
+			}
+		}
+	}
+	for _, required := range []string{"type", "last_lsn", "tx_commit_lsn", "schema_drift_marker"} {
+		if _, ok := raw[required]; !ok {
+			return false
+		}
+	}
 	p, err := position.ParseSDKPosition(rec.Position)
 	if err != nil || p.Type != position.TypeCDC || p.SchemaDriftMarker == "" {
 		return false
 	}
+	if lsn, err := p.LSN(); err != nil || lsn == 0 {
+		return false
+	}
+	if commit, err := p.TxCommit(); err != nil || commit == 0 {
+		return false
+	}
+	_, hasSeq := raw["tx_seq"]
+	_, hasSeqM := raw["tx_seq_m"]
+	if !hasSeq && !hasSeqM {
+		return false
+	}
 	return p.SchemaDriftMarker == rec.Metadata[logrepl.MetadataSchemaDriftTable]
+}
+
+// markerAdditions describes what a processor added to a proven marker, for
+// the WARN: its table, operation if not create, and the key and payload
+// fields it carries (names only, never values).
+func markerAdditions(rec opencdc.Record) string {
+	var parts []string
+	if rec.Operation != opencdc.OperationCreate {
+		parts = append(parts, "operation="+rec.Operation.String())
+	}
+	for name, d := range map[string]opencdc.Data{"key": rec.Key, "before": rec.Payload.Before, "after": rec.Payload.After} {
+		if isEmptyData(d) {
+			continue
+		}
+		if sd, ok := d.(opencdc.StructuredData); ok {
+			fields := make([]string, 0, len(sd))
+			for f := range sd {
+				fields = append(fields, f)
+			}
+			slices.Sort(fields)
+			parts = append(parts, name+"{"+strings.Join(fields, ",")+"}")
+		} else {
+			parts = append(parts, name+"(raw)")
+		}
+	}
+	slices.Sort(parts)
+	return rec.Metadata[logrepl.MetadataSchemaDriftTable] + ": " + strings.Join(parts, " ")
 }
 
 // hasDriftMetadata reports whether rec carries postgres.schema.drift=true.

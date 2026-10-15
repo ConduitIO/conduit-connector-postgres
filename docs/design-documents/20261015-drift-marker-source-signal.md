@@ -20,10 +20,15 @@ field to the source's position.
 - The marker is `NewRecordCreate(position, metadata, nil, nil)`: no key, no
   payload. Its position is a CDC position whose change key is one below the
   change that decided the drift (#338).
-- Conduit refuses a processor that changes a record's position
-  (`pkg/lifecycle/stream/processor.go`, `handleSingleRecord`: "processor
-  changed position ... not allowed"). In a Conduit pipeline the destination
-  therefore sees exactly the position bytes the source connector produced.
+- Conduit's **classic engine** refuses a processor that changes a record's
+  position (`pkg/lifecycle/stream/processor.go`, `handleSingleRecord`:
+  "processor changed position ... not allowed"). There the destination sees
+  exactly the position bytes the source connector produced. The **arch-v2
+  engine** lets a processor rewrite `Record.Position` (it tracks the original
+  separately, `pkg/lifecycle-poc/funnel/batch.go`), so there a processor could
+  forge the field. The impact is bounded: only a record a processor chose to
+  forge is skipped, which a processor with that power could do to any record
+  (by filtering it), and a genuine marker carries no data.
 - A record that reached the destination through another system (Kafka, a
   file) carries that system's position, never one this source wrote.
 
@@ -32,16 +37,19 @@ field to the source's position.
 1. The source stamps the marker's position with
    `schema_drift_marker: "<namespace.table>"` (position field
    `SchemaDriftMarker`). No other position carries it.
-2. The destination skips and acks a record only when **all** of these hold:
-   - metadata `postgres.schema.drift=true`;
-   - the #358 shape: `OperationCreate`, empty key, empty `Payload.Before` and
-     `Payload.After`;
-   - the record's position parses as this connector's CDC position whose
-     `schema_drift_marker` equals the metadata's `postgres.schema.drift.table`.
+2. The destination skips and acks a record when it has metadata
+   `postgres.schema.drift=true` and its position is this connector's CDC
+   position for a marker of that table: exact (case-sensitive) keys, a
+   parseable `last_lsn`, a change key, and `schema_drift_marker` equal to the
+   metadata's `postgres.schema.drift.table`. **Amended after the #418 review:**
+   the shape is not required for a proven marker. A processor that adds a key
+   or fields to a marker (for example a tenant column) must not turn it into
+   an inserted row, so a proven marker is skipped whatever its shape, with a
+   WARN naming the added fields.
 3. A record with the metadata and any key, payload or other operation is a
    real record: it is written, with one aggregated WARN per batch (#358).
-4. A record with the metadata and the marker's shape **but no verified
-   position** fails the batch with
+4. A record with the metadata and the marker's shape (no key, no payload)
+   **but no verified position** fails the batch with
    `postgres.destination.drift_marker_unverified`, nothing acked. It cannot be
    written correctly (an empty `DEFAULT VALUES` row is a wrong row) and it
    cannot be proved to be a marker. The fix text tells the operator to drop
@@ -71,7 +79,8 @@ field to the source's position.
 | Spoofed empty record carrying the metadata, no marker position | Batch fails with `drift_marker_unverified`; nothing acked; loud |
 | Genuine marker forwarded through Kafka to a Postgres destination | Same refusal; operator filters markers upstream. Previously skipped |
 | Genuine marker in a Postgres-to-Postgres pipeline | Skipped and acked, as before |
-| A position-rewriting engine (arch-v2 allows a processor to rewrite `Record.Position`) | A processor with that power can already break acks; it could also forge the field. The record still has no data, so nothing is lost |
+| Genuine marker that a processor added a key or fields to | Skipped and acked; a WARN names the added fields (they are not written) |
+| A position-rewriting engine (arch-v2 allows a processor to rewrite `Record.Position`) | A processor with that power could forge the field and have a record skipped; it could equally filter the record. Only records it chose to forge are affected |
 | Marker from a source build without the field (older connector upstream) | Refused, loudly. Upgrade the source, or filter markers |
 
 ## Upgrade and rollback

@@ -635,8 +635,6 @@ func (h *CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 	return h.buildPositionAt(lsn, h.currentChangeKey())
 }
 
-// buildPositionAt is buildPosition with an explicit change key. A key that is
-// not Known leaves the position without one (the legacy resume rule).
 // buildMarkerPosition is buildPositionAt for a schema-drift marker: the same
 // resume point, plus SchemaDriftMarker naming the drifted table, which the
 // destination checks before it skips the marker (invariant 3: only records
@@ -647,6 +645,8 @@ func (h *CDCHandler) buildMarkerPosition(lsn pglogrepl.LSN, key internal.ChangeK
 	return p.ToSDKPosition()
 }
 
+// buildPositionAt is buildPosition with an explicit change key. A key that is
+// not Known leaves the position without one (the legacy resume rule).
 func (h *CDCHandler) buildPositionAt(lsn pglogrepl.LSN, key internal.ChangeKey) opencdc.Position {
 	return h.positionAt(lsn, key).ToSDKPosition()
 }

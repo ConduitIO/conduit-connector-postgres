@@ -31,6 +31,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pgx/v5"
 	"github.com/matryer/is"
+	"github.com/rs/zerolog"
 )
 
 func TestDestination_Write(t *testing.T) {
@@ -660,7 +661,12 @@ func TestDestination_UnverifiedDriftMarkerIsRefused(t *testing.T) {
 		Payload:  opencdc.Change{After: driftTestPayload(1)},
 	}
 	for name, pos := range map[string]opencdc.Position{
-		"foreign position (e.g. from Kafka)":    opencdc.Position("kafka-partition-0-offset-17"),
+		// conduit-connector-kafka's source position, as it writes it.
+		"foreign position (Kafka source)":       opencdc.Position(`{"GroupID":"conduit","Topic":"dbz.public.orders","Partition":0,"Offset":17}`),
+		"case-variant keys":                     opencdc.Position(`{"version":3,"TYPE":2,"last_lsn":"0/16B3748","tx_commit_lsn":"0/16B3747","tx_seq":1,"schema_drift_marker":"` + tableName + `"}`),
+		"no last_lsn":                           opencdc.Position(`{"version":3,"type":2,"tx_commit_lsn":"0/16B3747","tx_seq":1,"schema_drift_marker":"` + tableName + `"}`),
+		"unparseable last_lsn":                  opencdc.Position(`{"version":3,"type":2,"last_lsn":"nope","tx_commit_lsn":"0/16B3747","tx_seq":1,"schema_drift_marker":"` + tableName + `"}`),
+		"no change key":                         opencdc.Position(`{"version":3,"type":2,"last_lsn":"0/16B3748","schema_drift_marker":"` + tableName + `"}`),
 		"cdc position without the marker field": position.Position{Type: position.TypeCDC, LastLSN: "0/1"}.ToSDKPosition(),
 		"marker position for another table":     markerPosition("public.other"),
 		"snapshot position with the field":      position.Position{Type: position.TypeSnapshot, SchemaDriftMarker: tableName}.ToSDKPosition(),
@@ -675,4 +681,39 @@ func TestDestination_UnverifiedDriftMarkerIsRefused(t *testing.T) {
 			is.Equal(count(), before) // nothing written, not even the real record before it
 		})
 	}
+}
+
+// Review SHOULD (#418): a marker proven by its position that a processor
+// modified (here: added a key and a column value) was inserted as a wrong,
+// nearly empty row. It is a marker, so it is skipped and acked whatever its
+// shape, and a WARN names the added fields.
+func TestDestination_ProvenMarkerModifiedByProcessorIsSkipped(t *testing.T) {
+	is := is.New(t)
+	logs := &lockedBuffer{}
+	ctx0, d, tableName, conn := openDriftTestDestination(t)
+	ctx := zerolog.New(logs).WithContext(ctx0)
+	count := func() int {
+		var c int
+		is.NoErr(conn.QueryRow(ctx, fmt.Sprintf("SELECT count(*) FROM %q", tableName)).Scan(&c))
+		return c
+	}
+	before := count()
+	marker := opencdc.Record{
+		Position:  markerPosition(tableName),
+		Operation: opencdc.OperationCreate,
+		Metadata: map[string]string{
+			opencdc.MetadataCollection:       tableName,
+			logrepl.MetadataSchemaDrift:      "true",
+			logrepl.MetadataSchemaDriftTable: tableName,
+		},
+		Key:     opencdc.StructuredData{"id": 9401},
+		Payload: opencdc.Change{After: opencdc.StructuredData{"column1": "acme"}},
+	}
+	n, err := d.Write(ctx, []opencdc.Record{marker})
+	is.NoErr(err)
+	is.Equal(n, 1)            // acked
+	is.Equal(count(), before) // nothing inserted
+	is.True(strings.Contains(logs.String(), "after{column1}"))
+	is.True(strings.Contains(logs.String(), "key{id}"))
+	is.True(strings.Contains(logs.String(), `"level":"warn"`))
 }
