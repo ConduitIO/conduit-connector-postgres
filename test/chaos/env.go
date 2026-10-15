@@ -88,6 +88,12 @@ const (
 	// forgets to set it fails loudly rather than passing by accident.
 	envHaltExpected = "PGCHAOS_HALT_EXPECTED"
 
+	// envImport, when set, is the logrepl.import.debeziumOffset setting
+	// (#341). The child then runs with snapshotMode "never", as the CLI
+	// writes it, and opens with the ledger's last position (empty on the
+	// first run, so the import applies).
+	envImport = "PGCHAOS_IMPORT"
+
 	// envParentPID is the OS PID of the process that spawned this
 	// invocation via spawnChildWithEnv (harness.go), stamped onto every
 	// child's environment as os.Getpid() of the parent at spawn time.
