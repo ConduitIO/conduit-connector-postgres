@@ -44,6 +44,11 @@ const (
 //   - 2: CDC positions also carry the change key (#331): TxCommitLSN, the
 //     commit LSN of the record's transaction, and TxSeq, the change's
 //     ordinal within it. Written by this build.
+//   - 3: reserved by main (v0.15.0): a schema-drift marker's position also
+//     carries schema_drift_marker (the drifted table), which the
+//     destination requires before it skips a marker (#418). Never written by
+//     v0.14.x. Read like 2 here: the field is ignored and the change key is
+//     used as usual.
 //
 // The format is additive only. Every field is omitempty, an older connector
 // ignores keys it does not know, and a position with a higher version than
