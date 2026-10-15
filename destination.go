@@ -36,6 +36,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Destination struct {
@@ -367,6 +368,9 @@ func (d *Destination) upsert(ctx context.Context, r opencdc.Record, b *pgx.Batch
 			ErrorCodeDestinationPayloadEmpty, r.Operation, tableName)
 	}
 
+	if err := checkIdentifiers(tableName, key, payload); err != nil {
+		return err
+	}
 	query, args, err := d.formatUpsertQuery(key, payload, tableName)
 	if err != nil {
 		return fmt.Errorf("error formatting query: %w", err)
@@ -388,8 +392,18 @@ func (d *Destination) remove(ctx context.Context, r opencdc.Record, b *pgx.Batch
 		return fmt.Errorf("failed to get table name for delete: %w", err)
 	}
 
+	if err := checkIdentifiers(tableName, key, nil); err != nil {
+		return err
+	}
 	where := make(sq.Eq)
 	for col, val := range key {
+		if val == nil {
+			// squirrel turns a nil value into IS NULL, which matches every
+			// row with a NULL in that column, not one row.
+			return fmt.Errorf("%s: the delete record's key has a null value for column %q of table %q, "+
+				"so it cannot be matched to one row. Fix: send delete records with a non-null value for every key column",
+				ErrorCodeDestinationKeyColumnMissing, col, tableName)
+		}
 		where[quoteIdent(col)] = val
 	}
 
@@ -471,10 +485,53 @@ func (d *Destination) formatUpsertQuery(
 	return stmt.ToSql()
 }
 
+// maxIdentifierBytes is NAMEDATALEN-1 of a default Postgres build. Postgres
+// truncates longer identifiers to this length with only a NOTICE, so a longer
+// field name would write into whichever column has the truncated name.
+const maxIdentifierBytes = 63
+
+// checkIdentifiers fails for a table or column name that Postgres would not
+// take literally: one with a NUL byte (pgx.Identifier.Sanitize strips it, so
+// "v\x00" would write into column v) or one longer than maxIdentifierBytes
+// (Postgres truncates it). Both would silently alias another column or table.
+func checkIdentifiers(table string, key, payload opencdc.StructuredData) error {
+	check := func(kind, name string) error {
+		switch {
+		case strings.IndexByte(name, 0) >= 0:
+			return fmt.Errorf("%s: %s name %q contains a NUL byte, which Postgres identifiers cannot hold. "+
+				"Fix: rename the field (or the table template result) before the destination",
+				ErrorCodeDestinationInvalidIdentifier, kind, name)
+		case len(name) > maxIdentifierBytes:
+			return fmt.Errorf("%s: %s name %q is %d bytes long, Postgres would truncate it to %d bytes and "+
+				"address a different column or table. Fix: rename it to at most %d bytes before the destination",
+				ErrorCodeDestinationInvalidIdentifier, kind, name, len(name), maxIdentifierBytes, maxIdentifierBytes)
+		case name == "":
+			return fmt.Errorf("%s: empty %s name. Fix: set the table template or the field name",
+				ErrorCodeDestinationInvalidIdentifier, kind)
+		}
+		return nil
+	}
+	if err := check("table", table); err != nil {
+		return err
+	}
+	for name := range key {
+		if err := check("column", name); err != nil {
+			return err
+		}
+	}
+	for name := range payload {
+		if err := check("column", name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // quoteIdent quotes a table or column name as a Postgres identifier: double
 // quotes around it, and every double quote inside it doubled. The names come
 // from records (payload field names, the record key, the table template), so
-// they must never change the SQL text. internal.WrapSQLIdent (strconv.Quote)
+// they must never change the SQL text. Callers check the names with
+// checkIdentifiers first: Sanitize strips NUL bytes, which would alias names. internal.WrapSQLIdent (strconv.Quote)
 // escapes a double quote as \", which Postgres does not understand, so a name
 // with a double quote broke the statement.
 func quoteIdent(name string) string {
@@ -600,8 +657,9 @@ func interruptOnDone(ctx context.Context, conn *pgx.Conn) (stop func() (fired bo
 const ErrorCodeDestinationPayloadEmpty = "postgres.destination.payload_empty"
 
 // exactNumbers replaces the json.Number values in v (a decoded JSON value) with
-// an int64 or uint64 when the number is an integer in range, and with a
-// float64 otherwise, which is what json.Unmarshal produced before.
+// an int64 or uint64 when the number is an integer literal in range, and with a
+// jsonNumber otherwise, which keeps the literal so that numeric, text and jsonb
+// columns store it exactly.
 func exactNumbers(v interface{}) interface{} {
 	switch v := v.(type) {
 	case map[string]interface{}:
@@ -621,11 +679,86 @@ func exactNumbers(v interface{}) interface{} {
 		if u, err := strconv.ParseUint(v.String(), 10, 64); err == nil {
 			return u
 		}
-		if f, err := v.Float64(); err == nil {
-			return f
-		}
-		return v.String()
+		return jsonNumber(v)
 	default:
 		return v
 	}
 }
+
+// jsonNumber is a JSON number literal that is not an int64 or uint64 literal
+// (a fraction, an exponent, or an integer beyond uint64). It implements the
+// pgx valuer interfaces so that each column type gets it exactly or fails:
+//
+//   - numeric: the exact decimal value (12345678901234567.89 stays exact);
+//   - int2/int4/int8: the integer if the value is whole and in range ("1e3",
+//     "1.0"), an error otherwise;
+//   - float4/float8: the nearest float, as before;
+//   - text and jsonb: the literal itself.
+//
+// Before, every such number became a float64, which rounded numeric values with
+// more than about 15 significant digits.
+type jsonNumber string
+
+var (
+	_ pgtype.NumericValuer = jsonNumber("")
+	_ pgtype.Int64Valuer   = jsonNumber("")
+	_ pgtype.Float64Valuer = jsonNumber("")
+	_ pgtype.TextValuer    = jsonNumber("")
+	_ json.Marshaler       = jsonNumber("")
+)
+
+func (n jsonNumber) rat() (*big.Rat, error) {
+	r, ok := new(big.Rat).SetString(string(n))
+	if !ok {
+		return nil, fmt.Errorf("invalid JSON number %q", string(n))
+	}
+	return r, nil
+}
+
+// NumericValue returns the exact decimal value.
+func (n jsonNumber) NumericValue() (pgtype.Numeric, error) {
+	var num pgtype.Numeric
+	if err := num.Scan(string(n)); err != nil {
+		return pgtype.Numeric{}, fmt.Errorf("JSON number %q as numeric: %w", string(n), err)
+	}
+	return num, nil
+}
+
+// Int64Value returns the value if it is a whole number in the int64 range.
+func (n jsonNumber) Int64Value() (pgtype.Int8, error) {
+	r, err := n.rat()
+	if err != nil {
+		return pgtype.Int8{}, err
+	}
+	if !r.IsInt() || !r.Num().IsInt64() {
+		return pgtype.Int8{}, fmt.Errorf("JSON number %q is not a whole number in the int64 range", string(n))
+	}
+	return pgtype.Int8{Int64: r.Num().Int64(), Valid: true}, nil
+}
+
+// Float64Value returns the nearest float64.
+func (n jsonNumber) Float64Value() (pgtype.Float8, error) {
+	f, err := strconv.ParseFloat(string(n), 64)
+	if err != nil {
+		return pgtype.Float8{}, fmt.Errorf("JSON number %q as float: %w", string(n), err)
+	}
+	return pgtype.Float8{Float64: f, Valid: true}, nil
+}
+
+// TextValue returns the literal.
+func (n jsonNumber) TextValue() (pgtype.Text, error) {
+	return pgtype.Text{String: string(n), Valid: true}, nil
+}
+
+// MarshalJSON writes the literal as a JSON number, for json and jsonb columns.
+func (n jsonNumber) MarshalJSON() ([]byte, error) {
+	return []byte(n), nil
+}
+
+// ErrorCodeDestinationInvalidIdentifier prefixes the error for a table or
+// column name that Postgres would not take literally.
+const ErrorCodeDestinationInvalidIdentifier = "postgres.destination.invalid_identifier"
+
+// ErrorCodeDestinationKeyColumnMissing prefixes the error for a delete whose key
+// has no usable value for a key column.
+const ErrorCodeDestinationKeyColumnMissing = "postgres.destination.key_column_missing"

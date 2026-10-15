@@ -185,3 +185,108 @@ func TestDestination_Write_QuotesIdentifiers(t *testing.T) {
 	is.NoErr(conn.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM %s`, table)).Scan(&count))
 	is.Equal(count, 1)
 }
+
+// pgx.Identifier.Sanitize strips NUL bytes and Postgres truncates names over
+// 63 bytes, so such a field or table name would silently write into another
+// column or table. They are refused, and nothing of the batch is stored.
+func TestDestination_Write_RejectsAliasingIdentifiers(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	table := test.RandomIdentifier(t)
+	long := strings.Repeat("v", 63)
+	_, err := conn.Exec(ctx, fmt.Sprintf(`CREATE TABLE %s (id bigint PRIMARY KEY, v text, %s text)`, table, long))
+	is.NoErr(err)
+
+	d := openJDBCTestDestination(t, is)
+	for name, rec := range map[string]opencdc.Record{
+		"NUL in field": jdbcTestRecord(table, opencdc.OperationCreate, opencdc.StructuredData{"id": 1},
+			opencdc.StructuredData{"id": 1, "v\x00": "x"}),
+		"NUL in key column": jdbcTestRecord(table, opencdc.OperationDelete, opencdc.StructuredData{"id\x00": 1}, nil),
+		"NUL in table": jdbcTestRecord(table+"\x00", opencdc.OperationCreate, opencdc.StructuredData{"id": 1},
+			opencdc.StructuredData{"id": 1, "v": "x"}),
+		"field over 63 bytes": jdbcTestRecord(table, opencdc.OperationCreate, opencdc.StructuredData{"id": 1},
+			opencdc.StructuredData{"id": 1, long + "x": "x"}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			is := is.New(t)
+			ok := jdbcTestRecord(table, opencdc.OperationCreate, opencdc.StructuredData{"id": 2},
+				opencdc.StructuredData{"id": 2, "v": "y"})
+			n, err := d.Write(ctx, []opencdc.Record{ok, rec})
+			is.True(err != nil)
+			is.True(strings.Contains(err.Error(), ErrorCodeDestinationInvalidIdentifier))
+			is.Equal(n, 0)
+			var count int
+			is.NoErr(conn.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM %s`, table)).Scan(&count))
+			is.Equal(count, 0)
+		})
+	}
+
+	// Exactly 63 bytes is a valid name and is written.
+	n, err := d.Write(ctx, []opencdc.Record{jdbcTestRecord(table, opencdc.OperationCreate,
+		opencdc.StructuredData{"id": 3}, opencdc.StructuredData{"id": 3, long: "z"})})
+	is.NoErr(err)
+	is.Equal(n, 1)
+}
+
+// A null key value became IS NULL and deleted every row with a NULL in that
+// column. It is refused.
+func TestDestination_Delete_NullKeyValueFails(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	table := test.RandomIdentifier(t)
+	_, err := conn.Exec(ctx, fmt.Sprintf(`CREATE TABLE %s (id bigint, v text)`, table))
+	is.NoErr(err)
+	_, err = conn.Exec(ctx, fmt.Sprintf(`INSERT INTO %s VALUES (NULL, 'a'), (NULL, 'b'), (1, 'c')`, table))
+	is.NoErr(err)
+
+	d := openJDBCTestDestination(t, is)
+	n, err := d.Write(ctx, []opencdc.Record{
+		jdbcTestRecord(table, opencdc.OperationDelete, opencdc.StructuredData{"id": nil}, nil),
+	})
+	is.True(err != nil)
+	is.True(strings.Contains(err.Error(), ErrorCodeDestinationKeyColumnMissing))
+	is.Equal(n, 0)
+	var count int
+	is.NoErr(conn.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM %s`, table)).Scan(&count))
+	is.Equal(count, 3)
+}
+
+// JSON numbers that are not int64/uint64 literals stay exact in numeric, text
+// and jsonb columns; whole values in exponent or decimal form still go into
+// integer columns; a fraction into an integer column fails.
+func TestDestination_Write_JSONNumbersAreExact(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	table := test.RandomIdentifier(t)
+	_, err := conn.Exec(ctx, fmt.Sprintf(
+		`CREATE TABLE %s (id bigint PRIMARY KEY, n numeric, big numeric, i bigint, i2 bigint, f float8, t text, j jsonb, na numeric[])`, table))
+	is.NoErr(err)
+
+	d := openJDBCTestDestination(t, is)
+	n, err := d.Write(ctx, []opencdc.Record{jdbcTestRecord(table, opencdc.OperationCreate,
+		opencdc.RawData(`{"id":1}`),
+		opencdc.RawData(`{"id":1,"n":12345678901234567.89,"big":18000000000000000000.5,"i":1e3,"i2":7.0,`+
+			`"f":1.5,"t":12345678901234567.89,"j":{"x":12345678901234567.89},"na":[1.25,12345678901234567.89]}`))})
+	is.NoErr(err)
+	is.Equal(n, 1)
+
+	var nv, big, iv, i2, f, tv, jv, na string
+	is.NoErr(conn.QueryRow(ctx, fmt.Sprintf(
+		`SELECT n::text, big::text, i::text, i2::text, f::text, t, j::text, na::text FROM %s WHERE id = 1`, table)).
+		Scan(&nv, &big, &iv, &i2, &f, &tv, &jv, &na))
+	is.Equal(nv, "12345678901234567.89")
+	is.Equal(big, "18000000000000000000.5")
+	is.Equal(iv, "1000")
+	is.Equal(i2, "7")
+	is.Equal(f, "1.5")
+	is.Equal(tv, "12345678901234567.89")
+	is.Equal(jv, `{"x": 12345678901234567.89}`)
+	is.Equal(na, "{1.25,12345678901234567.89}")
+
+	_, err = d.Write(ctx, []opencdc.Record{jdbcTestRecord(table, opencdc.OperationCreate,
+		opencdc.RawData(`{"id":2}`), opencdc.RawData(`{"id":2,"i":1.5}`))})
+	is.True(err != nil) // a fraction is never truncated into an integer column
+}
