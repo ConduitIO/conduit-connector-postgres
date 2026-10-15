@@ -144,12 +144,17 @@ func (s *importScenario) withOffset(t *testing.T, offset map[string]any) {
 	if err := s.replPool.QueryRow(ctx, "SELECT current_database(), system_identifier::text FROM pg_control_system()").Scan(&db, &sysID); err != nil {
 		t.Fatal(err)
 	}
+	pubID, err := dbzoffset.PublicationIdentity(ctx, s.replPool, s.pub)
+	if err != nil {
+		t.Fatal(err)
+	}
 	enc, err := dbzoffset.Setting{
 		Format: dbzoffset.FormatV1, Connector: "chaos", Database: db, SystemIdentifier: sysID,
-		Plugin: dbzoffset.PluginPgoutput, DebeziumSlotName: s.dbzSlot, PublicationName: s.pub,
-		Tables:   []string{"public." + s.table},
-		Identity: dbzoffset.Identity{ConduitSlotConsistentPoint: s.c.String(), DebeziumSlotFlushAtWait: s.c.String()},
-		Offset:   raw,
+		Plugin: dbzoffset.PluginPgoutput, DebeziumVersion: "3.2.4.Final", DebeziumSlotName: s.dbzSlot, PublicationName: s.pub,
+		Tables: []string{"public." + s.table},
+		Identity: dbzoffset.Identity{ConduitSlotConsistentPoint: s.c.String(), DebeziumSlotFlushAtWait: s.c.String(),
+			ConduitPublication: pubID},
+		Offset: raw,
 	}.Encode()
 	if err != nil {
 		t.Fatal(err)

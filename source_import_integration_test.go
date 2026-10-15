@@ -167,11 +167,13 @@ func (f *importFixture) setting(t *testing.T, offset map[string]any, modify func
 	s := dbzoffset.Setting{
 		Format: dbzoffset.FormatV1, Connector: "inventory-connector",
 		Database: f.db, SystemIdentifier: f.sysID, Plugin: dbzoffset.PluginPgoutput,
+		DebeziumVersion:  "3.2.4.Final",
 		DebeziumSlotName: f.dbzSlot, PublicationName: f.pub,
 		Tables: []string{"public." + f.table},
 		Identity: dbzoffset.Identity{
 			ConduitSlotConsistentPoint: f.c.String(),
 			DebeziumSlotFlushAtWait:    f.c.String(),
+			ConduitPublication:         f.publicationIdentity(t),
 		},
 		Offset: raw,
 	}
@@ -492,7 +494,8 @@ func TestImport_FlushCapHoldsSlotUntilFirstAck(t *testing.T) {
 	eventually(t, "the pending-import warning", func() bool {
 		return strings.Count(f.logs.String(), "import pending first ack") >= 1
 	})
-	time.Sleep(12 * time.Second)
+	// Two more standby status updates after the WAL end moved past Lc.
+	f.waitStatusReplies(t, 2)
 	noMoreRecords(f.ctx, t, src)
 	is.True(f.slotFlush(t, f.slot) <= last.end)
 	// The final status update at shutdown is capped too.
@@ -549,4 +552,73 @@ func TestImport_InterleavedTransactionPrefixBelowLc(t *testing.T) {
 	is.Equal(ids, []string{"101", "102"})
 	noMoreRecords(f.ctx, t, src)
 	is.NoErr(src.Teardown(context.Background()))
+}
+
+func (f *importFixture) publicationIdentity(t *testing.T) string {
+	t.Helper()
+	id, err := dbzoffset.PublicationIdentity(f.ctx, f.conn, f.pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// waitStatusReplies waits until the walsender on Conduit's slot has
+// received n more standby status updates (pg_stat_replication.reply_time
+// changes n times).
+func (f *importFixture) waitStatusReplies(t *testing.T, n int) {
+	t.Helper()
+	replyTime := func() time.Time {
+		var ts *time.Time
+		err := f.conn.QueryRow(f.ctx, `SELECT r.reply_time FROM pg_stat_replication r
+			JOIN pg_replication_slots s ON s.active_pid = r.pid WHERE s.slot_name = $1`, f.slot).Scan(&ts)
+		if err != nil || ts == nil {
+			return time.Time{}
+		}
+		return *ts
+	}
+	prev := replyTime()
+	for i := 0; i < n; i++ {
+		eventually(t, fmt.Sprintf("status reply %d of %d", i+1, n), func() bool {
+			return replyTime().After(prev)
+		})
+		prev = replyTime()
+	}
+}
+
+// B3: a table added to Conduit's publication after the slot was created
+// loses its earlier WAL silently. The recorded publication identity no
+// longer matches, so the import is refused.
+func TestImport_PublicationChangedAfterSlotIsRefused(t *testing.T) {
+	is := is.New(t)
+	f := newImportFixture(t)
+	commits, _ := f.workload(t)
+	other := f.table + "_late"
+	// Debezium captured the late table too, so only the identity can refuse.
+	setting := f.setting(t, map[string]any{
+		"lsn_commit": uint64(commits[0].end), "lsn": uint64(commits[0].end), "messageType": "COMMIT",
+	}, func(s *dbzoffset.Setting) { s.Tables = append(s.Tables, "public."+other) })
+	f.exec(t, "CREATE TABLE "+other+" (id int primary key)", "ALTER PUBLICATION "+f.pub+" ADD TABLE "+other)
+	defer f.exec(t, "DROP TABLE "+other)
+	_, err := f.open(t, setting, nil)
+	is.Equal(dbzoffset.CodeOf(err), dbzoffset.CodePublicationMismatch)
+	is.True(strings.Contains(err.Error(), "changed after Conduit's slot was created"))
+}
+
+// The publication streams a table Debezium did not capture.
+func TestImport_PublicationTableNotCapturedIsRefused(t *testing.T) {
+	is := is.New(t)
+	f := newImportFixture(t)
+	commits, _ := f.workload(t)
+	other := f.table + "_extra"
+	f.exec(t, "CREATE TABLE "+other+" (id int primary key)", "ALTER PUBLICATION "+f.pub+" ADD TABLE "+other)
+	defer f.exec(t, "DROP TABLE "+other)
+	// The identity is recorded after the change, so only the subset check
+	// can refuse.
+	setting := f.setting(t, map[string]any{
+		"lsn_commit": uint64(commits[0].end), "lsn": uint64(commits[0].end), "messageType": "COMMIT",
+	}, nil)
+	_, err := f.open(t, setting, nil)
+	is.Equal(dbzoffset.CodeOf(err), dbzoffset.CodeTablesNotCaptured)
+	is.True(strings.Contains(err.Error(), other))
 }

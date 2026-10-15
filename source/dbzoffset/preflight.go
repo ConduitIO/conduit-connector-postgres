@@ -16,6 +16,8 @@ package dbzoffset
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -152,7 +154,7 @@ func Preflight(ctx context.Context, q Querier, imp Import, t Target) (SlotState,
 	}
 
 	// 10.
-	if err := checkPublication(ctx, q, t.PublicationName, resolved); err != nil {
+	if err := checkPublication(ctx, q, t.PublicationName, resolved, imp); err != nil {
 		return SlotState{}, err
 	}
 
@@ -259,7 +261,8 @@ func checkIdentity(ctx context.Context, q Querier, imp Import, t Target) error {
 	case r.plugin != imp.Setting.Plugin:
 		// S4: the partial rule's proof rests on the plugin Debezium used.
 		// The slot is the ground truth; the setting must agree with it.
-		return newError(CodePluginUnsupported, SettingPath+".plugin", fixPluginUnsupported,
+		return newError(CodePluginUnsupported, SettingPath+".plugin",
+			"Re-export the offset with `conduit migrate kafka-connect --dry-run` so the setting names the plugin Debezium's slot uses.",
 			"the setting says Debezium used plugin %q, but its slot %q uses %q", imp.Setting.Plugin, name, r.plugin)
 	case r.confirmed == nil || *r.confirmed < imp.ConsistentPoint:
 		return newError(CodeDatabaseMismatch, path, fixDBMismatch,
@@ -305,7 +308,7 @@ func resolveTables(ctx context.Context, q Querier, tables []string) ([]string, e
 	return out, nil
 }
 
-func checkPublication(ctx context.Context, q Querier, publication string, tables []string) error {
+func checkPublication(ctx context.Context, q Querier, publication string, tables []string, imp Import) error {
 	var exists bool
 	if err := q.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = $1)", publication).Scan(&exists); err != nil {
 		return fmt.Errorf("import preflight: failed to read publication %q: %w", publication, err)
@@ -342,7 +345,76 @@ func checkPublication(ctx context.Context, q Querier, publication string, tables
 		return newError(CodePublicationMismatch, "logrepl.publicationName", fixPublication,
 			"publication %q does not cover the pipeline's tables %s", publication, strings.Join(missing, ", "))
 	}
+
+	// Every table the publication streams must be one Debezium captured:
+	// the offset says nothing about any other table, so its changes before
+	// Lc would be skipped by the base rule without having been delivered.
+	captured := map[string]bool{}
+	for _, c := range imp.Setting.Tables {
+		captured[qualify(c)] = true
+	}
+	var extra []string
+	for name := range covered {
+		if !captured[name] {
+			extra = append(extra, name)
+		}
+	}
+	if len(extra) > 0 {
+		sort.Strings(extra)
+		return newError(CodeTablesNotCaptured, "logrepl.publicationName",
+			"Remove those tables from Conduit's publication before the cutover (redo it with a new slot), or move them to a separate pipeline with a snapshot.",
+			"publication %q streams %s, which Debezium did not capture", publication, strings.Join(extra, ", "))
+	}
+
+	// B3: a table added to the publication after the slot's start loses its
+	// earlier WAL silently (pgoutput reads membership through the historic
+	// catalog). The CLI recorded the publication's identity when it created
+	// the slot; any change since then is refused.
+	id, err := PublicationIdentity(ctx, q, publication)
+	if err != nil {
+		return err
+	}
+	if id != imp.Setting.Identity.ConduitPublication {
+		return newError(CodePublicationMismatch, "logrepl.publicationName", fixPublication,
+			"publication %q changed after Conduit's slot was created (identity %s, recorded %s)",
+			publication, id, imp.Setting.Identity.ConduitPublication)
+	}
 	return nil
+}
+
+// PublicationIdentity returns an opaque identity of a publication: its oid,
+// its row version (xmin) and options, and the oid and row version of every
+// table and schema membership. Adding, dropping or re-adding a table, or
+// changing the publication's options, changes it. The CLI records it in
+// identity.conduitPublication right after it creates Conduit's slot; the
+// connector compares at Open.
+func PublicationIdentity(ctx context.Context, q Querier, publication string) (string, error) {
+	var version int
+	if err := q.QueryRow(ctx, "SELECT current_setting('server_version_num')::int").Scan(&version); err != nil {
+		return "", fmt.Errorf("publication identity: failed to read server_version_num: %w", err)
+	}
+	var pub, rels string
+	err := q.QueryRow(ctx, `SELECT p.oid::text || '/' || p.xmin::text || '/' || (to_jsonb(p) - 'pubname')::text,
+			COALESCE((SELECT string_agg(r.prrelid::text || ':' || r.xmin::text, ',' ORDER BY r.prrelid)
+				FROM pg_publication_rel r WHERE r.prpubid = p.oid), '')
+		FROM pg_publication p WHERE p.pubname = $1`, publication).Scan(&pub, &rels)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", newError(CodePublicationMismatch, "logrepl.publicationName", fixPublication,
+			"publication %q does not exist; import mode never creates one", publication)
+	}
+	if err != nil {
+		return "", fmt.Errorf("publication identity: failed to read publication %q: %w", publication, err)
+	}
+	var schemas string
+	if version >= 150000 { // FOR TABLES IN SCHEMA
+		if err := q.QueryRow(ctx, `SELECT COALESCE(string_agg(n.pnnspid::text || ':' || n.xmin::text, ',' ORDER BY n.pnnspid), '')
+			FROM pg_publication_namespace n JOIN pg_publication p ON p.oid = n.pnpubid WHERE p.pubname = $1`,
+			publication).Scan(&schemas); err != nil {
+			return "", fmt.Errorf("publication identity: failed to read publication %q schemas: %w", publication, err)
+		}
+	}
+	sum := sha256.Sum256([]byte(pub + "|" + rels + "|" + schemas))
+	return "v1:" + hex.EncodeToString(sum[:16]), nil
 }
 
 func checkTablesCaptured(captured, pipeline []string) error {

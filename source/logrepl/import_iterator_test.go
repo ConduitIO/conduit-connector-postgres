@@ -16,13 +16,12 @@ package logrepl
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/source/dbzoffset"
-	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
+	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -66,7 +65,7 @@ func TestCDCIterator_ImportNeverCreatesSlotOrPublication(t *testing.T) {
 
 	_, err := NewCDCIterator(ctx, pool, importConfig(table, slot, pub, importFor(1<<40)))
 	is.True(err != nil)
-	is.True(errors.Is(err, internal.ErrMissingSlot))
+	is.Equal(dbzoffset.CodeOf(err), dbzoffset.CodeSlotMissing)
 	s, p := slotAndPubExist(ctx, t, pool, slot, pub)
 	is.True(!s) // CREATE_REPLICATION_SLOT never ran
 	is.True(!p) // CREATE PUBLICATION never ran
@@ -197,4 +196,78 @@ func ignoreStartErr(err error) error {
 		return nil
 	}
 	return err
+}
+
+// D6 floor after the first ack: T began before P committed, so its first
+// change sits below Lc, and the slot was at Lc (F0) when the import started.
+// Acking that change alone (the rest of T in flight) must not report a flush
+// position below F0: before "Don't retreat slot's confirmed_flush LSN"
+// (14.19, 15.14, 16.10, 17.6) Postgres would move the slot back.
+func TestCDCIterator_ImportFloorHoldsAfterFirstAck(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupTestTable(ctx, t, pool)
+	slot := test.RandomIdentifier(t)
+	test.CreatePublication(t, pool, slot, []string{table})
+	test.CreateReplicationSlot(t, pool, slot)
+
+	tTx, err := pool.Begin(ctx)
+	is.NoErr(err)
+	defer func() { _ = tTx.Rollback(context.Background()) }()
+	_, err = tTx.Exec(ctx, fmt.Sprintf("INSERT INTO %q (key, column1) VALUES ('t1', 'x')", table))
+	is.NoErr(err)
+	_, err = pool.Exec(ctx, fmt.Sprintf("INSERT INTO %q (key, column1) VALUES ('p', 'x')", table)) // P commits
+	is.NoErr(err)
+	var lc pglogrepl.LSN
+	is.NoErr(pool.QueryRow(ctx, "SELECT pg_current_wal_lsn()").Scan(&lc))
+	_, err = pool.Exec(ctx, "SELECT pg_replication_slot_advance($1, $2::pg_lsn)", slot, lc.String())
+	is.NoErr(err)
+	var f0 pglogrepl.LSN
+	is.NoErr(pool.QueryRow(ctx, "SELECT confirmed_flush_lsn FROM pg_replication_slots WHERE slot_name = $1", slot).Scan(&f0))
+	is.True(f0 <= lc)
+	_, err = tTx.Exec(ctx, fmt.Sprintf("INSERT INTO %q (key, column1) VALUES ('t2', 'x')", table))
+	is.NoErr(err)
+	is.NoErr(tTx.Commit(ctx))
+
+	it, err := NewCDCIterator(ctx, pool, importConfig(table, slot, slot, importFor(f0)))
+	is.NoErr(err)
+	defer func() { _ = it.Teardown(context.Background()) }()
+	startCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	is.NoErr(it.StartSubscriber(startCtx))
+
+	recs, err := it.NextN(startCtx, 1)
+	is.NoErr(err)
+	is.True(len(recs) >= 1) // ack only the first; the rest of T stays in flight
+	firstLSN, err := position.ParseSDKPosition(recs[0].Position)
+	is.NoErr(err)
+	l, err := firstLSN.LSN()
+	is.NoErr(err)
+	is.True(l < f0) // the case under test: an acked change below F0
+	is.NoErr(it.Ack(ctx, recs[0].Position))
+
+	// Two status updates after the ack (one every 10 s).
+	replyTime := func() time.Time {
+		var ts *time.Time
+		_ = pool.QueryRow(ctx, `SELECT r.reply_time FROM pg_stat_replication r
+			JOIN pg_replication_slots s ON s.active_pid = r.pid WHERE s.slot_name = $1`, slot).Scan(&ts)
+		if ts == nil {
+			return time.Time{}
+		}
+		return *ts
+	}
+	for i := 0; i < 2; i++ {
+		prev := replyTime()
+		deadline := time.Now().Add(45 * time.Second)
+		for !replyTime().After(prev) {
+			if time.Now().After(deadline) {
+				t.Fatal("no standby status update")
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+	var after pglogrepl.LSN
+	is.NoErr(pool.QueryRow(ctx, "SELECT confirmed_flush_lsn FROM pg_replication_slots WHERE slot_name = $1", slot).Scan(&after))
+	is.True(after >= f0)
 }

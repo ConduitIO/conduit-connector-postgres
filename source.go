@@ -168,6 +168,9 @@ func (s *Source) debeziumImport(ctx context.Context, pos opencdc.Position) (*dbz
 	}); err != nil {
 		return nil, err
 	}
+	for _, w := range imp.Warnings {
+		sdk.Logger(ctx).Warn().Msg("debezium offset import: " + w)
+	}
 	return imp, nil
 }
 

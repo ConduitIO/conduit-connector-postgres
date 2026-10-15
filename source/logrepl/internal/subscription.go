@@ -715,7 +715,8 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 	// Manage replication slot lag: when every emitted record has been acked,
 	// report the server's WAL end instead of the last acked record. The gate lives in reportedPositions.
 	write, flush := reportedPositions(s.walWritten, walFlushed, serverWALEnd, s.reportedFlush, s.allAcked())
-	if s.ImportCeiling != 0 && s.FirstAckSeen() {
+	firstAckSeen := s.FirstAckSeen() // read once: both branches must see the same answer
+	if s.ImportCeiling != 0 && firstAckSeen {
 		// D6: import mode floors every report at F0, also after the first
 		// ack. The first acked change can sit below F0 (its transaction
 		// began before it), and before "Don't retreat slot's confirmed_flush
@@ -724,7 +725,7 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 		flush = maxLSN(flush, s.ImportFloor)
 		write = maxLSN(write, flush)
 	}
-	if s.ImportCeiling != 0 && !s.FirstAckSeen() {
+	if s.ImportCeiling != 0 && !firstAckSeen {
 		write, flush = capImportFlush(write, flush, s.ImportCeiling, s.ImportFloor)
 		if now := time.Now(); now.After(s.importWarnAt) {
 			s.importWarnAt = now.Add(time.Minute)

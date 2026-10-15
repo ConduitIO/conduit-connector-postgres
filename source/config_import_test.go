@@ -23,9 +23,9 @@ import (
 )
 
 const importSetting = `{"format":"debezium-postgres/v1","connector":"c","database":"inventory",
-"systemIdentifier":"7412345678901234567","plugin":"pgoutput","debeziumSlotName":"debezium",
+"systemIdentifier":"7412345678901234567","plugin":"pgoutput","debeziumVersion":"3.2.4.Final","debeziumSlotName":"debezium",
 "publicationName":"dbz_publication","tables":["public.orders"],
-"identity":{"conduitSlotConsistentPoint":"0/16E0000","debeziumSlotFlushAtWait":"0/16E2000"},
+"identity":{"conduitSlotConsistentPoint":"0/16E0000","debeziumSlotFlushAtWait":"0/16E2000","conduitPublication":"v1:00"},
 "offset":{"lsn_commit":24023064,"lsn":24023128,"txId":555,"messageType":"INSERT"}}`
 
 func TestConfig_ValidateImport(t *testing.T) {

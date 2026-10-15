@@ -145,6 +145,15 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		handler.Handle,
 	)
 	if err != nil {
+		if c.Import != nil && errors.Is(err, internal.ErrMissingSlot) {
+			// The slot went away after the preflight. Import mode never
+			// creates one: say so with the import's code.
+			return nil, &dbzoffset.Error{
+				Code: dbzoffset.CodeSlotMissing, Path: "logrepl.slotName",
+				Message: fmt.Sprintf("replication slot %q does not exist (it was dropped after the preflight)", c.SlotName),
+				Fix:     "Go back to Debezium with the manual runbook, gated by `conduit migrate kafka-connect --check-rollback`, then redo the cutover. Import mode never creates a slot.",
+			}
+		}
 		return nil, fmt.Errorf("failed to initialize subscription: %w", err)
 	}
 
