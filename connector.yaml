@@ -404,6 +404,34 @@ specification:
       the records are redelivered (at-least-once). Keyed upserts make redelivery
       idempotent; keyless inserts append again.
 
+    ### Schema-drift markers
+
+    When the Postgres source halts on schema drift it emits a drift marker: a create
+    record with no key and no payload, with the metadata `postgres.schema.drift=true`.
+    The destination skips and acknowledges a marker without writing a row, but only
+    when the record's position proves the Postgres source produced it as a marker for
+    the table named in `postgres.schema.drift.table`. The metadata alone is not proof,
+    because any processor or upstream system can set it.
+
+    - A record that carries the metadata but not a marker's position, and has a key
+      or a payload, is written as an ordinary record. One WARN per batch reports it.
+    - A record shaped like a marker (no key, no payload) without a marker's position
+      stops the pipeline with `postgres.destination.drift_marker_unverified`. Nothing
+      in that batch is written or acknowledged.
+    - A proven marker that a processor added a key or fields to is still skipped as
+      a marker, with a WARN that names the added fields.
+
+    A marker loses its position when it passes through another system, such as Kafka
+    or a file, because records read from there carry that system's position. In a
+    Postgres to Kafka to Postgres setup, drop drift markers before the hop with a
+    filter processor on the `postgres.schema.drift` metadata.
+
+    The proof relies on the engine not letting processors change a record's
+    position. Conduit's classic engine refuses that; the arch-v2 engine lets a
+    processor rewrite positions, so there a processor could forge a marker. The
+    forged record would be skipped, which a processor with that power could do to
+    any record anyway.
+
     ### Numeric columns
 
     Decimal values (`big.Rat`) are sent to Postgres as exact decimal strings, and

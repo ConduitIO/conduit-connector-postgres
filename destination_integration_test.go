@@ -16,18 +16,22 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"strings"
 	"testing"
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
+	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pgx/v5"
 	"github.com/matryer/is"
+	"github.com/rs/zerolog"
 )
 
 func TestDestination_Write(t *testing.T) {
@@ -230,7 +234,7 @@ func TestDestination_SchemaDriftMarkerNoop(t *testing.T) {
 	}()
 
 	marker := opencdc.Record{
-		Position:  opencdc.Position("marker"),
+		Position:  markerPosition(tableName),
 		Operation: opencdc.OperationCreate,
 		Metadata: map[string]string{
 			opencdc.MetadataCollection:       tableName,
@@ -284,6 +288,175 @@ func TestDestination_SchemaDriftMarkerNoop(t *testing.T) {
 	err = conn.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM %q`, tableName)).Scan(&count)
 	is.NoErr(err)
 	is.Equal(count, 5) // 4 seeded + the one real record; the marker wrote nothing
+}
+
+// openDriftTestDestination opens a destination routed by opencdc.collection
+// against a freshly seeded table (4 rows, ids 1-4) and returns it with the
+// table name and a separate verification connection.
+func openDriftTestDestination(t *testing.T) (context.Context, sdk.Destination, string, *pgx.Conn) {
+	t.Helper()
+	is := is.New(t)
+	ctx := test.Context(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+
+	tableName := strings.ToUpper(test.RandomIdentifier(t))
+	test.SetupTestTableWithName(ctx, t, conn, tableName)
+
+	d := NewDestination()
+	is.NoErr(sdk.Util.ParseConfig(
+		ctx,
+		map[string]string{
+			"url":   test.RegularConnString,
+			"table": "{{ index .Metadata \"opencdc.collection\" }}",
+		},
+		d.Config(),
+		Connector.NewSpecification().DestinationParams,
+	))
+	is.NoErr(d.Open(ctx))
+	t.Cleanup(func() { _ = d.Teardown(ctx) })
+	return ctx, d, tableName, conn
+}
+
+func driftTestPayload(v int) opencdc.StructuredData {
+	return opencdc.StructuredData{
+		"column1":          "real data",
+		"column2":          v,
+		"column3":          true,
+		"column4":          nil,
+		"UppercaseColumn1": 1,
+	}
+}
+
+// TestDestination_DriftMetadataOnRealRecordIsWritten is the regression test
+// for the silent-loss bug (invariant 3): Write skipped AND acked any record
+// whose metadata had postgres.schema.drift=true, without checking that the
+// record was shaped like the marker the source emits. A keyed,
+// payload-bearing record carrying the key came back n=1, err=nil, with no row
+// stored. Metadata is user-reachable (processors, other sources), so only the
+// exact marker shape may be skipped.
+//
+// Perturbation proof: restoring the metadata-only check in Destination.Write
+// fails every subtest on the row assertion.
+func TestDestination_DriftMetadataOnRealRecordIsWritten(t *testing.T) {
+	ctx, d, tableName, conn := openDriftTestDestination(t)
+
+	meta := func() map[string]string {
+		return map[string]string{
+			opencdc.MetadataCollection:       tableName,
+			logrepl.MetadataSchemaDrift:      "true",
+			logrepl.MetadataSchemaDriftTable: tableName,
+		}
+	}
+
+	t.Run("keyed create with payload", func(t *testing.T) {
+		is := is.New(t)
+		rec := opencdc.Record{
+			Position: opencdc.Position("p1"), Operation: opencdc.OperationCreate, Metadata: meta(),
+			Key:     opencdc.StructuredData{"id": 9001},
+			Payload: opencdc.Change{After: driftTestPayload(11)},
+		}
+		n, err := d.Write(ctx, []opencdc.Record{rec})
+		is.NoErr(err)
+		is.Equal(n, 1)
+		got, err := queryTestTable(ctx, conn, tableName, 9001)
+		is.NoErr(err) // the row must exist: acked implies stored
+		is.Equal("", cmp.Diff(rec.Payload.After, got,
+			cmp.Comparer(func(x, y *big.Rat) bool { return x.Cmp(y) == 0 })))
+	})
+
+	t.Run("snapshot with key and payload", func(t *testing.T) {
+		is := is.New(t)
+		rec := opencdc.Record{
+			Position: opencdc.Position("p2"), Operation: opencdc.OperationSnapshot, Metadata: meta(),
+			Key:     opencdc.StructuredData{"id": 9002},
+			Payload: opencdc.Change{After: driftTestPayload(12)},
+		}
+		n, err := d.Write(ctx, []opencdc.Record{rec})
+		is.NoErr(err)
+		is.Equal(n, 1)
+		_, err = queryTestTable(ctx, conn, tableName, 9002)
+		is.NoErr(err)
+	})
+
+	t.Run("update", func(t *testing.T) {
+		is := is.New(t)
+		rec := opencdc.Record{
+			Position: opencdc.Position("p3"), Operation: opencdc.OperationUpdate, Metadata: meta(),
+			Key:     opencdc.StructuredData{"id": 1},
+			Payload: opencdc.Change{After: driftTestPayload(13)},
+		}
+		n, err := d.Write(ctx, []opencdc.Record{rec})
+		is.NoErr(err)
+		is.Equal(n, 1)
+		got, err := queryTestTable(ctx, conn, tableName, 1)
+		is.NoErr(err)
+		is.Equal(got["column1"], "real data")
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		is := is.New(t)
+		rec := opencdc.Record{
+			Position: opencdc.Position("p4"), Operation: opencdc.OperationDelete, Metadata: meta(),
+			Key: opencdc.StructuredData{"id": 2},
+		}
+		n, err := d.Write(ctx, []opencdc.Record{rec})
+		is.NoErr(err)
+		is.Equal(n, 1)
+		_, err = queryTestTable(ctx, conn, tableName, 2)
+		is.True(errors.Is(err, pgx.ErrNoRows)) // the delete was applied, not skipped
+	})
+}
+
+// TestDestination_DriftMarkerAmongRealRecords pins that the genuine marker is
+// still a no-op that is acked, in a batch where it sits between real records
+// (one of which carries stray drift metadata): exactly the real records are
+// written, nothing else, and the full count is acked.
+func TestDestination_DriftMarkerAmongRealRecords(t *testing.T) {
+	is := is.New(t)
+	ctx, d, tableName, conn := openDriftTestDestination(t)
+
+	count := func() int {
+		var c int
+		is.NoErr(conn.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM %q`, tableName)).Scan(&c))
+		return c
+	}
+	is.Equal(count(), 4)
+
+	marker := opencdc.Record{
+		Position:  markerPosition(tableName),
+		Operation: opencdc.OperationCreate,
+		Metadata: map[string]string{
+			opencdc.MetadataCollection:       tableName,
+			logrepl.MetadataSchemaDrift:      "true",
+			logrepl.MetadataSchemaDriftTable: tableName,
+		},
+	}
+	mkReal := func(id int) opencdc.Record {
+		return opencdc.Record{
+			Position: opencdc.Position(fmt.Sprintf("r%d", id)), Operation: opencdc.OperationCreate,
+			Metadata: map[string]string{opencdc.MetadataCollection: tableName},
+			Key:      opencdc.StructuredData{"id": id},
+			Payload:  opencdc.Change{After: driftTestPayload(id)},
+		}
+	}
+	stray := mkReal(9103)
+	stray.Metadata[logrepl.MetadataSchemaDrift] = "true"
+
+	// The marker alone: acked, nothing written.
+	n, err := d.Write(ctx, []opencdc.Record{marker})
+	is.NoErr(err)
+	is.Equal(n, 1)
+	is.Equal(count(), 4)
+
+	// Marker first, middle and last, around a stray-metadata record.
+	n, err = d.Write(ctx, []opencdc.Record{marker, mkReal(9101), marker, mkReal(9102), stray, marker})
+	is.NoErr(err)
+	is.Equal(n, 6)
+	is.Equal(count(), 7) // 4 seeded + 3 real; the three markers wrote nothing
+	for _, id := range []int{9101, 9102, 9103} {
+		_, err := queryTestTable(ctx, conn, tableName, id)
+		is.NoErr(err)
+	}
 }
 
 func TestDestination_Batch(t *testing.T) {
@@ -451,4 +624,96 @@ func TestDestination_Write_CommitTimeError(t *testing.T) {
 	is.True(err != nil) // commit-time failure must surface as an error
 	is.Equal(n, 0)      // nothing was stored, so nothing may be reported written
 	is.Equal(count, 0)
+}
+
+// markerPosition is a position the source writes for a schema-drift marker
+// of table (SchemaDriftMarker set), the source-only signal the destination
+// requires before it skips a marker.
+func markerPosition(table string) opencdc.Position {
+	return position.Position{Type: position.TypeCDC, LastLSN: "0/16B3748", TxCommitLSN: "0/16B3747",
+		TxSeq: math.MaxUint64, SchemaDriftMarker: table}.ToSDKPosition()
+}
+
+// TestDestination_UnverifiedDriftMarkerIsRefused: a record with the drift
+// metadata and the marker's shape, but a position the source did not write
+// as a marker, is neither written nor acked. Before, it was skipped and
+// acked on metadata alone (spoofable; #358).
+func TestDestination_UnverifiedDriftMarkerIsRefused(t *testing.T) {
+	is := is.New(t)
+	ctx, d, tableName, conn := openDriftTestDestination(t)
+	count := func() int {
+		var c int
+		is.NoErr(conn.QueryRow(ctx, fmt.Sprintf("SELECT count(*) FROM %q", tableName)).Scan(&c))
+		return c
+	}
+	before := count()
+	meta := func(table string) map[string]string {
+		return map[string]string{
+			opencdc.MetadataCollection:       tableName,
+			logrepl.MetadataSchemaDrift:      "true",
+			logrepl.MetadataSchemaDriftTable: table,
+		}
+	}
+	realRec := opencdc.Record{
+		Position: opencdc.Position("real"), Operation: opencdc.OperationCreate,
+		Metadata: map[string]string{opencdc.MetadataCollection: tableName},
+		Key:      opencdc.StructuredData{"id": 9301},
+		Payload:  opencdc.Change{After: driftTestPayload(1)},
+	}
+	for name, pos := range map[string]opencdc.Position{
+		// conduit-connector-kafka's source position, as it writes it.
+		"foreign position (Kafka source)":       opencdc.Position(`{"GroupID":"conduit","Topic":"dbz.public.orders","Partition":0,"Offset":17}`),
+		"case-variant keys":                     opencdc.Position(`{"version":3,"TYPE":2,"last_lsn":"0/16B3748","tx_commit_lsn":"0/16B3747","tx_seq":1,"schema_drift_marker":"` + tableName + `"}`),
+		"no last_lsn":                           opencdc.Position(`{"version":3,"type":2,"tx_commit_lsn":"0/16B3747","tx_seq":1,"schema_drift_marker":"` + tableName + `"}`),
+		"unparseable last_lsn":                  opencdc.Position(`{"version":3,"type":2,"last_lsn":"nope","tx_commit_lsn":"0/16B3747","tx_seq":1,"schema_drift_marker":"` + tableName + `"}`),
+		"no change key":                         opencdc.Position(`{"version":3,"type":2,"last_lsn":"0/16B3748","schema_drift_marker":"` + tableName + `"}`),
+		"cdc position without the marker field": position.Position{Type: position.TypeCDC, LastLSN: "0/1"}.ToSDKPosition(),
+		"marker position for another table":     markerPosition("public.other"),
+		"snapshot position with the field":      position.Position{Type: position.TypeSnapshot, SchemaDriftMarker: tableName}.ToSDKPosition(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			is := is.New(t)
+			spoof := opencdc.Record{Position: pos, Operation: opencdc.OperationCreate, Metadata: meta(tableName)}
+			n, err := d.Write(ctx, []opencdc.Record{realRec, spoof})
+			is.True(err != nil)
+			is.True(strings.HasPrefix(err.Error(), ErrorCodeDriftMarkerUnverified+": "))
+			is.Equal(n, 0)            // nothing acked
+			is.Equal(count(), before) // nothing written, not even the real record before it
+		})
+	}
+}
+
+// Review SHOULD (#418): a marker proven by its position that a processor
+// modified (here: added a key and a column value) was inserted as a wrong,
+// nearly empty row. It is a marker, so it is skipped and acked whatever its
+// shape, and a WARN names the added fields.
+func TestDestination_ProvenMarkerModifiedByProcessorIsSkipped(t *testing.T) {
+	is := is.New(t)
+	logs := &lockedBuffer{}
+	ctx0, d, tableName, conn := openDriftTestDestination(t)
+	ctx := zerolog.New(logs).WithContext(ctx0)
+	count := func() int {
+		var c int
+		is.NoErr(conn.QueryRow(ctx, fmt.Sprintf("SELECT count(*) FROM %q", tableName)).Scan(&c))
+		return c
+	}
+	before := count()
+	marker := opencdc.Record{
+		Position:  markerPosition(tableName),
+		Operation: opencdc.OperationCreate,
+		Metadata: map[string]string{
+			opencdc.MetadataCollection:       tableName,
+			logrepl.MetadataSchemaDrift:      "true",
+			logrepl.MetadataSchemaDriftTable: tableName,
+		},
+		Key:     opencdc.StructuredData{"id": 9401},
+		Payload: opencdc.Change{After: opencdc.StructuredData{"column1": "acme"}},
+	}
+	n, err := d.Write(ctx, []opencdc.Record{marker})
+	is.NoErr(err)
+	is.Equal(n, 1)            // acked
+	is.Equal(count(), before) // nothing inserted
+	is.True(strings.Contains(logs.String(), "after{column1}"))
+	is.True(strings.Contains(logs.String(), "key{id}"))
+	is.True(strings.Contains(logs.String(), `"level":"warn"`))
 }

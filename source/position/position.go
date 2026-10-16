@@ -44,6 +44,9 @@ const (
 //     commit LSN of the record's transaction, and TxSeq, the change's ordinal
 //     within it. Written by this build and by the v0.14.x hotfix (which has
 //     no DBZ-3 fields).
+//   - 3: the position of a schema-drift marker also carries SchemaDriftMarker
+//     (docs/design-documents/20261015-drift-marker-source-signal.md). No
+//     other position has it.
 //
 // Backward/forward compatibility contract (see the DBZ-3 design doc,
 // docs/design-documents/20260724-dbz3-postgres-cdc-parity.md, "Upgrade / rollback"):
@@ -58,7 +61,7 @@ const (
 //     key. An absent SnapshotLowWatermarkLSN/SchemaHistory means
 //     "behave as v0.14 did"; a missing TxCommitLSN or TxSeq means the legacy
 //     resume point (logrepl/internal.ResumePoint).
-const CurrentPositionVersion = 2
+const CurrentPositionVersion = 3
 
 type Position struct {
 	// Version identifies the position format. See CurrentPositionVersion for the
@@ -108,6 +111,19 @@ type Position struct {
 	// positions and on positions written before format version 2; a position
 	// with TxCommitLSN but no TxSeq is read as legacy.
 	TxSeq uint64 `json:"tx_seq,omitempty"`
+
+	// SchemaDriftMarker is set only on the position of a schema-drift marker
+	// record, to the drifted table as "namespace.table". It is the proof the
+	// destination needs before it skips and acks a marker without writing
+	// it. Records from other systems carry their own positions, and the
+	// classic engine refuses a processor that changes a record's position
+	// (pkg/lifecycle/stream/processor.go). The arch-v2 engine lets a
+	// processor rewrite positions (pkg/lifecycle-poc/funnel/batch.go), so
+	// there a processor could forge the field; the record it forges is then
+	// skipped, which a processor with that power could do to any record
+	// anyway. It plays no part in resuming, and the source never carries it
+	// forward to a later position.
+	SchemaDriftMarker string `json:"schema_drift_marker,omitempty"`
 }
 
 type SnapshotPositions map[string]SnapshotPosition

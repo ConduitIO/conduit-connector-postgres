@@ -15,6 +15,7 @@
 package position
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -39,7 +40,7 @@ func Test_ToSDKPosition(t *testing.T) {
 	// position (leading "version" key).
 	is.Equal(
 		string(sdkPos),
-		`{"version":2,"type":1,"snapshots":{"orders":{"last_read":1,"snapshot_end":2}},"last_lsn":"4/137515E8"}`,
+		`{"version":3,"type":1,"snapshots":{"orders":{"last_read":1,"snapshot_end":2}},"last_lsn":"4/137515E8"}`,
 	)
 }
 
@@ -233,4 +234,37 @@ func Test_ParseGoldenPositions(t *testing.T) {
 	p, err := ParseSDKPosition(raw)
 	is.New(t).NoErr(err)
 	is.New(t).Equal(p, Position{Type: TypeSnapshot, Snapshots: SnapshotPositions{"users": {LastRead: 3, SnapshotEnd: 4}}})
+}
+
+// The marker field (version 3) is additive: a build that predates it reads
+// a marker position with every resume field intact, and a rewrite drops only
+// the marker field. Pinned with a struct that has exactly the version 2
+// fields, as v0.14.x and v0.15.0 before this change decode them.
+func Test_Position_DriftMarkerFieldIsAdditive(t *testing.T) {
+	is := is.New(t)
+	p := Position{Type: TypeCDC, LastLSN: "0/16B3748", TxCommitLSN: "0/16B3800", TxSeq: 3, SchemaDriftMarker: "public.orders"}
+	raw := p.ToSDKPosition()
+
+	got, err := ParseSDKPosition(raw)
+	is.NoErr(err)
+	is.Equal(got.Version, 3)
+	is.Equal(got.SchemaDriftMarker, "public.orders")
+
+	var older struct {
+		Version     int    `json:"version"`
+		Type        Type   `json:"type"`
+		LastLSN     string `json:"last_lsn"`
+		TxCommitLSN string `json:"tx_commit_lsn"`
+		TxSeq       uint64 `json:"tx_seq"`
+	}
+	is.NoErr(json.Unmarshal(raw, &older))
+	is.Equal(older.Type, TypeCDC)
+	is.Equal(older.LastLSN, "0/16B3748")
+	is.Equal(older.TxCommitLSN, "0/16B3800")
+	is.Equal(older.TxSeq, uint64(3))
+
+	// A version 2 position (v0.14.4, v0.15.0 nightlies) has no marker field.
+	v2, err := ParseSDKPosition(opencdc.Position(`{"version":2,"type":2,"last_lsn":"0/3EA20050","tx_commit_lsn":"0/3EA203D8","tx_seq":3}`))
+	is.NoErr(err)
+	is.Equal(v2.SchemaDriftMarker, "")
 }
