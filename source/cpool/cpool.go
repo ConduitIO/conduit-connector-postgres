@@ -31,6 +31,26 @@ func WithReplication(ctx context.Context) context.Context {
 	return context.WithValue(ctx, replicationCtxKey{}, true)
 }
 
+type sessionParamsCtxKey struct{}
+
+// WithSessionParams asks for a replication connection started with the
+// given run-time parameters (startup-packet GUCs). Only replication
+// connections take them; it is used by the Debezium mode to pin the
+// settings that change pgoutput's text form of values (DateStyle, TimeZone
+// and others). A connection that lacks one of them is never handed out for
+// such a request.
+func WithSessionParams(ctx context.Context, params map[string]string) context.Context {
+	if len(params) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, sessionParamsCtxKey{}, params)
+}
+
+func sessionParams(ctx context.Context) map[string]string {
+	p, _ := ctx.Value(sessionParamsCtxKey{}).(map[string]string)
+	return p
+}
+
 // New returns new pgxpool.Pool with added hooks.
 func New(ctx context.Context, conninfo string) (*pgxpool.Pool, error) {
 	config, err := pgxpool.ParseConfig(conninfo)
@@ -101,8 +121,17 @@ func afterConnectHook(_ context.Context, conn *pgx.Conn) error {
 func beforeAcquireHook(ctx context.Context, conn *pgx.Conn) bool {
 	replReq := ctx.Value(replicationCtxKey{}) != nil
 	replOn := conn.Config().RuntimeParams["replication"] != ""
-
-	return replReq == replOn
+	if replReq != replOn {
+		return false
+	}
+	if replReq {
+		for k, v := range sessionParams(ctx) {
+			if conn.Config().RuntimeParams[k] != v {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // beforeConnectHook customizes the configuration of the new connection.
@@ -113,6 +142,9 @@ func beforeConnectHook(ctx context.Context, config *pgx.ConnConfig) error {
 
 	if v := ctx.Value(replicationCtxKey{}); v != nil {
 		config.RuntimeParams["replication"] = "database"
+		for k, v := range sessionParams(ctx) {
+			config.RuntimeParams[k] = v
+		}
 	}
 
 	return nil

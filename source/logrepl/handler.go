@@ -27,6 +27,7 @@ import (
 	cschema "github.com/conduitio/conduit-commons/schema"
 	pginternal "github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/conduitio/conduit-connector-postgres/internal/chaospoint"
+	"github.com/conduitio/conduit-connector-postgres/source/debezium"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/schema"
@@ -190,6 +191,11 @@ type CDCHandler struct {
 	// the flush timer and the batch-size flush both hand the marker over
 	// without any further involvement of the subscription goroutine.
 	afterMarkerQueued func()
+
+	// dbz builds the records in the Debezium mode; nil in the default mode,
+	// where every record is built from pgx values as before. Set before the
+	// subscription starts and used only on the subscription goroutine.
+	dbz *debezium.Builder
 }
 
 func NewCDCHandler(
@@ -283,6 +289,9 @@ func (h *CDCHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogr
 		// D4 then skips (see the invariant at the emitted assignment in
 		// internal/subscription.go).
 		h.handleRelation(m)
+		if h.dbz != nil {
+			h.dbz.Relation(m)
+		}
 		return 0, nil
 	case *pglogrepl.InsertMessage:
 		if err := h.handleInsert(ctx, m, lsn); err != nil {
@@ -306,9 +315,15 @@ func (h *CDCHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogr
 		return 0, nil
 	case *pglogrepl.BeginMessage:
 		h.lastTXLSN = m.FinalLSN
+		if h.dbz != nil {
+			h.dbz.Begin(m)
+		}
 	case *pglogrepl.CommitMessage:
 		if h.lastTXLSN != 0 && h.lastTXLSN != m.CommitLSN {
 			return 0, fmt.Errorf("out of order commit %s, expected %s", m.CommitLSN, h.lastTXLSN)
+		}
+		if h.dbz != nil {
+			h.dbz.Commit(m)
 		}
 	}
 
@@ -342,6 +357,15 @@ func (h *CDCHandler) handleInsert(
 	// first DML using a shape is its true first-seen position, which the
 	// drift-halt message reports. See position.SetFirstSeenLSN.
 	h.basePosition.SetFirstSeenLSN(relationKey(rel), lsn.String())
+
+	if h.dbz != nil {
+		rec, err := h.dbz.Insert(ctx, msg, lsn)
+		if err != nil {
+			return err
+		}
+		h.addDebeziumRecord(ctx, rec, lsn)
+		return nil
+	}
 
 	newValues, err := h.relationSet.Values(msg.RelationID, msg.Tuple)
 	if err != nil {
@@ -385,6 +409,15 @@ func (h *CDCHandler) handleUpdate(
 
 	// Backfill the shape's FirstSeenLSN — see handleInsert.
 	h.basePosition.SetFirstSeenLSN(relationKey(rel), lsn.String())
+
+	if h.dbz != nil {
+		rec, err := h.dbz.Update(ctx, msg, lsn)
+		if err != nil {
+			return err
+		}
+		h.addDebeziumRecord(ctx, rec, lsn)
+		return nil
+	}
 
 	newValues, err := h.relationSet.Values(msg.RelationID, msg.NewTuple)
 	if err != nil {
@@ -463,6 +496,18 @@ func (h *CDCHandler) handleDelete(
 	// Backfill the shape's FirstSeenLSN — see handleInsert.
 	h.basePosition.SetFirstSeenLSN(relationKey(rel), lsn.String())
 
+	if h.dbz != nil {
+		// Invariant 3: the builder refuses a delete whose old tuple does not
+		// carry the key (debezium.delete_key_unavailable), as requireDeleteKey
+		// does in the default mode.
+		rec, err := h.dbz.Delete(ctx, msg, lsn)
+		if err != nil {
+			return err
+		}
+		h.addDebeziumRecord(ctx, rec, lsn)
+		return nil
+	}
+
 	oldValues, err := h.relationSet.Values(msg.RelationID, msg.OldTuple)
 	if err != nil {
 		return fmt.Errorf("failed to decode old values: %w", err)
@@ -492,6 +537,17 @@ func (h *CDCHandler) handleDelete(
 	h.addToBatch(ctx, rec)
 
 	return nil
+}
+
+// addDebeziumRecord stamps a Debezium-mode record with the position the
+// default mode would give the same change, then queues it. Positions, acks
+// and resume are therefore the default mode's: one record per WAL change,
+// at that change's LSN and change key (invariants 1 and 2 hold unchanged).
+// No Avro schema is attached; the row schema is in debezium.descriptor.
+func (h *CDCHandler) addDebeziumRecord(ctx context.Context, rec opencdc.Record, lsn pglogrepl.LSN) {
+	rec.Position = h.buildPosition(lsn)
+	rec.Metadata.SetReadAt(time.Now())
+	h.addToBatch(ctx, rec)
 }
 
 // addToBatch the record to the output channel or detect the cancellation of the
