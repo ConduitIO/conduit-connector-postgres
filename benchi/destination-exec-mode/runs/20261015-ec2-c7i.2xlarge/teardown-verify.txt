@@ -1,0 +1,11 @@
+instance i-0fd9641fff5127730                                 terminated
+volume vol-091ee2272822770a8                                 NotFound
+security group sg-0b36d6465d48dec68                          NotFound
+instance profile conduit-pg367-20261015t172513z              NoSuchEntity
+role conduit-pg367-20261015t172513z                          NoSuchEntity
+bucket conduit-pg367-132836343092-20261015t172513z           NotFound
+tagged instances not terminated (tag pg367-20261015)         0
+tagged volumes                                               0
+tagged network interfaces                                    0
+tagged security groups                                       0
+verify: every resource of this run is gone or terminated

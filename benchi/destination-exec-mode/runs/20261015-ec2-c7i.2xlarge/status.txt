@@ -1,0 +1,7 @@
+2026-10-15T17:25:40Z bootstrap start
+2026-10-15T17:27:16Z docker 25.0.16, 2.39.4, go version go1.26.9 linux/amd64, benchi v0.4.1
+2026-10-15T17:27:26Z cloned and pulled
+2026-10-15T17:27:31Z quiet 60s before the run
+2026-10-15T17:28:33Z run start (rounds 4)
+2026-10-15T18:18:57Z run exit 0
+2026-10-15T18:19:00Z DONE, halting (instance terminates on halt)

@@ -1,0 +1,4 @@
+d36c676745b6878ce09be10453cef93a400b7149c13de3f012b4d1b2c3609f80  bin/describe/conduit-connector-postgres
+aee5aa81dee2555f77ffba4b219cdfc34a40b0028cf7a4f28e7a3a09558a9a3c  bin/main/conduit-connector-postgres
+aee5aa81dee2555f77ffba4b219cdfc34a40b0028cf7a4f28e7a3a09558a9a3c  bin/main2/conduit-connector-postgres
+674fa20cd9d893761196982457a58b556b310629ce4a12772ce27f52afb02259  bin/optout/conduit-connector-postgres
