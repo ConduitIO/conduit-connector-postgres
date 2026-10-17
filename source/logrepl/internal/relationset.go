@@ -87,7 +87,10 @@ func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]a
 		return nil, fmt.Errorf("no relation for %d", id)
 	}
 
-	values := map[string]any{}
+	// Size the map for the full column set so it never rehashes while filling.
+	// The emitted map may hold fewer entries (unchanged-TOAST columns are
+	// omitted), so this is an upper bound, never an over-count.
+	values := make(map[string]any, len(row.Columns))
 
 	// assert same number of row and rel columns
 	for i, tuple := range row.Columns {

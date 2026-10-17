@@ -44,6 +44,21 @@ func CloneValue(v any) any {
 	if v == nil {
 		return nil
 	}
+	// Fast path: immutable value types are their own deep copy. They carry no
+	// slice, map or pointer that the copy could share, so returning the value
+	// itself is exactly what cloneValue does, without the reflection pass.
+	// time.Time is included: its methods return new values (never mutate the
+	// receiver), and the *time.Location it holds is immutable, so a shared
+	// time.Time is indistinguishable from a copied one.
+	switch v.(type) {
+	case bool,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64,
+		string,
+		time.Time:
+		return v
+	}
 	return cloneValue(reflect.ValueOf(v)).Interface()
 }
 

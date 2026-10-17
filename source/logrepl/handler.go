@@ -341,7 +341,7 @@ func (h *CDCHandler) handleInsert(
 	// an earlier build may still carry the relation message's WALStart 0. The
 	// first DML using a shape is its true first-seen position, which the
 	// drift-halt message reports. See position.SetFirstSeenLSN.
-	h.basePosition.SetFirstSeenLSN(relationKey(rel), lsn.String())
+	h.backfillFirstSeenLSN(rel, lsn)
 
 	newValues, err := h.relationSet.Values(msg.RelationID, msg.Tuple)
 	if err != nil {
@@ -384,7 +384,7 @@ func (h *CDCHandler) handleUpdate(
 	}
 
 	// Backfill the shape's FirstSeenLSN — see handleInsert.
-	h.basePosition.SetFirstSeenLSN(relationKey(rel), lsn.String())
+	h.backfillFirstSeenLSN(rel, lsn)
 
 	newValues, err := h.relationSet.Values(msg.RelationID, msg.NewTuple)
 	if err != nil {
@@ -461,7 +461,7 @@ func (h *CDCHandler) handleDelete(
 	}
 
 	// Backfill the shape's FirstSeenLSN — see handleInsert.
-	h.basePosition.SetFirstSeenLSN(relationKey(rel), lsn.String())
+	h.backfillFirstSeenLSN(rel, lsn)
 
 	oldValues, err := h.relationSet.Values(msg.RelationID, msg.OldTuple)
 	if err != nil {
@@ -525,14 +525,11 @@ func (h *CDCHandler) buildRecordMetadata(rel *pglogrepl.RelationMessage) map[str
 // matches the configured keyColumnName.
 func (h *CDCHandler) buildRecordKey(values map[string]any, table string) opencdc.Data {
 	keyColumn := h.tableKeys[table]
-	key := make(opencdc.StructuredData)
-	for k, v := range values {
-		if keyColumn == k {
-			// Invariant 6: the key owns its value; the payload holds the same
-			// column (#425).
-			key[k] = types.CloneValue(v)
-			break // TODO add support for composite keys
-		}
+	key := make(opencdc.StructuredData, 1)
+	if v, ok := values[keyColumn]; ok {
+		// Invariant 6: the key owns its value; the payload holds the same
+		// column (#425).
+		key[keyColumn] = types.CloneValue(v)
 	}
 	return key
 }
@@ -611,7 +608,44 @@ func (h *CDCHandler) requireDeleteKey(key opencdc.Data, table string, lsn pglogr
 // available before Postgres 14. A low part of FFFFFFFF carries into the high
 // part.
 func nextLSN(l pglogrepl.LSN) string {
-	return (l + 1).String()
+	return formatLSN(l + 1)
+}
+
+const lsnHexDigits = "0123456789ABCDEF"
+
+// formatLSN renders an LSN exactly as pglogrepl.LSN.String does — "%X/%X" of
+// its two 32-bit halves, uppercase hex, no leading zeros — without the
+// fmt.Sprintf reflection and formatting overhead. It is on the per-record
+// position path: every CDC record serializes its LastLSN and TxCommitLSN, and
+// pglogrepl.LSN.String's two fmt.Sprintf calls per record show up in profiles
+// of the CDC decode/assembly hot path.
+func formatLSN(lsn pglogrepl.LSN) string {
+	// 8 hex digits + '/' + 8 hex digits: at most 17 bytes.
+	var buf [17]byte
+	i := len(buf)
+	i = writeLSNHex(buf[:i], uint64(lsn)&0xFFFFFFFF) // low half first
+	i--
+	buf[i] = '/'
+	i = writeLSNHex(buf[:i], uint64(lsn)>>32)
+	return string(buf[i:])
+}
+
+// writeLSNHex writes the uppercase hex form of v (a uint32 value, no leading
+// zeros) into the tail of b and returns the new (smaller) length of the used
+// prefix.
+func writeLSNHex(b []byte, v uint64) int {
+	i := len(b)
+	if v == 0 {
+		i--
+		b[i] = '0'
+		return i
+	}
+	for v > 0 {
+		i--
+		b[i] = lsnHexDigits[v&0xF]
+		v >>= 4
+	}
+	return i
 }
 
 // buildRecordPayload takes the values from the message and extracts the payload
@@ -662,11 +696,11 @@ func (h *CDCHandler) positionAt(lsn pglogrepl.LSN, key internal.ChangeKey) posit
 	var commit string
 	var seq uint64
 	if key.Known() {
-		commit, seq = key.CommitLSN.String(), key.Seq
+		commit, seq = formatLSN(key.CommitLSN), key.Seq
 	}
 	return position.Position{
 		Type:                    position.TypeCDC,
-		LastLSN:                 lsn.String(),
+		LastLSN:                 formatLSN(lsn),
 		TxCommitLSN:             commit,
 		TxSeq:                   seq,
 		SnapshotLowWatermarkLSN: h.basePosition.SnapshotLowWatermarkLSN,
@@ -700,6 +734,19 @@ func (h *CDCHandler) currentChangeKey() internal.ChangeKey {
 // must be re-applied before CDC positions are built).
 func (h *CDCHandler) setBasePositionLowWatermark(lsn string) {
 	h.basePosition.SnapshotLowWatermarkLSN = lsn
+}
+
+// backfillFirstSeenLSN repairs a "0/0" FirstSeenLSN placeholder (carried in
+// from a position written before #335) with the LSN of the first delivered DML
+// that uses the shape. It wraps Position.SetFirstSeenLSN with its cheap
+// NeedsFirstSeenLSN pre-check so the steady state — where every shape already
+// records a real first-seen LSN — pays neither for the LSN -> string format
+// nor for it. It runs once per delivered change, on the subscription goroutine.
+func (h *CDCHandler) backfillFirstSeenLSN(rel *pglogrepl.RelationMessage, lsn pglogrepl.LSN) {
+	key := relationKey(rel)
+	if h.basePosition.NeedsFirstSeenLSN(key) {
+		h.basePosition.SetFirstSeenLSN(key, formatLSN(lsn))
+	}
 }
 
 // driftKind classifies the shape a delivered change is decoded with, relative

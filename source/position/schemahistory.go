@@ -204,6 +204,13 @@ func (p *Position) SetFirstSeenLSN(table, lsn string) bool {
 	return p.SchemaHistory.SetFirstSeenLSN(table, lsn)
 }
 
+// NeedsFirstSeenLSN is SchemaHistories.NeedsFirstSeenLSN for a Position. It is
+// the cheap pre-check a hot-path caller runs before paying to format an LSN
+// string for SetFirstSeenLSN; see that method's godoc.
+func (p *Position) NeedsFirstSeenLSN(table string) bool {
+	return p.SchemaHistory.NeedsFirstSeenLSN(table)
+}
+
 // SetFirstSeenLSN is Position.SetFirstSeenLSN's standalone form for a
 // SchemaHistories value.
 func (h SchemaHistories) SetFirstSeenLSN(table, lsn string) bool {
@@ -217,6 +224,24 @@ func (h SchemaHistories) SetFirstSeenLSN(table, lsn string) bool {
 	}
 	last.FirstSeenLSN = lsn
 	return true
+}
+
+// NeedsFirstSeenLSN reports whether SetFirstSeenLSN would mutate the table's
+// most recent shape — i.e. its FirstSeenLSN is a "0/0" placeholder (or empty)
+// waiting to be backfilled with a real LSN.
+//
+// It is the cheap half of SetFirstSeenLSN, split out so a hot-path caller (the
+// CDC handler) can skip formatting an LSN string on every record when no
+// backfill is due: in the steady state every shape already records a real
+// first-seen LSN, so the string argument to SetFirstSeenLSN would be built and
+// discarded. The caller checks this first and only then pays for the string.
+func (h SchemaHistories) NeedsFirstSeenLSN(table string) bool {
+	versions := h[table]
+	if len(versions) == 0 {
+		return false
+	}
+	last := &versions[len(versions)-1]
+	return last.FirstSeenLSN == "" || last.FirstSeenLSN == "0/0"
 }
 
 // RecordSchemaVersion appends a newly observed shape for a table and prunes the
