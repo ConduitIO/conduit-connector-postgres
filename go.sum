@@ -14,12 +14,12 @@ github.com/Masterminds/squirrel v1.5.4 h1:uUcX/aBc8O7Fg9kaISIUsHXdKuqehiXAMQTYX8
 github.com/Masterminds/squirrel v1.5.4/go.mod h1:NNaOrjSoIDfDA40n7sr2tPNZRfjzjA400rg+riTZj10=
 github.com/bufbuild/protocompile v0.14.2-0.20260127163740-a85d2ef77713 h1:owghT7DcDTOr0HlXqpLSTvg8tKWIp8l2b4LOGlVbu0g=
 github.com/bufbuild/protocompile v0.14.2-0.20260127163740-a85d2ef77713/go.mod h1:cxhE8h+14t0Yxq2H9MV/UggzQ1L0gh0t2tJobITWsBE=
-github.com/conduitio/conduit-commons v0.8.0 h1:NLjtS018Kys1oe1wfuu4DTUE4zILhcKgEsbbWPq0X3k=
-github.com/conduitio/conduit-commons v0.8.0/go.mod h1:aeZE6tPtrw0eUw3yIs34WdeebPdDrbFYhsPUkBR+t/g=
-github.com/conduitio/conduit-connector-protocol v0.10.0 h1:CuwYiz30XR8PgRE2cRUBZX+9JIYEVseQXvt1KhdB7OA=
-github.com/conduitio/conduit-connector-protocol v0.10.0/go.mod h1:n0EmTGr0Us9OuBAMbexa44pUld5ZA+9aQy2V7RveWVg=
-github.com/conduitio/conduit-connector-sdk v0.16.0 h1:mcAVfN1NtB3IOTf0PAqV3JqjcB6POazzPUW5kOL85k8=
-github.com/conduitio/conduit-connector-sdk v0.16.0/go.mod h1:OQpCZ5wveCpFdsvWzkH8mfVrm/y22nE2zaPjgtf9MeU=
+github.com/conduitio/conduit-commons v0.10.0 h1:b6SaTom8XS3tAWTjRBn4Quv6/sGQie3hy2sQ4h4l5ss=
+github.com/conduitio/conduit-commons v0.10.0/go.mod h1:I5BjvJ7rZzNbELaqR2rbls4Tu2o88cOcSMewLKM8pQw=
+github.com/conduitio/conduit-connector-protocol v0.11.0 h1:YNHw6LCQ7noFLdfEp5IZoAMwwFPI17FueMjDhxUjLt8=
+github.com/conduitio/conduit-connector-protocol v0.11.0/go.mod h1:Fiy2/VeW5vp9TC3Ynno8zXwtiCZsIcMcZ/OtI+Fiz+c=
+github.com/conduitio/conduit-connector-sdk v0.17.0 h1:AtN+As+/YNP5rVQ/nDP7KTZBCGxdjjpumHcB+HYkLwQ=
+github.com/conduitio/conduit-connector-sdk v0.17.0/go.mod h1:NduxN3BZI3YsWdJy2uSWn3XWFsLcjF07Ck8aSGu/emw=
 github.com/conduitio/evolviconf v0.1.1 h1:IKacjKLc8r0h0Epi0Eo1O4/aoZLb4Z7JFb3xKd6gCTw=
 github.com/conduitio/evolviconf v0.1.1/go.mod h1:y8ogfy/dDvXKWzKVUKY8089qPV61OvoKLnyyiGJNuwo=
 github.com/conduitio/evolviconf/evolviyaml v0.1.0 h1:nMW7CROIMtHhscm/QLMpMs7uCPp6O2dS4CfU9bhugd4=
@@ -139,6 +139,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/tidwall/btree v1.8.1 h1:27ehoXvm5AG/g+1VxLS1SD3vRhp/H7LuEfwNvddEdmA=
 github.com/tidwall/btree v1.8.1/go.mod h1:jBbTdUWhSZClZWoDg54VnvV7/54modSOzDN7VXftj1A=
+github.com/twmb/franz-go/pkg/sr v1.8.0 h1:50iiB5/p9fEntgzd5S/FCd6v3Kkt0D26OtjBxNKjZcs=
+github.com/twmb/franz-go/pkg/sr v1.8.0/go.mod h1:64CsHlsQnyFRq1sYPcCmlRrEG3PlLPb6cDddx2wGr28=
 github.com/twmb/go-cache v1.4.0 h1:GH5epdpUr/I6VXTFlDw07wrzxvZiXbPAmVXmnB4fjXI=
 github.com/twmb/go-cache v1.4.0/go.mod h1:JfqUPE/5cy+r8yZITIf/KDPSZdY2Gk4aJxvEh02lntg=
 go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
