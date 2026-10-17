@@ -5,8 +5,8 @@ go 1.26.9
 require (
 	github.com/Masterminds/sprig/v3 v3.3.0
 	github.com/Masterminds/squirrel v1.5.4
-	github.com/conduitio/conduit-commons v0.8.0
-	github.com/conduitio/conduit-connector-sdk v0.16.0
+	github.com/conduitio/conduit-commons v0.10.0
+	github.com/conduitio/conduit-connector-sdk v0.17.0
 	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/iskorotkov/avro/v2 v2.34.0
@@ -23,13 +23,14 @@ require pgregory.net/rapid v1.3.0
 require (
 	github.com/bufbuild/protocompile v0.14.2-0.20260127163740-a85d2ef77713 // indirect
 	github.com/petermattis/goid v0.0.0-20250319124200-ccd6737f222a // indirect
+	github.com/twmb/franz-go/pkg/sr v1.8.0 // indirect
 )
 
 require (
 	dario.cat/mergo v1.0.1 // indirect
 	github.com/Masterminds/goutils v1.1.1 // indirect
 	github.com/Masterminds/semver/v3 v3.5.0 // indirect
-	github.com/conduitio/conduit-connector-protocol v0.10.0
+	github.com/conduitio/conduit-connector-protocol v0.11.0
 	github.com/conduitio/evolviconf v0.1.1 // indirect
 	github.com/conduitio/evolviconf/evolviyaml v0.1.0 // indirect
 	github.com/conduitio/yaml/v3 v3.3.0 // indirect
