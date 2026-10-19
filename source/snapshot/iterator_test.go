@@ -48,12 +48,14 @@ func Test_Iterator_buildRecord_ResumedTag(t *testing.T) {
 
 	t.Run("resumed tags every record and carries watermark", func(t *testing.T) {
 		is := is.New(t)
+		lastPos := position.Position{
+			Snapshots:               make(position.SnapshotPositions),
+			SnapshotLowWatermarkLSN: watermark,
+		}
 		i := &Iterator{
-			conf: Config{SnapshotResumed: true},
-			lastPosition: position.Position{
-				Snapshots:               make(position.SnapshotPositions),
-				SnapshotLowWatermarkLSN: watermark,
-			},
+			conf:         Config{SnapshotResumed: true},
+			lastPosition: lastPos,
+			codec:        position.NewSnapshotPositionCodec(lastPos),
 		}
 
 		rec := i.buildRecord(fd)
@@ -68,9 +70,11 @@ func Test_Iterator_buildRecord_ResumedTag(t *testing.T) {
 
 	t.Run("first run is not tagged resumed", func(t *testing.T) {
 		is := is.New(t)
+		lastPos := position.Position{Snapshots: make(position.SnapshotPositions)}
 		i := &Iterator{
 			conf:         Config{SnapshotResumed: false},
-			lastPosition: position.Position{Snapshots: make(position.SnapshotPositions)},
+			lastPosition: lastPos,
+			codec:        position.NewSnapshotPositionCodec(lastPos),
 		}
 
 		rec := i.buildRecord(fd)
