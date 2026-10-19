@@ -68,6 +68,15 @@ type Destination struct {
 	closing     bool               // Teardown started: refuse and cancel Writes
 	abandoned   bool               // Teardown gave up waiting: the last Write closes conn
 	stmtBuilder sq.StatementBuilderType
+	// upsertSQLCache and deleteSQLCache memoize the SQL text of a record shape.
+	// The text depends only on the column names (every value is a single
+	// placeholder), so records that share a shape reuse one string instead of
+	// rebuilding it with squirrel for every record. They are read and written
+	// only inside Write, which connSem serializes, so they need no lock of
+	// their own, and they stay bounded by the number of distinct (table, column
+	// set) shapes, not by the number of records.
+	upsertSQLCache map[sqlShape]string
+	deleteSQLCache map[sqlShape]string
 }
 
 func (d *Destination) Config() sdk.DestinationConfig {
@@ -644,15 +653,25 @@ func (d *Destination) remove(ctx context.Context, r opencdc.Record, b *pgx.Batch
 	if err := checkKeyValues(r.Operation, tableName, key); err != nil {
 		return err
 	}
-	where := make(sq.Eq)
-	for col, val := range key {
-		where[quoteIdent(col)] = val
+	// sq.Eq sorts the WHERE terms by the quoted column name, so sort the key
+	// columns the same way to reproduce the argument order.
+	type keyPair struct {
+		quoted, name string
+	}
+	pairs := make([]keyPair, 0, len(key))
+	for col := range key {
+		pairs = append(pairs, keyPair{quoteIdent(col), col})
+	}
+	slices.SortFunc(pairs, func(a, b keyPair) int { return strings.Compare(a.quoted, b.quoted) })
+
+	quotedCols := make([]string, 0, len(pairs))
+	args := make([]interface{}, 0, len(pairs))
+	for _, p := range pairs {
+		quotedCols = append(quotedCols, p.quoted)
+		args = append(args, key[p.name])
 	}
 
-	query, args, err := d.stmtBuilder.
-		Delete(quoteIdent(tableName)).
-		Where(where).
-		ToSql()
+	query, err := d.deleteSQL(tableName, quotedCols)
 	if err != nil {
 		return fmt.Errorf("error formatting delete query: %w", err)
 	}
@@ -677,6 +696,12 @@ func (d *Destination) remove(ctx context.Context, r opencdc.Record, b *pgx.Batch
 // the key's value. Neither map is modified: the record belongs to the caller
 // (#343). Columns are sorted so that a record shape always gives the same SQL
 // text.
+//
+// The SQL text is a pure function of the column names: every value becomes one
+// placeholder, never inlined SQL. The only exception is a value that implements
+// squirrel.Sqlizer, which the destination never produces (values are
+// JSON-decoded scalars, big.Rat, time.Time and []byte); such a record bypasses
+// the cache and is built per record, exactly as before.
 func (d *Destination) formatUpsertQuery(
 	key, payload opencdc.StructuredData,
 	tableName string,
@@ -690,15 +715,102 @@ func (d *Destination) formatUpsertQuery(
 	}
 	slices.Sort(otherColumns)
 
-	colArgs := make([]string, 0, len(keyColumns)+len(otherColumns))
 	valArgs := make([]interface{}, 0, len(keyColumns)+len(otherColumns))
+	var sqlizer bool
+	for _, col := range keyColumns {
+		v := d.formatValue(key[col])
+		valArgs = append(valArgs, v)
+		sqlizer = sqlizer || isSQLizer(v)
+	}
+	for _, col := range otherColumns {
+		v := d.formatValue(payload[col])
+		valArgs = append(valArgs, v)
+		sqlizer = sqlizer || isSQLizer(v)
+	}
+
+	if sqlizer {
+		// A Sqlizer value inlines SQL instead of a placeholder, so this
+		// statement is not a pure function of the column names; it must not be
+		// memoized. Build it with the real values, as before, and use the args
+		// squirrel expanded from those values.
+		query, args, err := d.buildUpsertSQL(tableName, keyColumns, otherColumns, valArgs)
+		if err != nil {
+			return "", nil, fmt.Errorf("error formatting query: %w", err)
+		}
+		return query, args, nil
+	}
+
+	query, err := d.upsertSQL(tableName, keyColumns, otherColumns)
+	if err != nil {
+		return "", nil, fmt.Errorf("error formatting query: %w", err)
+	}
+	return query, valArgs, nil
+}
+
+// isSQLizer reports whether a formatted value implements squirrel.Sqlizer. A
+// Sqlizer value would inline SQL text into the statement instead of taking a
+// single placeholder, so its presence makes the SQL depend on the value, not
+// just the column names.
+func isSQLizer(v interface{}) bool {
+	_, ok := v.(sq.Sqlizer)
+	return ok
+}
+
+// sqlShape identifies the SQL text of a statement: the target table plus the
+// sorted key and non-key column names. Column names are joined with NUL, which
+// no name can contain (checkIdentifiers rejects it), so the join is
+// unambiguous.
+type sqlShape struct {
+	table        string
+	keyColumns   string
+	otherColumns string
+}
+
+func shapeKey(table string, keyColumns, otherColumns []string) sqlShape {
+	return sqlShape{
+		table:        table,
+		keyColumns:   strings.Join(keyColumns, "\x00"),
+		otherColumns: strings.Join(otherColumns, "\x00"),
+	}
+}
+
+// upsertSQL returns the cached SQL text for an upsert of one record shape,
+// building and caching it on the first use. The cached string is the same text
+// buildUpsertSQL produces for the real values: the placeholder count is the
+// column count, so a build with dummy values of that arity yields the identical
+// string.
+func (d *Destination) upsertSQL(tableName string, keyColumns, otherColumns []string) (string, error) {
+	key := shapeKey(tableName, keyColumns, otherColumns)
+	if query, ok := d.upsertSQLCache[key]; ok {
+		return query, nil
+	}
+	dummy := make([]interface{}, len(keyColumns)+len(otherColumns))
+	query, _, err := d.buildUpsertSQL(tableName, keyColumns, otherColumns, dummy)
+	if err != nil {
+		return "", err
+	}
+	if d.upsertSQLCache == nil {
+		d.upsertSQLCache = make(map[sqlShape]string)
+	}
+	d.upsertSQLCache[key] = query
+	return query, nil
+}
+
+// buildUpsertSQL renders the INSERT for the given columns and values, returning
+// the SQL text and the arguments squirrel produced. The SQL text depends only
+// on the column names; valArgs supplies one placeholder's worth of argument per
+// column (real values, or dummy values when the text is being memoized).
+func (d *Destination) buildUpsertSQL(
+	tableName string,
+	keyColumns, otherColumns []string,
+	valArgs []interface{},
+) (string, []interface{}, error) {
+	colArgs := make([]string, 0, len(keyColumns)+len(otherColumns))
 	for _, col := range keyColumns {
 		colArgs = append(colArgs, quoteIdent(col))
-		valArgs = append(valArgs, d.formatValue(key[col]))
 	}
 	for _, col := range otherColumns {
 		colArgs = append(colArgs, quoteIdent(col))
-		valArgs = append(valArgs, d.formatValue(payload[col]))
 	}
 
 	stmt := d.stmtBuilder.
@@ -725,6 +837,32 @@ func (d *Destination) formatUpsertQuery(
 	}
 
 	return stmt.ToSql()
+}
+
+// deleteSQL returns the cached SQL text for a delete of one record shape,
+// building and caching it on the first use. quotedKeyCols are the quoted key
+// column names, sorted the way sq.Eq sorts its WHERE terms; each is one "= ?"
+// for a non-null scalar, which checkKeyValues guarantees for a key.
+func (d *Destination) deleteSQL(tableName string, quotedKeyCols []string) (string, error) {
+	key := shapeKey(tableName, quotedKeyCols, nil)
+	if query, ok := d.deleteSQLCache[key]; ok {
+		return query, nil
+	}
+	where := make(sq.Eq, len(quotedKeyCols))
+	for _, col := range quotedKeyCols {
+		// A non-nil scalar stands in for the real value: it yields one "= ?"
+		// term. nil would yield "IS NULL", a different statement.
+		where[col] = ""
+	}
+	query, _, err := d.stmtBuilder.Delete(quoteIdent(tableName)).Where(where).ToSql()
+	if err != nil {
+		return "", err
+	}
+	if d.deleteSQLCache == nil {
+		d.deleteSQLCache = make(map[sqlShape]string)
+	}
+	d.deleteSQLCache[key] = query
+	return query, nil
 }
 
 // checkKeyValues fails unless every key value is a single non-null scalar.
