@@ -499,6 +499,27 @@ func TestCDCIterator_NextN_InternalBatching(t *testing.T) {
 	verifyOpenCDCRecords(is, got, table, 5, 5)
 }
 
+// TestCDCIterator_NextN_LeftoverLongerThanRequest_NoPanic is the regression
+// test for the makeslice panic: a leftover batch longer than the requested
+// count used to hit make(len, cap) with cap < len ("makeslice: cap out of
+// range") when the batch size exceeds the caller's read size.
+func TestCDCIterator_NextN_LeftoverLongerThanRequest_NoPanic(t *testing.T) {
+	ctx := test.Context(t)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupEmptyTestTable(ctx, t, pool)
+	is := is.New(t)
+
+	underTest := testCDCIterator(ctx, t, pool, table, true)
+	<-underTest.sub.Ready()
+
+	// Simulate a leftover batch of 2 records while the caller requests 1.
+	underTest.recordsForNextRead = []opencdc.Record{{}, {}}
+
+	got, err := underTest.NextN(bounded(ctx, t), 1)
+	is.NoErr(err)
+	is.Equal(len(got), 2) // the whole leftover is returned
+}
+
 // waitForTest polls cond until it holds, failing the test after a generous
 // deadline. The deadline only bounds a hang; it is not part of the assertion.
 func waitForTest(t *testing.T, what string, cond func() bool) {
