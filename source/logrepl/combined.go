@@ -89,6 +89,38 @@ type Config struct {
 	Import *dbzoffset.Import
 }
 
+// defaultCDCBatchSize is the CDC streaming batch size the connector falls back
+// to when sdk.batch.size is unset (0). The SDK's SourceWithBatch default is 0,
+// which the SDK documents as "read 1 record at a time" — its source run loop
+// literally calls ReadN with n=1 (see conduit-connector-sdk source.go runRead)
+// — and with a 0 the CDCHandler flushes after every single record. A
+// record-at-a-time source forces the engine into a record-at-a-time pass
+// (pkg/lifecycle-poc/funnel BenchmarkEnginePass measures ~790ns/record at
+// batch 1 vs ~295ns/record at batch 1000) and, because the source batch size
+// is also the destination's write granularity when the destination has no
+// batching of its own, a record-at-a-time destination round-trip.
+//
+// 1000 matches the v0.21 CDC-parity benchmark's CONDUIT_BATCH_SIZE and is the
+// point where the engine's per-pass cost has flattened. Memory bound: a
+// full batch is 1000 opencdc.Records (each with a JSON position, a key and a
+// 2-column payload, ~2KB including the position) ≈ 2MB per pipeline, plus the
+// handler's single buffered output channel. Latency bound: a partial batch is
+// flushed by the handler's 1s flush timer (CDCHandler.flushInterval), so a
+// sparse stream is delayed at most ~1s — the same bound the benchmark's
+// explicit sdk.batch.size: 1000 already has.
+const defaultCDCBatchSize = 1000
+
+// effectiveCDCBatchSize returns the CDC streaming batch size, substituting the
+// connector default when sdk.batch.size is unset (0). It is applied only to the
+// CDC handler; the snapshot fetch size is a separate knob (snapshot.fetchSize,
+// default 50000) and keeps its own 0-means-default handling.
+func effectiveCDCBatchSize(n int) int {
+	if n <= 0 {
+		return defaultCDCBatchSize
+	}
+	return n
+}
+
 // Validate performs validation tasks on the config.
 func (c Config) Validate() error {
 	var errs []error
@@ -273,7 +305,7 @@ func (c *CombinedIterator) initCDCIterator(ctx context.Context, pos position.Pos
 		Tables:          c.conf.Tables,
 		TableKeys:       c.conf.TableKeys,
 		WithAvroSchema:  c.conf.WithAvroSchema,
-		BatchSize:       c.conf.BatchSize,
+		BatchSize:       effectiveCDCBatchSize(c.conf.BatchSize),
 		// Seed the handler with the start position so DBZ-3 carry-forward fields
 		// (e.g. SnapshotLowWatermarkLSN) survive across the snapshot->CDC handoff
 		// and every subsequent CDC restart.

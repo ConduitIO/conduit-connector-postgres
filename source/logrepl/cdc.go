@@ -283,8 +283,15 @@ func (i *CDCIterator) NextN(ctx context.Context, n int) ([]opencdc.Record, error
 	}
 
 	// First, we check if there are any records from the previous batch
-	// that we can start with.
-	recs := make([]opencdc.Record, len(i.recordsForNextRead), n)
+	// that we can start with. The capacity hint is n, but the leftover from a
+	// previous batch can exceed n when the batch size is larger than the
+	// caller's requested count, so clamp the capacity to at least the leftover
+	// length (make with cap < len panics).
+	capHint := n
+	if len(i.recordsForNextRead) > capHint {
+		capHint = len(i.recordsForNextRead)
+	}
+	recs := make([]opencdc.Record, len(i.recordsForNextRead), capHint)
 	copy(recs, i.recordsForNextRead)
 	i.recordsForNextRead = nil
 
