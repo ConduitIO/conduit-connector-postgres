@@ -25,13 +25,15 @@ import (
 	"github.com/matryer/is"
 )
 
-// Regression test for #367. pgx's default mode caches prepared statements with
-// the parameter types Postgres inferred when they were first prepared. After
-// ALTER COLUMN ... TYPE on a running pipeline the destination kept sending
-// parameters typed for the old column, and Postgres converted them by
-// assignment: 5/2 into a column that had become integer was stored as 3, with
-// no error (invariant 6). A fresh destination rejects it, and so must a running
-// one.
+// Regression test for #367. The destination defaults to cache_statement, which
+// caches the parameter types Postgres inferred when a statement was first
+// prepared. After ALTER COLUMN ... TYPE on a running pipeline the cached
+// statement would keep sending parameters typed for the old column, and
+// Postgres would convert them by assignment cast without an error: 5/2 into a
+// column that had become integer was stored as 3 (invariant 6). The schema
+// guard must abort that batch and retry with fresh types, so the value is
+// refused — never rounded — and no row is stored. The guard is exercised
+// through the default URL, exactly as a real pipeline would.
 func TestDestination_Write_ColumnTypeChangedWhileRunning(t *testing.T) {
 	is := is.New(t)
 	ctx := test.Context(t)
@@ -41,38 +43,130 @@ func TestDestination_Write_ColumnTypeChangedWhileRunning(t *testing.T) {
 	is.NoErr(err)
 
 	d := openJDBCTestDestination(t, is)
-	n, err := d.Write(ctx, []opencdc.Record{jdbcTestRecord(table, opencdc.OperationCreate,
-		opencdc.StructuredData{"id": 1}, opencdc.StructuredData{"id": 1, "amt": big.NewRat(1, 1)})})
+	rec := func(id int, amt *big.Rat) opencdc.Record {
+		return jdbcTestRecord(table, opencdc.OperationCreate,
+			opencdc.StructuredData{"id": id}, opencdc.StructuredData{"id": id, "amt": amt})
+	}
+
+	n, err := d.Write(ctx, []opencdc.Record{rec(1, big.NewRat(1, 1))})
 	is.NoErr(err)
 	is.Equal(n, 1)
 
 	_, err = conn.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s ALTER COLUMN amt TYPE integer`, table))
 	is.NoErr(err)
 
-	n, err = d.Write(ctx, []opencdc.Record{jdbcTestRecord(table, opencdc.OperationCreate,
-		opencdc.StructuredData{"id": 2}, opencdc.StructuredData{"id": 2, "amt": big.NewRat(5, 2)})})
-	is.True(err != nil) // 2.5 is not an integer: refused, never rounded to 3
+	// A batch of values the new type cannot hold exactly: the guard aborts the
+	// batch and retries with fresh types, so each write is refused (2.5 and 3.5
+	// are not integers) and none of them is stored — atomically, no partial
+	// rows.
+	n, err = d.Write(ctx, []opencdc.Record{rec(2, big.NewRat(5, 2)), rec(3, big.NewRat(7, 2))})
+	is.True(err != nil) // refused, never rounded to 3 and 4
 	is.Equal(n, 0)
 
 	var count int
-	is.NoErr(conn.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM %s WHERE id = 2`, table)).Scan(&count))
+	is.NoErr(conn.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM %s WHERE id IN (2, 3)`, table)).Scan(&count))
 	is.Equal(count, 0)
+
+	// The destination stays usable after the schema change: a value that fits
+	// the new type is written exactly, in order after the first row.
+	n, err = d.Write(ctx, []opencdc.Record{rec(4, big.NewRat(7, 1))})
+	is.NoErr(err)
+	is.Equal(n, 1)
+
+	var got int
+	is.NoErr(conn.QueryRow(ctx, fmt.Sprintf(`SELECT amt FROM %s WHERE id = 4`, table)).Scan(&got))
+	is.Equal(got, 7)
 }
 
-// The mode is describe_exec unless the URL sets default_query_exec_mode; an
-// explicit cache mode is kept and reported, so Open can warn.
+// A widening change (integer -> bigint) is handled transparently: the guard
+// fires, clears the statement cache and retries, and the write succeeds with
+// the value stored type-exactly — no pipeline-visible error.
+func TestDestination_Write_ColumnTypeWidenedWhileRunning(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	table := test.RandomIdentifier(t)
+	_, err := conn.Exec(ctx, fmt.Sprintf(`CREATE TABLE %s (id int PRIMARY KEY, n integer)`, table))
+	is.NoErr(err)
+
+	d := openJDBCTestDestination(t, is)
+	rec := func(id int, n int64) opencdc.Record {
+		return jdbcTestRecord(table, opencdc.OperationCreate,
+			opencdc.StructuredData{"id": id}, opencdc.StructuredData{"id": id, "n": n})
+	}
+
+	n, err := d.Write(ctx, []opencdc.Record{rec(1, 5)})
+	is.NoErr(err)
+	is.Equal(n, 1)
+
+	_, err = conn.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s ALTER COLUMN n TYPE bigint`, table))
+	is.NoErr(err)
+
+	n, err = d.Write(ctx, []opencdc.Record{rec(2, 6)})
+	is.NoErr(err)
+	is.Equal(n, 1)
+
+	var got int64
+	is.NoErr(conn.QueryRow(ctx, fmt.Sprintf(`SELECT n FROM %s WHERE id = 2`, table)).Scan(&got))
+	is.Equal(got, int64(6))
+}
+
+// A value that overflows the OLD type (int) but fits the NEW one (bigint) and is
+// the first write after the ALTER cannot be encoded into the still-cached int
+// parameter, so it fails before the guard can run. The failure clears the
+// statement cache, so the redelivery re-prepares with the bigint parameter and
+// stores it exactly: at-least-once liveness, never silently coerced.
+func TestDestination_Write_ColumnTypeWidenedOverflowRecovers(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	table := test.RandomIdentifier(t)
+	_, err := conn.Exec(ctx, fmt.Sprintf(`CREATE TABLE %s (id int PRIMARY KEY, n integer)`, table))
+	is.NoErr(err)
+
+	d := openJDBCTestDestination(t, is)
+	rec := func(id int, n int64) opencdc.Record {
+		return jdbcTestRecord(table, opencdc.OperationCreate,
+			opencdc.StructuredData{"id": id}, opencdc.StructuredData{"id": id, "n": n})
+	}
+
+	n, err := d.Write(ctx, []opencdc.Record{rec(1, 5)})
+	is.NoErr(err)
+	is.Equal(n, 1)
+
+	_, err = conn.Exec(ctx, fmt.Sprintf(`ALTER TABLE %s ALTER COLUMN n TYPE bigint`, table))
+	is.NoErr(err)
+
+	big := int64(3_000_000_000)
+	n, err = d.Write(ctx, []opencdc.Record{rec(2, big)})
+	is.True(err != nil)
+	is.Equal(n, 0)
+
+	n, err = d.Write(ctx, []opencdc.Record{rec(2, big)})
+	is.NoErr(err)
+	is.Equal(n, 1)
+
+	var got int64
+	is.NoErr(conn.QueryRow(ctx, fmt.Sprintf(`SELECT n FROM %s WHERE id = 2`, table)).Scan(&got))
+	is.Equal(got, big)
+}
+
+// The mode is cache_statement (guarded) unless the URL sets
+// default_query_exec_mode itself; a cache mode reports true so Open enables the
+// schema guard.
 func TestDestinationQueryExecMode(t *testing.T) {
 	for url, want := range map[string]struct {
 		mode   pgx.QueryExecMode
 		caches bool
 	}{
-		"postgres://u@h/db":                                         {pgx.QueryExecModeDescribeExec, false},
-		"postgres://u@h/db?sslmode=disable":                         {pgx.QueryExecModeDescribeExec, false},
+		"postgres://u@h/db":                                         {pgx.QueryExecModeCacheStatement, true},
+		"postgres://u@h/db?sslmode=disable":                         {pgx.QueryExecModeCacheStatement, true},
 		"postgres://u@h/db?default_query_exec_mode=cache_statement": {pgx.QueryExecModeCacheStatement, true},
 		"postgres://u@h/db?default_query_exec_mode=cache_describe":  {pgx.QueryExecModeCacheDescribe, true},
 		"postgres://u@h/db?default_query_exec_mode=exec":            {pgx.QueryExecModeExec, false},
+		"postgres://u@h/db?default_query_exec_mode=describe_exec":   {pgx.QueryExecModeDescribeExec, false},
 		"postgres://u@h/db?default_query_exec_mode=simple_protocol": {pgx.QueryExecModeSimpleProtocol, false},
-		"host=h user=u dbname=db":                                   {pgx.QueryExecModeDescribeExec, false},
+		"host=h user=u dbname=db":                                   {pgx.QueryExecModeCacheStatement, true},
 		"host=h user=u default_query_exec_mode=cache_statement":     {pgx.QueryExecModeCacheStatement, true},
 	} {
 		t.Run(url, func(t *testing.T) {

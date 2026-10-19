@@ -39,6 +39,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -77,6 +78,18 @@ type Destination struct {
 	// set) shapes, not by the number of records.
 	upsertSQLCache map[sqlShape]string
 	deleteSQLCache map[sqlShape]string
+	// guardSchema is set in Open: it is true when the connection's query exec
+	// mode caches statement parameter types (cache_statement, cache_describe),
+	// so a schema change must invalidate that cache. describe_exec, exec and
+	// simple_protocol learn the parameter types fresh or never cache them, so
+	// they need no guard.
+	guardSchema bool
+	// schemaFingerprint maps a table name (as getTableName returns it) to the
+	// md5 of its live (column name, type OID, typmod) list, learned on first
+	// write and re-checked by the schema guard on every batch. It is read and
+	// written only inside Write, which connSem serializes, so it needs no lock
+	// of its own; it stays bounded by the number of distinct tables written.
+	schemaFingerprint map[string]string
 }
 
 func (d *Destination) Config() sdk.DestinationConfig {
@@ -98,13 +111,7 @@ func (d *Destination) Open(ctx context.Context) error {
 	// main keeps pgx 5.7's SCRAM behaviour; channel_binding=require stays
 	// opt-in. See cpool.DefaultSCRAMCompat.
 	cpool.DefaultSCRAMCompat(&connConfig.Config)
-	if setDestinationQueryExecMode(connConfig, d.config.URL) {
-		sdk.Logger(ctx).Warn().
-			Str("default_query_exec_mode", connConfig.DefaultQueryExecMode.String()).
-			Msg("the url selects a query exec mode that caches statement parameter types: after ALTER COLUMN ... TYPE " +
-				"on a running pipeline, values can be converted into the new type without an error until the destination " +
-				"restarts (conduit-connector-postgres#367)")
-	}
+	d.guardSchema = setDestinationQueryExecMode(connConfig, d.config.URL)
 
 	conn, err := pgx.ConnectConfig(ctx, connConfig)
 	if err != nil {
@@ -120,22 +127,24 @@ func (d *Destination) Open(ctx context.Context) error {
 	return nil
 }
 
-// setDestinationQueryExecMode makes the destination describe every statement
-// before executing it, instead of reusing a cached prepared statement, unless
-// the URL sets default_query_exec_mode itself. It reports whether the mode in
-// use caches parameter types (an explicit cache_statement or cache_describe).
+// setDestinationQueryExecMode selects cache_statement as the default query exec
+// mode — one round trip per batch, the fast mode — unless the URL sets
+// default_query_exec_mode itself, in which case the explicit value is kept.
+// It reports whether the mode in use caches statement parameter types
+// (cache_statement or cache_describe), so Open can enable the schema guard.
 //
-// Invariant 6: a cached statement keeps the parameter types Postgres inferred
-// when it was prepared. After ALTER COLUMN ... TYPE on a running pipeline the
-// destination kept sending parameters typed for the old column, and Postgres
-// converted them by assignment without an error: 5/2 into a column that had
-// become integer was stored as 3 (#367). Describing each statement costs a
-// round trip per statement (see benchi/destination-exec-mode for the measured
-// cost), so a URL may opt back into a cache mode, with a warning.
+// Invariant 6 is upheld by the schema guard, not by the mode: a cached
+// statement keeps the parameter types Postgres inferred when it was prepared,
+// so after ALTER COLUMN ... TYPE it would keep sending parameters typed for the
+// old column (5/2 into a column that had become integer was stored as 3, #367).
+// The guard aborts the batch and clears the statement cache when the column
+// types change, so cache_statement stays safe and can be the default.
+// describe_exec, exec and simple_protocol do not cache parameter types, so they
+// need no guard.
 func setDestinationQueryExecMode(cfg *pgx.ConnConfig, rawURL string) (cachesTypes bool) {
 	if !explicitQueryExecMode(rawURL) {
-		cfg.DefaultQueryExecMode = pgx.QueryExecModeDescribeExec
-		return false
+		cfg.DefaultQueryExecMode = pgx.QueryExecModeCacheStatement
+		return true
 	}
 	switch cfg.DefaultQueryExecMode {
 	case pgx.QueryExecModeCacheStatement, pgx.QueryExecModeCacheDescribe:
@@ -210,9 +219,123 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 	}()
 	ctx = context.WithoutCancel(ctx)
 
+	for attempt := 0; ; attempt++ {
+		b, skipped, err := d.buildBatch(ctx, recs)
+		if err != nil {
+			return 0, err
+		}
+		changed, err := d.execBatch(ctx, b, len(recs)-skipped)
+		if err != nil {
+			// A batch can fail before the schema guard runs: a value that no
+			// longer encodes into a cached parameter type (ALTER widened the
+			// column and the value overflows the old type) fails at argument
+			// encoding, before the guard statement is sent, and pgx does not
+			// invalidate the statement cache on that path. Clear it so a
+			// redelivery re-prepares with the live column types (invariant 6,
+			// and at-least-once liveness); for ordinary errors this is a cheap
+			// no-op next to the redelivery.
+			if d.conn != nil && !d.conn.IsClosed() {
+				_ = d.conn.DeallocateAll(ctx)
+			}
+			return 0, err
+		}
+		if !changed {
+			return len(recs), nil
+		}
+		if attempt >= maxSchemaGuardRetries {
+			return 0, errors.New("destination schema changed repeatedly: the target table is being altered " +
+				"faster than writes can re-describe it")
+		}
+		sdk.Logger(ctx).Debug().
+			Msg("destination schema changed: clearing the statement cache and retrying the batch")
+		// Invariant 6: forget the stale fingerprints so the retry re-learns
+		// them, and reset pgx's statement and description caches so the retry
+		// re-prepares with the live column types instead of the cached ones.
+		d.schemaFingerprint = nil
+		if err := d.conn.DeallocateAll(ctx); err != nil {
+			return 0, fmt.Errorf("failed to clear the statement cache after a schema change: %w", err)
+		}
+	}
+}
+
+// maxSchemaGuardRetries bounds the schema-change retry loop. A single retry
+// always succeeds unless the schema keeps changing under the writes; beyond
+// this bound the destination gives up rather than spin.
+const maxSchemaGuardRetries = 3
+
+// schemaFingerprintSQL computes the schema fingerprint of the table named by
+// $1 (a quoted identifier, the same form the write's table reference uses): the
+// md5 of its live (column name, type OID, typmod) list. It changes on
+// ALTER COLUMN ... TYPE and on ADD/DROP/RENAME COLUMN, and resolves the name
+// exactly as the INSERT does (through search_path, case-sensitively).
+const schemaFingerprintSQL = `
+SELECT pg_catalog.md5(pg_catalog.string_agg(
+		a.attname || ':' || a.atttypid::text || ':' || a.atttypmod::text,
+		',' ORDER BY a.attnum))
+FROM pg_catalog.pg_attribute a
+WHERE a.attrelid = pg_catalog.to_regclass($1)
+	AND a.attnum > 0 AND NOT a.attisdropped`
+
+// schemaGuardSQL is queued once per distinct table, after a batch's writes. It
+// evaluates to 1 when the live fingerprint of $1 matches the remembered $2, and
+// otherwise divides by zero (the boolean match casts to 0), raising SQLSTATE
+// 22012 and aborting the batch's implicit transaction so the stale writes are
+// rolled back. The guard is itself a cached prepared statement, so it costs no
+// extra round trip: it is one more statement in the already-pipelined batch,
+// and the server-side work is an indexed pg_attribute lookup over a handful of
+// columns.
+const schemaGuardSQL = `
+SELECT 1 / ((` + schemaFingerprintSQL + `) IS NOT DISTINCT FROM $2::text)::int`
+
+// isSchemaChanged reports whether err is the guard's division-by-zero
+// (SQLSTATE 22012) that signals a schema change. The destination's own
+// statements never divide, so 22012 can only come from a guard.
+func isSchemaChanged(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "22012"
+}
+
+// learnFingerprint reads and returns the current schema fingerprint of table.
+// The name is passed to the query as a quoted identifier so the catalog lookup
+// resolves the same relation the write's table reference does.
+func (d *Destination) learnFingerprint(ctx context.Context, table string) (string, error) {
+	var fp pgtype.Text
+	if err := d.conn.QueryRow(ctx, schemaFingerprintSQL, quoteIdent(table)).Scan(&fp); err != nil {
+		return "", fmt.Errorf("failed to read the schema of table %q: %w", table, err)
+	}
+	if !fp.Valid || fp.String == "" {
+		return "", fmt.Errorf("table %q does not exist", table)
+	}
+	return fp.String, nil
+}
+
+// tables collects the distinct tables a batch writes to, in first-use order,
+// so the schema guards are queued once per table after the writes.
+type tables struct {
+	order []string
+	seen  map[string]struct{}
+}
+
+func (t *tables) add(name string) {
+	if t.seen == nil {
+		t.seen = make(map[string]struct{})
+	}
+	if _, ok := t.seen[name]; ok {
+		return
+	}
+	t.seen[name] = struct{}{}
+	t.order = append(t.order, name)
+}
+
+// buildBatch queues one statement per record into a batch and, when the query
+// exec mode caches parameter types, one schema guard per distinct table after
+// the writes. It learns a table's schema fingerprint on first use. It returns
+// the batch and the number of records skipped as drift markers.
+func (d *Destination) buildBatch(ctx context.Context, recs []opencdc.Record) (*pgx.Batch, int, error) {
 	b := &pgx.Batch{}
 	var skipped, strayDrift int
 	var modifiedMarkers []string
+	tables := &tables{}
 	for _, rec := range recs {
 		// Schema-drift markers (postgres.schema.drift, source/logrepl) are
 		// keyless, payload-less OperationCreate records that carry the approval
@@ -232,7 +355,7 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 		// rewrite any record (docs/design-documents/20261015-drift-marker-source-signal.md).
 		skip, added, err := driftMarkerDisposition(rec)
 		if err != nil {
-			return 0, err
+			return nil, 0, err
 		}
 		if skip {
 			if added != "" {
@@ -249,47 +372,75 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 		}
 		rec, err = d.ensureStructuredData(rec)
 		if err != nil {
-			return 0, fmt.Errorf("failed to clean record: %w", err)
+			return nil, 0, fmt.Errorf("failed to clean record: %w", err)
 		}
 		switch rec.Operation {
 		case opencdc.OperationCreate:
-			err = d.handleInsert(ctx, rec, b)
+			err = d.handleInsert(ctx, rec, b, tables)
 		case opencdc.OperationUpdate:
-			err = d.handleUpdate(ctx, rec, b)
+			err = d.handleUpdate(ctx, rec, b, tables)
 		case opencdc.OperationDelete:
-			err = d.handleDelete(ctx, rec, b)
+			err = d.handleDelete(ctx, rec, b, tables)
 		case opencdc.OperationSnapshot:
-			err = d.handleInsert(ctx, rec, b)
+			err = d.handleInsert(ctx, rec, b, tables)
 		default:
-			return 0, fmt.Errorf("invalid operation %q", rec.Operation)
+			return nil, 0, fmt.Errorf("invalid operation %q", rec.Operation)
 		}
 		if err != nil {
-			return 0, err
+			return nil, 0, err
 		}
 	}
 
 	logDriftWarnings(ctx, modifiedMarkers, strayDrift)
 
-	br := d.conn.SendBatch(ctx, b)
-
-	for i := 0; i < len(recs)-skipped; i++ {
-		// fetch error for each statement
-		if _, err := br.Exec(); err != nil {
-			// the batch is executed in a transaction, if one failed all failed
-			_ = br.Close()
-			return 0, fmt.Errorf("failed to execute query for record %d: %w", i, err)
+	if d.guardSchema {
+		for _, table := range tables.order {
+			if d.schemaFingerprint == nil {
+				d.schemaFingerprint = make(map[string]string)
+			}
+			if _, ok := d.schemaFingerprint[table]; !ok {
+				fp, err := d.learnFingerprint(ctx, table)
+				if err != nil {
+					return nil, 0, err
+				}
+				d.schemaFingerprint[table] = fp
+			}
+			b.Queue(schemaGuardSQL, quoteIdent(table), d.schemaFingerprint[table])
 		}
 	}
-	// Invariant 1: ack only after the destination confirms a durable write.
-	// The batch runs in one implicit transaction, and the COMMIT outcome (e.g.
-	// deferred constraints, serialization failures) is reported only by Close,
-	// after every statement result has been read successfully. If Close fails
-	// the transaction was rolled back, so none of the records are stored and
-	// none may be acked.
-	if err := br.Close(); err != nil {
-		return 0, fmt.Errorf("failed to commit batch: %w", err)
+	return b, skipped, nil
+}
+
+// execBatch sends b and reads every result. It reports whether a schema guard
+// fired — a schema change rolled the batch back, so the caller must clear the
+// statement cache and retry — or returns the error to surface.
+//
+// Invariant 1: the batch runs in one implicit transaction; a write error or a
+// fired guard rolls it back, so nothing is acked on the error paths.
+func (d *Destination) execBatch(ctx context.Context, b *pgx.Batch, nWrites int) (changed bool, err error) {
+	br := d.conn.SendBatch(ctx, b)
+	var firstErr error
+	firstIdx := 0
+	for i := 0; i < len(b.QueuedQueries); i++ {
+		if _, e := br.Exec(); e != nil && firstErr == nil {
+			firstErr, firstIdx = e, i
+		}
 	}
-	return len(recs), nil
+	// Close drains the remaining results, resynchronizes the connection and,
+	// on an error, invalidates the statement cache for the batch.
+	if closeErr := br.Close(); firstErr == nil && closeErr != nil {
+		return false, fmt.Errorf("failed to commit batch: %w", closeErr)
+	}
+	if firstErr == nil {
+		return false, nil
+	}
+	if firstIdx >= nWrites && isSchemaChanged(firstErr) {
+		return true, nil
+	}
+	if firstIdx >= nWrites {
+		return false, fmt.Errorf("failed to verify the table schema: %w", firstErr)
+	}
+	return false, fmt.Errorf("failed to execute query for record %d: %w", firstIdx, firstErr)
 }
 
 // logDriftWarnings reports, once per batch, proven markers a processor added
@@ -371,8 +522,10 @@ func hasMarkerPosition(rec opencdc.Record) bool {
 	if err := json.Unmarshal(rec.Position, &raw); err != nil {
 		return false
 	}
-	known := []string{"version", "type", "last_lsn", "tx_commit_lsn", "tx_seq", "tx_seq_m", "schema_drift_marker",
-		"snapshots", "snapshot_low_watermark_lsn", "schema_history"}
+	known := []string{
+		"version", "type", "last_lsn", "tx_commit_lsn", "tx_seq", "tx_seq_m", "schema_drift_marker",
+		"snapshots", "snapshot_low_watermark_lsn", "schema_history",
+	}
 	for k := range raw {
 		for _, want := range known {
 			if k != want && strings.EqualFold(k, want) {
@@ -582,36 +735,37 @@ func (d *Destination) finishWrite() {
 // table. It checks for the existence of a key. If no key is present or a key
 // exists and no key column name is configured, it will plainly insert the data.
 // Otherwise it upserts the record.
-func (d *Destination) handleInsert(ctx context.Context, r opencdc.Record, b *pgx.Batch) error {
-	return d.upsert(ctx, r, b)
+func (d *Destination) handleInsert(ctx context.Context, r opencdc.Record, b *pgx.Batch, tables *tables) error {
+	return d.upsert(ctx, r, b, tables)
 }
 
 // handleUpdate adds a query to the batch that updates the record in the target
 // table. It assumes the record has a key and fails if one is not present.
-func (d *Destination) handleUpdate(ctx context.Context, r opencdc.Record, b *pgx.Batch) error {
+func (d *Destination) handleUpdate(ctx context.Context, r opencdc.Record, b *pgx.Batch, tables *tables) error {
 	if !d.hasKey(r) {
 		return fmt.Errorf("key must be provided on update actions")
 	}
 	// TODO handle case if the key was updated
-	return d.upsert(ctx, r, b)
+	return d.upsert(ctx, r, b, tables)
 }
 
 // handleDelete adds a query to the batch that deletes the record from the
 // target table. It assumes the record has a key and fails if one is not present.
-func (d *Destination) handleDelete(ctx context.Context, r opencdc.Record, b *pgx.Batch) error {
+func (d *Destination) handleDelete(ctx context.Context, r opencdc.Record, b *pgx.Batch, tables *tables) error {
 	if !d.hasKey(r) {
 		return fmt.Errorf("key must be provided on delete actions")
 	}
-	return d.remove(ctx, r, b)
+	return d.remove(ctx, r, b, tables)
 }
 
-func (d *Destination) upsert(ctx context.Context, r opencdc.Record, b *pgx.Batch) error {
+func (d *Destination) upsert(ctx context.Context, r opencdc.Record, b *pgx.Batch, tables *tables) error {
 	payload, _ := r.Payload.After.(opencdc.StructuredData) // ensureStructuredData made it structured
 	key, _ := r.Key.(opencdc.StructuredData)
 	tableName, err := d.getTableName(r)
 	if err != nil {
 		return fmt.Errorf("failed to get table name for upsert: %w", err)
 	}
+	tables.add(tableName)
 	if len(payload) == 0 {
 		// An empty row would be an INSERT of only the key (or of nothing),
 		// acked as if the record had been applied (invariant 6).
@@ -640,12 +794,13 @@ func (d *Destination) upsert(ctx context.Context, r opencdc.Record, b *pgx.Batch
 	return nil
 }
 
-func (d *Destination) remove(ctx context.Context, r opencdc.Record, b *pgx.Batch) error {
+func (d *Destination) remove(ctx context.Context, r opencdc.Record, b *pgx.Batch, tables *tables) error {
 	key, _ := r.Key.(opencdc.StructuredData) // hasKey checked it
 	tableName, err := d.getTableName(r)
 	if err != nil {
 		return fmt.Errorf("failed to get table name for delete: %w", err)
 	}
+	tables.add(tableName)
 
 	if err := checkIdentifiers(tableName, key, nil); err != nil {
 		return err
