@@ -33,17 +33,19 @@ import (
 // mode), and it reports allocations so a shape-memoization regression shows up
 // as a jump back toward per-record squirrel builds.
 //
-// Run with -cpuprofile/-memprofile to attribute the cost. Both query exec modes
-// are measured: the default DescribeExec (correct under ALTER COLUMN ... TYPE)
-// and the explicit cache_statement opt-out.
+// Run with -cpuprofile/-memprofile to attribute the cost. Two query exec modes
+// are measured: the default (cache_statement with the schema guard — one round
+// trip per batch, correct under ALTER COLUMN ... TYPE) and the explicit
+// describe_exec opt-out (re-describes every batch — two round trips). The delta
+// between them is what the default used to pay for correctness.
 func BenchmarkDestination_Write_Upsert(b *testing.B) {
 	for _, batchSize := range []int{1, 1000} {
 		for _, mode := range []struct {
 			name string
 			url  string
 		}{
-			{"describe", test.RegularConnString}, // default: DescribeExec
-			{"cache_statement", test.RegularConnString + "&default_query_exec_mode=cache_statement"},
+			{"default", test.RegularConnString}, // cache_statement + schema guard
+			{"describe", test.RegularConnString + "&default_query_exec_mode=describe_exec"},
 		} {
 			b.Run(fmt.Sprintf("batch=%d/mode=%s", batchSize, mode.name), func(b *testing.B) {
 				benchmarkUpsert(b, mode.url, batchSize)

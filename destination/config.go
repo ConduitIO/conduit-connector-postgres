@@ -36,11 +36,12 @@ type Config struct {
 	// With TLS, SCRAM authentication does not use channel binding by default
 	// (`channel_binding=disable`); add `channel_binding=require` to the URL to
 	// require SCRAM-SHA-256-PLUS.
-	// The destination describes each statement before it runs it, so a column
-	// type change on a running pipeline is seen by the next write. Add
-	// `default_query_exec_mode=cache_statement` to reuse prepared statements
-	// for speed, at the risk that after an ALTER COLUMN ... TYPE values are
-	// converted into the new type without an error until a restart (#367).
+	// The destination reuses prepared statements (cache_statement) and checks a
+	// per-table schema fingerprint with every batch, so a column type change on
+	// a running pipeline invalidates the cache and the next write sees the new
+	// type — fast and correct. Set `default_query_exec_mode` to `describe_exec`,
+	// `exec` or `simple_protocol` to override; `cache_statement` and
+	// `cache_describe` are also guarded and safe.
 	URL string `json:"url" validate:"required"`
 	// Table is used as the target table into which records are inserted.
 	Table string `json:"table" default:"{{ index .Metadata \"opencdc.collection\" }}"`
