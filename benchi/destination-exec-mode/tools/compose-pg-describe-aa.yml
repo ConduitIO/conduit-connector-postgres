@@ -1,0 +1,17 @@
+# Tool "pg-describe-aa": the same binary (../bin/describe, from FIX_REF) and the
+# same default-URL pipeline as pg-describe: an A/A control when every arm is
+# built from one commit and the arms differ only by URL.
+services:
+  conduit:
+    image: ghcr.io/conduitio/conduit:v0.20.2
+    container_name: pgbench367-conduit
+    command: ["/app/conduit", "run", "--connectors.path", "/app/connectors", "--pipelines.path", "/app/pipelines"]
+    volumes:
+      - ../bin/describe:/app/connectors:ro
+      - ../${BENCH_PIPELINE:?set BENCH_PIPELINE}:/app/pipelines/pipeline.yml:ro
+    networks:
+      - benchi
+
+networks:
+  benchi:
+    external: true

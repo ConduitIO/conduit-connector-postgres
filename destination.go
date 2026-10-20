@@ -171,14 +171,15 @@ func (d *Destination) Open(ctx context.Context) error {
 	cpool.DefaultSCRAMCompat(&connConfig.Config)
 	d.guardSchema = setDestinationQueryExecMode(connConfig, d.config.URL)
 	d.connConfig = connConfig
-	if d.guardSchema {
+	if connConfig.DefaultQueryExecMode == pgx.QueryExecModeCacheStatement {
+		// cache_describe is not warned about: pgx never creates a named
+		// statement in that mode, so there is nothing a pooler could share.
 		sdk.Logger(ctx).Warn().
 			Str("default_query_exec_mode", connConfig.DefaultQueryExecMode.String()).
-			Msg("the url selects a query exec mode that caches prepared statements. It is safe only on a " +
-				"direct connection or behind a pooler that does not share prepared statements between clients. " +
-				"Behind PgBouncer (at any max_prepared_statements) or another statement-sharing pooler, a column " +
-				"type change can make writes convert values silently (5/2 stored as 3 in an integer column); " +
-				"use default_query_exec_mode=describe_exec there")
+			Msg("the url selects cache_statement, which reuses named prepared statements. It is safe only on " +
+				"a direct connection. Behind PgBouncer (at any max_prepared_statements) or another " +
+				"statement-sharing pooler, a column type change can make writes convert values silently " +
+				"(5/2 stored as 3 in an integer column); use describe_exec or cache_describe there")
 	}
 
 	conn, err := pgx.ConnectConfig(ctx, connConfig)
@@ -329,10 +330,10 @@ func (d *Destination) prepareRetry(
 			Uint64("schema_changes_total", total).
 			Msg("destination table schema changed: rolled the batch back, clearing the statement cache and retrying")
 		// Invariant 6: forget the stale fingerprints so the retry re-learns
-		// them, and reset pgx's statement and description caches so the
-		// retry re-prepares with the live column types, not the cached ones.
+		// them, and make the retry prepare or describe every statement anew,
+		// with the live column types, not the cached ones.
 		d.schemaFingerprint = nil
-		if err := d.resetStatementCache(ctx); err != nil {
+		if err := d.resetAfterSchemaChange(ctx); err != nil {
 			return fmt.Errorf("failed to clear the statement cache after a schema change: %w", err)
 		}
 	case d.guardSchema && retryable && isStaleStatement(err):
@@ -455,13 +456,55 @@ func (d *Destination) ensureConn(ctx context.Context) error {
 	return nil
 }
 
-// resetStatementCache empties pgx's statement and description caches and
-// deallocates the connection's prepared statements, so the next batch
-// re-prepares every statement with the live column types.
+// execMode is the query exec mode the destination's connections use.
+func (d *Destination) execMode() pgx.QueryExecMode {
+	if d.connConfig == nil {
+		return pgx.QueryExecModeDescribeExec
+	}
+	return d.connConfig.DefaultQueryExecMode
+}
+
+// resetStatementCache makes the next batch prepare or describe every
+// statement anew, with the live column types.
+//
+//   - cache_statement: pgx's DeallocateAll empties the statement cache and
+//     sends DEALLOCATE ALL for the session's named statements.
+//   - cache_describe: pgx never creates a named statement in this mode, only a
+//     local description cache, so nothing is sent to the server. DEALLOCATE ALL
+//     would, behind a pooler that shares server connections, also remove other
+//     clients' statements. pgx has no API that empties the description cache
+//     alone, so the connection is closed; ensureConn replaces it with a new
+//     one, whose caches are empty.
+//   - describe_exec, exec, simple_protocol: nothing is cached.
 func (d *Destination) resetStatementCache(ctx context.Context) error {
-	return d.withConn(ctx, func(ctx context.Context) error {
-		return d.conn.DeallocateAll(ctx)
-	})
+	switch d.execMode() {
+	case pgx.QueryExecModeCacheStatement:
+		return d.withConn(ctx, func(ctx context.Context) error {
+			return d.conn.DeallocateAll(ctx)
+		})
+	case pgx.QueryExecModeCacheDescribe:
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		// Not closeConn: d.conn stays set, closed, so ensureConn reconnects.
+		_ = d.conn.Close(closeCtx)
+		return nil
+	default:
+		return nil
+	}
+}
+
+// resetAfterSchemaChange readies the retry after a schema guard fired. In
+// cache_describe mode nothing needs to be done: the guard's error failed the
+// batch, and pgx invalidates the cached description of every statement of a
+// batch that fails (invalidateCachesOnBatchResultsError, pgx v5 batch.go), so
+// the retry describes them again. Sending nothing to the server leaves other
+// clients' prepared statements alone on a shared server connection. In
+// cache_statement mode the cache is reset as before (#433).
+func (d *Destination) resetAfterSchemaChange(ctx context.Context) error {
+	if d.execMode() == pgx.QueryExecModeCacheDescribe {
+		return nil
+	}
+	return d.resetStatementCache(ctx)
 }
 
 // clearStatementCache makes the next attempt start from an empty statement
@@ -482,11 +525,15 @@ func (d *Destination) clearStatementCache(ctx context.Context) error {
 // failWrite is the error path of Write. A failed batch can leave cached
 // parameter types behind that no longer match the table (a value that does
 // not encode into a cached type fails before the schema guard runs, and pgx
-// does not invalidate the statement cache on that path), so the cache is
-// cleared if the connection is still open: a redelivery re-prepares with the
-// live column types (invariant 6, and at-least-once liveness). For ordinary
-// errors this is a cheap no-op next to the redelivery. A batch that could
-// not be sent gets the index of the record whose value could not be encoded.
+// does not invalidate its caches on that path), so in a cached mode the cache
+// is reset if the connection is still open: a redelivery re-prepares with the
+// live column types (invariant 6, and at-least-once liveness). In
+// cache_describe mode that is needed only for a batch that was never sent;
+// for a server error pgx already invalidated the batch's descriptions. The
+// uncached modes have nothing to reset, and sending DEALLOCATE ALL in them
+// would only remove other clients' statements behind a shared pooler. A batch
+// that could not be sent gets the index of the record whose value could not
+// be encoded.
 func (d *Destination) failWrite(ctx context.Context, p *writePlan, err error) error {
 	if isUnsentBatch(err) && d.conn != nil && d.encodesWithDescribedTypes() && d.ensureConn(ctx) == nil {
 		var idx int
@@ -504,9 +551,15 @@ func (d *Destination) failWrite(ctx context.Context, p *writePlan, err error) er
 		err = tableNotFoundError(table, err)
 	}
 	if d.conn != nil && !d.conn.IsClosed() {
-		_ = d.withConn(ctx, func(ctx context.Context) error {
-			return d.conn.DeallocateAll(ctx)
-		})
+		switch d.execMode() {
+		case pgx.QueryExecModeCacheStatement:
+			_ = d.resetStatementCache(ctx)
+		case pgx.QueryExecModeCacheDescribe:
+			if isUnsentBatch(err) {
+				_ = d.resetStatementCache(ctx)
+			}
+		default:
+		}
 	}
 	return err
 }
@@ -616,12 +669,22 @@ func isUnsentBatch(err error) bool {
 
 // schemaFingerprintSQL computes the schema fingerprint of the table named by
 // $1 (a quoted identifier, the same form the write's table reference uses): the
-// md5 of its live (column name, type OID, typmod) list. It changes on
-// ALTER COLUMN ... TYPE and on ADD/DROP/RENAME COLUMN, and resolves the name
+// md5 of its live (column name, type OID, typmod, row version) list. It changes
+// on ALTER COLUMN ... TYPE and on ADD/DROP/RENAME COLUMN, and resolves the name
 // exactly as the INSERT does (through search_path, case-sensitively).
+//
+// The row version is the pg_attribute row's xmin. Every ALTER that touches a
+// column writes a new version of its row, so a schema that changes and changes
+// back (ABA: numeric, then integer, then numeric again) gets a fingerprint it
+// never had before. Without it the fingerprint returns to its old value, and a
+// statement tagged with it (statementText) that a client prepared while the
+// column was integer would be taken for one prepared under numeric: behind a
+// statement-sharing pooler that stored 2.5 as 2.00. A DDL that rewrites the row
+// without changing the type (SET STATISTICS, a column comment is not one) also
+// changes it, which costs one rollback and retry.
 const schemaFingerprintSQL = `
 SELECT pg_catalog.md5(pg_catalog.string_agg(
-		a.attname || ':' || a.atttypid::text || ':' || a.atttypmod::text,
+		a.attname || ':' || a.atttypid::text || ':' || a.atttypmod::text || ':' || a.xmin::text,
 		',' ORDER BY a.attnum))
 FROM pg_catalog.pg_attribute a
 WHERE a.attrelid = pg_catalog.to_regclass($1)

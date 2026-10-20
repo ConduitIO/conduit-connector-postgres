@@ -48,6 +48,11 @@ const RegularConnString = "postgres://meroxauser:meroxapass@127.0.0.1:5433/merox
 // clients of a server connection.
 const BouncerConnString = "postgres://meroxauser:meroxapass@127.0.0.1:6432/meroxadb?sslmode=disable"
 
+// BouncerSingleConnString is BouncerConnString through a pool of one server
+// connection (the meroxadb_single alias), so all its clients share one server
+// connection and its prepared statements.
+const BouncerSingleConnString = "postgres://meroxauser:meroxapass@127.0.0.1:6432/meroxadb_single?sslmode=disable"
+
 // TestTableAvroSchemaV1 is the Avro schema representation of the test table
 // defined through testTableCreateQuery.
 // The fields are sorted by name.

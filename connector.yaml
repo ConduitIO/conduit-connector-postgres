@@ -438,20 +438,24 @@ specification:
     COLUMN ... TYPE` the next write uses the new column types. A value the new
     type cannot hold exactly fails the write instead of being converted.
 
-    The cached modes, `cache_statement` and `cache_describe`, are opt-in. They
-    reuse prepared statements and check a per-table schema fingerprint with
+    The cached modes, `cache_describe` and `cache_statement`, are opt-in. They
+    save the describe round trip and check a per-table schema fingerprint with
     every batch: after a column type change the batch is rolled back, the
-    statement cache is cleared, and the batch is retried with the new types. A
+    cached types are dropped, and the batch is retried with the new types. A
     fired check is logged at Info with the table name and the running count
-    (`schema_changes_total`). The destination warns at startup when a cached
-    mode is set.
+    (`schema_changes_total`).
 
-    **The cached modes are safe only on a direct connection, or behind a pooler
-    that does not share prepared statements between clients.** A pooler that
-    shares them hands a statement one client prepared before a column type
-    change to every client that sends the same SQL; the fingerprint check
-    cannot see that, and values are converted without an error (5/2 stored as 3
-    in a column that became `integer`). v0.17.0 and v0.17.1 used
+    `cache_describe` never creates named prepared statements, so it is not
+    affected by statement-sharing poolers; the fingerprint check covers its own
+    description cache. After a fired check it sends nothing to the server, so
+    other clients' statements on a shared server connection are left alone.
+
+    **`cache_statement` is safe only on a direct connection.** A pooler that
+    shares prepared statements hands a statement one client prepared before a
+    column type change to every client that sends the same SQL; the
+    fingerprint check cannot see that, and values are converted without an
+    error (5/2 stored as 3 in a column that became `integer`). The destination
+    warns at startup when `cache_statement` is set. v0.17.0 and v0.17.1 used
     `cache_statement` by default; see the v0.17.2 release notes.
 
     If pgx closes the connection after a failed batch (for example a value
@@ -473,16 +477,18 @@ specification:
     ### Connection poolers
 
     Behind PgBouncer, at any `max_prepared_statements`, use the default
-    (`describe_exec`) or `exec`. That likely applies to other poolers that
-    share or route prepared statements (Supavisor, PgCat, Odyssey), which have
-    not been tested. With `max_prepared_statements` above 0, PgBouncer shares
-    prepared statements between clients, so a cached mode can convert values
-    silently after a column type change. With `max_prepared_statements=0`, a
-    batch can reach a server that does not have its statement; the destination
-    retries batches that fail with SQLSTATE 26000 (prepared statement does not
-    exist) or 42P05 (prepared statement already exists) on an empty statement
-    cache, up to three times, but a cached mode still fails some batches
-    there. `describe_exec` was tested with PgBouncer 1.26 in both settings.
+    (`describe_exec`), `cache_describe` or `exec`, not `cache_statement`. That
+    likely applies to other poolers that share or route prepared statements
+    (Supavisor, PgCat, Odyssey), which have not been tested. With
+    `max_prepared_statements` above 0, PgBouncer shares prepared statements
+    between clients, so `cache_statement` can convert values silently after a
+    column type change. With `max_prepared_statements=0`, a batch can reach a
+    server that does not have its statement; the destination retries batches
+    that fail with SQLSTATE 26000 (prepared statement does not exist) or 42P05
+    (prepared statement already exists) on an empty statement cache, up to
+    three times, but `cache_statement` still fails some batches there.
+    `describe_exec` and `cache_describe` were tested with PgBouncer 1.26 with
+    `max_prepared_statements=200`.
 
     ### Numeric columns
 
@@ -704,13 +710,13 @@ specification:
           The destination describes every statement before it runs it
           (`describe_exec`), so a column type change on a running pipeline takes
           effect on the next write. Set `default_query_exec_mode` (in the URL or in
-          a service file) to `exec`, `simple_protocol`, `cache_statement` or
-          `cache_describe` to override. The cached modes save a round trip per batch
-          and check a per-table schema fingerprint, but they are safe only on a
-          direct connection or behind a pooler that does not share prepared
-          statements between clients. Behind PgBouncer (at any
-          `max_prepared_statements`) or another statement-sharing pooler, keep
-          `describe_exec`: a cached mode can convert values silently after a column
+          a service file) to `exec`, `simple_protocol`, `cache_describe` or
+          `cache_statement` to override. The cached modes save a round trip per
+          batch and check a per-table schema fingerprint. `cache_describe` never
+          creates named prepared statements, so it is not affected by
+          statement-sharing poolers. `cache_statement` is safe only on a direct
+          connection: behind PgBouncer (at any `max_prepared_statements`) or another
+          statement-sharing pooler it can convert values silently after a column
           type change.
         type: string
         default: ""

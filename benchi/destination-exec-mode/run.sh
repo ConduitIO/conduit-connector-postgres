@@ -7,6 +7,12 @@
 #   pg-optout    OPTOUT_REF, option 2 with an explicit cache_statement URL
 #   pg-guarded   GUARD_REF, an explicit cache_statement URL: cached statements
 #                with the schema guard (#433)
+#   pg-cachedescribe  GUARD_REF, an explicit cache_describe URL: cached
+#                descriptions with the schema guard, no named statements
+#   pg-describe-aa    FIX_REF again (same binary as pg-describe): an A/A
+#                control when ARMS compares URLs on one commit
+# ARMS (space-separated tool names) selects and orders the arms; default: the
+# five arms of the EC2 kit.
 # See README.md.
 #
 # Usage: benchi/destination-exec-mode/run.sh [ROUNDS]   (default 5)
@@ -66,6 +72,7 @@ run() { # batch tool label
   cat /proc/loadavg > "$dir/load-before.txt" 2>/dev/null || uptime > "$dir/load-before.txt"
   # Every run is bounded; a stuck run cannot hold the machine.
   BENCH_PIPELINE="pipeline-batch$1.yml" BENCH_PIPELINE_OPTOUT="pipeline-batch$1-optout.yml" \
+    BENCH_PIPELINE_CACHEDESCRIBE="pipeline-batch$1-cachedescribe.yml" \
     with_tty timeout 600 "$BENCHI" -config "$CONFIG" -tool "$2" -out "$dir" < /dev/null > /dev/null 2>&1 ||
     echo "run $dir exited $?" >&2
   cat /proc/loadavg > "$dir/load-after.txt" 2>/dev/null || uptime > "$dir/load-after.txt"
@@ -75,15 +82,16 @@ run() { # batch tool label
   echo "$1,$3,$2,${before:-NA},${after:-NA}" >> "$OUT/runs.csv"
 }
 
-ARMS=(pg-cache pg-describe pg-cache-aa pg-optout pg-guarded)
+read -r -a ARMS <<< "${ARMS:-pg-cache pg-describe pg-cache-aa pg-optout pg-guarded}"
+NARMS=${#ARMS[@]}
 echo "batch,run,tool,rows_before,rows_after" > "$OUT/runs.csv"
 for batch in $BATCHES; do
   run "$batch" pg-cache "warmup"
   for ((r = 1; r <= ROUNDS; r++)); do # not seq: BSD seq 1 0 counts down
-    # Latin square: round r starts at arm (r-1) mod 5, so every arm runs in
-    # every position once over five rounds.
-    for k in 0 1 2 3 4; do
-      tool=${ARMS[$(( (r - 1 + k) % 5 ))]}
+    # Latin square: round r starts at arm (r-1) mod NARMS, so every arm runs
+    # in every position once over NARMS rounds.
+    for ((k = 0; k < NARMS; k++)); do
+      tool=${ARMS[$(( (r - 1 + k) % NARMS ))]}
       run "$batch" "$tool" "r$r-$tool"
     done
   done

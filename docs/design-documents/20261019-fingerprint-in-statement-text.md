@@ -1,8 +1,8 @@
-# Destination: the schema fingerprint in the statement text (draft, prototype)
+# Destination: restoring cached-mode performance without the pooler risk
 
-Status: **draft.** Prototype only. The default stays `describe_exec` (#436). Before cached
-statements could become the default again, this needs review, the open questions below
-answered, and a benchi run.
+Status: **proposal for v0.17.3.** The default stays `describe_exec` (#436) in this change. It
+compares two candidates to replace it, guarded `cache_describe` and `cache_statement` with the
+fingerprint in the statement text, and recommends one from the benchmark below.
 
 ## Summary
 
@@ -33,7 +33,23 @@ for a different statement.
 - Keep one round trip per warm batch, which is the reason to want a cached mode at all.
 - Nothing changes in describe_exec, exec or simple_protocol.
 
-## Decision (prototype)
+## The two candidates
+
+**Guarded `cache_describe`.** pgx caches the statement description (parameter and result
+types) on the client and runs every statement unnamed, with the cached parameter OIDs. No
+named prepared statement exists, so a pooler has nothing to share. The schema guard (#433)
+protects the description cache on a running connection. After a guard fires, nothing is sent
+to the server: pgx invalidates the description of every statement in a failed batch
+(`invalidateCachesOnBatchResultsError`), so the retry describes again. Before this change the
+destination sent `DEALLOCATE ALL` there, which behind a shared server connection removed other
+clients' statements. Where pgx does not invalidate (a batch that was never sent), the
+destination drops its caches by reconnecting.
+
+**`cache_statement` with the fingerprint in the statement text.** One round trip per warm batch
+(no describe at all), but named statements; it is only as safe as the fingerprint is unique
+per column layout. That is what the rest of this section is about.
+
+## Decision (cache_statement candidate)
 
 `buildBatch` in a cached mode:
 
@@ -56,6 +72,18 @@ for a different statement.
 | Unique statement names per connection | pgx owns the names; this means forking or wrapping its statement cache. A pooler that shares by text would still share. |
 | Detect poolers | PgBouncer does not identify itself on the wire. |
 
+### The pg_attribute row version in the fingerprint
+
+The fingerprint is the md5 of (name, type OID, typmod, **xmin**) per column. Without xmin a
+schema that changes and changes back (ABA) returns to its old fingerprint. The review showed
+the effect: a client learns fp0 (numeric), the column becomes integer, the client prepares the
+fp0-tagged INSERT (so its parameter is int4) and dies without deallocating it, the column goes
+back to numeric, and new clients ask for the fp0-tagged statement and store 2.5 as 2.00.
+Every ALTER writes a new version of the column's pg_attribute row, so with xmin the
+fingerprint after the ABA is one no client has prepared under.
+`TestDestination_Write_FingerprintABAKilledPreparer` (CI PgBouncer, one-connection pool) fails
+without xmin (stored "2.00") and passes with it.
+
 ## Failure modes and open questions
 
 - **ALTER between learning the fingerprint and executing.** The destination prepares the
@@ -63,8 +91,12 @@ for a different statement.
   server describes it after the `ALTER`. The guard fires on this destination (the live
   fingerprint differs from the remembered one) and rolls the batch back. Another client that
   still holds the old fingerprint and gets this statement from the pooler encodes for the old
-  types. Its guard fires too, because the live fingerprint is new. Both roll back. This needs a
-  test with two clients behind the pooler and an `ALTER` timed in between. **Not tested.**
+  types. Its guard fires too, because the live fingerprint is new. Both roll back.
+  `TestDestination_Write_FingerprintAlterBetweenLearnAndPrepare` runs the `ALTER` from a dial
+  hook at the moment the destination sends the INSERT's Parse, with and without a revert, and
+  later clients on the same server connection store exactly. It passes with and without xmin:
+  the destination's `DEALLOCATE ALL` after its guard fires removes the poisoned statement. The
+  killed-preparer test above is the case where nothing removes it.
 - **Fingerprint collisions across type changes.** The fingerprint covers (name, type OID,
   typmod) per column. A change that keeps those but changes encoding (a domain's base type,
   an enum's labels) does not change it. That is the same exposure as #433's guard. **Not
@@ -75,9 +107,11 @@ for a different statement.
 - **Cost.** One tagged string per distinct statement per batch, and the fingerprint lookups
   happen before the batch is built. Unmeasured: needs the benchi `pg-guarded` arm run against
   this branch.
-- **`cache_describe`** also passed the pooler test without the tag on the #436 head: it executes
-  with unnamed statements, so there is nothing for a pooler to share. Whether it is safe
-  without the tag needs its own argument before anyone relies on it.
+- **xmin wraparound.** xmin is a 32-bit transaction id. Two schema versions of one table would
+  need the same xmin on every column row to collide, which needs 2^32 transactions between them
+  and freezing to keep the raw value; not a practical concern, but not impossible.
+- **`cache_describe`** is safe behind poolers by construction (above). The fingerprint check
+  covers its own description cache.
 
 ## Upgrade / rollback
 
