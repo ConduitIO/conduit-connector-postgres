@@ -27,12 +27,17 @@ import (
 	"github.com/matryer/is"
 )
 
-// poolerTestModes are the destination URLs the pooler test checks. Only modes
-// that must be correct behind a statement-sharing pooler belong here; the
-// cached modes are not (see TestDestination_Write_PoolerSharedStaleStatement).
+// poolerTestModes are the destination URLs the pooler test checks: every mode
+// that must be correct behind a statement-sharing pooler. cache_describe is
+// correct by construction (pgx creates no named statement in it). For
+// cache_statement the fingerprint in the statement text keeps a stale shared
+// statement from being reused (statementText); the docs still call it safe
+// only on a direct connection until that has been reviewed.
 var poolerTestModes = map[string]string{
-	"default":       test.BouncerConnString,
-	"describe_exec": test.BouncerConnString + "&default_query_exec_mode=describe_exec",
+	"default":         test.BouncerConnString,
+	"describe_exec":   test.BouncerConnString + "&default_query_exec_mode=describe_exec",
+	"cache_describe":  test.BouncerConnString + "&default_query_exec_mode=cache_describe",
+	"cache_statement": test.BouncerConnString + "&default_query_exec_mode=cache_statement",
 }
 
 // Regression test for #436, a silent conversion shipped in v0.17.0 and
@@ -44,9 +49,9 @@ var poolerTestModes = map[string]string{
 // guard passes) but runs the old statement: 5/2 into a column that became
 // integer was stored as 3, and 5.5 into a column that became float8 as 5.
 //
-// The default (describe_exec) prepares nothing named, so it never gets
-// another client's statement. The test fails with
-// default_query_exec_mode=cache_statement in poolerTestModes.
+// The default (describe_exec) and cache_describe prepare nothing named, so
+// they never get another client's statement. Without the fingerprint in the
+// statement text (main at #436), the cache_statement cases fail.
 func TestDestination_Write_PoolerSharedStaleStatement(t *testing.T) {
 	cases := []struct {
 		name       string

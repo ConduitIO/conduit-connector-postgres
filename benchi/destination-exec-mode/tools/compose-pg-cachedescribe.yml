@@ -1,0 +1,18 @@
+# Tool "pg-cachedescribe": Conduit v0.20.2 with the standalone postgres
+# connector from ../bin/guarded (built by run.sh from GUARD_REF), with an
+# explicit cache_describe URL: cached descriptions, no named prepared
+# statements, and the per-table schema guard.
+services:
+  conduit:
+    image: ghcr.io/conduitio/conduit:v0.20.2
+    container_name: pgbench367-conduit
+    command: ["/app/conduit", "run", "--connectors.path", "/app/connectors", "--pipelines.path", "/app/pipelines"]
+    volumes:
+      - ../bin/guarded:/app/connectors:ro
+      - ../${BENCH_PIPELINE_CACHEDESCRIBE:?set BENCH_PIPELINE_CACHEDESCRIBE}:/app/pipelines/pipeline.yml:ro
+    networks:
+      - benchi
+
+networks:
+  benchi:
+    external: true

@@ -32,6 +32,10 @@ tools:
     compose: ./tools/compose-pg-optout.yml
   pg-guarded:
     compose: ./tools/compose-pg-guarded.yml
+  pg-cachedescribe:
+    compose: ./tools/compose-pg-cachedescribe.yml
+  pg-describe-aa:
+    compose: ./tools/compose-pg-describe-aa.yml
 
 metrics:
   docker:

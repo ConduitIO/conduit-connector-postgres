@@ -39,13 +39,13 @@ type Config struct {
 	// The destination describes every statement before it runs it
 	// (`describe_exec`), so a column type change on a running pipeline takes
 	// effect on the next write. Set `default_query_exec_mode` (in the URL or in
-	// a service file) to `exec`, `simple_protocol`, `cache_statement` or
-	// `cache_describe` to override. The cached modes save a round trip per batch
-	// and check a per-table schema fingerprint, but they are safe only on a
-	// direct connection or behind a pooler that does not share prepared
-	// statements between clients. Behind PgBouncer (at any
-	// `max_prepared_statements`) or another statement-sharing pooler, keep
-	// `describe_exec`: a cached mode can convert values silently after a column
+	// a service file) to `exec`, `simple_protocol`, `cache_describe` or
+	// `cache_statement` to override. The cached modes save a round trip per
+	// batch and check a per-table schema fingerprint. `cache_describe` never
+	// creates named prepared statements, so it is not affected by
+	// statement-sharing poolers. `cache_statement` is safe only on a direct
+	// connection: behind PgBouncer (at any `max_prepared_statements`) or another
+	// statement-sharing pooler it can convert values silently after a column
 	// type change.
 	URL string `json:"url" validate:"required"`
 	// Table is used as the target table into which records are inserted.
