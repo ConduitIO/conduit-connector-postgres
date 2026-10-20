@@ -3,8 +3,10 @@
 # Compares Postgres destination throughput between the cached-statement mode
 # (main before #367, pgx's default), describe_exec (option 1, the fix) and
 # option 2 (describe_exec by default, run here with an explicit cache_statement
-# URL, the opt-out), with an A/A control: a second, separately built main
-# binary that should measure the same as the first. See README.md.
+# URL, the opt-out) and the guarded default since v0.17.0 (cache_statement
+# with the per-table schema guard, #433), with an A/A control: a second,
+# separately built main binary that should measure the same as the first. See
+# README.md.
 #
 # Ground truth, not engine metrics (see conduit's benchi/METHODOLOGY.md): the
 # pre-test and post-test hooks count the rows in the target table, and the run
@@ -28,6 +30,8 @@ tools:
     compose: ./tools/compose-pg-describe.yml
   pg-optout:
     compose: ./tools/compose-pg-optout.yml
+  pg-guarded:
+    compose: ./tools/compose-pg-guarded.yml
 
 metrics:
   docker:

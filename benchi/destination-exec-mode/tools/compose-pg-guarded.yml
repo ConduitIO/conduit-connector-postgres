@@ -1,0 +1,17 @@
+# Tool "pg-guarded": Conduit v0.20.2 with the standalone postgres connector from
+# ../bin/guarded (built by run.sh from GUARD_REF; the default URL selects
+# cache_statement with the per-table schema guard, #433).
+services:
+  conduit:
+    image: ghcr.io/conduitio/conduit:v0.20.2
+    container_name: pgbench367-conduit
+    command: ["/app/conduit", "run", "--connectors.path", "/app/connectors", "--pipelines.path", "/app/pipelines"]
+    volumes:
+      - ../bin/guarded:/app/connectors:ro
+      - ../${BENCH_PIPELINE:?set BENCH_PIPELINE}:/app/pipelines/pipeline.yml:ro
+    networks:
+      - benchi
+
+networks:
+  benchi:
+    external: true

@@ -113,9 +113,10 @@ func TestDestination_Write_ColumnTypeWidenedWhileRunning(t *testing.T) {
 
 // A value that overflows the OLD type (int) but fits the NEW one (bigint) and is
 // the first write after the ALTER cannot be encoded into the still-cached int
-// parameter, so it fails before the guard can run. The failure clears the
-// statement cache, so the redelivery re-prepares with the bigint parameter and
-// stores it exactly: at-least-once liveness, never silently coerced.
+// parameter, so it fails before the guard can run. The destination retries the
+// batch once on an empty statement cache, which re-prepares with the bigint
+// parameter, so the value is stored exactly without a pipeline-visible error,
+// never silently coerced.
 func TestDestination_Write_ColumnTypeWidenedOverflowRecovers(t *testing.T) {
 	is := is.New(t)
 	ctx := test.Context(t)
@@ -138,10 +139,6 @@ func TestDestination_Write_ColumnTypeWidenedOverflowRecovers(t *testing.T) {
 	is.NoErr(err)
 
 	big := int64(3_000_000_000)
-	n, err = d.Write(ctx, []opencdc.Record{rec(2, big)})
-	is.True(err != nil)
-	is.Equal(n, 0)
-
 	n, err = d.Write(ctx, []opencdc.Record{rec(2, big)})
 	is.NoErr(err)
 	is.Equal(n, 1)

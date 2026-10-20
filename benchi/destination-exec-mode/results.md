@@ -1,5 +1,12 @@
 # Results
 
+## Pending: the guarded default (`pg-guarded`)
+
+Not run yet. The run of record below predates #433, so it has no arm for the
+current default (cache_statement with the per-table schema guard). Nothing in
+this file measures the guard's cost. To fill this in, launch the five-arm kit
+with `-guard-sha` set to a commit from v0.17.0 on (see README.md).
+
 ## 2026-10-15, EC2 c7i.2xlarge: the run of record
 
 | | |

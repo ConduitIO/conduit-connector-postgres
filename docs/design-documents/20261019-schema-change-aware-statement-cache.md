@@ -1,5 +1,11 @@
 # Destination: a schema-change-aware statement cache so `cache_statement` can be the default
 
+> Follow-up: `20261019-destination-statement-cache-recovery.md` changes three things described
+> here. A batch that cannot be encoded is retried once on a clean cache inside Write (and a
+> connection pgx closed is replaced) instead of failing until a redelivery; a fired guard is
+> logged at Info, not debug; and the benchi numbers below compare *unguarded* cached statements
+> with `describe_exec` — the guarded default has not been measured with benchi yet.
+
 ## Summary
 
 The destination's `default_query_exec_mode` defaults to `describe_exec`, which re-describes

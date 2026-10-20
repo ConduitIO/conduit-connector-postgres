@@ -5,18 +5,21 @@
 #   pg-cache-aa  BASE_REF, built a second time: the A/A control
 #   pg-describe  FIX_REF, describe_exec (option 1)
 #   pg-optout    OPTOUT_REF, option 2 with an explicit cache_statement URL
+#   pg-guarded   GUARD_REF, the default URL: cache_statement with the schema
+#                guard (#433), the default since v0.17.0
 # See README.md.
 #
-# Usage: benchi/destination-exec-mode/run.sh [ROUNDS]   (default 4)
-# Env:   BASE_REF, FIX_REF, OPTOUT_REF (commits), BENCHI (benchi v0.4.1 binary),
+# Usage: benchi/destination-exec-mode/run.sh [ROUNDS]   (default 5)
+# Env:   BASE_REF, FIX_REF, OPTOUT_REF, GUARD_REF (commits), BENCHI (benchi v0.4.1 binary),
 #        OUT (results dir), BATCHES (default "1 1000"), BENCH_CONFIG (default
 #        bench.yml; a shorter copy is useful to check the setup).
 set -euo pipefail
 cd "$(dirname "$0")"
-ROUNDS=${1:-4}
+ROUNDS=${1:-5}
 BASE_REF=${BASE_REF:-bd44a41}
 FIX_REF=${FIX_REF:-HEAD}
 OPTOUT_REF=${OPTOUT_REF:-$FIX_REF}
+GUARD_REF=${GUARD_REF:-HEAD}
 BENCHI=${BENCHI:-benchi}
 BATCHES=${BATCHES:-1 1000}
 CONFIG=${BENCH_CONFIG:-bench.yml}
@@ -52,9 +55,10 @@ build() { # ref dir
 }
 if [ ! -x bin/main/conduit-connector-postgres ]; then
   build "$BASE_REF" main; build "$BASE_REF" main2; build "$FIX_REF" describe; build "$OPTOUT_REF" optout
+  build "$GUARD_REF" guarded
 fi
 sha256 bin/*/conduit-connector-postgres > "$OUT/binaries.sha256"
-{ echo "base $(git -C ../.. rev-parse "$BASE_REF")"; echo "fix $(git -C ../.. rev-parse "$FIX_REF")"; echo "optout $(git -C ../.. rev-parse "$OPTOUT_REF")"; } > "$OUT/commits.txt"
+{ echo "base $(git -C ../.. rev-parse "$BASE_REF")"; echo "fix $(git -C ../.. rev-parse "$FIX_REF")"; echo "optout $(git -C ../.. rev-parse "$OPTOUT_REF")"; echo "guarded $(git -C ../.. rev-parse "$GUARD_REF")"; } > "$OUT/commits.txt"
 
 run() { # batch tool label
   local dir="$OUT/batch$1/$3"
@@ -71,15 +75,15 @@ run() { # batch tool label
   echo "$1,$3,$2,${before:-NA},${after:-NA}" >> "$OUT/runs.csv"
 }
 
-ARMS=(pg-cache pg-describe pg-cache-aa pg-optout)
+ARMS=(pg-cache pg-describe pg-cache-aa pg-optout pg-guarded)
 echo "batch,run,tool,rows_before,rows_after" > "$OUT/runs.csv"
 for batch in $BATCHES; do
   run "$batch" pg-cache "warmup"
   for ((r = 1; r <= ROUNDS; r++)); do # not seq: BSD seq 1 0 counts down
-    # Latin square: round r starts at arm (r-1) mod 4, so every arm runs in
-    # every position once over four rounds.
-    for k in 0 1 2 3; do
-      tool=${ARMS[$(( (r - 1 + k) % 4 ))]}
+    # Latin square: round r starts at arm (r-1) mod 5, so every arm runs in
+    # every position once over five rounds.
+    for k in 0 1 2 3 4; do
+      tool=${ARMS[$(( (r - 1 + k) % 5 ))]}
       run "$batch" "$tool" "r$r-$tool"
     done
   done

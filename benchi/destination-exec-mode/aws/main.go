@@ -20,7 +20,7 @@
 //
 // It is a separate module so the AWS SDK stays out of the connector's go.mod.
 //
-//	go run . launch  -manifest m.json -account <id> -base-sha <sha> -fix-sha <sha> -optout-sha <sha>
+//	go run . launch  -manifest m.json -account <id> -base-sha <sha> -fix-sha <sha> -optout-sha <sha> -guard-sha <sha>
 //	go run . status  -manifest m.json
 //	go run . fetch   -manifest m.json -dir <local results dir>
 //	go run . cleanup -manifest m.json -delete-bucket
@@ -115,6 +115,7 @@ type manifest struct {
 	BaseSHA             string    `json:"base_sha"`
 	FixSHA              string    `json:"fix_sha"`
 	OptoutSHA           string    `json:"optout_sha"`
+	GuardSHA            string    `json:"guard_sha"`
 	Rounds              int       `json:"rounds"`
 	MaxMinutes          int       `json:"max_minutes"`
 	Deleted             []string  `json:"deleted,omitempty"`
@@ -211,10 +212,12 @@ func launch(ctx context.Context, args []string) error {
 	volumeMBps := fs.Int("volume-throughput", 250, "root gp3 throughput, MB/s (Postgres data is on tmpfs)")
 	volumeIOPS := fs.Int("volume-iops", 3000, "root gp3 IOPS")
 	maxMinutes := fs.Int("max-minutes", 150, "hard runtime cap; the instance halts (and terminates) after this")
-	rounds := fs.Int("rounds", 4, "rounds per batch size")
+	rounds := fs.Int("rounds", 5, "rounds per batch size (5 gives every arm every position once)")
 	baseSHA := fs.String("base-sha", "", "commit of the cache arms (main before #367) (required)")
 	fixSHA := fs.String("fix-sha", "", "commit of the describe_exec arm, option 1 (required)")
 	optoutSHA := fs.String("optout-sha", "", "commit of the opt-out arm, option 2 (required)")
+	guardSHA := fs.String("guard-sha", "", "commit of the guarded arm (the default URL, cache_statement with the schema guard); "+
+		"it also supplies run.sh and the benchmark config (required)")
 	benchTag := fs.String("bench-tag", "pg367-"+time.Now().UTC().Format("20060102"), `value of the "conduit-bench" tag on every resource`)
 	goVersion := fs.String("go-version", "1.26.9", "Go toolchain on the instance; match go.mod")
 	_ = fs.Parse(args)
@@ -222,7 +225,9 @@ func launch(ctx context.Context, args []string) error {
 	if *manifestPath == "" || *account == "" {
 		return errors.New("-manifest and -account are required")
 	}
-	for name, v := range map[string]string{"base-sha": *baseSHA, "fix-sha": *fixSHA, "optout-sha": *optoutSHA} {
+	for name, v := range map[string]string{
+		"base-sha": *baseSHA, "fix-sha": *fixSHA, "optout-sha": *optoutSHA, "guard-sha": *guardSHA,
+	} {
 		if !shaRe.MatchString(v) {
 			return fmt.Errorf("-%s must be a full 40-character lowercase commit SHA, got %q", name, v)
 		}
@@ -246,7 +251,7 @@ func launch(ctx context.Context, args []string) error {
 	m := &manifest{
 		RunID: now.Format("20060102t150405z"), Region: *region, Account: *account, BenchTag: *benchTag,
 		CreatedAt: now, ExpiresAt: now.Add(time.Duration(*maxMinutes) * time.Minute),
-		BaseSHA: *baseSHA, FixSHA: *fixSHA, OptoutSHA: *optoutSHA,
+		BaseSHA: *baseSHA, FixSHA: *fixSHA, OptoutSHA: *optoutSHA, GuardSHA: *guardSHA,
 		Rounds: *rounds, MaxMinutes: *maxMinutes, path: *manifestPath,
 	}
 	if err := m.save(); err != nil {
@@ -429,7 +434,7 @@ func runInstance(ctx context.Context, c clients, m *manifest, tags map[string]st
 	var ud strings.Builder
 	if err := template.Must(template.New("ud").Parse(userDataTmpl)).Execute(&ud, map[string]any{
 		"MaxMinutes": o.MaxMinutes, "Bucket": m.Bucket, "Prefix": m.Prefix, "Region": m.Region,
-		"BaseSHA": m.BaseSHA, "FixSHA": m.FixSHA, "OptoutSHA": m.OptoutSHA,
+		"BaseSHA": m.BaseSHA, "FixSHA": m.FixSHA, "OptoutSHA": m.OptoutSHA, "GuardSHA": m.GuardSHA,
 		"GoVersion": o.GoVersion, "GoSHA256": goSHA, "Rounds": o.Rounds, "BenchiVersion": benchiVersion,
 	}); err != nil {
 		return fmt.Errorf("render user data: %w", err)

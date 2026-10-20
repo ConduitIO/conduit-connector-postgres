@@ -39,9 +39,12 @@ type Config struct {
 	// The destination reuses prepared statements (cache_statement) and checks a
 	// per-table schema fingerprint with every batch, so a column type change on
 	// a running pipeline invalidates the cache and the next write sees the new
-	// type — fast and correct. Set `default_query_exec_mode` to `describe_exec`,
-	// `exec` or `simple_protocol` to override; `cache_statement` and
-	// `cache_describe` are also guarded and safe.
+	// type. Set `default_query_exec_mode` (in the URL or in a service file) to
+	// `describe_exec`, `exec` or `simple_protocol` to override; `cache_statement`
+	// and `cache_describe` are also guarded. Behind a connection pooler that does
+	// not track prepared statements (PgBouncer in transaction mode with
+	// `max_prepared_statements=0`), set `default_query_exec_mode=describe_exec`
+	// or `exec`: cached statements are not supported there.
 	URL string `json:"url" validate:"required"`
 	// Table is used as the target table into which records are inserted.
 	Table string `json:"table" default:"{{ index .Metadata \"opencdc.collection\" }}"`
