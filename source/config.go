@@ -86,7 +86,7 @@ type Config struct {
 	// slot starts at the current WAL, so every change between the saved
 	// position and the slot's creation is skipped and never delivered: this
 	// setting accepts that DATA LOSS. Leave it false (the default) and the
-	// connector refuses to start with the error `postgres.slot.wal_gap`
+	// connector refuses to start with the error `postgres.source.slot_wal_gap`
 	// instead. Use it only after deciding that the destination can be repaired
 	// some other way, and remove it once the pipeline has resumed.
 	LogreplAllowWALGap bool `json:"logrepl.allowWALGap" default:"false"`

@@ -95,7 +95,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	// Invariant 3: before anything is created, so a refusal leaves no slot
 	// behind that a retry would take for a healthy one.
 	if c.Import == nil {
-		if err := checkSlotCoversPosition(ctx, pool, c); err != nil {
+		if err := checkSlot(ctx, pool, c); err != nil {
 			return nil, err
 		}
 	}
@@ -141,9 +141,15 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	)
 
 	newSub := internal.CreateSubscription
-	if c.Import != nil {
+	switch {
+	case c.Import != nil:
 		// Import mode never creates the slot: a slot created now would start
 		// at the current WAL and miss everything since Debezium's offset.
+		newSub = internal.OpenSubscription
+	case hasSavedPosition(c) && !c.AllowWALGap:
+		// Invariant 3: a saved position never creates a slot. checkSlot
+		// already looked, but a slot dropped after that read must not be
+		// recreated at the current WAL either.
 		newSub = internal.OpenSubscription
 	}
 	sub, err := newSub(
@@ -164,6 +170,9 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 				Message: fmt.Sprintf("replication slot %q does not exist (it was dropped after the preflight)", c.SlotName),
 				Fix:     "Go back to Debezium with the manual runbook, gated by `conduit migrate kafka-connect --check-rollback`, then redo the cutover. Import mode never creates a slot.",
 			}
+		}
+		if c.Import == nil && errors.Is(err, internal.ErrMissingSlot) {
+			return nil, newSlotGapError(c.SlotName, slotGapPositions{saved: describeSavedPosition(c), newSlotStart: currentWAL(ctx, pool)})
 		}
 		return nil, fmt.Errorf("failed to initialize subscription: %w", err)
 	}

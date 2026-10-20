@@ -46,3 +46,55 @@ func ReadReplicationSlot(ctx context.Context, conn *pgxpool.Pool, name string) (
 
 	return r, nil
 }
+
+// SlotHealth is what pg_replication_slots says about whether a slot can still
+// be streamed from.
+type SlotHealth struct {
+	// WALStatus is wal_status (Postgres 13+), "" when the server has no such
+	// column or it is NULL. "lost" means the WAL the slot needs is gone.
+	WALStatus string
+	// InvalidationReason is invalidation_reason (Postgres 17+), "" when unset
+	// or not available on this server.
+	InvalidationReason string
+}
+
+// Invalidated reports whether the slot can no longer be streamed from.
+func (h SlotHealth) Invalidated() bool {
+	return h.WALStatus == "lost" || h.InvalidationReason != ""
+}
+
+// ReadSlotHealth returns the health of an existing slot, or ErrMissingSlot.
+// It reads neither restart_lsn nor confirmed_flush_lsn, which are NULL on an
+// invalidated slot and would fail a scan into an LSN.
+func ReadSlotHealth(ctx context.Context, conn *pgxpool.Pool, name string) (SlotHealth, error) {
+	var version int
+	if err := conn.QueryRow(ctx, "SELECT current_setting('server_version_num')::int").Scan(&version); err != nil {
+		return SlotHealth{}, fmt.Errorf("failed to read the server version: %w", err)
+	}
+	// Name the columns only on servers that have them: wal_status came with
+	// Postgres 13, invalidation_reason with 17.
+	walStatus, reason := "NULL::text", "NULL::text"
+	if version >= 130000 {
+		walStatus = "wal_status"
+	}
+	if version >= 170000 {
+		reason = "invalidation_reason"
+	}
+	var h SlotHealth
+	var ws, ir *string
+	err := conn.QueryRow(ctx,
+		"SELECT "+walStatus+", "+reason+" FROM pg_replication_slots WHERE slot_name=$1", name).Scan(&ws, &ir)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SlotHealth{}, fmt.Errorf("%s: %w", name, ErrMissingSlot)
+	}
+	if err != nil {
+		return SlotHealth{}, fmt.Errorf("failed to read replication slot %q: %w", name, err)
+	}
+	if ws != nil {
+		h.WALStatus = *ws
+	}
+	if ir != nil {
+		h.InvalidationReason = *ir
+	}
+	return h, nil
+}

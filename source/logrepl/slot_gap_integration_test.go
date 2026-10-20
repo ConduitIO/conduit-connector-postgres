@@ -166,11 +166,11 @@ func TestCombinedIterator_SlotDropped_CDCPosition_FailsLoudly(t *testing.T) {
 		slotGapDiagnose(ctx, t, pool, table, it)
 	}
 
-	var gap *SlotGapError
+	var gap *SlotError
 	is.True(errors.As(err, &gap)) // coded error
-	is.Equal(gap.Code, CodeSlotGap)
+	is.Equal(gap.Code, CodeSlotWALGap)
 	msg := err.Error()
-	for _, want := range []string{string(CodeSlotGap), table, "logrepl.allowWALGap", "logrepl.slotName"} {
+	for _, want := range []string{string(CodeSlotWALGap), table, "logrepl.allowWALGap", "logrepl.slotName", "set it back"} {
 		is.True(strings.Contains(msg, want)) // error names the code, slot, setting and path
 	}
 
@@ -223,15 +223,16 @@ func TestCombinedIterator_SlotDropped_SnapshotPosition_FailsLoudly(t *testing.T)
 		_ = it.Teardown(ctx)
 		t.Fatal("SILENT SKIP: Open succeeded on a recreated slot with a snapshot position; the UPDATE of an already-read row is never delivered")
 	}
-	var gap *SlotGapError
+	var gap *SlotError
 	is.True(errors.As(err, &gap))
-	is.Equal(gap.Code, CodeSlotGap)
+	is.Equal(gap.Code, CodeSlotWALGap)
 }
 
 // An intact slot resumes as before, including after the pipeline sat idle and
-// the slot's restart_lsn moved past the saved record LSN. This is why the
-// check is "the slot had to be created", not "restart_lsn > saved LSN": the
-// connector itself advances the slot past the last record when idle.
+// the slot's confirmed_flush_lsn moved past the saved record LSN. This is why
+// the check is "the slot is missing", not "the slot's LSN is past the saved
+// LSN": the connector itself reports the server's WAL end once everything is
+// acked, so a healthy slot is routinely ahead of the last record.
 func TestCombinedIterator_IntactSlot_ResumesAfterIdle(t *testing.T) {
 	ctx := test.Context(t)
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
@@ -260,6 +261,7 @@ func TestCombinedIterator_IntactSlot_ResumesAfterIdle(t *testing.T) {
 	slot, err := internal.ReadReplicationSlot(ctx, pool, table)
 	is.NoErr(err)
 	t.Logf("saved LSN %s, slot restart_lsn %s, confirmed_flush_lsn %s", saved, slot.RestartLSN, slot.ConfirmedFlushLSN)
+	is.True(slot.ConfirmedFlushLSN > saved) // the slot is ahead of the saved record, and must still resume
 
 	it, err := NewCombinedIterator(ctx, pool, slotGapConfig(table, pos, false))
 	is.NoErr(err)
@@ -294,4 +296,86 @@ func TestCombinedIterator_SlotDropped_AllowWALGap(t *testing.T) {
 	slotGapInsert(ctx, t, pool, table, "after-reopen")
 	is.Equal(slotGapReadKeys(ctx, t, it, 1), []string{"after-reopen"}) // the gap is real, and accepted
 	is.NoErr(it.Teardown(ctx))
+}
+
+// alterSystem sets cluster settings for a test and restores every one of them
+// (ALTER SYSTEM ... RESET) when the test ends.
+func alterSystem(ctx context.Context, t *testing.T, pool *pgxpool.Pool, settings map[string]string) {
+	t.Helper()
+	reload := func() {
+		if _, err := pool.Exec(context.Background(), "SELECT pg_reload_conf()"); err != nil {
+			t.Errorf("pg_reload_conf: %v", err)
+		}
+	}
+	for name, value := range settings {
+		if _, err := pool.Exec(ctx, fmt.Sprintf("ALTER SYSTEM SET %s = '%s'", name, value)); err != nil {
+			t.Fatalf("alter system %s: %v", name, err)
+		}
+		t.Cleanup(func() {
+			if _, err := pool.Exec(context.Background(), "ALTER SYSTEM RESET "+name); err != nil {
+				t.Errorf("alter system reset %s: %v", name, err)
+			}
+			reload()
+		})
+	}
+	reload()
+}
+
+// An invalidated slot that still exists cannot be streamed from. It is refused
+// with its own code for a fresh start and for a resume, instead of an uncoded
+// scan error (NULL restart_lsn) or a late failure at the snapshot handoff.
+//
+// This test changes cluster-wide settings for a few seconds (and restores
+// them); a slot of another test that is inactive in that window could be
+// invalidated too.
+func TestCombinedIterator_InvalidatedSlot_FailsLoudly(t *testing.T) {
+	ctx := test.Context(t)
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	is := is.New(t)
+
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupTestTable(ctx, t, pool)
+	other := test.SetupTestTable(ctx, t, pool)
+
+	// An unused slot that has to keep WAL.
+	test.CreateReplicationSlot(t, pool, table)
+	test.CreatePublication(t, pool, table, []string{table})
+
+	alterSystem(ctx, t, pool, map[string]string{"max_slot_wal_keep_size": "1MB", "wal_keep_size": "0"})
+
+	var status string
+	for deadline := time.Now().Add(30 * time.Second); status != "lost" && time.Now().Before(deadline); {
+		slotGapInsert(ctx, t, pool, other, "noise")
+		_, err := pool.Exec(ctx, "SELECT pg_switch_wal()")
+		is.NoErr(err)
+		_, err = pool.Exec(ctx, "CHECKPOINT")
+		is.NoErr(err)
+		is.NoErr(pool.QueryRow(ctx, "SELECT wal_status FROM pg_replication_slots WHERE slot_name=$1", table).Scan(&status))
+		if status != "lost" {
+			time.Sleep(300 * time.Millisecond)
+		}
+	}
+	is.Equal(status, "lost")
+
+	for name, pos := range map[string]opencdc.Position{
+		"fresh start":  {},
+		"cdc position": opencdc.Position(`{"version":3,"type":2,"last_lsn":"0/1000","tx_commit_lsn":"0/1000","tx_seq":1}`),
+		"snapshot":     opencdc.Position(`{"version":3,"type":1}`),
+	} {
+		_, err := NewCombinedIterator(ctx, pool, slotGapConfig(table, pos, name == "snapshot"))
+		var se *SlotError
+		if !errors.As(err, &se) {
+			t.Fatalf("%s: err = %v, want *SlotError", name, err)
+		}
+		is.Equal(se.Code, CodeSlotInvalidated)
+		for _, want := range []string{string(CodeSlotInvalidated), table, "wal_status=lost", "pg_drop_replication_slot", "re-snapshot"} {
+			is.True(strings.Contains(err.Error(), want))
+		}
+		// logrepl.allowWALGap does not apply to an invalidated slot.
+		conf := slotGapConfig(table, pos, name == "snapshot")
+		conf.AllowWALGap = true
+		_, err = NewCombinedIterator(ctx, pool, conf)
+		is.Equal(CodeOf(err), CodeSlotInvalidated)
+	}
 }

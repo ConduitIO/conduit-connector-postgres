@@ -15,42 +15,42 @@
 package logrepl
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
 
+	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/jackc/pglogrepl"
 	"github.com/matryer/is"
 )
 
-func TestSlotGapError_Message(t *testing.T) {
+func TestSlotError_Messages(t *testing.T) {
 	is := is.New(t)
 
-	var err error = &SlotGapError{
-		Code:          CodeSlotGap,
-		Path:          slotNamePath,
-		Slot:          "myslot",
-		SavedPosition: "last acked change at LSN 0/1000",
-		NewSlotStart:  "0/2000",
+	var gap error = newSlotGapError("myslot", slotGapPositions{saved: "last acked change at LSN 0/1000", newSlotStart: "0/2000"})
+	is.True(strings.HasPrefix(gap.Error(), "postgres.source.slot_wal_gap: ")) // the code survives layers that keep only the string
+	for _, want := range []string{`"myslot"`, "0/1000", "0/2000", "(logrepl.slotName)", "set it back", "logrepl.allowWALGap", "DATA LOSS", "re-snapshot", "failover or promotion"} {
+		is.True(strings.Contains(gap.Error(), want))
 	}
-	is.True(strings.HasPrefix(err.Error(), "postgres.slot.wal_gap: ")) // the code survives layers that keep only the string
-	for _, want := range []string{`"myslot"`, "0/1000", "0/2000", "logrepl.slotName", "logrepl.allowWALGap", "DATA LOSS", "re-snapshot"} {
-		is.True(strings.Contains(err.Error(), want))
-	}
+	is.Equal(CodeOf(errors.Join(errors.New("outer"), gap)), CodeSlotWALGap)
 
-	var gap *SlotGapError
-	is.True(errors.As(errors.Join(errors.New("outer"), err), &gap))
-	is.Equal(gap.Code, "postgres.slot.wal_gap")
+	var inv error = newSlotInvalidatedError("myslot", internal.SlotHealth{WALStatus: "lost", InvalidationReason: "wal_removed"})
+	is.True(strings.HasPrefix(inv.Error(), "postgres.source.slot_invalidated: "))
+	for _, want := range []string{`"myslot"`, "wal_status=lost", "invalidation_reason=wal_removed", "pg_drop_replication_slot('myslot')", "re-snapshot"} {
+		is.True(strings.Contains(inv.Error(), want))
+	}
+	is.Equal(CodeOf(inv), CodeSlotInvalidated)
+	is.Equal(CodeOf(errors.New("x")), Code(""))
 }
 
-// A fresh start never touches the database: a new slot is what it wants.
-func TestCheckSlotCoversPosition_FreshStart(t *testing.T) {
+func TestSlotHealth_Invalidated(t *testing.T) {
 	is := is.New(t)
-	// A nil pool would panic on any query.
-	is.NoErr(checkSlotCoversPosition(context.Background(), nil, CDCConfig{SlotName: "s"}))
-	is.NoErr(checkSlotCoversPosition(context.Background(), nil, CDCConfig{SlotName: "s", StartPosition: position.Position{Version: 3}}))
+	is.True(!internal.SlotHealth{}.Invalidated())
+	is.True(!internal.SlotHealth{WALStatus: "reserved"}.Invalidated())
+	is.True(!internal.SlotHealth{WALStatus: "unreserved"}.Invalidated())
+	is.True(internal.SlotHealth{WALStatus: "lost"}.Invalidated())
+	is.True(internal.SlotHealth{InvalidationReason: "wal_removed"}.Invalidated())
 }
 
 func TestDescribeSavedPosition(t *testing.T) {

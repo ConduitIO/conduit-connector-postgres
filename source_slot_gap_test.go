@@ -16,7 +16,6 @@ package postgres
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -73,9 +72,8 @@ func TestSource_Open_SlotMissingWithPosition(t *testing.T) {
 		_ = src.Teardown(ctx)
 		t.Fatal("Open succeeded on a missing slot with a saved position")
 	}
-	var gap *logrepl.SlotGapError
-	if !errors.As(err, &gap) || gap.Code != "postgres.slot.wal_gap" {
-		t.Fatalf("Open error = %v, want a *logrepl.SlotGapError with code postgres.slot.wal_gap", err)
+	if logrepl.CodeOf(err) != "postgres.source.slot_wal_gap" {
+		t.Fatalf("Open error = %v, want code postgres.source.slot_wal_gap", err)
 	}
 	if !strings.Contains(err.Error(), table) || !strings.Contains(err.Error(), "0/1000") {
 		t.Fatalf("error does not name the slot and the saved LSN: %v", err)
