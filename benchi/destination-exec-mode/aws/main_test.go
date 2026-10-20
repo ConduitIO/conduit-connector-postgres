@@ -27,6 +27,7 @@ func TestUserData(t *testing.T) {
 	err := template.Must(template.New("ud").Option("missingkey=error").Parse(userDataTmpl)).Execute(&b, map[string]any{
 		"MaxMinutes": 150, "Bucket": "conduit-pg367-1-x", "Prefix": "runs/x", "Region": "us-west-1",
 		"BaseSHA": strings.Repeat("a", 40), "FixSHA": strings.Repeat("b", 40), "OptoutSHA": strings.Repeat("c", 40),
+		"GuardSHA": strings.Repeat("d", 40),
 		"GoVersion": "1.26.9", "GoSHA256": strings.Repeat("0", 64), "Rounds": 4, "BenchiVersion": benchiVersion,
 	})
 	if err != nil {
@@ -49,7 +50,8 @@ func TestUserData(t *testing.T) {
 			t.Fatalf("user data contains %q", s)
 		}
 	}
-	for _, s := range []string{"BASE_SHA=" + strings.Repeat("a", 40), "OPTOUT_SHA=" + strings.Repeat("c", 40), "shutdown -h now"} {
+	for _, s := range []string{"BASE_SHA=" + strings.Repeat("a", 40), "OPTOUT_SHA=" + strings.Repeat("c", 40),
+		"GUARD_SHA=" + strings.Repeat("d", 40), "shutdown -h now"} {
 		if !strings.Contains(ud, s) {
 			t.Fatalf("user data lacks %q", s)
 		}

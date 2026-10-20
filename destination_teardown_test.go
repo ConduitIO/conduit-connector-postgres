@@ -115,9 +115,16 @@ func TestDestinationTeardownDuringWrite(t *testing.T) {
 // tests can reach its internals.
 func newRawDestination(ctx context.Context, t *testing.T, table string) *Destination {
 	t.Helper()
+	return newRawDestinationURL(ctx, t, table, test.RegularConnString)
+}
+
+// newRawDestinationURL is newRawDestination with a connection string of the
+// test's choosing.
+func newRawDestinationURL(ctx context.Context, t *testing.T, table, url string) *Destination {
+	t.Helper()
 	d := &Destination{stmtBuilder: sq.StatementBuilder.PlaceholderFormat(sq.Dollar)}
 	err := sdk.Util.ParseConfig(ctx, map[string]string{
-		"url": test.RegularConnString, "table": table,
+		"url": url, "table": table,
 	}, d.Config(), Connector.NewSpecification().DestinationParams)
 	if err != nil {
 		t.Fatal(err)

@@ -17,6 +17,7 @@ REGION={{.Region}}
 BASE_SHA={{.BaseSHA}}
 FIX_SHA={{.FixSHA}}
 OPTOUT_SHA={{.OptoutSHA}}
+GUARD_SHA={{.GuardSHA}}
 GO_VERSION={{.GoVersion}}
 GO_SHA256={{.GoSHA256}}
 ROUNDS={{.Rounds}}
@@ -71,12 +72,16 @@ status "docker $(docker version --format '{{"{{"}}.Server.Version{{"}}"}}'), $(d
 git clone -q https://github.com/ConduitIO/conduit-connector-postgres.git "$W/pg" || fail "git clone"
 cd "$W/pg" || fail "cd clone"
 git fetch -q origin '+refs/heads/fix/destination-describe-exec*:refs/remotes/origin/fix/destination-describe-exec*' || fail "fetch branches"
-for sha in "$BASE_SHA" "$FIX_SHA" "$OPTOUT_SHA"; do
+# Before it merges, the guarded arm can come from its PR branch; after, it is on
+# main and already in the clone, so a missing branch is not an error here (the
+# commit check below is).
+git fetch -q origin '+refs/heads/fix/destination-cache-hardening*:refs/remotes/origin/fix/destination-cache-hardening*' || true
+for sha in "$BASE_SHA" "$FIX_SHA" "$OPTOUT_SHA" "$GUARD_SHA"; do
   git cat-file -e "${sha}^{commit}" || fail "commit $sha not found"
 done
-# The benchmark config and run.sh come from the opt-out commit, which carries
-# the four-arm version of both.
-git checkout -q --detach "$OPTOUT_SHA" || fail "checkout $OPTOUT_SHA"
+# The benchmark config and run.sh come from the guarded commit, which carries
+# the five-arm version of both.
+git checkout -q --detach "$GUARD_SHA" || fail "checkout $GUARD_SHA"
 docker pull -q ghcr.io/conduitio/conduit:v0.20.2 || fail "pull conduit"
 docker pull -q postgres:17 || fail "pull postgres"
 status "cloned and pulled"
@@ -87,7 +92,7 @@ status "cloned and pulled"
   for k in instance-id instance-type ami-id placement/availability-zone; do
     echo "$k: $(curl -fsS -H "X-aws-ec2-metadata-token: $TOK" "http://169.254.169.254/latest/meta-data/$k")"
   done
-  echo "## commits"; echo "base: $BASE_SHA"; echo "fix (option 1): $FIX_SHA"; echo "optout (option 2): $OPTOUT_SHA"
+  echo "## commits"; echo "base: $BASE_SHA"; echo "fix (option 1): $FIX_SHA"; echo "optout (option 2): $OPTOUT_SHA"; echo "guarded: $GUARD_SHA"
   echo "## images"; docker images --no-trunc
   echo "## uname"; uname -a
   echo "## os"; cat /etc/os-release
@@ -116,7 +121,7 @@ sync; echo 3 > /proc/sys/vm/drop_caches
 status "quiet 60s before the run"
 sleep 60
 status "run start (rounds $ROUNDS)"
-BASE_REF=$BASE_SHA FIX_REF=$FIX_SHA OPTOUT_REF=$OPTOUT_SHA BENCHI=/root/go/bin/benchi OUT="$OUT/results" \
+BASE_REF=$BASE_SHA FIX_REF=$FIX_SHA OPTOUT_REF=$OPTOUT_SHA GUARD_REF=$GUARD_SHA BENCHI=/root/go/bin/benchi OUT="$OUT/results" \
   bash benchi/destination-exec-mode/run.sh "$ROUNDS" > "$OUT/run.log" 2>&1
 status "run exit $?"
 finish

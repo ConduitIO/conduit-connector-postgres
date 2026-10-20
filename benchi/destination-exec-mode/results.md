@@ -1,5 +1,13 @@
 # Results
 
+## Pending: guarded cached statements (`pg-guarded`)
+
+Not run yet. The run of record below predates #433, so it has no arm for
+cached statements with the per-table schema guard (the default in v0.17.0 and
+v0.17.1; an explicit opt-in from v0.17.2, #436). Nothing in this file measures
+the guard's cost. To fill this in, launch the five-arm kit
+with `-guard-sha` set to a commit from v0.17.0 on (see README.md).
+
 ## 2026-10-15, EC2 c7i.2xlarge: the run of record
 
 | | |

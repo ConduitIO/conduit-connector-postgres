@@ -22,12 +22,12 @@ import (
 	"fmt"
 	"maps"
 	"math/big"
-	"net/url"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -41,6 +41,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/rs/zerolog"
 )
 
 type Destination struct {
@@ -90,6 +91,63 @@ type Destination struct {
 	// written only inside Write, which connSem serializes, so it needs no lock
 	// of its own; it stays bounded by the number of distinct tables written.
 	schemaFingerprint map[string]string
+	// connConfig is the parsed configuration Open connected with, kept so a
+	// Write can replace a connection that pgx closed after an error with a
+	// fresh one (and so a fresh, empty statement cache).
+	connConfig *pgx.ConnConfig
+	// stats counts the write path's recoveries. The SDK has no metrics API
+	// for connectors, so each recovery is logged at Info with its running
+	// total; the counters are atomic so they can be read outside Write.
+	stats destinationStats
+	// recoveryLogs rate-limits the Info lines of those recoveries, so a
+	// pooler that makes most batches retry cannot flood the log.
+	recoveryLogs recoveryLogThrottle
+}
+
+// recoveryLogInterval is the least time between two Info lines about the same
+// kind of recovery. The lines in between are counted, not dropped silently:
+// the next line carries the count, and the running totals in destinationStats
+// count every recovery.
+const recoveryLogInterval = 30 * time.Second
+
+// recoveryLogThrottle remembers when each kind of recovery was last logged.
+type recoveryLogThrottle struct {
+	mu         sync.Mutex
+	last       map[string]time.Time
+	suppressed map[string]uint64
+}
+
+// recoveryLog returns an Info event for a recovery of the given kind, with
+// the number of lines of that kind suppressed since the last one, or nil if
+// one was logged less than recoveryLogInterval ago. A nil *zerolog.Event is a
+// no-op, so callers chain on the result unconditionally.
+func (d *Destination) recoveryLog(ctx context.Context, kind string) *zerolog.Event {
+	t := &d.recoveryLogs
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := time.Now()
+	if t.last == nil {
+		t.last = make(map[string]time.Time)
+		t.suppressed = make(map[string]uint64)
+	}
+	if last, ok := t.last[kind]; ok && now.Sub(last) < recoveryLogInterval {
+		t.suppressed[kind]++
+		return nil
+	}
+	n := t.suppressed[kind]
+	t.suppressed[kind] = 0
+	t.last[kind] = now
+	return sdk.Logger(ctx).Info().Uint64("suppressed_since_last", n)
+}
+
+// destinationStats counts the write path's recoveries over a destination's
+// lifetime: schema guards that fired, connections replaced after pgx closed
+// them, and batches retried after a pooler lost or duplicated a prepared
+// statement.
+type destinationStats struct {
+	schemaChanges   atomic.Uint64
+	reconnects      atomic.Uint64
+	staleStatements atomic.Uint64
 }
 
 func (d *Destination) Config() sdk.DestinationConfig {
@@ -112,6 +170,16 @@ func (d *Destination) Open(ctx context.Context) error {
 	// opt-in. See cpool.DefaultSCRAMCompat.
 	cpool.DefaultSCRAMCompat(&connConfig.Config)
 	d.guardSchema = setDestinationQueryExecMode(connConfig, d.config.URL)
+	d.connConfig = connConfig
+	if d.guardSchema {
+		sdk.Logger(ctx).Warn().
+			Str("default_query_exec_mode", connConfig.DefaultQueryExecMode.String()).
+			Msg("the url selects a query exec mode that caches prepared statements. It is safe only on a " +
+				"direct connection or behind a pooler that does not share prepared statements between clients. " +
+				"Behind PgBouncer (at any max_prepared_statements) or another statement-sharing pooler, a column " +
+				"type change can make writes convert values silently (5/2 stored as 3 in an integer column); " +
+				"use default_query_exec_mode=describe_exec there")
+	}
 
 	conn, err := pgx.ConnectConfig(ctx, connConfig)
 	if err != nil {
@@ -127,24 +195,27 @@ func (d *Destination) Open(ctx context.Context) error {
 	return nil
 }
 
-// setDestinationQueryExecMode selects cache_statement as the default query exec
-// mode — one round trip per batch, the fast mode — unless the URL sets
-// default_query_exec_mode itself, in which case the explicit value is kept.
-// It reports whether the mode in use caches statement parameter types
-// (cache_statement or cache_describe), so Open can enable the schema guard.
+// setDestinationQueryExecMode selects describe_exec as the default query exec
+// mode unless the connection settings set default_query_exec_mode themselves,
+// in which case the explicit value is kept. It reports whether the mode in use
+// caches statement parameter types (cache_statement or cache_describe), so
+// Open can enable the schema guard and warn.
 //
-// Invariant 6 is upheld by the schema guard, not by the mode: a cached
-// statement keeps the parameter types Postgres inferred when it was prepared,
-// so after ALTER COLUMN ... TYPE it would keep sending parameters typed for the
-// old column (5/2 into a column that had become integer was stored as 3, #367).
-// The guard aborts the batch and clears the statement cache when the column
-// types change, so cache_statement stays safe and can be the default.
-// describe_exec, exec and simple_protocol do not cache parameter types, so they
-// need no guard.
+// Invariant 6: describe_exec describes every statement on the connection that
+// runs it, so parameter types follow ALTER COLUMN ... TYPE (#367) and nothing
+// cached can go stale. A cached statement keeps the parameter types Postgres
+// inferred when it was prepared. On a direct connection the schema guard
+// catches that: it aborts the batch and clears the cache when the table's
+// column types change. Behind a pooler that shares prepared statements across
+// clients (PgBouncer with max_prepared_statements > 0) the guard cannot: a
+// destination that connects after the ALTER learns a fresh fingerprint but is
+// handed a statement another client prepared before it, and 5/2 into a column
+// that had become integer is stored as 3 (#436). That is why cache_statement,
+// the default from v0.17.0 to v0.17.1, is no longer the default.
 func setDestinationQueryExecMode(cfg *pgx.ConnConfig, rawURL string) (cachesTypes bool) {
 	if !explicitQueryExecMode(rawURL) {
-		cfg.DefaultQueryExecMode = pgx.QueryExecModeCacheStatement
-		return true
+		cfg.DefaultQueryExecMode = pgx.QueryExecModeDescribeExec
+		return false
 	}
 	switch cfg.DefaultQueryExecMode {
 	case pgx.QueryExecModeCacheStatement, pgx.QueryExecModeCacheDescribe:
@@ -154,20 +225,21 @@ func setDestinationQueryExecMode(cfg *pgx.ConnConfig, rawURL string) (cachesType
 	}
 }
 
-// explicitQueryExecMode reports whether a connection string (URL or keyword/
-// value form) sets default_query_exec_mode. pgx's parsed config cannot tell an
-// explicit cache_statement from its default.
+// explicitQueryExecMode reports whether the connection settings set
+// default_query_exec_mode anywhere pgx reads it from: the URL, the
+// keyword/value form, or a service file selected with service= or PGSERVICE
+// (PGSERVICEFILE). pgx's parsed config cannot tell an explicit cache_statement
+// from its default, so this asks pgconn, which keeps every setting it does not
+// know itself, default_query_exec_mode included, in RuntimeParams.
 func explicitQueryExecMode(connString string) bool {
-	if u, err := url.Parse(connString); err == nil && (u.Scheme == "postgres" || u.Scheme == "postgresql") {
-		_, ok := u.Query()["default_query_exec_mode"]
-		return ok
+	cfg, err := pgconn.ParseConfig(connString)
+	if err != nil {
+		// pgx.ParseConfig parses the same string first and fails the same way,
+		// so Open never gets here with an invalid string.
+		return false
 	}
-	for _, field := range strings.Fields(connString) {
-		if k, _, ok := strings.Cut(field, "="); ok && strings.TrimSpace(k) == "default_query_exec_mode" {
-			return true
-		}
-	}
-	return false
+	_, ok := cfg.RuntimeParams["default_query_exec_mode"]
+	return ok
 }
 
 // Write routes incoming records to their appropriate handler based on the
@@ -198,70 +270,349 @@ func (d *Destination) Write(ctx context.Context, recs []opencdc.Record) (int, er
 	if !d.beginWrite(cancel) {
 		return 0, errors.New("destination is closing")
 	}
-	// pgx must not watch this context. When a watched context ends in the
-	// middle of a batch, pgx leaves its context-watcher goroutine parked
-	// forever (it waits for an Unwatch that the failed batch never reaches),
-	// pinning the connection: one leaked goroutine per interrupted
-	// connection. So the database calls get a context that cannot be
-	// canceled, and the interruption is done here instead: when ctx ends,
-	// the connection's deadline is set to now, which fails the blocked read
-	// the same way pgx does. stopWatch always runs before Write returns.
-	stopWatch := interruptOnDone(ctx, d.conn)
-	defer func() {
-		// If the watcher fired, the connection carries a deadline in the
-		// past and is unusable: close it before Write returns so a later
-		// caller never sees a half-dead connection.
-		if stopWatch() {
-			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = d.closeConn(closeCtx)
-		}
-	}()
-	ctx = context.WithoutCancel(ctx)
 
+	// The records become statements once per Write; only the batch built
+	// from them (with its schema guards) is rebuilt on a retry. So the
+	// per-record checks and the drift warnings run once, not per attempt.
+	p, err := d.planWrites(ctx, recs)
+	if err != nil {
+		return 0, err
+	}
+
+	// freshRetried records that the batch already got its one retry on a
+	// clean statement cache after it could not be sent (see isUnsentBatch).
+	freshRetried := false
 	for attempt := 0; ; attempt++ {
-		b, skipped, err := d.buildBatch(ctx, recs)
-		if err != nil {
+		// A connection pgx closed after an error (a failed send, a network
+		// error) would fail every later Write; replace it first. The new
+		// connection has an empty statement cache.
+		if err := d.ensureConn(ctx); err != nil {
 			return 0, err
 		}
-		changed, err := d.execBatch(ctx, b, len(recs)-skipped)
-		if err != nil {
-			// A batch can fail before the schema guard runs: a value that no
-			// longer encodes into a cached parameter type (ALTER widened the
-			// column and the value overflows the old type) fails at argument
-			// encoding, before the guard statement is sent, and pgx does not
-			// invalidate the statement cache on that path. Clear it so a
-			// redelivery re-prepares with the live column types (invariant 6,
-			// and at-least-once liveness); for ordinary errors this is a cheap
-			// no-op next to the redelivery.
-			if d.conn != nil && !d.conn.IsClosed() {
-				_ = d.conn.DeallocateAll(ctx)
+		changed, err := d.attemptWrite(ctx, p)
+		if err == nil && changed == "" {
+			return len(recs), nil
+		}
+		// Teardown canceled the Write: the batch was rolled back (or never
+		// sent), and nothing is retried or acked.
+		if ctx.Err() != nil {
+			if err == nil {
+				err = ctx.Err()
 			}
 			return 0, err
 		}
-		if !changed {
-			return len(recs), nil
-		}
-		if attempt >= maxSchemaGuardRetries {
-			return 0, errors.New("destination schema changed repeatedly: the target table is being altered " +
-				"faster than writes can re-describe it")
-		}
-		sdk.Logger(ctx).Debug().
-			Msg("destination schema changed: clearing the statement cache and retrying the batch")
-		// Invariant 6: forget the stale fingerprints so the retry re-learns
-		// them, and reset pgx's statement and description caches so the retry
-		// re-prepares with the live column types instead of the cached ones.
-		d.schemaFingerprint = nil
-		if err := d.conn.DeallocateAll(ctx); err != nil {
-			return 0, fmt.Errorf("failed to clear the statement cache after a schema change: %w", err)
+		if err := d.prepareRetry(ctx, p, attempt, changed, err, &freshRetried); err != nil {
+			return 0, err
 		}
 	}
 }
 
-// maxSchemaGuardRetries bounds the schema-change retry loop. A single retry
-// always succeeds unless the schema keeps changing under the writes; beyond
-// this bound the destination gives up rather than spin.
-const maxSchemaGuardRetries = 3
+// prepareRetry decides what follows a failed attempt of a Write. It returns
+// nil after readying the destination for another attempt, or the error the
+// Write returns. changed is the table whose schema guard fired (err is nil
+// then); freshRetried records that the one retry after an unsent batch was
+// used.
+func (d *Destination) prepareRetry(
+	ctx context.Context, p *writePlan, attempt int, changed string, err error, freshRetried *bool,
+) error {
+	retryable := attempt < maxWriteRetries
+	switch {
+	case err == nil: // a schema guard fired and rolled the batch back
+		total := d.stats.schemaChanges.Add(1)
+		if !retryable {
+			return fmt.Errorf("%s: the schema of table %q changed %d times while one batch was being "+
+				"written; it is being altered faster than writes can re-describe it. Fix: retry once the "+
+				"DDL is done", ErrorCodeDestinationSchemaChurn, changed, attempt+1)
+		}
+		d.recoveryLog(ctx, "schema_change").
+			Str("table", changed).
+			Uint64("schema_changes_total", total).
+			Msg("destination table schema changed: rolled the batch back, clearing the statement cache and retrying")
+		// Invariant 6: forget the stale fingerprints so the retry re-learns
+		// them, and reset pgx's statement and description caches so the
+		// retry re-prepares with the live column types, not the cached ones.
+		d.schemaFingerprint = nil
+		if err := d.resetStatementCache(ctx); err != nil {
+			return fmt.Errorf("failed to clear the statement cache after a schema change: %w", err)
+		}
+	case d.guardSchema && retryable && isStaleStatement(err):
+		// Only a pooler that does not track prepared statements (PgBouncer
+		// in transaction mode with max_prepared_statements=0) produces
+		// these with a cached statement: the server that runs the batch is
+		// not the one the statement was prepared on (26000), or already has
+		// one of that name from another client (42P05). Either error aborts
+		// the batch's implicit transaction, or happens while preparing,
+		// before anything ran, so nothing was committed and a retry cannot
+		// apply a record twice.
+		total := d.stats.staleStatements.Add(1)
+		d.recoveryLog(ctx, "stale_statement").
+			Err(err).
+			Uint64("stale_statement_retries_total", total).
+			Msg("a prepared statement was missing or already existed on the server (a transaction-mode " +
+				"connection pooler?): clearing the statement cache and retrying the batch. Behind such a " +
+				"pooler set default_query_exec_mode=describe_exec or exec in the url")
+		if err := d.clearStatementCache(ctx); err != nil {
+			return err
+		}
+	case d.guardSchema && retryable && !*freshRetried && isUnsentBatch(err):
+		// The batch failed before its Sync was sent, so the server never
+		// committed any of it. In a caching mode the likely cause is a
+		// statement cached before ALTER widened a column (a value that
+		// overflows the old type cannot be encoded), and on any record but
+		// the first pgx closes the connection on this path (it cannot
+		// resynchronize a half-sent pipeline). Retry once on a clean cache;
+		// if the batch fails again, the value itself does not fit.
+		*freshRetried = true
+		d.recoveryLog(ctx, "unsent_batch").
+			Err(err).
+			Msg("could not send the batch: retrying it once with an empty statement cache")
+		if err := d.clearStatementCache(ctx); err != nil {
+			return err
+		}
+	default:
+		return d.failWrite(ctx, p, err)
+	}
+	return nil
+}
+
+// maxWriteRetries bounds the retries of one Write, whatever their cause: a
+// schema guard that fired, a missing or duplicate prepared statement, or a
+// batch that could not be sent. One retry succeeds unless the cause keeps
+// recurring; beyond this bound the destination gives up rather than spin.
+const maxWriteRetries = 3
+
+// ErrorCodeDestinationSchemaChurn prefixes the error for a batch whose target
+// table changed schema on every retry.
+const ErrorCodeDestinationSchemaChurn = "postgres.destination.schema_churn"
+
+// ErrorCodeDestinationTableNotFound prefixes the error for a write to a table
+// that does not exist (or is not visible through the connection's
+// search_path).
+const ErrorCodeDestinationTableNotFound = "postgres.destination.table_not_found"
+
+// attemptWrite builds the batch for p and runs it once. It returns the table
+// whose schema guard fired (the batch was rolled back and must be retried), or
+// the error that failed the batch.
+func (d *Destination) attemptWrite(ctx context.Context, p *writePlan) (changed string, err error) {
+	err = d.withConn(ctx, func(ctx context.Context) error {
+		b, err := d.buildBatch(ctx, p)
+		if err != nil {
+			return err
+		}
+		changed, err = d.execBatch(ctx, b, p)
+		return err
+	})
+	return changed, err
+}
+
+// withConn runs fn against d.conn with a context pgx cannot watch. When a
+// watched context ends in the middle of a batch, pgx leaves its
+// context-watcher goroutine parked forever (it waits for an Unwatch that the
+// failed batch never reaches), pinning the connection: one leaked goroutine
+// per interrupted connection. So fn gets a context that cannot be canceled,
+// and the interruption is done here instead: when ctx ends, the connection's
+// deadline is set to now, which fails the blocked read the same way pgx does.
+// If that happened, the connection is unusable and is closed (and forgotten)
+// before withConn returns, so a later caller never sees a half-dead
+// connection.
+func (d *Destination) withConn(ctx context.Context, fn func(context.Context) error) error {
+	stop := interruptOnDone(ctx, d.conn)
+	err := fn(context.WithoutCancel(ctx))
+	if stop() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = d.closeConn(closeCtx)
+	}
+	return err
+}
+
+// ensureConn replaces a connection pgx has closed with a new one. pgx closes
+// a connection when it cannot resynchronize it: a network error, or a batch
+// that failed after some of its statements were sent (pgconn's
+// Pipeline.Close on unsynced requests). Without this every later Write would
+// fail on the closed connection, and the stale statement cache that caused
+// the failure would never be cleared. The new connection starts with empty
+// statement and description caches, and the schema fingerprints are
+// re-learned. ctx bounds the connect, so Teardown can interrupt it.
+func (d *Destination) ensureConn(ctx context.Context) error {
+	if d.conn == nil {
+		return errors.New("destination is closed")
+	}
+	if !d.conn.IsClosed() {
+		return nil
+	}
+	conn, err := pgx.ConnectConfig(ctx, d.connConfig)
+	if err != nil {
+		// d.conn stays the closed connection, so the next Write tries again.
+		return fmt.Errorf("the connection was closed after an error and reconnecting failed: %w", err)
+	}
+	d.conn = conn
+	d.schemaFingerprint = nil
+	total := d.stats.reconnects.Add(1)
+	d.recoveryLog(ctx, "reconnect").
+		Uint64("reconnects_total", total).
+		Msg("the connection was closed after an error: reconnected with an empty statement cache")
+	return nil
+}
+
+// resetStatementCache empties pgx's statement and description caches and
+// deallocates the connection's prepared statements, so the next batch
+// re-prepares every statement with the live column types.
+func (d *Destination) resetStatementCache(ctx context.Context) error {
+	return d.withConn(ctx, func(ctx context.Context) error {
+		return d.conn.DeallocateAll(ctx)
+	})
+}
+
+// clearStatementCache makes the next attempt start from an empty statement
+// cache and re-learned schema fingerprints: on an open connection by
+// resetting its cache, on one pgx closed by leaving it to ensureConn, which
+// replaces it with a new connection.
+func (d *Destination) clearStatementCache(ctx context.Context) error {
+	d.schemaFingerprint = nil
+	if d.conn == nil || d.conn.IsClosed() {
+		return nil
+	}
+	if err := d.resetStatementCache(ctx); err != nil {
+		return fmt.Errorf("failed to clear the statement cache: %w", err)
+	}
+	return nil
+}
+
+// failWrite is the error path of Write. A failed batch can leave cached
+// parameter types behind that no longer match the table (a value that does
+// not encode into a cached type fails before the schema guard runs, and pgx
+// does not invalidate the statement cache on that path), so the cache is
+// cleared if the connection is still open: a redelivery re-prepares with the
+// live column types (invariant 6, and at-least-once liveness). For ordinary
+// errors this is a cheap no-op next to the redelivery. A batch that could
+// not be sent gets the index of the record whose value could not be encoded.
+func (d *Destination) failWrite(ctx context.Context, p *writePlan, err error) error {
+	if isUnsentBatch(err) && d.conn != nil && d.encodesWithDescribedTypes() && d.ensureConn(ctx) == nil {
+		var idx int
+		var encErr error
+		_ = d.withConn(ctx, func(ctx context.Context) error {
+			idx, encErr = d.locateEncodeFailure(ctx, p)
+			return nil
+		})
+		if encErr != nil {
+			err = fmt.Errorf("failed to encode record %d for table %q: %w", p.writes[idx].record,
+				p.writes[idx].table, encErr)
+		}
+	}
+	if table, ok := undefinedTable(p, err); ok {
+		err = tableNotFoundError(table, err)
+	}
+	if d.conn != nil && !d.conn.IsClosed() {
+		_ = d.withConn(ctx, func(ctx context.Context) error {
+			return d.conn.DeallocateAll(ctx)
+		})
+	}
+	return err
+}
+
+// undefinedTable reports whether err is Postgres's undefined_table (42P01),
+// raised where describe_exec and exec describe or run a statement for a table
+// that does not exist, and which of p's tables it is about, if that can be
+// told: the statement pgx names, or the only table of the batch.
+func undefinedTable(p *writePlan, err error) (string, bool) {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "42P01" {
+		return "", false
+	}
+	var pre pgx.ErrPreprocessingBatch
+	if errors.As(err, &pre) {
+		for _, w := range p.writes {
+			if w.sql == pre.SQL() {
+				return w.table, true
+			}
+		}
+	}
+	if len(p.tables) == 1 {
+		return p.tables[0], true
+	}
+	return "", true
+}
+
+// tableNotFoundError is the error for a write to a table that does not exist,
+// in every query exec mode. cause is the server error, if there is one.
+func tableNotFoundError(table string, cause error) error {
+	msg := fmt.Sprintf("%s: table %q does not exist or is not visible through the connection's "+
+		"search_path. Fix: create the table, or set the destination's table (or the record's "+
+		"opencdc.collection metadata) to an existing one", ErrorCodeDestinationTableNotFound, table)
+	if cause == nil {
+		return errors.New(msg)
+	}
+	return fmt.Errorf("%s: %w", msg, cause)
+}
+
+// encodesWithDescribedTypes reports whether the connection's query exec mode
+// encodes arguments into the parameter types the server describes (every mode
+// but exec and simple_protocol), so locateEncodeFailure reproduces its
+// encoding.
+func (d *Destination) encodesWithDescribedTypes() bool {
+	switch d.conn.Config().DefaultQueryExecMode {
+	case pgx.QueryExecModeExec, pgx.QueryExecModeSimpleProtocol:
+		return false
+	default:
+		return true
+	}
+}
+
+// locateEncodeFailure finds the first write in p whose arguments pgx cannot
+// encode into the parameter types the server describes for its statement now,
+// and returns its index in p.writes and the encoding error. It describes each
+// distinct statement once (an unnamed statement: nothing is left on the
+// server). It returns a nil error if every write encodes, for example because
+// the schema changed again since the batch failed. It only runs on the error
+// path, so the extra round trips do not matter.
+func (d *Destination) locateEncodeFailure(ctx context.Context, p *writePlan) (int, error) {
+	descs := make(map[string]*pgconn.StatementDescription)
+	var eqb pgx.ExtendedQueryBuilder
+	for i, w := range p.writes {
+		sd, ok := descs[w.sql]
+		if !ok {
+			var err error
+			sd, err = d.conn.PgConn().Prepare(ctx, "", w.sql, nil)
+			if err != nil {
+				// (0, nil) means "not found": the lookup is best effort, and
+				// the caller then keeps the batch's original error instead of
+				// replacing it with one about the lookup. The index is
+				// meaningless without an error.
+				return 0, nil
+			}
+			descs[w.sql] = sd
+		}
+		if err := eqb.Build(d.conn.TypeMap(), sd, w.args); err != nil {
+			return i, err
+		}
+	}
+	// Every write encodes now (the schema changed again since the batch
+	// failed): not found, as above.
+	return 0, nil
+}
+
+// isStaleStatement reports whether err is a server error about a prepared
+// statement the client believes is cached: 26000 (invalid_sql_statement_name,
+// the statement does not exist on this server) or 42P05
+// (duplicate_prepared_statement, this server already has one of that name).
+func isStaleStatement(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && (pgErr.Code == "26000" || pgErr.Code == "42P05")
+}
+
+// isUnsentBatch reports whether err failed a batch before pgx sent its Sync:
+// pgx could not encode an argument (the "build" step), or could not prepare a
+// statement for a reason the server did not report (a network error in the
+// "prepare" step). The server commits a batch's implicit transaction only at
+// its Sync, so none of the batch was committed. A server error in the prepare
+// step (a missing table, a syntax error) is not included: it would fail the
+// same way on a retry.
+func isUnsentBatch(err error) bool {
+	var pre pgx.ErrPreprocessingBatch
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pre) && !errors.As(err, &pgErr)
+}
 
 // schemaFingerprintSQL computes the schema fingerprint of the table named by
 // $1 (a quoted identifier, the same form the write's table reference uses): the
@@ -304,39 +655,50 @@ func (d *Destination) learnFingerprint(ctx context.Context, table string) (strin
 		return "", fmt.Errorf("failed to read the schema of table %q: %w", table, err)
 	}
 	if !fp.Valid || fp.String == "" {
-		return "", fmt.Errorf("table %q does not exist", table)
+		return "", tableNotFoundError(table, nil)
 	}
 	return fp.String, nil
 }
 
-// tables collects the distinct tables a batch writes to, in first-use order,
-// so the schema guards are queued once per table after the writes.
-type tables struct {
-	order []string
-	seen  map[string]struct{}
+// writePlan holds the statements of one Write: one per record that is not a
+// skipped drift marker, in record order, and the distinct tables they write
+// to, in first-use order. It is built once per Write; every attempt turns it
+// into a new pgx.Batch (buildBatch), because the schema guards appended to the
+// batch depend on the fingerprints known at that attempt.
+type writePlan struct {
+	writes []plannedWrite
+	tables []string
+	seen   map[string]struct{}
 }
 
-func (t *tables) add(name string) {
-	if t.seen == nil {
-		t.seen = make(map[string]struct{})
-	}
-	if _, ok := t.seen[name]; ok {
-		return
-	}
-	t.seen[name] = struct{}{}
-	t.order = append(t.order, name)
+// plannedWrite is one record's statement.
+type plannedWrite struct {
+	sql    string
+	args   []any
+	table  string
+	record int // the record's index in the slice Write was given
 }
 
-// buildBatch queues one statement per record into a batch and, when the query
-// exec mode caches parameter types, one schema guard per distinct table after
-// the writes. It learns a table's schema fingerprint on first use. It returns
-// the batch and the number of records skipped as drift markers.
-func (d *Destination) buildBatch(ctx context.Context, recs []opencdc.Record) (*pgx.Batch, int, error) {
-	b := &pgx.Batch{}
-	var skipped, strayDrift int
+func (p *writePlan) add(record int, table, sql string, args []any) {
+	p.writes = append(p.writes, plannedWrite{sql: sql, args: args, table: table, record: record})
+	if p.seen == nil {
+		p.seen = make(map[string]struct{})
+	}
+	if _, ok := p.seen[table]; !ok {
+		p.seen[table] = struct{}{}
+		p.tables = append(p.tables, table)
+	}
+}
+
+// planWrites turns the records into statements. It skips drift markers that
+// carry the source's proof, and refuses invalid records before anything is
+// sent. Its warnings about drift markers are logged once per Write, not once
+// per attempt.
+func (d *Destination) planWrites(ctx context.Context, recs []opencdc.Record) (*writePlan, error) {
+	p := &writePlan{}
+	var strayDrift int
 	var modifiedMarkers []string
-	tables := &tables{}
-	for _, rec := range recs {
+	for i, rec := range recs {
 		// Schema-drift markers (postgres.schema.drift, source/logrepl) are
 		// keyless, payload-less OperationCreate records that carry the approval
 		// checkpoint for the escape hatch. Writing them would insert an empty
@@ -355,7 +717,7 @@ func (d *Destination) buildBatch(ctx context.Context, recs []opencdc.Record) (*p
 		// rewrite any record (docs/design-documents/20261015-drift-marker-source-signal.md).
 		skip, added, err := driftMarkerDisposition(rec)
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 		if skip {
 			if added != "" {
@@ -364,7 +726,6 @@ func (d *Destination) buildBatch(ctx context.Context, recs []opencdc.Record) (*p
 			sdk.Logger(ctx).Debug().
 				Str("table", rec.Metadata[logrepl.MetadataSchemaDriftTable]).
 				Msg("skipping schema-drift marker record at the destination (FM6 no-op)")
-			skipped++
 			continue
 		}
 		if hasDriftMetadata(rec) {
@@ -372,52 +733,62 @@ func (d *Destination) buildBatch(ctx context.Context, recs []opencdc.Record) (*p
 		}
 		rec, err = d.ensureStructuredData(rec)
 		if err != nil {
-			return nil, 0, fmt.Errorf("failed to clean record: %w", err)
+			return nil, fmt.Errorf("failed to clean record: %w", err)
 		}
 		switch rec.Operation {
 		case opencdc.OperationCreate:
-			err = d.handleInsert(ctx, rec, b, tables)
+			err = d.handleInsert(ctx, i, rec, p)
 		case opencdc.OperationUpdate:
-			err = d.handleUpdate(ctx, rec, b, tables)
+			err = d.handleUpdate(ctx, i, rec, p)
 		case opencdc.OperationDelete:
-			err = d.handleDelete(ctx, rec, b, tables)
+			err = d.handleDelete(ctx, i, rec, p)
 		case opencdc.OperationSnapshot:
-			err = d.handleInsert(ctx, rec, b, tables)
+			err = d.handleInsert(ctx, i, rec, p)
 		default:
-			return nil, 0, fmt.Errorf("invalid operation %q", rec.Operation)
+			return nil, fmt.Errorf("invalid operation %q", rec.Operation)
 		}
 		if err != nil {
-			return nil, 0, err
+			return nil, err
 		}
 	}
 
 	logDriftWarnings(ctx, modifiedMarkers, strayDrift)
+	return p, nil
+}
 
+// buildBatch queues p's statements into a new batch and, when the query exec
+// mode caches parameter types, one schema guard per distinct table after the
+// writes. It learns a table's schema fingerprint on first use.
+func (d *Destination) buildBatch(ctx context.Context, p *writePlan) (*pgx.Batch, error) {
+	b := &pgx.Batch{}
+	for _, w := range p.writes {
+		b.Queue(w.sql, w.args...)
+	}
 	if d.guardSchema {
-		for _, table := range tables.order {
+		for _, table := range p.tables {
 			if d.schemaFingerprint == nil {
 				d.schemaFingerprint = make(map[string]string)
 			}
 			if _, ok := d.schemaFingerprint[table]; !ok {
 				fp, err := d.learnFingerprint(ctx, table)
 				if err != nil {
-					return nil, 0, err
+					return nil, err
 				}
 				d.schemaFingerprint[table] = fp
 			}
 			b.Queue(schemaGuardSQL, quoteIdent(table), d.schemaFingerprint[table])
 		}
 	}
-	return b, skipped, nil
+	return b, nil
 }
 
-// execBatch sends b and reads every result. It reports whether a schema guard
-// fired — a schema change rolled the batch back, so the caller must clear the
-// statement cache and retry — or returns the error to surface.
+// execBatch sends b and reads every result. It returns the table whose schema
+// guard fired — a schema change rolled the batch back, so the caller must
+// clear the statement cache and retry — or the error to surface.
 //
 // Invariant 1: the batch runs in one implicit transaction; a write error or a
 // fired guard rolls it back, so nothing is acked on the error paths.
-func (d *Destination) execBatch(ctx context.Context, b *pgx.Batch, nWrites int) (changed bool, err error) {
+func (d *Destination) execBatch(ctx context.Context, b *pgx.Batch, p *writePlan) (changed string, err error) {
 	br := d.conn.SendBatch(ctx, b)
 	var firstErr error
 	firstIdx := 0
@@ -429,18 +800,25 @@ func (d *Destination) execBatch(ctx context.Context, b *pgx.Batch, nWrites int) 
 	// Close drains the remaining results, resynchronizes the connection and,
 	// on an error, invalidates the statement cache for the batch.
 	if closeErr := br.Close(); firstErr == nil && closeErr != nil {
-		return false, fmt.Errorf("failed to commit batch: %w", closeErr)
+		return "", fmt.Errorf("failed to commit batch: %w", closeErr)
 	}
-	if firstErr == nil {
-		return false, nil
+	nWrites := len(p.writes)
+	switch {
+	case firstErr == nil:
+		return "", nil
+	case errors.As(firstErr, new(pgx.ErrPreprocessingBatch)):
+		// pgx failed the batch before running it, and every result reports
+		// the same error, so its index says nothing about which record caused
+		// it. failWrite names the record when it can.
+		return "", fmt.Errorf("failed to send the batch: %w", firstErr)
+	case firstIdx >= nWrites && isSchemaChanged(firstErr):
+		return p.tables[firstIdx-nWrites], nil
+	case firstIdx >= nWrites:
+		return "", fmt.Errorf("failed to verify the schema of table %q: %w", p.tables[firstIdx-nWrites], firstErr)
+	default:
+		w := p.writes[firstIdx]
+		return "", fmt.Errorf("failed to execute query for record %d (table %q): %w", w.record, w.table, firstErr)
 	}
-	if firstIdx >= nWrites && isSchemaChanged(firstErr) {
-		return true, nil
-	}
-	if firstIdx >= nWrites {
-		return false, fmt.Errorf("failed to verify the table schema: %w", firstErr)
-	}
-	return false, fmt.Errorf("failed to execute query for record %d: %w", firstIdx, firstErr)
 }
 
 // logDriftWarnings reports, once per batch, proven markers a processor added
@@ -735,37 +1113,36 @@ func (d *Destination) finishWrite() {
 // table. It checks for the existence of a key. If no key is present or a key
 // exists and no key column name is configured, it will plainly insert the data.
 // Otherwise it upserts the record.
-func (d *Destination) handleInsert(ctx context.Context, r opencdc.Record, b *pgx.Batch, tables *tables) error {
-	return d.upsert(ctx, r, b, tables)
+func (d *Destination) handleInsert(ctx context.Context, idx int, r opencdc.Record, p *writePlan) error {
+	return d.upsert(ctx, idx, r, p)
 }
 
 // handleUpdate adds a query to the batch that updates the record in the target
 // table. It assumes the record has a key and fails if one is not present.
-func (d *Destination) handleUpdate(ctx context.Context, r opencdc.Record, b *pgx.Batch, tables *tables) error {
+func (d *Destination) handleUpdate(ctx context.Context, idx int, r opencdc.Record, p *writePlan) error {
 	if !d.hasKey(r) {
 		return fmt.Errorf("key must be provided on update actions")
 	}
 	// TODO handle case if the key was updated
-	return d.upsert(ctx, r, b, tables)
+	return d.upsert(ctx, idx, r, p)
 }
 
 // handleDelete adds a query to the batch that deletes the record from the
 // target table. It assumes the record has a key and fails if one is not present.
-func (d *Destination) handleDelete(ctx context.Context, r opencdc.Record, b *pgx.Batch, tables *tables) error {
+func (d *Destination) handleDelete(ctx context.Context, idx int, r opencdc.Record, p *writePlan) error {
 	if !d.hasKey(r) {
 		return fmt.Errorf("key must be provided on delete actions")
 	}
-	return d.remove(ctx, r, b, tables)
+	return d.remove(ctx, idx, r, p)
 }
 
-func (d *Destination) upsert(ctx context.Context, r opencdc.Record, b *pgx.Batch, tables *tables) error {
+func (d *Destination) upsert(ctx context.Context, idx int, r opencdc.Record, p *writePlan) error {
 	payload, _ := r.Payload.After.(opencdc.StructuredData) // ensureStructuredData made it structured
 	key, _ := r.Key.(opencdc.StructuredData)
 	tableName, err := d.getTableName(r)
 	if err != nil {
 		return fmt.Errorf("failed to get table name for upsert: %w", err)
 	}
-	tables.add(tableName)
 	if len(payload) == 0 {
 		// An empty row would be an INSERT of only the key (or of nothing),
 		// acked as if the record had been applied (invariant 6).
@@ -790,17 +1167,16 @@ func (d *Destination) upsert(ctx context.Context, r opencdc.Record, b *pgx.Batch
 		Any("key", key).
 		Msg("upserting record")
 
-	b.Queue(query, args...)
+	p.add(idx, tableName, query, args)
 	return nil
 }
 
-func (d *Destination) remove(ctx context.Context, r opencdc.Record, b *pgx.Batch, tables *tables) error {
+func (d *Destination) remove(ctx context.Context, idx int, r opencdc.Record, p *writePlan) error {
 	key, _ := r.Key.(opencdc.StructuredData) // hasKey checked it
 	tableName, err := d.getTableName(r)
 	if err != nil {
 		return fmt.Errorf("failed to get table name for delete: %w", err)
 	}
-	tables.add(tableName)
 
 	if err := checkIdentifiers(tableName, key, nil); err != nil {
 		return err
@@ -837,7 +1213,7 @@ func (d *Destination) remove(ctx context.Context, r opencdc.Record, b *pgx.Batch
 		Any("key", key).
 		Msg("deleting record")
 
-	b.Queue(query, args...)
+	p.add(idx, tableName, query, args)
 	return nil
 }
 

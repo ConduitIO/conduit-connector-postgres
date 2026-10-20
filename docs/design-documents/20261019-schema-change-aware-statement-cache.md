@@ -1,5 +1,16 @@
 # Destination: a schema-change-aware statement cache so `cache_statement` can be the default
 
+> **Superseded in part (v0.17.2, #436).** The default is `describe_exec` again. Behind a pooler
+> that shares prepared statements between clients (PgBouncer with `max_prepared_statements > 0`),
+> a destination that connects after an `ALTER` learns a fresh fingerprint but runs a statement
+> another client prepared before it, so the guard passes and values are converted silently. The
+> "race safety" argument below holds only when the statement was prepared on the destination's
+> own connection. The guard stays for explicit `cache_statement`/`cache_describe` on direct
+> connections. See `20261019-destination-statement-cache-recovery.md`, which also changes:
+> a batch that cannot be encoded is retried once on a clean cache inside Write (and a connection
+> pgx closed is replaced); a fired guard is logged at Info; and the benchi numbers below compare
+> *unguarded* cached statements with `describe_exec`, the guarded mode is unmeasured.
+
 ## Summary
 
 The destination's `default_query_exec_mode` defaults to `describe_exec`, which re-describes

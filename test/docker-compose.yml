@@ -24,6 +24,19 @@ services:
       - REPMGR_NODE_NAME=pg-0
       - REPMGR_NODE_NETWORK_NAME=pg-0
       - REPMGR_PORT_NUMBER=5432
+  # Transaction pooling with prepared-statement tracking, two server
+  # connections: the setup where a statement prepared by one client is handed
+  # to another (#436). See BouncerConnString.
+  pgbouncer:
+    image: docker.io/edoburu/pgbouncer:v1.26.0-p0
+    entrypoint: [ "pgbouncer", "/etc/pgbouncer-test/pgbouncer.ini" ]
+    ports:
+      - "6432:6432"
+    volumes:
+      - "./pgbouncer/:/etc/pgbouncer-test/:ro"
+    depends_on:
+      pg-0:
+        condition: service_healthy
 volumes:
   pg_0_data:
     driver: local
