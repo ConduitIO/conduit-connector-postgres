@@ -758,28 +758,57 @@ func (d *Destination) planWrites(ctx context.Context, recs []opencdc.Record) (*w
 
 // buildBatch queues p's statements into a new batch and, when the query exec
 // mode caches parameter types, one schema guard per distinct table after the
-// writes. It learns a table's schema fingerprint on first use.
+// writes.
+//
+// In a caching mode it learns every table's schema fingerprint first and tags
+// each write's SQL text with its table's fingerprint (statementText). pgx names
+// a cached statement after its SQL text, so a statement prepared under one
+// table schema is never reused under another: not by this connection's cache,
+// and not by a pooler that shares prepared statements between clients by name
+// (#436). The guard still runs, for a schema change between learning the
+// fingerprint and executing the batch.
 func (d *Destination) buildBatch(ctx context.Context, p *writePlan) (*pgx.Batch, error) {
 	b := &pgx.Batch{}
-	for _, w := range p.writes {
-		b.Queue(w.sql, w.args...)
+	if !d.guardSchema {
+		for _, w := range p.writes {
+			b.Queue(w.sql, w.args...)
+		}
+		return b, nil
 	}
-	if d.guardSchema {
-		for _, table := range p.tables {
-			if d.schemaFingerprint == nil {
-				d.schemaFingerprint = make(map[string]string)
+	if d.schemaFingerprint == nil {
+		d.schemaFingerprint = make(map[string]string)
+	}
+	for _, table := range p.tables {
+		if _, ok := d.schemaFingerprint[table]; !ok {
+			fp, err := d.learnFingerprint(ctx, table)
+			if err != nil {
+				return nil, err
 			}
-			if _, ok := d.schemaFingerprint[table]; !ok {
-				fp, err := d.learnFingerprint(ctx, table)
-				if err != nil {
-					return nil, err
-				}
-				d.schemaFingerprint[table] = fp
-			}
-			b.Queue(schemaGuardSQL, quoteIdent(table), d.schemaFingerprint[table])
+			d.schemaFingerprint[table] = fp
 		}
 	}
+	// One tagged string per distinct statement in the batch, not per record.
+	tagged := make(map[string]string)
+	for _, w := range p.writes {
+		sql, ok := tagged[w.sql]
+		if !ok {
+			sql = statementText(w.sql, d.schemaFingerprint[w.table])
+			tagged[w.sql] = sql
+		}
+		b.Queue(sql, w.args...)
+	}
+	for _, table := range p.tables {
+		b.Queue(schemaGuardSQL, quoteIdent(table), d.schemaFingerprint[table])
+	}
 	return b, nil
+}
+
+// statementText appends the table's schema fingerprint to a write's SQL text
+// as a comment. The fingerprint is an md5 in hex, so it cannot end the
+// comment. Postgres ignores the comment; pgx and poolers that key prepared
+// statements by SQL text (or by a name derived from it) do not.
+func statementText(sql, fingerprint string) string {
+	return sql + " /* fp:" + fingerprint + " */"
 }
 
 // execBatch sends b and reads every result. It returns the table whose schema

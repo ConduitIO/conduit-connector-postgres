@@ -33,6 +33,10 @@ import (
 var poolerTestModes = map[string]string{
 	"default":       test.BouncerConnString,
 	"describe_exec": test.BouncerConnString + "&default_query_exec_mode=describe_exec",
+	// Prototype: the fingerprint in the statement text keeps a stale shared
+	// statement from being reused (see statementText).
+	"cache_statement": test.BouncerConnString + "&default_query_exec_mode=cache_statement",
+	"cache_describe":  test.BouncerConnString + "&default_query_exec_mode=cache_describe",
 }
 
 // Regression test for #436, a silent conversion shipped in v0.17.0 and
