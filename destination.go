@@ -33,6 +33,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type Destination struct {
@@ -82,6 +83,16 @@ func (d *Destination) Open(ctx context.Context) error {
 	// v0.14.x keeps pgx 5.7's SCRAM behaviour; channel_binding=require stays
 	// opt-in. See cpool.DefaultSCRAMCompat.
 	cpool.DefaultSCRAMCompat(&connConfig.Config)
+	if setDestinationQueryExecMode(connConfig, d.config.URL) {
+		sdk.Logger(ctx).Warn().
+			Str("default_query_exec_mode", connConfig.DefaultQueryExecMode.String()).
+			Msg("the url selects a query exec mode that caches prepared statements and their parameter types. " +
+				"After ALTER COLUMN ... TYPE on a running pipeline a cached statement goes stale, and values are " +
+				"converted into the new type without an error (5/2 stored as 3 in an integer column) until the " +
+				"destination restarts. Behind PgBouncer or another pooler that shares prepared statements between " +
+				"clients, a restart does not help either. Remove default_query_exec_mode from the url to use " +
+				"describe_exec (conduit-connector-postgres#367)")
+	}
 
 	conn, err := pgx.ConnectConfig(ctx, connConfig)
 	if err != nil {
@@ -95,6 +106,50 @@ func (d *Destination) Open(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// setDestinationQueryExecMode selects describe_exec as the default query exec
+// mode unless the connection settings set default_query_exec_mode themselves,
+// in which case the explicit value is kept. It reports whether the mode in use
+// caches statement parameter types (cache_statement or cache_describe), so
+// Open can warn.
+//
+// Invariant 6: describe_exec describes every statement on the connection that
+// runs it, so parameter types follow ALTER COLUMN ... TYPE and nothing cached
+// can go stale. pgx's own default, cache_statement, keeps the parameter types
+// Postgres inferred when the statement was first prepared: after the column
+// became integer the destination kept sending numeric parameters and Postgres
+// converted them by assignment, so 5/2 was stored as 3 without an error
+// (#367). Describing each statement costs a round trip per statement, so a URL
+// may opt back into a cache mode, with a warning.
+func setDestinationQueryExecMode(cfg *pgx.ConnConfig, rawURL string) (cachesTypes bool) {
+	if !explicitQueryExecMode(rawURL) {
+		cfg.DefaultQueryExecMode = pgx.QueryExecModeDescribeExec
+		return false
+	}
+	switch cfg.DefaultQueryExecMode {
+	case pgx.QueryExecModeCacheStatement, pgx.QueryExecModeCacheDescribe:
+		return true
+	default:
+		return false
+	}
+}
+
+// explicitQueryExecMode reports whether the connection settings set
+// default_query_exec_mode anywhere pgx reads it from: the URL, the
+// keyword/value form, or a service file selected with service= or PGSERVICE
+// (PGSERVICEFILE). pgx's parsed config cannot tell an explicit cache_statement
+// from its default, so this asks pgconn, which keeps every setting it does not
+// know itself, default_query_exec_mode included, in RuntimeParams.
+func explicitQueryExecMode(connString string) bool {
+	cfg, err := pgconn.ParseConfig(connString)
+	if err != nil {
+		// pgx.ParseConfig parses the same string first and fails the same way,
+		// so Open never gets here with an invalid string.
+		return false
+	}
+	_, ok := cfg.RuntimeParams["default_query_exec_mode"]
+	return ok
 }
 
 // Write routes incoming records to their appropriate handler based on the
