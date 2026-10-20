@@ -22,7 +22,7 @@ The method follows Conduit's `benchi/METHODOLOGY.md`:
   infrastructure. Each round runs the three arms in a rotated order, so
   drift during the session lands on every arm. One warmup run per batch size
   is discarded.
-- **Five arms.** `pg-cache` (base, cached statements), `pg-cache-aa` (base built again: the A/A control), `pg-describe` (option 1), `pg-optout` (option 2: describe_exec by default, run here with an explicit `default_query_exec_mode=cache_statement` URL, so it should measure like `pg-cache`) and `pg-guarded` (the default since v0.17.0: the default URL selects cache_statement with the per-table schema guard of #433, one extra pipelined statement per table per batch). Rounds rotate the order as a Latin square; five rounds put every arm in every position once.
+- **Five arms.** `pg-cache` (base, cached statements), `pg-cache-aa` (base built again: the A/A control), `pg-describe` (option 1), `pg-optout` (option 2: describe_exec by default, run here with an explicit `default_query_exec_mode=cache_statement` URL, so it should measure like `pg-cache`) and `pg-guarded` (an explicit `cache_statement` URL on a commit with the per-table schema guard of #433: one extra pipelined statement per table per batch). The guarded mode was the default in v0.17.0 and v0.17.1; from v0.17.2 the default is `describe_exec` again (#436), because behind a statement-sharing pooler the guard cannot see a stale statement another client prepared. Rounds rotate the order as a Latin square; five rounds put every arm in every position once.
 - **The guarded arm is not measured yet.** The 2026-10-15 run of record had the first four arms only. Until a run with `pg-guarded` is in `results.md`, the cost of the schema guard is unmeasured: the numbers there compare unguarded cached statements with describe_exec.
 - **Two batch sizes.** `describe_exec` adds a round trip per distinct
   statement per batch. With `sdk.batch.size: 1` (the default) that is a
@@ -74,7 +74,8 @@ benchi/destination-exec-mode/run.sh 5     # 5 rounds; about 80 minutes
 `run.sh` builds `bin/main` and `bin/main2` from `BASE_REF` (default `bd44a41`,
 main before #367), `bin/describe` from `FIX_REF` (default `HEAD`),
 `bin/optout` from `OPTOUT_REF` (default `FIX_REF`) and `bin/guarded` from
-`GUARD_REF` (default `HEAD`; any commit from v0.17.0 on). It
+`GUARD_REF` (default `HEAD`; any commit from v0.17.0 on; the arm's URL selects
+`cache_statement` explicitly). It
 writes `runs.csv` (one row per run with the before/after counts), the
 binaries' checksums, and each run's benchi output under `results/`. Run it
 on an otherwise idle machine; the uptime before and after each run is

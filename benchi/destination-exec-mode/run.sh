@@ -5,8 +5,8 @@
 #   pg-cache-aa  BASE_REF, built a second time: the A/A control
 #   pg-describe  FIX_REF, describe_exec (option 1)
 #   pg-optout    OPTOUT_REF, option 2 with an explicit cache_statement URL
-#   pg-guarded   GUARD_REF, the default URL: cache_statement with the schema
-#                guard (#433), the default since v0.17.0
+#   pg-guarded   GUARD_REF, an explicit cache_statement URL: cached statements
+#                with the schema guard (#433)
 # See README.md.
 #
 # Usage: benchi/destination-exec-mode/run.sh [ROUNDS]   (default 5)

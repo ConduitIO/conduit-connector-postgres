@@ -41,6 +41,13 @@ const RepmgrConnString = "postgres://repmgr:repmgrmeroxa@127.0.0.1:5433/meroxadb
 // RegularConnString is a non-replication user connection string for the test postgres.
 const RegularConnString = "postgres://meroxauser:meroxapass@127.0.0.1:5433/meroxadb?sslmode=disable"
 
+// BouncerConnString connects the regular user through the test PgBouncer
+// (test/docker-compose.yml, test/pgbouncer/pgbouncer.ini): transaction pooling,
+// two server connections, and prepared-statement tracking
+// (max_prepared_statements=200), so prepared statements are shared between the
+// clients of a server connection.
+const BouncerConnString = "postgres://meroxauser:meroxapass@127.0.0.1:6432/meroxadb?sslmode=disable"
+
 // TestTableAvroSchemaV1 is the Avro schema representation of the test table
 // defined through testTableCreateQuery.
 // The fields are sorted by name.

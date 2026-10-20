@@ -3,8 +3,8 @@
 # Compares Postgres destination throughput between the cached-statement mode
 # (main before #367, pgx's default), describe_exec (option 1, the fix) and
 # option 2 (describe_exec by default, run here with an explicit cache_statement
-# URL, the opt-out) and the guarded default since v0.17.0 (cache_statement
-# with the per-table schema guard, #433), with an A/A control: a second,
+# URL, the opt-out) and guarded cached statements (an explicit cache_statement
+# URL on a commit with the per-table schema guard, #433), with an A/A control: a second,
 # separately built main binary that should measure the same as the first. See
 # README.md.
 #

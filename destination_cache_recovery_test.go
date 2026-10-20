@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
@@ -34,6 +35,14 @@ import (
 	"github.com/matryer/is"
 	"github.com/rs/zerolog"
 )
+
+// cacheStatementURL selects the cached mode explicitly: the default is
+// describe_exec, which caches nothing, so the cache-recovery paths need it.
+var cacheStatementURL = test.RegularConnString + "&default_query_exec_mode=cache_statement"
+
+// bothModes is the default (describe_exec) and cache_statement, for behavior
+// that must hold in either.
+var bothModes = map[string]string{"default": test.RegularConnString, "cache_statement": cacheStatementURL}
 
 // cacheTestTable creates a table (id int PRIMARY KEY, n integer) and returns
 // its name and an admin connection.
@@ -77,7 +86,7 @@ func TestDestination_Write_EncodeFailureMidBatchReconnects(t *testing.T) {
 	is := is.New(t)
 	ctx := test.Context(t)
 	table, conn := cacheTestTable(ctx, t)
-	d := newRawDestination(ctx, t, table)
+	d := newRawDestinationURL(ctx, t, table, cacheStatementURL)
 
 	n, err := d.Write(ctx, []opencdc.Record{cacheTestRecord(table, 1, 5)})
 	is.NoErr(err)
@@ -107,25 +116,29 @@ func TestDestination_Write_EncodeFailureMidBatchReconnects(t *testing.T) {
 // stays usable: before, the connection pgx closed on this path was never
 // replaced, so every later Write failed.
 func TestDestination_Write_EncodeFailureNamesRecordAndRecovers(t *testing.T) {
-	is := is.New(t)
-	ctx := test.Context(t)
-	table, conn := cacheTestTable(ctx, t)
-	d := newRawDestination(ctx, t, table)
+	for name, url := range bothModes {
+		t.Run(name, func(t *testing.T) {
+			is := is.New(t)
+			ctx := test.Context(t)
+			table, conn := cacheTestTable(ctx, t)
+			d := newRawDestinationURL(ctx, t, table, url)
 
-	n, err := d.Write(ctx, []opencdc.Record{cacheTestRecord(table, 1, 5), cacheTestRecord(table, 2, 3_000_000_000)})
-	is.True(err != nil)
-	is.Equal(n, 0)
-	is.True(strings.Contains(err.Error(), "record 1 ")) // the record that does not fit
-	is.True(!strings.Contains(err.Error(), "record 0")) // not the first one
-	_, ok := storedN(ctx, t, conn, table, 1)
-	is.True(!ok) // invariant 1: the batch is all or nothing
+			n, err := d.Write(ctx, []opencdc.Record{cacheTestRecord(table, 1, 5), cacheTestRecord(table, 2, 3_000_000_000)})
+			is.True(err != nil)
+			is.Equal(n, 0)
+			is.True(strings.Contains(err.Error(), "record 1 ")) // the record that does not fit
+			is.True(!strings.Contains(err.Error(), "record 0")) // not the first one
+			_, ok := storedN(ctx, t, conn, table, 1)
+			is.True(!ok) // invariant 1: the batch is all or nothing
 
-	n, err = d.Write(ctx, []opencdc.Record{cacheTestRecord(table, 3, 7)})
-	is.NoErr(err)
-	is.Equal(n, 1)
-	got, ok := storedN(ctx, t, conn, table, 3)
-	is.True(ok)
-	is.Equal(got, int64(7))
+			n, err = d.Write(ctx, []opencdc.Record{cacheTestRecord(table, 3, 7)})
+			is.NoErr(err)
+			is.Equal(n, 1)
+			got, ok := storedN(ctx, t, conn, table, 3)
+			is.True(ok)
+			is.Equal(got, int64(7))
+		})
+	}
 }
 
 // SHOULD-2 of the #433 review: behind PgBouncer in transaction mode with
@@ -137,7 +150,7 @@ func TestDestination_Write_MissingPreparedStatementIsRetried(t *testing.T) {
 	is := is.New(t)
 	ctx := test.Context(t)
 	table, conn := cacheTestTable(ctx, t)
-	d := newRawDestination(ctx, t, table)
+	d := newRawDestinationURL(ctx, t, table, cacheStatementURL)
 
 	_, err := d.Write(ctx, []opencdc.Record{cacheTestRecord(table, 1, 5)})
 	is.NoErr(err)
@@ -164,7 +177,7 @@ func TestDestination_Write_DuplicatePreparedStatementIsRetried(t *testing.T) {
 	is := is.New(t)
 	ctx := test.Context(t)
 	table, conn := cacheTestTable(ctx, t)
-	d := newRawDestination(ctx, t, table)
+	d := newRawDestinationURL(ctx, t, table, cacheStatementURL)
 
 	// pgx's stmtcache.StatementName: the name is stable for the SQL text.
 	digest := sha256.Sum256([]byte(schemaFingerprintSQL))
@@ -190,7 +203,7 @@ func TestDestination_Write_GuardFireIsLoggedOnce(t *testing.T) {
 	var logs bytes.Buffer
 	ctx := zerolog.New(&logs).Level(zerolog.InfoLevel).WithContext(test.Context(t))
 	table, conn := cacheTestTable(ctx, t)
-	d := newRawDestination(ctx, t, table)
+	d := newRawDestinationURL(ctx, t, table, cacheStatementURL)
 
 	_, err := d.Write(ctx, []opencdc.Record{cacheTestRecord(table, 1, 5)})
 	is.NoErr(err)
@@ -227,17 +240,22 @@ func TestDestination_Write_GuardFireIsLoggedOnce(t *testing.T) {
 }
 
 // NIT of the #433 review: a write to a table that does not exist fails with a
-// stable error code.
+// stable error code, in the default mode (where Postgres reports 42P01) and in
+// a cached mode (where the fingerprint read finds no table).
 func TestDestination_Write_MissingTableHasErrorCode(t *testing.T) {
-	is := is.New(t)
-	ctx := test.Context(t)
-	table := test.RandomIdentifier(t) // never created
-	d := newRawDestination(ctx, t, table)
+	for name, url := range bothModes {
+		t.Run(name, func(t *testing.T) {
+			is := is.New(t)
+			ctx := test.Context(t)
+			table := test.RandomIdentifier(t) // never created
+			d := newRawDestinationURL(ctx, t, table, url)
 
-	n, err := d.Write(ctx, []opencdc.Record{cacheTestRecord(table, 1, 5)})
-	is.True(err != nil)
-	is.Equal(n, 0)
-	is.True(strings.HasPrefix(err.Error(), ErrorCodeDestinationTableNotFound+": "))
+			n, err := d.Write(ctx, []opencdc.Record{cacheTestRecord(table, 1, 5)})
+			is.True(err != nil)
+			is.Equal(n, 0)
+			is.True(strings.HasPrefix(err.Error(), ErrorCodeDestinationTableNotFound+": "))
+		})
+	}
 }
 
 // SHOULD-2: a default_query_exec_mode set in a service file (selected with
@@ -250,7 +268,8 @@ func TestDestinationQueryExecMode_ServiceFile(t *testing.T) {
 	file := filepath.Join(dir, "pg_service.conf")
 	if err := os.WriteFile(file, []byte(
 		"[pooled]\nhost=h\nuser=u\ndbname=db\ndefault_query_exec_mode=describe_exec\n\n"+
-			"[plain]\nhost=h\nuser=u\ndbname=db\n"), 0o600); err != nil {
+			"[plain]\nhost=h\nuser=u\ndbname=db\n\n"+
+			"[cached]\nhost=h\nuser=u\ndbname=db\ndefault_query_exec_mode=cache_statement\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PGSERVICEFILE", file)
@@ -263,7 +282,8 @@ func TestDestinationQueryExecMode_ServiceFile(t *testing.T) {
 		{"url service", "postgres://u@h/db?service=pooled", "", pgx.QueryExecModeDescribeExec, false},
 		{"keyword service", "service=pooled", "", pgx.QueryExecModeDescribeExec, false},
 		{"PGSERVICE", "postgres://u@h/db", "pooled", pgx.QueryExecModeDescribeExec, false},
-		{"service without mode", "service=plain", "", pgx.QueryExecModeCacheStatement, true},
+		{"service without mode", "service=plain", "", pgx.QueryExecModeDescribeExec, false},
+		{"service sets a cached mode", "postgres://u@h/db?service=cached", "", pgx.QueryExecModeCacheStatement, true},
 		{
 			"url overrides service", "postgres://u@h/db?service=pooled&default_query_exec_mode=exec", "",
 			pgx.QueryExecModeExec, false,
@@ -287,4 +307,29 @@ func TestIsStaleStatement(t *testing.T) {
 	is.True(isStaleStatement(fmt.Errorf("wrapped: %w", &pgconn.PgError{Code: "42P05"})))
 	is.True(!isStaleStatement(&pgconn.PgError{Code: "22012"}))
 	is.True(!isStaleStatement(fmt.Errorf("not a server error")))
+}
+
+// NIT of the #436 review: the per-attempt recovery lines are rate-limited per
+// kind, and the next line carries the number suppressed in between.
+func TestRecoveryLogIsRateLimited(t *testing.T) {
+	is := is.New(t)
+	var logs bytes.Buffer
+	ctx := zerolog.New(&logs).Level(zerolog.InfoLevel).WithContext(context.Background())
+	d := &Destination{}
+
+	d.recoveryLog(ctx, "reconnect").Msg("first")
+	d.recoveryLog(ctx, "reconnect").Msg("suppressed")
+	d.recoveryLog(ctx, "reconnect").Msg("suppressed")
+	d.recoveryLog(ctx, "stale_statement").Msg("other kind")
+	// The interval passes.
+	d.recoveryLogs.last["reconnect"] = time.Now().Add(-2 * recoveryLogInterval)
+	d.recoveryLog(ctx, "reconnect").Msg("after")
+
+	var got []string
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		var entry map[string]any
+		is.NoErr(json.Unmarshal([]byte(line), &entry))
+		got = append(got, fmt.Sprintf("%s/%v", entry["message"], entry["suppressed_since_last"]))
+	}
+	is.Equal(got, []string{"first/0", "other kind/0", "after/2"})
 }

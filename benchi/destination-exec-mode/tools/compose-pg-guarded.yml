@@ -1,6 +1,7 @@
 # Tool "pg-guarded": Conduit v0.20.2 with the standalone postgres connector from
-# ../bin/guarded (built by run.sh from GUARD_REF; the default URL selects
-# cache_statement with the per-table schema guard, #433).
+# ../bin/guarded (built by run.sh from GUARD_REF), with an explicit
+# cache_statement URL, so the per-table schema guard (#433) is on. From v0.17.2
+# the default is describe_exec again (#436), so the URL must select the mode.
 services:
   conduit:
     image: ghcr.io/conduitio/conduit:v0.20.2
@@ -8,7 +9,7 @@ services:
     command: ["/app/conduit", "run", "--connectors.path", "/app/connectors", "--pipelines.path", "/app/pipelines"]
     volumes:
       - ../bin/guarded:/app/connectors:ro
-      - ../${BENCH_PIPELINE:?set BENCH_PIPELINE}:/app/pipelines/pipeline.yml:ro
+      - ../${BENCH_PIPELINE_OPTOUT:?set BENCH_PIPELINE_OPTOUT}:/app/pipelines/pipeline.yml:ro
     networks:
       - benchi
 

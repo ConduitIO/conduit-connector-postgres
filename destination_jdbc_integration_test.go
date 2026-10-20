@@ -27,10 +27,17 @@ import (
 
 func openJDBCTestDestination(t *testing.T, is *is.I) sdk.Destination {
 	t.Helper()
+	return openJDBCTestDestinationURL(t, is, test.RegularConnString)
+}
+
+// openJDBCTestDestinationURL is openJDBCTestDestination with a connection
+// string of the test's choosing.
+func openJDBCTestDestinationURL(t *testing.T, is *is.I, url string) sdk.Destination {
+	t.Helper()
 	ctx := test.Context(t)
 	d := NewDestination()
 	is.NoErr(sdk.Util.ParseConfig(ctx,
-		map[string]string{"url": test.RegularConnString},
+		map[string]string{"url": url},
 		d.Config(), Connector.NewSpecification().DestinationParams))
 	is.NoErr(d.Open(ctx))
 	t.Cleanup(func() { is.NoErr(d.Teardown(ctx)) })

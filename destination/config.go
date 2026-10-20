@@ -36,15 +36,17 @@ type Config struct {
 	// With TLS, SCRAM authentication does not use channel binding by default
 	// (`channel_binding=disable`); add `channel_binding=require` to the URL to
 	// require SCRAM-SHA-256-PLUS.
-	// The destination reuses prepared statements (cache_statement) and checks a
-	// per-table schema fingerprint with every batch, so a column type change on
-	// a running pipeline invalidates the cache and the next write sees the new
-	// type. Set `default_query_exec_mode` (in the URL or in a service file) to
-	// `describe_exec`, `exec` or `simple_protocol` to override; `cache_statement`
-	// and `cache_describe` are also guarded. Behind a connection pooler that does
-	// not track prepared statements (PgBouncer in transaction mode with
-	// `max_prepared_statements=0`), set `default_query_exec_mode=describe_exec`
-	// or `exec`: cached statements are not supported there.
+	// The destination describes every statement before it runs it
+	// (`describe_exec`), so a column type change on a running pipeline takes
+	// effect on the next write. Set `default_query_exec_mode` (in the URL or in
+	// a service file) to `exec`, `simple_protocol`, `cache_statement` or
+	// `cache_describe` to override. The cached modes save a round trip per batch
+	// and check a per-table schema fingerprint, but they are safe only on a
+	// direct connection or behind a pooler that does not share prepared
+	// statements between clients. Behind PgBouncer (at any
+	// `max_prepared_statements`) or another statement-sharing pooler, keep
+	// `describe_exec`: a cached mode can convert values silently after a column
+	// type change.
 	URL string `json:"url" validate:"required"`
 	// Table is used as the target table into which records are inserted.
 	Table string `json:"table" default:"{{ index .Metadata \"opencdc.collection\" }}"`

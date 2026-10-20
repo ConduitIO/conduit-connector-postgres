@@ -41,6 +41,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/rs/zerolog"
 )
 
 type Destination struct {
@@ -98,6 +99,45 @@ type Destination struct {
 	// for connectors, so each recovery is logged at Info with its running
 	// total; the counters are atomic so they can be read outside Write.
 	stats destinationStats
+	// recoveryLogs rate-limits the Info lines of those recoveries, so a
+	// pooler that makes most batches retry cannot flood the log.
+	recoveryLogs recoveryLogThrottle
+}
+
+// recoveryLogInterval is the least time between two Info lines about the same
+// kind of recovery. The lines in between are counted, not dropped silently:
+// the next line carries the count, and the running totals in destinationStats
+// count every recovery.
+const recoveryLogInterval = 30 * time.Second
+
+// recoveryLogThrottle remembers when each kind of recovery was last logged.
+type recoveryLogThrottle struct {
+	mu         sync.Mutex
+	last       map[string]time.Time
+	suppressed map[string]uint64
+}
+
+// recoveryLog returns an Info event for a recovery of the given kind, with
+// the number of lines of that kind suppressed since the last one, or nil if
+// one was logged less than recoveryLogInterval ago. A nil *zerolog.Event is a
+// no-op, so callers chain on the result unconditionally.
+func (d *Destination) recoveryLog(ctx context.Context, kind string) *zerolog.Event {
+	t := &d.recoveryLogs
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := time.Now()
+	if t.last == nil {
+		t.last = make(map[string]time.Time)
+		t.suppressed = make(map[string]uint64)
+	}
+	if last, ok := t.last[kind]; ok && now.Sub(last) < recoveryLogInterval {
+		t.suppressed[kind]++
+		return nil
+	}
+	n := t.suppressed[kind]
+	t.suppressed[kind] = 0
+	t.last[kind] = now
+	return sdk.Logger(ctx).Info().Uint64("suppressed_since_last", n)
 }
 
 // destinationStats counts the write path's recoveries over a destination's
@@ -131,6 +171,15 @@ func (d *Destination) Open(ctx context.Context) error {
 	cpool.DefaultSCRAMCompat(&connConfig.Config)
 	d.guardSchema = setDestinationQueryExecMode(connConfig, d.config.URL)
 	d.connConfig = connConfig
+	if d.guardSchema {
+		sdk.Logger(ctx).Warn().
+			Str("default_query_exec_mode", connConfig.DefaultQueryExecMode.String()).
+			Msg("the url selects a query exec mode that caches prepared statements. It is safe only on a " +
+				"direct connection or behind a pooler that does not share prepared statements between clients. " +
+				"Behind PgBouncer (at any max_prepared_statements) or another statement-sharing pooler, a column " +
+				"type change can make writes convert values silently (5/2 stored as 3 in an integer column); " +
+				"use default_query_exec_mode=describe_exec there")
+	}
 
 	conn, err := pgx.ConnectConfig(ctx, connConfig)
 	if err != nil {
@@ -146,24 +195,27 @@ func (d *Destination) Open(ctx context.Context) error {
 	return nil
 }
 
-// setDestinationQueryExecMode selects cache_statement as the default query exec
-// mode — one round trip per batch, the fast mode — unless the URL sets
-// default_query_exec_mode itself, in which case the explicit value is kept.
-// It reports whether the mode in use caches statement parameter types
-// (cache_statement or cache_describe), so Open can enable the schema guard.
+// setDestinationQueryExecMode selects describe_exec as the default query exec
+// mode unless the connection settings set default_query_exec_mode themselves,
+// in which case the explicit value is kept. It reports whether the mode in use
+// caches statement parameter types (cache_statement or cache_describe), so
+// Open can enable the schema guard and warn.
 //
-// Invariant 6 is upheld by the schema guard, not by the mode: a cached
-// statement keeps the parameter types Postgres inferred when it was prepared,
-// so after ALTER COLUMN ... TYPE it would keep sending parameters typed for the
-// old column (5/2 into a column that had become integer was stored as 3, #367).
-// The guard aborts the batch and clears the statement cache when the column
-// types change, so cache_statement stays safe and can be the default.
-// describe_exec, exec and simple_protocol do not cache parameter types, so they
-// need no guard.
+// Invariant 6: describe_exec describes every statement on the connection that
+// runs it, so parameter types follow ALTER COLUMN ... TYPE (#367) and nothing
+// cached can go stale. A cached statement keeps the parameter types Postgres
+// inferred when it was prepared. On a direct connection the schema guard
+// catches that: it aborts the batch and clears the cache when the table's
+// column types change. Behind a pooler that shares prepared statements across
+// clients (PgBouncer with max_prepared_statements > 0) the guard cannot: a
+// destination that connects after the ALTER learns a fresh fingerprint but is
+// handed a statement another client prepared before it, and 5/2 into a column
+// that had become integer is stored as 3 (#436). That is why cache_statement,
+// the default from v0.17.0 to v0.17.1, is no longer the default.
 func setDestinationQueryExecMode(cfg *pgx.ConnConfig, rawURL string) (cachesTypes bool) {
 	if !explicitQueryExecMode(rawURL) {
-		cfg.DefaultQueryExecMode = pgx.QueryExecModeCacheStatement
-		return true
+		cfg.DefaultQueryExecMode = pgx.QueryExecModeDescribeExec
+		return false
 	}
 	switch cfg.DefaultQueryExecMode {
 	case pgx.QueryExecModeCacheStatement, pgx.QueryExecModeCacheDescribe:
@@ -272,7 +324,7 @@ func (d *Destination) prepareRetry(
 				"written; it is being altered faster than writes can re-describe it. Fix: retry once the "+
 				"DDL is done", ErrorCodeDestinationSchemaChurn, changed, attempt+1)
 		}
-		sdk.Logger(ctx).Info().
+		d.recoveryLog(ctx, "schema_change").
 			Str("table", changed).
 			Uint64("schema_changes_total", total).
 			Msg("destination table schema changed: rolled the batch back, clearing the statement cache and retrying")
@@ -293,7 +345,7 @@ func (d *Destination) prepareRetry(
 		// before anything ran, so nothing was committed and a retry cannot
 		// apply a record twice.
 		total := d.stats.staleStatements.Add(1)
-		sdk.Logger(ctx).Info().
+		d.recoveryLog(ctx, "stale_statement").
 			Err(err).
 			Uint64("stale_statement_retries_total", total).
 			Msg("a prepared statement was missing or already existed on the server (a transaction-mode " +
@@ -311,7 +363,7 @@ func (d *Destination) prepareRetry(
 		// resynchronize a half-sent pipeline). Retry once on a clean cache;
 		// if the batch fails again, the value itself does not fit.
 		*freshRetried = true
-		sdk.Logger(ctx).Info().
+		d.recoveryLog(ctx, "unsent_batch").
 			Err(err).
 			Msg("could not send the batch: retrying it once with an empty statement cache")
 		if err := d.clearStatementCache(ctx); err != nil {
@@ -397,7 +449,7 @@ func (d *Destination) ensureConn(ctx context.Context) error {
 	d.conn = conn
 	d.schemaFingerprint = nil
 	total := d.stats.reconnects.Add(1)
-	sdk.Logger(ctx).Info().
+	d.recoveryLog(ctx, "reconnect").
 		Uint64("reconnects_total", total).
 		Msg("the connection was closed after an error: reconnected with an empty statement cache")
 	return nil
@@ -448,12 +500,50 @@ func (d *Destination) failWrite(ctx context.Context, p *writePlan, err error) er
 				p.writes[idx].table, encErr)
 		}
 	}
+	if table, ok := undefinedTable(p, err); ok {
+		err = tableNotFoundError(table, err)
+	}
 	if d.conn != nil && !d.conn.IsClosed() {
 		_ = d.withConn(ctx, func(ctx context.Context) error {
 			return d.conn.DeallocateAll(ctx)
 		})
 	}
 	return err
+}
+
+// undefinedTable reports whether err is Postgres's undefined_table (42P01),
+// raised where describe_exec and exec describe or run a statement for a table
+// that does not exist, and which of p's tables it is about, if that can be
+// told: the statement pgx names, or the only table of the batch.
+func undefinedTable(p *writePlan, err error) (string, bool) {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "42P01" {
+		return "", false
+	}
+	var pre pgx.ErrPreprocessingBatch
+	if errors.As(err, &pre) {
+		for _, w := range p.writes {
+			if w.sql == pre.SQL() {
+				return w.table, true
+			}
+		}
+	}
+	if len(p.tables) == 1 {
+		return p.tables[0], true
+	}
+	return "", true
+}
+
+// tableNotFoundError is the error for a write to a table that does not exist,
+// in every query exec mode. cause is the server error, if there is one.
+func tableNotFoundError(table string, cause error) error {
+	msg := fmt.Sprintf("%s: table %q does not exist or is not visible through the connection's "+
+		"search_path. Fix: create the table, or set the destination's table (or the record's "+
+		"opencdc.collection metadata) to an existing one", ErrorCodeDestinationTableNotFound, table)
+	if cause == nil {
+		return errors.New(msg)
+	}
+	return fmt.Errorf("%s: %w", msg, cause)
 }
 
 // encodesWithDescribedTypes reports whether the connection's query exec mode
@@ -485,6 +575,10 @@ func (d *Destination) locateEncodeFailure(ctx context.Context, p *writePlan) (in
 			var err error
 			sd, err = d.conn.PgConn().Prepare(ctx, "", w.sql, nil)
 			if err != nil {
+				// (0, nil) means "not found": the lookup is best effort, and
+				// the caller then keeps the batch's original error instead of
+				// replacing it with one about the lookup. The index is
+				// meaningless without an error.
 				return 0, nil
 			}
 			descs[w.sql] = sd
@@ -493,6 +587,8 @@ func (d *Destination) locateEncodeFailure(ctx context.Context, p *writePlan) (in
 			return i, err
 		}
 	}
+	// Every write encodes now (the schema changed again since the batch
+	// failed): not found, as above.
 	return 0, nil
 }
 
@@ -559,9 +655,7 @@ func (d *Destination) learnFingerprint(ctx context.Context, table string) (strin
 		return "", fmt.Errorf("failed to read the schema of table %q: %w", table, err)
 	}
 	if !fp.Valid || fp.String == "" {
-		return "", fmt.Errorf("%s: table %q does not exist or is not visible through the connection's "+
-			"search_path. Fix: create the table, or set the destination's table (or the record's "+
-			"opencdc.collection metadata) to an existing one", ErrorCodeDestinationTableNotFound, table)
+		return "", tableNotFoundError(table, nil)
 	}
 	return fp.String, nil
 }

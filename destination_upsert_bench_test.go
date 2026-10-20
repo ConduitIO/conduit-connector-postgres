@@ -34,18 +34,19 @@ import (
 // as a jump back toward per-record squirrel builds.
 //
 // Run with -cpuprofile/-memprofile to attribute the cost. Two query exec modes
-// are measured: the default (cache_statement with the schema guard — one round
-// trip per batch, correct under ALTER COLUMN ... TYPE) and the explicit
-// describe_exec opt-out (re-describes every batch — two round trips). The delta
-// between them is what the default used to pay for correctness.
+// are measured: the default (describe_exec, which describes every statement on
+// the connection that runs it: two round trips per batch) and an explicit
+// cache_statement with the schema guard (one round trip, correct under ALTER
+// COLUMN ... TYPE on a direct connection only, #436). It is a microbenchmark of
+// the write path on one machine: indicative, not a benchi result.
 func BenchmarkDestination_Write_Upsert(b *testing.B) {
 	for _, batchSize := range []int{1, 1000} {
 		for _, mode := range []struct {
 			name string
 			url  string
 		}{
-			{"default", test.RegularConnString}, // cache_statement + schema guard
-			{"describe", test.RegularConnString + "&default_query_exec_mode=describe_exec"},
+			{"default", test.RegularConnString},                                            // describe_exec
+			{"cache", test.RegularConnString + "&default_query_exec_mode=cache_statement"}, // + schema guard
 		} {
 			b.Run(fmt.Sprintf("batch=%d/mode=%s", batchSize, mode.name), func(b *testing.B) {
 				benchmarkUpsert(b, mode.url, batchSize)
