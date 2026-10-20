@@ -83,6 +83,9 @@ type Config struct {
 	WithAvroSchema    bool
 	BatchSize         int
 	SchemaDriftPolicy SchemaDriftPolicy
+	// AllowWALGap accepts the data loss of resuming from a saved position on a
+	// replication slot that no longer exists (see checkSlotCoversPosition).
+	AllowWALGap bool
 	// Import is the Debezium offset import (#341), set only for a pipeline
 	// with no position, after dbzoffset.Preflight passed. WithSnapshot is
 	// false with it.
@@ -312,6 +315,7 @@ func (c *CombinedIterator) initCDCIterator(ctx context.Context, pos position.Pos
 		StartPosition:     pos,
 		SchemaDriftPolicy: c.conf.SchemaDriftPolicy,
 		Import:            c.conf.Import,
+		AllowWALGap:       c.conf.AllowWALGap,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create CDC iterator: %w", err)

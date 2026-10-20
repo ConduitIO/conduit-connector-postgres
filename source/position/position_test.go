@@ -268,3 +268,24 @@ func Test_Position_DriftMarkerFieldIsAdditive(t *testing.T) {
 	is.NoErr(err)
 	is.Equal(v2.SchemaDriftMarker, "")
 }
+
+func TestPosition_ImpliesSlot(t *testing.T) {
+	for name, tc := range map[string]struct {
+		p    Position
+		want bool
+	}{
+		"empty (fresh start)":     {Position{}, false},
+		"version only":            {Position{Version: CurrentPositionVersion}, false},
+		"snapshot":                {Position{Type: TypeSnapshot}, true},
+		"cdc":                     {Position{Type: TypeCDC}, true},
+		"legacy cdc, LSN only":    {Position{LastLSN: "0/1"}, true},
+		"change key only":         {Position{TxCommitLSN: "0/2", TxSeq: 1}, true},
+		"snapshot with watermark": {Position{Type: TypeSnapshot, SnapshotLowWatermarkLSN: "0/3"}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := tc.p.ImpliesSlot(); got != tc.want {
+				t.Fatalf("ImpliesSlot() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

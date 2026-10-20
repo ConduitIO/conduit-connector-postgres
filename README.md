@@ -99,6 +99,28 @@ pipelines:
 attempt to delete the replication slot and publication. This is the default behaviour
 and can be disabled by setting `logrepl.autoCleanup` to `false`.
 
+#### Resuming after the replication slot was lost
+
+The slot is what keeps Postgres from discarding the changes the pipeline has not
+acknowledged yet. If the pipeline has a saved position and its slot no longer
+exists (it was dropped by hand, removed by `logrepl.autoCleanup` while the position
+was kept, or invalidated by `max_slot_wal_keep_size` and dropped), a new slot starts at the current WAL and every change
+in between is gone. The connector does not carry on from there. It refuses to
+start with the error code `postgres.slot.wal_gap`, which names the slot, the
+position the pipeline stopped at and the WAL position a new slot would start at.
+The same applies to a position saved during an initial snapshot. A pipeline with
+no position (a fresh start) creates its slot as usual.
+
+To recover, re-snapshot: stop the pipeline, delete the source connector and create
+it again so it has no position. With `snapshotMode: initial` every table is read
+again and every row is delivered again, so the destination must tolerate
+duplicates (an upsert or keyed destination does).
+
+To accept the loss instead, set `logrepl.allowWALGap` to `true`. This is data
+loss: the skipped changes are never delivered, and the connector logs a warning
+when it takes the setting. Remove it after the pipeline has resumed, or the next
+lost slot is accepted silently.
+
 ### Key Handling
 
 The connector will automatically look up the primary key column for the specified tables
@@ -563,6 +585,18 @@ pipelines:
           # Type: string
           # Required: no
           cdcMode: "auto"
+          # LogreplAllowWALGap lets the connector resume from a saved position
+          # when the replication slot no longer exists and has to be created
+          # again. A new slot starts at the current WAL, so every change between
+          # the saved position and the slot's creation is skipped and never
+          # delivered: this setting accepts that DATA LOSS. Leave it false (the
+          # default) and the connector refuses to start with the error
+          # `postgres.slot.wal_gap` instead. Use it only after deciding that the
+          # destination can be repaired some other way, and remove it once the
+          # pipeline has resumed.
+          # Type: bool
+          # Required: no
+          logrepl.allowWALGap: "false"
           # LogreplAutoCleanup determines if the replication slot and
           # publication should be removed when the connector is deleted.
           # Type: bool
