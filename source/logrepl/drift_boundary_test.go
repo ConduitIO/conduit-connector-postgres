@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/jackc/pglogrepl"
@@ -354,8 +355,12 @@ func TestDrift338_PositionFormat(t *testing.T) {
 	}
 	is.Equal(mp.SchemaDriftMarker, marker.Metadata[MetadataSchemaDriftTable]) // names the drifted table
 	is.Equal(pp.SchemaDriftMarker, "")                                        // only the marker has it
-	is.True(mp.SlotIdentity != "")                                            // #442
+	if info, err := internal.ReadServerInfo(ctx, pool); err == nil && info.BeaconsSupported() {
+		is.True(mp.SlotIdentity != "") // #442 (none on a server that cannot carry beacons)
+	}
 	is.Equal(mp.SlotIdentity, pp.SlotIdentity)
+	is.True(mp.SystemIdentifier != "") // #447 B3
+	is.Equal(mp.SystemIdentifier, pp.SystemIdentifier)
 }
 
 // reformatPosition returns the same position re-marshaled: indented, keys in

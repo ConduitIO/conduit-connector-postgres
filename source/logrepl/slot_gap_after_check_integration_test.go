@@ -153,6 +153,14 @@ func TestCDCIterator_AllowWALGap_WarnsWhenCreateSucceedsThenFails(t *testing.T) 
 	it, err := NewCombinedIterator(lctx, pool, conf)
 	is.NoErr(err)
 	is.NoErr(it.Teardown(ctx))
+	info, err := internal.ReadServerInfo(ctx, pool)
+	is.NoErr(err)
+	if !info.BeaconsSupported() {
+		// Postgres 13 (or a standby): no identity, so the retry cannot tell
+		// (the documented limit on such servers).
+		is.Equal(strings.Count(logs.String(), dataLossWarn), 1)
+		return
+	}
 	is.Equal(strings.Count(logs.String(), dataLossWarn), 2)
 	is.True(strings.Contains(logs.String(), string(CodeSlotReplaced)))
 }
