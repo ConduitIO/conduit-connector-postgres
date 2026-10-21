@@ -17,7 +17,6 @@ package internal
 import (
 	"errors"
 	"fmt"
-	"strings"
 
 	pginternal "github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/types"
@@ -190,14 +189,18 @@ func rootCause(err error) error {
 }
 
 // keyText names the row of a tuple by the columns Postgres flags as part of the
-// key (the replica identity), using their text form, for error messages.
+// key (the replica identity), by column names and a hash of the values (never
+// the values themselves), for error messages.
 func keyText(rel *pglogrepl.RelationMessage, row *pglogrepl.TupleData) string {
-	var parts []string
+	key := make(map[string]any)
 	for i, tuple := range row.Columns {
 		if i >= len(rel.Columns) || rel.Columns[i].Flags&1 == 0 || tuple.DataType != pglogrepl.TupleDataTypeText {
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s=%s", rel.Columns[i].Name, tuple.Data))
+		key[rel.Columns[i].Name] = string(tuple.Data)
 	}
-	return strings.Join(parts, ",")
+	if len(key) == 0 {
+		return ""
+	}
+	return pginternal.RowRef(key)
 }

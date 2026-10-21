@@ -39,3 +39,13 @@ func TestKeyHash(t *testing.T) {
 	// an empty key does not panic
 	is.Equal(len(KeyHash(nil)), 16)
 }
+
+func TestRowRef(t *testing.T) {
+	is := is.New(t)
+
+	ref := RowRef(map[string]any{"tenant": "acme-SECRET", "id": int64(8675309)})
+	is.True(strings.HasPrefix(ref, "columns id,tenant, key hash "))
+	is.True(!strings.Contains(ref, "SECRET"))
+	is.True(!strings.Contains(ref, "8675309"))
+	is.Equal(ref, RowRef(map[string]any{"id": int64(8675309), "tenant": "acme-SECRET"}))
+}

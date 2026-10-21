@@ -394,7 +394,7 @@ func (f *FetchWorker) buildSnapshotPosition(fields []pgconn.FieldDescription, va
 func (f *FetchWorker) rowID(fields []pgconn.FieldDescription, values []any) string {
 	for i, fd := range fields {
 		if fd.Name == f.conf.Key {
-			return fmt.Sprintf("%s=%v", fd.Name, values[i])
+			return internal.RowRef(map[string]any{fd.Name: values[i]})
 		}
 	}
 	return ""

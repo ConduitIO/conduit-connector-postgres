@@ -215,7 +215,7 @@ func wallClockMicros(t time.Time) (int64, error) {
 	const maxSec = math.MaxInt64/1_000_000 - 1
 	sec := t.Unix()
 	if sec > maxSec || sec < -maxSec {
-		return 0, &TemporalNotRepresentableError{Type: "timestamp", Value: pgText(kindTimestamp, t)}
+		return 0, &TemporalNotRepresentableError{Type: "timestamp", Value: "out of range"}
 	}
 	return sec*1e6 + int64(t.Nanosecond())/1e3, nil
 }
