@@ -1164,7 +1164,8 @@ func (d *Destination) upsert(ctx context.Context, idx int, r opencdc.Record, p *
 	sdk.Logger(ctx).Trace().
 		Str("table", tableName).
 		Str("query", query).
-		Any("key", key).
+		Int("key_columns", len(key)).
+		Str("key_hash", internal.KeyHash(key)).
 		Msg("upserting record")
 
 	p.add(idx, tableName, query, args)
@@ -1210,7 +1211,8 @@ func (d *Destination) remove(ctx context.Context, idx int, r opencdc.Record, p *
 	sdk.Logger(ctx).Trace().
 		Str("table", tableName).
 		Str("query", query).
-		Any("key", key).
+		Int("key_columns", len(key)).
+		Str("key_hash", internal.KeyHash(key)).
 		Msg("deleting record")
 
 	p.add(idx, tableName, query, args)
