@@ -158,17 +158,28 @@ func checkSlot(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) error {
 	if !hasSavedPosition(c) {
 		return nil // fresh start: a new slot is exactly what is wanted
 	}
-	gap := newSlotGapError(c.SlotName, slotGapPositions{saved: describeSavedPosition(c), newSlotStart: currentWAL(ctx, pool)})
 	if c.AllowWALGap {
-		sdk.Logger(ctx).Warn().
-			Str("code", string(gap.Code)).
-			Str("slot", c.SlotName).
-			Str("saved_position", describeSavedPosition(c)).
-			Msg("DATA LOSS ACCEPTED (logrepl.allowWALGap): the replication slot is gone and is created again; " +
-				"every change between the saved position and the new slot's start is skipped and will not be delivered")
+		// The DATA LOSS warning is logged by warnGapAccepted once the slot
+		// has actually been created (NewCDCIterator), not here: a slot that
+		// reappears between this read and the create loses nothing, and one
+		// that vanishes after this read is created without passing here.
 		return nil
 	}
-	return gap
+	return newSlotGapError(c.SlotName, slotGapPositions{saved: describeSavedPosition(c), newSlotStart: currentWAL(ctx, pool)})
+}
+
+// warnGapAccepted logs the accepted data loss of logrepl.allowWALGap. It is
+// called only after CreateSubscription really created the slot for a saved
+// position, so it fires exactly once per gap taken, whether the slot was
+// already missing at the check or was dropped after it.
+func warnGapAccepted(ctx context.Context, c CDCConfig, slotStart string) {
+	sdk.Logger(ctx).Warn().
+		Str("code", string(CodeSlotWALGap)).
+		Str("slot", c.SlotName).
+		Str("saved_position", describeSavedPosition(c)).
+		Str("new_slot_start", slotStart).
+		Msg("DATA LOSS ACCEPTED (logrepl.allowWALGap): the replication slot was gone and has been created again; " +
+			"every change between the saved position and the new slot's start is skipped and will not be delivered")
 }
 
 func describeSavedPosition(c CDCConfig) string {

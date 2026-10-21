@@ -90,6 +90,10 @@ type CDCIterator struct {
 	importDone atomic.Bool
 }
 
+// afterSlotCheck is a test seam, nil in production. It runs between checkSlot
+// and the subscription, the window in which a slot can vanish.
+var afterSlotCheck func()
+
 // NewCDCIterator initializes logical replication by creating the publication and subscription manager.
 func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCIterator, error) {
 	// Invariant 3: before anything is created, so a refusal leaves no slot
@@ -98,6 +102,10 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		if err := checkSlot(ctx, pool, c); err != nil {
 			return nil, err
 		}
+	}
+
+	if afterSlotCheck != nil {
+		afterSlotCheck()
 	}
 
 	// Import mode never creates the publication (#341 S16): one created
@@ -175,6 +183,13 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 			return nil, newSlotGapError(c.SlotName, slotGapPositions{saved: describeSavedPosition(c), newSlotStart: currentWAL(ctx, pool)})
 		}
 		return nil, fmt.Errorf("failed to initialize subscription: %w", err)
+	}
+
+	// sub.TXSnapshotID is set only when CREATE_REPLICATION_SLOT succeeded in
+	// this call. With a saved position that is the accepted gap (allowWALGap
+	// is the only way here), including a slot dropped after checkSlot.
+	if c.Import == nil && hasSavedPosition(c) && sub.TXSnapshotID != "" {
+		warnGapAccepted(ctx, c, sub.StartLSN.String())
 	}
 
 	if key := (internal.ChangeKey{CommitLSN: c.TxCommitLSN, Seq: c.TxSeq}); key.Known() {

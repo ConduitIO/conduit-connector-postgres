@@ -252,10 +252,23 @@ func TestCombinedIterator_IntactSlot_ResumesAfterIdle(t *testing.T) {
 	saved, err := pp.LSN()
 	is.NoErr(err)
 
-	// Move WAL on an unrelated table and let the slot follow it.
+	// Move WAL on an unrelated table, then advance the idle slot to the current
+	// WAL end, as main's connector does by reporting the server's WAL end once
+	// everything is acked. Nothing of the watched table is skipped: the
+	// "while-stopped" row is written after the advance. The slot stays inactive
+	// briefly after Teardown, so the advance retries.
 	slotGapInsert(ctx, t, pool, other, "noise")
 	_, err = pool.Exec(ctx, "SELECT pg_switch_wal()")
 	is.NoErr(err)
+	var advErr error
+	for i := 0; i < 50; i++ {
+		_, advErr = pool.Exec(ctx, "SELECT pg_replication_slot_advance($1, pg_current_wal_lsn())", table)
+		if advErr == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	is.NoErr(advErr)
 	slotGapInsert(ctx, t, pool, table, "while-stopped")
 
 	slot, err := internal.ReadReplicationSlot(ctx, pool, table)
