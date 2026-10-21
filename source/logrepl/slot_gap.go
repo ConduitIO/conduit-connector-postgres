@@ -169,15 +169,16 @@ func checkSlot(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) error {
 }
 
 // warnGapAccepted logs the accepted data loss of logrepl.allowWALGap. It is
-// called only after CreateSubscription really created the slot for a saved
+// called only when CreateSubscription really created the slot for a saved
 // position, so it fires exactly once per gap taken, whether the slot was
-// already missing at the check or was dropped after it.
-func warnGapAccepted(ctx context.Context, c CDCConfig, slotStart string) {
+// already missing at the check or was dropped after it, and whether the call
+// then succeeded or failed.
+func warnGapAccepted(ctx context.Context, c CDCConfig, consistentPoint string) {
 	sdk.Logger(ctx).Warn().
 		Str("code", string(CodeSlotWALGap)).
 		Str("slot", c.SlotName).
 		Str("saved_position", describeSavedPosition(c)).
-		Str("new_slot_start", slotStart).
+		Str("new_slot_consistent_point", consistentPoint).
 		Msg("DATA LOSS ACCEPTED (logrepl.allowWALGap): the replication slot was gone and has been created again; " +
 			"every change between the saved position and the new slot's start is skipped and will not be delivered")
 }

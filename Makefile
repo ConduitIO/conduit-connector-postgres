@@ -8,7 +8,7 @@ build:
 test:
 	# run required docker containers, execute integration tests, stop containers after tests
 	docker compose -f test/docker-compose.yml up --force-recreate --quiet-pull -d --wait
-	go test -count=1 $(GOTEST_FLAGS) -race ./...; ret=$$?; \
+	env -u CONDUIT_PG_SLOT_INVALIDATION go test -count=1 $(GOTEST_FLAGS) -race ./...; ret=$$?; \
 		if [ $$ret -eq 0 ]; then \
 			echo "slot invalidation test: alone, after the suite (it sets max_slot_wal_keep_size cluster-wide)"; \
 			CONDUIT_PG_SLOT_INVALIDATION=1 go test -count=1 $(GOTEST_FLAGS) -race -p 1 -run '^TestCombinedIterator_InvalidatedSlot_FailsLoudly$$' ./source/logrepl/; ret=$$?; \
