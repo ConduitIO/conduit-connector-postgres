@@ -183,12 +183,45 @@ hex digits of its SHA-256 (`internal.IdentityFingerprint`).
 
 ### 2. Beacons
 
-`internal.Beacons` reads `pg_current_wal_insert_lsn()` (L0), then writes
-`pg_logical_emit_message(true, 'conduit.postgres.slot_identity', 'v=2;n=<nonce>;l=<L0>;mac=<hex>')`
-in a transaction of its own with `SET LOCAL synchronous_commit TO on`, where the nonce is
-128 random bits and `mac = HMAC-SHA256(key, "conduit.postgres.slot_identity/v2" ‖ slot ‖
-nonce ‖ L0)`. It records the pending beacon (exact content, nonce included) before emitting
-it; the stream must deliver exactly that content to move the cap.
+`internal.Beacons.Emit` runs one transaction:
+
+1. `SET LOCAL synchronous_commit TO local`, then `SELECT pg_current_xact_id()`: the
+   transaction holds an xid from here on.
+2. **The guard** (#447 B1): it reads the slot from `pg_replication_slots`. While the stream
+   runs, `active_pid` must be this run's walsender (the backend PID of the replication
+   connection). Before the stream starts, the slot must be inactive with a
+   `confirmed_flush_lsn` at or below the limit this run checked or created it at
+   (`heldConfirmedLimit`). Otherwise the emit fails with `ErrSlotNotHeld` and writes
+   nothing; a stamp that fails this way refuses the start with `slot_replaced`.
+3. It reads `pg_current_wal_insert_lsn()` (L0), records the attempt (exact content, nonce
+   included), and writes `pg_logical_emit_message(true, 'conduit.postgres.slot_identity',
+   'v=2;n=<nonce>;l=<L0>;mac=<hex>')`, where the nonce is 128 random bits and `mac =
+   HMAC-SHA256(key, "conduit.postgres.slot_identity/v2" ‖ slot ‖ nonce ‖ L0)`.
+
+**Why the guard is enough.** A slot that passes step 2 is this run's slot at that moment.
+A slot created *after* step 2 cannot decode the beacon: creating a logical slot waits for
+every transaction that holds an xid when the slot starts building its snapshot to finish,
+and the slot's consistent point is after their commits. The beacon's transaction got its
+xid in step 1, before the check, so it is one of those, and Postgres never decodes a
+transaction that committed before a slot's consistent point. A slot created *before* step
+2 either fails the check (another walsender holds it, or its `confirmed_flush_lsn` is past
+the limit, since a slot created later starts later) or is this run's slot. Without the
+guard the review reproduced a loss on 17: the walsender of a running pipeline is
+terminated (a half-open replication connection while the pool stays healthy), the slot is
+dropped and recreated with rows written in between, the old run writes its next beacon
+through the pool, the new slot decodes it, and the next start accepted the new slot and
+delivered only the rows written after it
+(`TestSlotIdentity_BeaconAfterWalsenderLoss_DoesNotVouchForReplacement`: failed before,
+passes after).
+
+**Why `synchronous_commit = local` is enough** (#447 S1). The beacon must be flushed to the
+local WAL before a restart's peek looks for it, and must survive a server crash: a local
+commit gives both, and does not block on a synchronous standby that is down, as `on` would.
+A failover standby needs no stronger commit: the cap moves only when the stream delivers
+the beacon, and with `synchronized_standby_slots` the walsender sends WAL only after the
+listed standbys confirmed it. The stream must deliver exactly one of this run's recorded
+attempts to move the cap. An attempt whose `Emit` returned an error still counts if it
+committed (the error can come after the commit); the last 16 attempts are kept.
 
 A beacon proves the slot on resume (`verifyBeacon`) only if its MAC verifies, compared in
 constant time (`hmac.Equal`), **and** its `l` is at or after the slot's
@@ -198,7 +231,7 @@ old slot's history, which is before the new slot's creation and so before its
 `confirmed_flush_lsn`. A genuine beacon that proves its slot always passes it, because an
 idle advance stops at `Cap`, which is that beacon's `l`.
 
-Transactional with a synchronous commit, because a non-transactional message is not
+Transactional with a local synchronous commit, because a non-transactional message is not
 flushed before 17 (F5). The first version of this change emitted it non-transactionally:
 a restart within a second missed the beacon and refused an intact slot on 14, 15 and 16
 (`TestSlotIdentity_SnapshotPosition_RecreatedRefused` and
@@ -228,6 +261,22 @@ last received beacon. 512 bytes keeps an idle database idle (F6): our own beacon
 else asks for one. A beacon that has not come back after five minutes stops blocking the
 next one. So an idle slot reaches the WAL end two status updates (about 20 seconds) after
 the last ack, where before it took one.
+
+**When beacons keep failing** (#447 S1). A runtime emission can fail (the role lost
+`EXECUTE`, the pool is down, the guard refuses). While it fails, the cap holds the slot
+back, and the WAL retained grows at the server's WAL rate: after `t` seconds of failures
+it is at most `t × (WAL bytes per second)` plus what was retained when they started (at
+most 512 bytes plus one status interval of WAL, see above). That must not grow without a
+bound, or the disk fills or `max_slot_wal_keep_size` invalidates the slot. So once emissions
+have failed (or a written beacon has not come back) for longer than
+`logrepl.slotIdentity.beaconFailureTimeout` (default 5 minutes), the run **abandons the
+cap**: the idle advance is uncapped again for the rest of the run, the connector logs
+`postgres.source.slot_beacon_unavailable` as an error with `retained_wal_bytes` (each
+failed attempt logs it as a warning before that; the connector SDK has no metrics API, so
+the log fields are the metric), and the slot can no longer be proven. The next start is
+then refused with `slot_replaced` (no beacon after `confirmed_flush_lsn`) unless a record
+saved since covers it: an outage, never a loss. The retained WAL is bounded by the timeout
+times the WAL rate.
 
 One consequence: a pipeline that stops within those 20 seconds leaves its slot below the
 last acked transaction's commit, and the next start decodes that transaction again. The
@@ -266,18 +315,27 @@ handling) and decides:
 4. Not found, the position has an identity: **replaced**. Refused with
    `postgres.source.slot_replaced`, or with `allowWALGap` accepted with one DATA LOSS
    warning.
-5. Beacons not supported (13, or a standby) and not covered: **unsupported**, the v0.17.4
-   behaviour with a `postgres.source.slot_identity_unsupported` warning.
+5. Beacons not supported (13, or a standby) and not covered: a legacy position is
+   **unsupported** (the v0.17.4 behaviour with a `postgres.source.slot_identity_unsupported`
+   warning); a position with an identity is peeked for on a 16+ standby and otherwise
+   **unprovable**, refused (see "Servers that cannot carry beacons").
 
 ### 5. The window before the stream holds the slot
 
 The check reads the slot before the subscription takes it, and nothing stops a third party
 from dropping and recreating it in between. `Subscription.VerifyHeld` reads the slot again
 right after `START_REPLICATION` (an active slot cannot be dropped) and before anything is
-sent on the stream, like `checkImportSlot`. It refuses a slot whose `confirmed_flush_lsn`
-is past what the check accepted, or, for a slot this run created, past what the creating
-connection read (that connection holds the slot until the stream starts). A recreated
-slot's `confirmed_flush_lsn` is past it, because the slot was created after the check.
+sent on the stream, like `checkImportSlot`. It runs on **every** start but an import
+(#447 B2), with the limit `heldConfirmedLimit`: what the check accepted, or, for a slot
+this run created or a fresh start, the `confirmed_flush_lsn` read right after creating or
+opening it. Nothing holds the slot between that read and the stream start: on Postgres 17
+the slot is inactive right after `CREATE_REPLICATION_SLOT`, and a fresh start with a
+snapshot reaches the stream start hours later. A slot recreated in between has a
+`confirmed_flush_lsn` past the limit, because it was created later. The first version set
+`VerifyHeld` only for saved positions and assumed the creating connection held the slot;
+the review reproduced the loss of the rows written during the snapshot and while the slot
+was gone (`TestSlotIdentity_FreshStartSlotReplacedMidSnapshot_Refused`: failed before,
+passes after).
 This also closes #445's limit: with `allowWALGap`, a slot recreated after the check now
 gets the DATA LOSS warning. A slot that was missing at the check and is back when the
 subscription opens it is treated the same way.
@@ -286,18 +344,25 @@ When to write the run's first beacon (the stamp) matters. A stamp written into a
 was swapped in after the check would make that slot pass the next start's check. So a
 position with an identity, on a slot this run did not create, is stamped inside
 `VerifyHeld`, after the slot was accepted. Its earlier beacons cover a restart until then.
-Every other start is stamped in `NewCDCIterator`: a slot this run created is held by its
-creating connection, a fresh start has no position to lose, and a legacy position is
-adopted either way, so a stamp there changes only the log level of the next start. Stamping
-at once matters for a snapshot, which can run for hours before the stream starts. A failed
-stamp fails the start with `postgres.source.slot_beacon_failed` and the `GRANT` that fixes
-it.
+Every other start is stamped in `NewCDCIterator`, through the guard (the slot inactive and
+not past the limit): a slot this run created, a fresh start (nothing saved to lose), a
+legacy position (adopted either way), and a rotated identity. Stamping at once matters for
+a snapshot, which can run for hours before the stream starts. A stamp the guard refuses
+fails the start with `slot_replaced`; any other failed stamp with
+`postgres.source.slot_beacon_failed` and the `GRANT` that fixes it.
 
 ### 6. Positions without an identity: learn on the first resume
 
 Decision: the first resume from a position written before v0.17.5 proves the slot when it
-can (covered by the position) and otherwise takes it over with one `postgres.source.slot_identity_unverified` warning, then
-stamps it. From then on a replaced slot is refused.
+can (covered by the position) and otherwise takes it over with a
+`postgres.source.slot_identity_unverified` warning, which carries `unproven_wal_bytes`
+(`confirmed_flush_lsn` minus the position's bound: the stretch nothing proves), and
+stamps it with a new key. **Protection begins at the first record saved after the
+upgrade**: from then on a replaced slot is refused. Until then a restart adopts the slot
+again with the same warning. The position also learns its WAL history (Decision 8).
+Release note: anyone who dropped and recreated a slot, or restored or replaced the source
+database, since its pipeline's last delivered record should re-snapshot that pipeline
+before or right after the upgrade.
 
 Why not fail closed (accept only `confirmed_flush_lsn <= saved`, else refuse): F7. Every
 version before v0.17.5 advances an idle slot to the WAL end, so this refuses nearly every
@@ -308,6 +373,41 @@ exactly the exposure that exists today: a slot that was replaced before the upgr
 not silent: the warning names the slot and the saved position, and the README tells
 operators who suspect a replacement to re-snapshot. **DeVaris to confirm.**
 
+### 8. WAL history (#447 B3)
+
+"`confirmed_flush_lsn` at or below the saved bound loses nothing" holds only if both LSNs
+are on the same WAL history. The review reproduced silent skips with a restored snapshot
+or VM image, point-in-time recovery, and a different server at the same host and port: the
+slot (even its beacons) looks fine, and the position's change key skips the changes the new
+history has at the same LSNs. So every position also carries `system_identifier` and
+`timeline` from `IDENTIFY_SYSTEM`, updated by every start, and a resume is refused with
+`postgres.source.wal_history_changed` when:
+
+- the system identifier differs (another cluster: a new server at the address, a backup
+  restored as a new cluster, pg_upgrade);
+- the server's timeline is before the position's (restored from an earlier backup);
+- the server's timeline is later, and its history (`TIMELINE_HISTORY`) left the position's
+  timeline before the position's bound, or does not descend from it (point-in-time
+  recovery, a failover to a standby that was behind). A failover that keeps logical
+  consumers consistent (`synchronized_standby_slots`) switches after everything the
+  consumer saw, so it passes (F8, `TestFailover_SlotIdentitySurvivesPromotion`, which also
+  checks a position past the switch point is refused);
+- the position's bound is past the server's current WAL position (`IDENTIFY_SYSTEM`'s
+  `xlogpos`): a restore on the same timeline.
+
+`logrepl.allowWALGap` accepts it with a `WAL HISTORY CHANGE ACCEPTED` warning, not the DATA
+LOSS one: after a pg_upgrade that migrated the slot (pg_upgrade requires every slot to have
+decoded all WAL) nothing is lost if the pipeline had delivered everything before the
+upgrade. The README has the pg_upgrade runbook. A legacy position learns its history on
+adoption, and that first start logs `postgres.source.wal_history_unverified` (a fingerprint
+of the server's system identifier and its timeline) instead of passing silently: the
+history cannot be checked on that run, and protection starts once the next position is
+saved (`TestSlotIdentity_WALHistoryUnverified_WarnsOnlyForLegacy`, which also checks that a
+position carrying a system identifier does not warn). Not detected: a restore on the same timeline whose new WAL has already passed the
+position's bound when the connector starts, if the restored slot is also at or below the
+bound; nothing in the slot or the WAL tells that history apart from the original, so
+restores must be followed by a re-snapshot (README).
+
 ### 7. Error codes
 
 | Code | Kind | Fix text |
@@ -317,8 +417,23 @@ operators who suspect a replacement to re-snapshot. **DeVaris to confirm.**
 | `postgres.source.slot_identity_unverified` | warning | none; re-snapshot if a replacement is suspected |
 | `postgres.source.slot_identity_unsupported` | warning | none |
 | `postgres.source.slot_beacon_public` | warning | `REVOKE EXECUTE ON FUNCTION pg_logical_emit_message(...) FROM PUBLIC` and `GRANT` to the connector's role (hardening) |
+| `postgres.source.slot_beacon_unavailable` | warning, then error | beacons failing at runtime, with `retained_wal_bytes`; after `beaconFailureTimeout` the cap is abandoned and the next start may be refused |
+| `postgres.source.slot_identity_unprovable` | refusal | a position with an identity on a server that cannot check it (Postgres 13, a standby before 16): point the source at the primary, or start once with `allowWALGap` |
+| `postgres.source.wal_history_changed` | refusal | check `url`; after pg_upgrade see the runbook; otherwise re-snapshot |
+| `postgres.source.wal_history_unverified` | warning | a legacy position: the history is checked from the next saved position on; re-snapshot if the database was restored or replaced since the last delivered record |
 
-`logrepl.allowWALGap` now also accepts a replaced slot. No new setting.
+`logrepl.allowWALGap` now also accepts a replaced slot, an unprovable one and a WAL history
+change. Two new settings: `logrepl.slotIdentity.checkTimeout` (default 10 minutes, #447 S2:
+the peek decodes from `restart_lsn`, which a long-running transaction can hold far back, so
+a short fixed timeout turned into a restart loop) and
+`logrepl.slotIdentity.beaconFailureTimeout` (default 5 minutes, S1).
+
+**Servers that cannot carry beacons** (#447 N5). Postgres 13 cannot decode messages, and a
+standby cannot write them. Such a server writes positions with no identity and logs
+`slot_identity_unsupported`. A position that *carries* an identity is never accepted there
+unproven: a standby on 16+ can still decode beacons the primary wrote, so the check peeks
+as usual; otherwise the start is refused with `slot_identity_unprovable`. Only warning would
+let a replaced slot through on exactly the servers that cannot tell.
 
 ### Privileges and exposure
 
@@ -335,7 +450,7 @@ hand or by a tool) and against a database role that tries to make a replaced slo
 | --- | --- |
 | Any role with `CONNECT` (`pg_logical_emit_message` is `PUBLIC`) | No. Without the key no valid MAC can be made (security review of the first version, which put the identity in clear: `TestFindBeacon_RefusesForgedAndCopiedBeacons`, `TestSlotIdentity_ForgedBeacons_StillRefused`). |
 | A role that reads the WAL (`REPLICATION`, `pg_waldump`) and replays a genuine beacon | No. The beacon's `l` is below the new slot's `confirmed_flush_lsn` (same tests). |
-| Someone with the key: read access to Conduit's position store, the connector's records' positions at the destination, or a log that printed a position | Yes. The key is as sensitive as the position store. The connector never logs it (the one log that printed a raw position on a parse failure now prints its length), and errors never carry it. Positions reaching a destination is Conduit's behaviour, outside this connector. |
+| Someone with the key | Every record carries its position, and Conduit passes records' positions to destinations and returns the source's position over its API (`GET /v1/connectors/<id>`, `sourceState.position`). So **the key is readable wherever records or that API are**: Conduit's position store, every destination that keeps positions (a Kafka topic with OpenCDC records, for example), and API clients. To forge a passing beacon such a reader still needs to replace the slot (drop and create it, which takes `REPLICATION` or superuser) **and** write a message into the WAL. The key turns forging from anyone-with-CONNECT into needing slot-drop privileges plus read access to positions. The connector never logs the key (logs show a fingerprint; the one log that printed a raw position on a parse failure now prints its length, as does the chaos harness), and errors never carry it. |
 | A legacy (pre-v0.17.5) position | Not by forging: there is no key to forge. Such a slot is adopted without proof on the first resume anyway (Decision 6), which is the pre-existing exposure; the first position saved after that carries a random key. |
 
 Hardening: `REVOKE EXECUTE ON FUNCTION pg_logical_emit_message(...) FROM PUBLIC` and
@@ -406,8 +521,16 @@ either way; the revoke keeps other roles from writing messages into the WAL at a
 | Failover without it | The standby can lag behind the cap's beacon: the first start can be refused (fail closed, no loss) | 3 |
 | Promoted standby keeps a stale `synchronized_standby_slots` | The peek blocks; after two minutes the start fails with a hint naming the setting (streaming would block too) | 7 |
 | Role cannot call `pg_logical_emit_message` | `slot_beacon_failed` at start, with the `GRANT` | 3 |
-| Beacon write fails at runtime | Logged; the idle slot is not advanced until one succeeds (WAL retained, no loss) | 1 |
-| Beacon never comes back | After five minutes a new one may be written | 1 |
+| Beacon write fails at runtime | Warned with `retained_wal_bytes`; the idle slot is held at the last beacon. After `beaconFailureTimeout` (5 min) the cap is abandoned (uncapped advance, the disk is safe), an error is logged, and the next start is refused unless a record saved since covers it: an outage, never a loss. Retention is at most the timeout times the WAL rate | 1, 3 |
+| A beacon commits but `Emit` returns an error | Still recognised when the stream delivers it (last 16 attempts kept) | 1 |
+| Beacon never comes back | After five minutes a new one may be written, and the time counts as failing | 1 |
+| A synchronous standby is down | Beacons commit with `synchronous_commit = local`; nothing waits for it | 1 |
+| The walsender dies (half-open connection), the slot is replaced, the old run writes a beacon (#447 B1) | The guard refuses: `active_pid` is not this run's walsender; nothing is written, the next start is refused | 3 |
+| A slot replaced between its creation (or a fresh open) and the stream start, e.g. mid-snapshot (#447 B2) | `VerifyHeld` (now on every start) sees a `confirmed_flush_lsn` past the creation point; refused at the handoff | 3 |
+| A stamp lands after the slot was replaced but before the check | The guard sees the slot past the limit or held by another; refused | 3 |
+| Another cluster, an earlier timeline, a timeline that left before the position, or WAL behind the position (#447 B3) | `wal_history_changed` | 3 |
+| A restore on the same timeline whose new WAL already passed the position, with the restored slot at or below the bound | Not detected (Decision 8); re-snapshot after restores | 3 (not closed) |
+| A long-running transaction holds `restart_lsn` far back | The peek decodes from there; `slotIdentity.checkTimeout` (10 min) bounds it, configurable | 7 |
 | A role writes a beacon without the key (`PUBLIC` may call `pg_logical_emit_message`) | MAC fails; the replaced slot is refused | 3 |
 | A WAL reader copies a genuine beacon into a replaced slot | Its `l` is below the new slot's `confirmed_flush_lsn`; refused | 3 |
 | An attempt creates (or takes over) the slot with `allowWALGap`, stamps it, and fails before saving | The slot carries a new key; the retry from the old position is refused (or accepted again with the opt-in and the warning) | 3 |
@@ -415,7 +538,7 @@ either way; the revoke keeps other roles from writing messages into the WAL at a
 | A log or error carrying the identity key | None does: logs show an 8-digit fingerprint of its SHA-256, the raw-position debug log prints only its length | - |
 | Stop within about 20s of the last ack | The slot is below that transaction's commit; the next start decodes it again and the change key skips it | 1, 2 |
 | Very large backlog in front of the beacon | The peek reads in growing rounds; past 2^24 changes the start fails with an error (never seen: the beacon follows `confirmed_flush_lsn` closely) | 3 |
-| Postgres 13, or a standby as the source | No beacons: v0.17.4 behaviour with a warning | 3 (not closed) |
+| Postgres 13, or a standby as the source | No beacons: positions carry no identity, v0.17.4 behaviour with a warning. A position that carries one is proven (a 16+ standby peeks) or refused (`slot_identity_unprovable`) | 3 (not closed for runs on such servers) |
 | `pg_upgrade` recreates the slot | Refused; documented: advance and start once with `allowWALGap` | 3 |
 | Another consumer decodes messages (Debezium) | Sees beacons; filter by prefix | - |
 | Many pipelines on one database | Each slot decodes the others' beacons and ignores them | - |
@@ -434,7 +557,15 @@ either way; the revoke keeps other roles from writing messages into the WAL at a
   identity but the slot is past every beacon, and the start is refused with
   `slot_replaced`; start once with `allowWALGap`. Documented in the README.
 - **Shared version history:** version 4 must be reserved in `release/v0.14.x`'s
-  `CurrentPositionVersion` comment, as version 3 was (#419).
+  `CurrentPositionVersion` comment, as version 3 was (#419). Issue #449: v0.14.x reads a
+  version 4 position like version 2 and ignores the new fields (no rejection, per the
+  existing "read, not rejected" contract).
+- **Hardened databases:** a database that revoked `pg_logical_emit_message` from PUBLIC
+  without granting it to the connector's role fails the first start on v0.17.5 with
+  `slot_beacon_failed`. Check before upgrading:
+  `SELECT has_function_privilege('<role>', 'pg_logical_emit_message(boolean, text, text, boolean)', 'EXECUTE')`
+  (Postgres 17+; `(boolean, text, text)` before), and grant it if false. In the release
+  notes.
 
 ## Backport to release/v0.14.x
 
@@ -486,13 +617,31 @@ its own review; until then v0.14.x keeps #444's missing-slot check and the docum
   (`nextFindBeaconLimit`) and exhaustion at a clamped limit below the first round.
 - Property: positions round-trip with the identity (`genPosition`); every CDC and marker
   position carries the run's identity.
+- #447 review repros, each failing before its fix and passing after:
+  `TestSlotIdentity_BeaconAfterWalsenderLoss_DoesNotVouchForReplacement` (B1),
+  `TestSlotIdentity_FreshStartSlotReplacedMidSnapshot_Refused` (B2),
+  `TestSlotIdentity_WALHistoryChanged_Refused` (B3: another cluster, an earlier timeline, WAL
+  behind the position; the timeline switch case is in the failover test). Unit:
+  `TestBeacons_EmitOnlyIntoTheHeldSlot` (the guard), `TestBeacons_AbandonedAfterFailureTimeout`
+  (S1), `TestParseSwitchPoint`, `TestReadWALHistory`; on Postgres 13
+  `TestSlotIdentity_UnsupportedServer_WarnsAndResumes` also checks that a position carrying
+  an identity is refused (N5). `TestB1_AC7_RestartHaltUnsettled` is AC7 without the settle
+  step (N4).
 - Failover (`test/failover/run.sh`, not part of `make test`): Postgres 17 and 18, promoted
-  standby resumes, recreated slot on the new primary refused.
+  standby resumes, a position past the timeline switch point is refused, recreated slot on
+  the new primary refused.
 - Version matrix: the integration and internal tests above on 14, 15, 16, 17 (17.5 and
   17.11 in the failover stack) and 18 pass; on 13 the beacon tests skip and the unsupported
   path passes.
 
 ## Not verified
+- The xid argument in Emit's guard (a slot created after the check cannot decode the
+  beacon) is reasoned from how logical slots build their snapshot; it is not exercised by a
+  test that creates a slot while a beacon transaction is open.
+- A beacon whose `Emit` returned an error after it committed is matched from the stream
+  (the attempts list), but no test makes a commit succeed and `Emit` fail.
+- The pg_upgrade runbook (whether pg_upgrade keeps the system identifier, and the slot
+  migration path) is reasoned from the Postgres documentation, not run.
 
 - `pg_upgrade` with logical slot migration (17 to 18) is reasoned from the Postgres
   documentation, not run.
