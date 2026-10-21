@@ -1650,6 +1650,16 @@ var (
 	_ json.Marshaler       = jsonNumber("")
 )
 
+// numberCause returns the reason a number failed to parse without the number,
+// which strconv.NumError repeats.
+func numberCause(err error) error {
+	var ne *strconv.NumError
+	if errors.As(err, &ne) {
+		return ne.Err
+	}
+	return errors.New("not a valid number")
+}
+
 func (n jsonNumber) rat() (*big.Rat, error) {
 	// big.Rat builds a number with as many digits as the exponent (1e1000000
 	// takes milliseconds and hundreds of kilobytes per value); no int64 needs
@@ -1657,12 +1667,12 @@ func (n jsonNumber) rat() (*big.Rat, error) {
 	if i := strings.IndexAny(string(n), "eE"); i >= 0 {
 		exp, err := strconv.Atoi(strings.TrimPrefix(string(n)[i+1:], "+"))
 		if err != nil || exp < -400 || exp > 400 {
-			return nil, fmt.Errorf("JSON number %q has an exponent outside -400..400", string(n))
+			return nil, fmt.Errorf("a %d byte JSON number has an exponent outside -400..400", len(n))
 		}
 	}
 	r, ok := new(big.Rat).SetString(string(n))
 	if !ok {
-		return nil, fmt.Errorf("invalid JSON number %q", string(n))
+		return nil, fmt.Errorf("invalid JSON number (%d bytes)", len(n))
 	}
 	return r, nil
 }
@@ -1671,7 +1681,7 @@ func (n jsonNumber) rat() (*big.Rat, error) {
 func (n jsonNumber) NumericValue() (pgtype.Numeric, error) {
 	var num pgtype.Numeric
 	if err := num.Scan(string(n)); err != nil {
-		return pgtype.Numeric{}, fmt.Errorf("JSON number %q as numeric: %w", string(n), err)
+		return pgtype.Numeric{}, fmt.Errorf("a %d byte JSON number as numeric: %w", len(n), numberCause(err))
 	}
 	return num, nil
 }
@@ -1683,7 +1693,7 @@ func (n jsonNumber) Int64Value() (pgtype.Int8, error) {
 		return pgtype.Int8{}, err
 	}
 	if !r.IsInt() || !r.Num().IsInt64() {
-		return pgtype.Int8{}, fmt.Errorf("JSON number %q is not a whole number in the int64 range", string(n))
+		return pgtype.Int8{}, fmt.Errorf("a %d byte JSON number is not a whole number in the int64 range", len(n))
 	}
 	return pgtype.Int8{Int64: r.Num().Int64(), Valid: true}, nil
 }
@@ -1692,7 +1702,7 @@ func (n jsonNumber) Int64Value() (pgtype.Int8, error) {
 func (n jsonNumber) Float64Value() (pgtype.Float8, error) {
 	f, err := strconv.ParseFloat(string(n), 64)
 	if err != nil {
-		return pgtype.Float8{}, fmt.Errorf("JSON number %q as float: %w", string(n), err)
+		return pgtype.Float8{}, fmt.Errorf("a %d byte JSON number as float: %w", len(n), numberCause(err))
 	}
 	return pgtype.Float8{Float64: f, Valid: true}, nil
 }

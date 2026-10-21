@@ -17,8 +17,10 @@ package internal
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
+	pginternal "github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/types"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -111,7 +113,15 @@ func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]a
 			if located, ok := types.LocateError(decodeErr, rel.RelationName, col.Name); ok {
 				return nil, types.WithRow(located, keyText(rel, row))
 			}
-			return nil, fmt.Errorf("failed to decode value for column %q: %w", col.Name, decodeErr)
+			// The decoder's error repeats the value it could not parse (for
+			// example strconv's `parsing "..."`), and errors reach the DLQ,
+			// the API and CLI output: report the column, the size and a hash
+			// of the value instead.
+			return nil, &scrubbedError{
+				msg: fmt.Sprintf("failed to decode value for column %q (%d bytes, value hash %s): %s",
+					col.Name, len(tuple.Data), pginternal.KeyHash(map[string]any{col.Name: string(tuple.Data)}), scrubValue(decodeErr.Error(), tuple.Data)),
+				err: decodeErr,
+			}
 		}
 
 		values[col.Name] = v
@@ -155,6 +165,34 @@ func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, data []
 	}
 
 	return v, nil
+}
+
+// scrubbedError carries a message without the offending value and keeps the
+// original error in the chain so errors.Is and errors.As keep working.
+type scrubbedError struct {
+	msg string
+	err error
+}
+
+func (e *scrubbedError) Error() string { return e.msg }
+func (e *scrubbedError) Unwrap() error { return e.err }
+
+// scrubValue removes a value from an error message: its quoted forms always
+// ("v" and 'v'), and its raw text when it is long enough not to mangle
+// unrelated parts of the message.
+func scrubValue(msg string, value []byte) string {
+	v := string(value)
+	if v == "" {
+		return msg
+	}
+	q := strconv.Quote(v)
+	for _, form := range []string{q, "'" + v + "'", `"` + v + `"`} {
+		msg = strings.ReplaceAll(msg, form, `"<value>"`)
+	}
+	if len(v) >= 4 {
+		msg = strings.ReplaceAll(msg, v, "<value>")
+	}
+	return msg
 }
 
 // keyText names the row of a tuple by the columns Postgres flags as part of the
