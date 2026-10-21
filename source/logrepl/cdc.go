@@ -47,6 +47,13 @@ type CDCConfig struct {
 	// BatchSize is the maximum size of a batch that will be read from the DB
 	// in one go and processed by the CDCHandler.
 	BatchSize int
+	// StartPosition is the position the connector was started/resumed with.
+	// A saved position (snapshot or CDC) implies a replication slot that must
+	// still exist, see checkSlot.
+	StartPosition position.Position
+	// AllowWALGap accepts the data loss of resuming from a saved position on
+	// a replication slot that had to be created again (see checkSlot).
+	AllowWALGap bool
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -68,8 +75,23 @@ type CDCIterator struct {
 	recordsForNextRead []opencdc.Record
 }
 
+// afterSlotCheck is a test seam, nil in production. It runs between checkSlot
+// and the subscription, the window in which a slot can vanish. It is only
+// assigned in _test.go files (enforced by TestSeamsOnlyAssignedInTests).
+var afterSlotCheck func()
+
 // NewCDCIterator initializes logical replication by creating the publication and subscription manager.
 func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCIterator, error) {
+	// Invariant 3: before anything is created, so a refusal leaves no slot
+	// behind that a retry would take for a healthy one.
+	if err := checkSlot(ctx, pool, c); err != nil {
+		return nil, err
+	}
+
+	if afterSlotCheck != nil {
+		afterSlotCheck()
+	}
+
 	if err := internal.CreatePublication(
 		ctx,
 		pool,
@@ -103,7 +125,14 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		time.Second,
 	)
 
-	sub, err := internal.CreateSubscription(
+	newSub := internal.CreateSubscription
+	if hasSavedPosition(c) && !c.AllowWALGap {
+		// Invariant 3: a saved position never creates a slot. checkSlot
+		// already looked, but a slot dropped after that read must not be
+		// recreated at the current WAL either.
+		newSub = internal.OpenSubscription
+	}
+	sub, err := newSub(
 		ctx,
 		pool,
 		c.SlotName,
@@ -112,7 +141,13 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		c.LSN,
 		handler.Handle,
 	)
+	// Before the error return: a slot created by a call that then failed is
+	// a taken gap too (see internal.SlotCreatedError).
+	warnIfSlotCreatedForSavedPosition(ctx, c, sub, err)
 	if err != nil {
+		if errors.Is(err, internal.ErrMissingSlot) {
+			return nil, newSlotGapError(c.SlotName, slotGapPositions{saved: describeSavedPosition(c), newSlotStart: currentWAL(ctx, pool)})
+		}
 		return nil, fmt.Errorf("failed to initialize subscription: %w", err)
 	}
 
@@ -133,6 +168,31 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		batchesCh: batchesCh,
 		sub:       sub,
 	}, nil
+}
+
+// warnIfSlotCreatedForSavedPosition logs the accepted data loss when the call
+// created the slot although the config carries a saved position, whether the
+// call then succeeded or failed.
+func warnIfSlotCreatedForSavedPosition(ctx context.Context, c CDCConfig, sub *internal.Subscription, err error) {
+	// A slot was created in this call only if CREATE_REPLICATION_SLOT
+	// succeeded (internal.CreatedSlot). With a saved position that is the
+	// accepted gap (allowWALGap is the only way here), including a slot
+	// dropped after checkSlot and one created by a call that then failed: the
+	// retry would find a healthy slot and log nothing.
+	//
+	// Known limit (#442): if a third party drops the slot and creates it again
+	// under the same name between checkSlot and our CREATE, the create fails
+	// with a duplicate error and no warning fires. newSubscription cannot tell
+	// that from an intact slot reached through the create path (allowWALGap
+	// with a healthy slot also ends in a duplicate), so reporting "took the
+	// create path" would warn falsely. Closing it needs a slot identity in the
+	// position (#442).
+	if !hasSavedPosition(c) {
+		return
+	}
+	if point, created := internal.CreatedSlot(sub, err); created {
+		warnGapAccepted(ctx, c, point)
+	}
 }
 
 // StartSubscriber starts the logical replication service in the background.

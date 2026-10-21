@@ -119,6 +119,18 @@ func (p Position) ToSDKPosition() opencdc.Position {
 	return v
 }
 
+// ImpliesSlot reports whether the position was written by a run that held a
+// replication slot, so resuming from it needs that slot (or one that still
+// covers the position) to exist. It is true for every position a run has
+// produced, snapshot or CDC, and false for the empty position of a fresh start.
+//
+// A snapshot position implies a slot too: the run took its snapshot at the
+// slot's consistent point and relies on the slot to replay every change made
+// after it.
+func (p Position) ImpliesSlot() bool {
+	return p.Type != TypeInitial || p.LastLSN != "" || p.TxCommitLSN != ""
+}
+
 // LSN returns the last LSN (Log Sequence Number) in the position.
 func (p Position) LSN() (pglogrepl.LSN, error) {
 	if p.LastLSN == "" {

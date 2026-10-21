@@ -71,6 +71,9 @@ type Config struct {
 	WithSnapshot    bool
 	WithAvroSchema  bool
 	BatchSize       int
+	// AllowWALGap accepts the data loss of resuming from a saved position on a
+	// replication slot that no longer exists (see checkSlot).
+	AllowWALGap bool
 }
 
 // Validate performs validation tasks on the config.
@@ -236,6 +239,10 @@ func (c *CombinedIterator) initCDCIterator(ctx context.Context, pos position.Pos
 		TableKeys:       c.conf.TableKeys,
 		WithAvroSchema:  c.conf.WithAvroSchema,
 		BatchSize:       c.conf.BatchSize,
+		// The saved position decides whether a missing slot is a gap (see
+		// checkSlot).
+		StartPosition: pos,
+		AllowWALGap:   c.conf.AllowWALGap,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create CDC iterator: %w", err)
