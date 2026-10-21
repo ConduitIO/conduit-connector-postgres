@@ -252,21 +252,31 @@ func TestCombinedIterator_IntactSlot_ResumesAfterIdle(t *testing.T) {
 	saved, err := pp.LSN()
 	is.NoErr(err)
 
-	// Move WAL on an unrelated table and let the slot follow it.
+	// Move WAL on an unrelated table, then advance the idle slot to the current
+	// WAL end, as a connector that reports the server's WAL end once everything is
+	// acked does. Nothing of the watched table is skipped: the
+	// "while-stopped" row is written after the advance. The slot stays inactive
+	// briefly after Teardown, so the advance retries.
 	slotGapInsert(ctx, t, pool, other, "noise")
 	_, err = pool.Exec(ctx, "SELECT pg_switch_wal()")
 	is.NoErr(err)
+	var advErr error
+	for i := 0; i < 50; i++ {
+		_, advErr = pool.Exec(ctx, "SELECT pg_replication_slot_advance($1, pg_current_wal_lsn())", table)
+		if advErr == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	is.NoErr(advErr)
 	slotGapInsert(ctx, t, pool, table, "while-stopped")
 
 	slot, err := internal.ReadReplicationSlot(ctx, pool, table)
 	is.NoErr(err)
 	t.Logf("saved LSN %s, slot restart_lsn %s, confirmed_flush_lsn %s", saved, slot.RestartLSN, slot.ConfirmedFlushLSN)
-	// On main the slot's confirmed_flush_lsn is routinely ahead of the saved
-	// record (the connector reports the server's WAL end once everything is
-	// acked), and the check must not read that as a gap. v0.14 reports the
-	// record LSN itself, so here it equals the saved LSN; the point of the
-	// control is the same: a healthy idle slot resumes and is not refused.
-	is.True(slot.ConfirmedFlushLSN >= saved)
+	// The slot is ahead of the saved record (guaranteed by the advance above),
+	// and the check must not read that as a gap: a healthy idle slot resumes.
+	is.True(slot.ConfirmedFlushLSN > saved)
 
 	it, err := NewCombinedIterator(ctx, pool, slotGapConfig(table, pos, false))
 	is.NoErr(err)
