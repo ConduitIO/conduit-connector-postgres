@@ -112,6 +112,7 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 			WithSnapshot:    s.config.SnapshotMode == source.SnapshotModeInitial,
 			WithAvroSchema:  s.config.WithAvroSchema,
 			BatchSize:       *s.config.BatchSize,
+			AllowWALGap:     s.config.LogreplAllowWALGap,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create logical replication iterator: %w", err)

@@ -142,6 +142,36 @@ func CreateSubscription(
 	startLSN pglogrepl.LSN,
 	h Handler,
 ) (*Subscription, error) {
+	return newSubscription(ctx, pool, slotName, publication, tables, startLSN, h, true)
+}
+
+// OpenSubscription is CreateSubscription for a slot that must already exist:
+// it never issues CREATE_REPLICATION_SLOT. A source resuming from a saved
+// position uses it, because a slot created now would start at the current WAL
+// and skip every change since the position (invariant 3). A missing slot fails
+// with ErrMissingSlot.
+func OpenSubscription(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	slotName,
+	publication string,
+	tables []string,
+	startLSN pglogrepl.LSN,
+	h Handler,
+) (*Subscription, error) {
+	return newSubscription(ctx, pool, slotName, publication, tables, startLSN, h, false)
+}
+
+func newSubscription(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	slotName,
+	publication string,
+	tables []string,
+	startLSN pglogrepl.LSN,
+	h Handler,
+	createSlot bool,
+) (*Subscription, error) {
 	var err error
 
 	// Request a replication connection
@@ -155,25 +185,28 @@ func CreateSubscription(
 		}
 	}()
 
-	result, err := pglogrepl.CreateReplicationSlot(
-		ctx,
-		conn.Conn().PgConn(),
-		slotName,
-		pgOutputPlugin,
-		pglogrepl.CreateReplicationSlotOptions{
-			SnapshotAction: "EXPORT_SNAPSHOT",
-			Mode:           pglogrepl.LogicalReplication,
-		},
-	)
-	if err != nil {
-		// If creating the replication slot fails with code 42710, this means
-		// the replication slot already exists.
-		if !IsPgDuplicateErr(err) {
-			return nil, err
-		}
+	var result pglogrepl.CreateReplicationSlotResult
+	if createSlot {
+		result, err = pglogrepl.CreateReplicationSlot(
+			ctx,
+			conn.Conn().PgConn(),
+			slotName,
+			pgOutputPlugin,
+			pglogrepl.CreateReplicationSlotOptions{
+				SnapshotAction: "EXPORT_SNAPSHOT",
+				Mode:           pglogrepl.LogicalReplication,
+			},
+		)
+		if err != nil {
+			// If creating the replication slot fails with code 42710, this means
+			// the replication slot already exists.
+			if !IsPgDuplicateErr(err) {
+				return nil, err
+			}
 
-		sdk.Logger(ctx).Warn().
-			Msgf("replication slot %q already exists", slotName)
+			sdk.Logger(ctx).Warn().
+				Msgf("replication slot %q already exists", slotName)
+		}
 	}
 
 	slotInfo, err := ReadReplicationSlot(ctx, pool, slotName)

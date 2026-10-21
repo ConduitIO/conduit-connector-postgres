@@ -47,6 +47,13 @@ type CDCConfig struct {
 	// BatchSize is the maximum size of a batch that will be read from the DB
 	// in one go and processed by the CDCHandler.
 	BatchSize int
+	// StartPosition is the position the connector was started/resumed with.
+	// A saved position (snapshot or CDC) implies a replication slot that must
+	// still exist, see checkSlot.
+	StartPosition position.Position
+	// AllowWALGap accepts the data loss of resuming from a saved position on
+	// a replication slot that had to be created again (see checkSlot).
+	AllowWALGap bool
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -70,6 +77,12 @@ type CDCIterator struct {
 
 // NewCDCIterator initializes logical replication by creating the publication and subscription manager.
 func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCIterator, error) {
+	// Invariant 3: before anything is created, so a refusal leaves no slot
+	// behind that a retry would take for a healthy one.
+	if err := checkSlot(ctx, pool, c); err != nil {
+		return nil, err
+	}
+
 	if err := internal.CreatePublication(
 		ctx,
 		pool,
@@ -103,7 +116,14 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		time.Second,
 	)
 
-	sub, err := internal.CreateSubscription(
+	newSub := internal.CreateSubscription
+	if hasSavedPosition(c) && !c.AllowWALGap {
+		// Invariant 3: a saved position never creates a slot. checkSlot
+		// already looked, but a slot dropped after that read must not be
+		// recreated at the current WAL either.
+		newSub = internal.OpenSubscription
+	}
+	sub, err := newSub(
 		ctx,
 		pool,
 		c.SlotName,
@@ -113,6 +133,9 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		handler.Handle,
 	)
 	if err != nil {
+		if errors.Is(err, internal.ErrMissingSlot) {
+			return nil, newSlotGapError(c.SlotName, slotGapPositions{saved: describeSavedPosition(c), newSlotStart: currentWAL(ctx, pool)})
+		}
 		return nil, fmt.Errorf("failed to initialize subscription: %w", err)
 	}
 
