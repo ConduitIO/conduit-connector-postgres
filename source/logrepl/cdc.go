@@ -150,6 +150,14 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	// sub.TXSnapshotID is set only when CREATE_REPLICATION_SLOT succeeded in
 	// this call. With a saved position that is the accepted gap (allowWALGap
 	// is the only way here), including a slot dropped after checkSlot.
+	//
+	// Known limit (#442): if a third party drops the slot and creates it again
+	// under the same name between checkSlot and our CREATE, the create fails
+	// with a duplicate error, TXSnapshotID stays empty and no warning fires.
+	// newSubscription cannot tell that from an intact slot reached through the
+	// create path (allowWALGap with a healthy slot also ends in a duplicate), so
+	// reporting "took the create path" would warn falsely. Closing it needs a
+	// slot identity in the position (#442).
 	if hasSavedPosition(c) && sub.TXSnapshotID != "" {
 		warnGapAccepted(ctx, c, sub.StartLSN.String())
 	}
