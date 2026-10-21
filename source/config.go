@@ -81,6 +81,16 @@ type Config struct {
 	// removed when the connector is deleted.
 	LogreplAutoCleanup bool `json:"logrepl.autoCleanup" default:"true"`
 
+	// LogreplAllowWALGap lets the connector resume from a saved position when
+	// the replication slot no longer exists and has to be created again. A new
+	// slot starts at the current WAL, so every change between the saved
+	// position and the slot's creation is skipped and never delivered: this
+	// setting accepts that DATA LOSS. Leave it false (the default) and the
+	// connector refuses to start with the error `postgres.source.slot_wal_gap`
+	// instead. Use it only after deciding that the destination can be repaired
+	// some other way, and remove it once the pipeline has resumed.
+	LogreplAllowWALGap bool `json:"logrepl.allowWALGap" default:"false"`
+
 	// WithAvroSchema determines whether the connector should attach an avro schema on each
 	// record.
 	WithAvroSchema bool `json:"logrepl.withAvroSchema" default:"true"`

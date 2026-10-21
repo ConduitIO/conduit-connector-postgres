@@ -120,6 +120,7 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 			WithAvroSchema:    s.config.WithAvroSchema,
 			BatchSize:         *s.config.BatchSize,
 			SchemaDriftPolicy: s.config.LogreplSchemaDriftPolicy,
+			AllowWALGap:       s.config.LogreplAllowWALGap,
 			Import:            imp,
 		})
 		if err != nil {

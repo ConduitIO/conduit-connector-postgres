@@ -61,6 +61,9 @@ type CDCConfig struct {
 	// It is set only when the pipeline has no position; the caller has run
 	// dbzoffset.Preflight.
 	Import *dbzoffset.Import
+	// AllowWALGap accepts the data loss of resuming from a saved position on
+	// a replication slot that had to be created again (see checkSlotCoversPosition).
+	AllowWALGap bool
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -89,6 +92,14 @@ type CDCIterator struct {
 
 // NewCDCIterator initializes logical replication by creating the publication and subscription manager.
 func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCIterator, error) {
+	// Invariant 3: before anything is created, so a refusal leaves no slot
+	// behind that a retry would take for a healthy one.
+	if c.Import == nil {
+		if err := checkSlot(ctx, pool, c); err != nil {
+			return nil, err
+		}
+	}
+
 	// Import mode never creates the publication (#341 S16): one created
 	// after the slot's start makes pgoutput skip the earlier WAL of its
 	// tables. The preflight checked that it exists and covers the tables.
@@ -130,9 +141,15 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	)
 
 	newSub := internal.CreateSubscription
-	if c.Import != nil {
+	switch {
+	case c.Import != nil:
 		// Import mode never creates the slot: a slot created now would start
 		// at the current WAL and miss everything since Debezium's offset.
+		newSub = internal.OpenSubscription
+	case hasSavedPosition(c) && !c.AllowWALGap:
+		// Invariant 3: a saved position never creates a slot. checkSlot
+		// already looked, but a slot dropped after that read must not be
+		// recreated at the current WAL either.
 		newSub = internal.OpenSubscription
 	}
 	sub, err := newSub(
@@ -149,10 +166,13 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 			// The slot went away after the preflight. Import mode never
 			// creates one: say so with the import's code.
 			return nil, &dbzoffset.Error{
-				Code: dbzoffset.CodeSlotMissing, Path: "logrepl.slotName",
+				Code: dbzoffset.CodeSlotMissing, Path: slotNamePath,
 				Message: fmt.Sprintf("replication slot %q does not exist (it was dropped after the preflight)", c.SlotName),
 				Fix:     "Go back to Debezium with the manual runbook, gated by `conduit migrate kafka-connect --check-rollback`, then redo the cutover. Import mode never creates a slot.",
 			}
+		}
+		if c.Import == nil && errors.Is(err, internal.ErrMissingSlot) {
+			return nil, newSlotGapError(c.SlotName, slotGapPositions{saved: describeSavedPosition(c), newSlotStart: currentWAL(ctx, pool)})
 		}
 		return nil, fmt.Errorf("failed to initialize subscription: %w", err)
 	}
@@ -195,7 +215,7 @@ func applyImport(ctx context.Context, sub *internal.Subscription, imp *dbzoffset
 	// it (Subscription.checkImportSlot).
 	if sub.ConfirmedFlushLSN > plan.SkipCommitsBelow {
 		return &dbzoffset.Error{
-			Code: dbzoffset.CodeSlotAhead, Path: "logrepl.slotName",
+			Code: dbzoffset.CodeSlotAhead, Path: slotNamePath,
 			Message: fmt.Sprintf("replication slot %q moved to confirmed_flush_lsn %s, past Debezium's lsn_commit %s",
 				sub.SlotName, sub.ConfirmedFlushLSN, plan.SkipCommitsBelow),
 			Fix: "Something else consumed Conduit's slot. Stop it, go back to Debezium with the manual runbook (`conduit migrate kafka-connect --check-rollback`), then cut over again.",

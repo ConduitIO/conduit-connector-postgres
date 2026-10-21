@@ -117,6 +117,10 @@ func TestCombinedIterator_New(t *testing.T) {
 	t.Run("position cdc only", func(t *testing.T) {
 		is := is.New(t)
 
+		// A CDC position resumes on its slot, so the slot must exist (a missing
+		// one is postgres.source.slot_wal_gap, see slot_gap_integration_test.go).
+		test.CreateReplicationSlot(t, pool, table)
+
 		i, err := NewCombinedIterator(ctx, pool, Config{
 			Position:        opencdc.Position(`{"type":2, "last_lsn":"0/0"}`),
 			Tables:          []string{table},
