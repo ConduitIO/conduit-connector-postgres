@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -252,10 +253,23 @@ func TestCombinedIterator_IntactSlot_ResumesAfterIdle(t *testing.T) {
 	saved, err := pp.LSN()
 	is.NoErr(err)
 
-	// Move WAL on an unrelated table and let the slot follow it.
+	// Move WAL on an unrelated table, then advance the idle slot to the current
+	// WAL end, as main's connector does by reporting the server's WAL end once
+	// everything is acked. Nothing of the watched table is skipped: the
+	// "while-stopped" row is written after the advance. The slot stays inactive
+	// briefly after Teardown, so the advance retries.
 	slotGapInsert(ctx, t, pool, other, "noise")
 	_, err = pool.Exec(ctx, "SELECT pg_switch_wal()")
 	is.NoErr(err)
+	var advErr error
+	for i := 0; i < 50; i++ {
+		_, advErr = pool.Exec(ctx, "SELECT pg_replication_slot_advance($1, pg_current_wal_lsn())", table)
+		if advErr == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	is.NoErr(advErr)
 	slotGapInsert(ctx, t, pool, table, "while-stopped")
 
 	slot, err := internal.ReadReplicationSlot(ctx, pool, table)
@@ -321,14 +335,22 @@ func alterSystem(ctx context.Context, t *testing.T, pool *pgxpool.Pool, settings
 	reload()
 }
 
+// slotInvalidationEnv opts into the cluster-wide invalidation test.
+const slotInvalidationEnv = "CONDUIT_PG_SLOT_INVALIDATION"
+
 // An invalidated slot that still exists cannot be streamed from. It is refused
 // with its own code for a fresh start and for a resume, instead of an uncoded
 // scan error (NULL restart_lsn) or a late failure at the snapshot handoff.
 //
-// This test changes cluster-wide settings for a few seconds (and restores
-// them); a slot of another test that is inactive in that window could be
-// invalidated too.
+// The test sets max_slot_wal_keep_size cluster-wide for a few seconds (and
+// restores it), which invalidates the idle slots of any test running against
+// the same Postgres at that moment. It therefore runs alone: it is skipped
+// unless CONDUIT_PG_SLOT_INVALIDATION=1, and `make test` (so CI, on every PR)
+// runs it after the rest of the suite with -p 1.
 func TestCombinedIterator_InvalidatedSlot_FailsLoudly(t *testing.T) {
+	if os.Getenv(slotInvalidationEnv) != "1" {
+		t.Skipf("runs alone, after the suite, with %s=1 (make test does this)", slotInvalidationEnv)
+	}
 	ctx := test.Context(t)
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
