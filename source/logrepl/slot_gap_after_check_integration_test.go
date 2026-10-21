@@ -17,11 +17,13 @@ package logrepl
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/matryer/is"
 	"github.com/rs/zerolog"
@@ -119,6 +121,54 @@ func TestCDCIterator_AllowWALGap_WarnsOnceWhenSlotRecreated(t *testing.T) {
 			is.True(strings.Contains(logs.String(), string(CodeSlotWALGap)))
 		})
 	}
+}
+
+// CREATE_REPLICATION_SLOT can succeed and the call still fail (reading the slot
+// back, a timeout). The slot then exists, so the retry finds a healthy one and
+// would log nothing: the gap is taken, and must be warned about, on the first
+// attempt, exactly once over both attempts.
+func TestCDCIterator_AllowWALGap_WarnsWhenCreateSucceedsThenFails(t *testing.T) {
+	ctx := test.Context(t)
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	is := is.New(t)
+
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	table := test.SetupTestTable(ctx, t, pool)
+	t.Cleanup(func() {
+		_ = Cleanup(context.Background(), CleanupConfig{URL: pool.Config().ConnString(), SlotName: table, PublicationName: table})
+	})
+
+	pos := slotGapRun1(ctx, t, pool, table)
+	slotGapDropSlot(ctx, t, pool, table)
+
+	injected := errors.New("injected failure after CREATE_REPLICATION_SLOT")
+	fail := true
+	internal.AfterSlotCreateHook = func() error {
+		if fail {
+			fail = false // one-shot
+			return injected
+		}
+		return nil
+	}
+	t.Cleanup(func() { internal.AfterSlotCreateHook = nil })
+
+	var logs syncBuffer
+	lctx := zerolog.New(&logs).WithContext(ctx)
+	conf := slotGapConfig(table, pos, false)
+	conf.AllowWALGap = true
+
+	_, err := NewCombinedIterator(lctx, pool, conf)
+	is.True(errors.Is(err, injected))
+	is.Equal(strings.Count(logs.String(), dataLossWarn), 1) // warned on the failed attempt
+	var n int
+	is.NoErr(pool.QueryRow(ctx, "SELECT count(*) FROM pg_replication_slots WHERE slot_name=$1", table).Scan(&n))
+	is.Equal(n, 1) // the slot exists: this is why the warning could not wait
+
+	it, err := NewCombinedIterator(lctx, pool, conf) // retry: slot is healthy, nothing more to warn about
+	is.NoErr(err)
+	is.NoErr(it.Teardown(ctx))
+	is.Equal(strings.Count(logs.String(), dataLossWarn), 1)
 }
 
 // An intact slot with the opt-in set is not a gap: no warning.

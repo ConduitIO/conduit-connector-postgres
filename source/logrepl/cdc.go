@@ -76,7 +76,8 @@ type CDCIterator struct {
 }
 
 // afterSlotCheck is a test seam, nil in production. It runs between checkSlot
-// and the subscription, the window in which a slot can vanish.
+// and the subscription, the window in which a slot can vanish. It is only
+// assigned in _test.go files (enforced by TestSeamsOnlyAssignedInTests).
 var afterSlotCheck func()
 
 // NewCDCIterator initializes logical replication by creating the publication and subscription manager.
@@ -140,26 +141,14 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		c.LSN,
 		handler.Handle,
 	)
+	// Before the error return: a slot created by a call that then failed is
+	// a taken gap too (see internal.SlotCreatedError).
+	warnIfSlotCreatedForSavedPosition(ctx, c, sub, err)
 	if err != nil {
 		if errors.Is(err, internal.ErrMissingSlot) {
 			return nil, newSlotGapError(c.SlotName, slotGapPositions{saved: describeSavedPosition(c), newSlotStart: currentWAL(ctx, pool)})
 		}
 		return nil, fmt.Errorf("failed to initialize subscription: %w", err)
-	}
-
-	// sub.TXSnapshotID is set only when CREATE_REPLICATION_SLOT succeeded in
-	// this call. With a saved position that is the accepted gap (allowWALGap
-	// is the only way here), including a slot dropped after checkSlot.
-	//
-	// Known limit (#442): if a third party drops the slot and creates it again
-	// under the same name between checkSlot and our CREATE, the create fails
-	// with a duplicate error, TXSnapshotID stays empty and no warning fires.
-	// newSubscription cannot tell that from an intact slot reached through the
-	// create path (allowWALGap with a healthy slot also ends in a duplicate), so
-	// reporting "took the create path" would warn falsely. Closing it needs a
-	// slot identity in the position (#442).
-	if hasSavedPosition(c) && sub.TXSnapshotID != "" {
-		warnGapAccepted(ctx, c, sub.StartLSN.String())
 	}
 
 	if key := (internal.ChangeKey{CommitLSN: c.TxCommitLSN, Seq: c.TxSeq}); key.Known() {
@@ -179,6 +168,31 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		batchesCh: batchesCh,
 		sub:       sub,
 	}, nil
+}
+
+// warnIfSlotCreatedForSavedPosition logs the accepted data loss when the call
+// created the slot although the config carries a saved position, whether the
+// call then succeeded or failed.
+func warnIfSlotCreatedForSavedPosition(ctx context.Context, c CDCConfig, sub *internal.Subscription, err error) {
+	// A slot was created in this call only if CREATE_REPLICATION_SLOT
+	// succeeded (internal.CreatedSlot). With a saved position that is the
+	// accepted gap (allowWALGap is the only way here), including a slot
+	// dropped after checkSlot and one created by a call that then failed: the
+	// retry would find a healthy slot and log nothing.
+	//
+	// Known limit (#442): if a third party drops the slot and creates it again
+	// under the same name between checkSlot and our CREATE, the create fails
+	// with a duplicate error and no warning fires. newSubscription cannot tell
+	// that from an intact slot reached through the create path (allowWALGap
+	// with a healthy slot also ends in a duplicate), so reporting "took the
+	// create path" would warn falsely. Closing it needs a slot identity in the
+	// position (#442).
+	if !hasSavedPosition(c) {
+		return
+	}
+	if point, created := internal.CreatedSlot(sub, err); created {
+		warnGapAccepted(ctx, c, point)
+	}
 }
 
 // StartSubscriber starts the logical replication service in the background.

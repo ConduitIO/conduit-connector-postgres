@@ -44,6 +44,9 @@ type Subscription struct {
 	Handler       Handler
 	StatusTimeout time.Duration
 	TXSnapshotID  string
+	// ConsistentPoint is the consistent point of the slot created by this
+	// call, empty when the slot already existed (TXSnapshotID is empty too).
+	ConsistentPoint string
 
 	pool *pgxpool.Pool
 
@@ -132,6 +135,45 @@ type Subscription struct {
 
 type Handler func(context.Context, pglogrepl.Message, pglogrepl.LSN) (pglogrepl.LSN, error)
 
+// AfterSlotCreateHook is a test seam, nil in production. It runs right after
+// CREATE_REPLICATION_SLOT succeeded and may fail the call, to test what
+// callers do when a slot was created by a call that then errors. It is only
+// assigned in _test.go files (enforced by TestSeamsOnlyAssignedInTests in
+// the logrepl package).
+var AfterSlotCreateHook func() error
+
+// SlotCreatedError wraps an error returned by CreateSubscription after the
+// slot had already been created. The slot exists (and keeps its consistent
+// point) although the call failed, so a caller that resumes from a saved
+// position must still treat the creation as a taken gap (invariant 3): the
+// next attempt finds a healthy slot and cannot tell.
+type SlotCreatedError struct {
+	// ConsistentPoint is the created slot's consistent point.
+	ConsistentPoint string
+	// Err is the failure after the creation.
+	Err error
+}
+
+func (e *SlotCreatedError) Error() string {
+	return fmt.Sprintf("replication slot was created (consistent point %s), but the call failed: %v", e.ConsistentPoint, e.Err)
+}
+
+func (e *SlotCreatedError) Unwrap() error { return e.Err }
+
+// CreatedSlot reports whether the call that returned sub and err created the
+// replication slot, and the slot's consistent point: sub for a call that
+// succeeded (Subscription.ConsistentPoint), a *SlotCreatedError for one that failed after the creation.
+func CreatedSlot(sub *Subscription, err error) (string, bool) {
+	var ce *SlotCreatedError
+	if errors.As(err, &ce) {
+		return ce.ConsistentPoint, true
+	}
+	if err == nil && sub != nil && sub.TXSnapshotID != "" {
+		return sub.ConsistentPoint, true
+	}
+	return "", false
+}
+
 // CreateSubscription initializes the logical replication subscriber by creating the replication slot.
 func CreateSubscription(
 	ctx context.Context,
@@ -209,8 +251,26 @@ func newSubscription(
 		}
 	}
 
+	// created: CREATE_REPLICATION_SLOT succeeded in this call (a duplicate
+	// error leaves SnapshotName empty).
+	created := result.SnapshotName != ""
+
+	// AfterSlotCreateHook is a test seam, see its doc.
+	if hook := AfterSlotCreateHook; created && hook != nil {
+		if err = hook(); err != nil {
+			err = &SlotCreatedError{ConsistentPoint: result.ConsistentPoint, Err: err}
+			return nil, err
+		}
+	}
+
 	slotInfo, err := ReadReplicationSlot(ctx, pool, slotName)
 	if err != nil {
+		if created {
+			// The slot exists now although this call failed: tell the
+			// caller, or the next attempt finds a healthy slot and nobody
+			// knows a gap was taken (see SlotCreatedError).
+			err = &SlotCreatedError{ConsistentPoint: result.ConsistentPoint, Err: err}
+		}
 		return nil, err
 	}
 
@@ -231,14 +291,15 @@ func newSubscription(
 	}
 
 	return &Subscription{
-		SlotName:      slotName,
-		Publication:   publication,
-		Tables:        tables,
-		StartLSN:      startLSN,
-		Handler:       h,
-		StatusTimeout: 10 * time.Second,
-		TXSnapshotID:  result.SnapshotName,
-		Resume:        ResumePoint{LSN: startLSN},
+		SlotName:        slotName,
+		Publication:     publication,
+		Tables:          tables,
+		StartLSN:        startLSN,
+		Handler:         h,
+		StatusTimeout:   10 * time.Second,
+		TXSnapshotID:    result.SnapshotName,
+		ConsistentPoint: result.ConsistentPoint,
+		Resume:          ResumePoint{LSN: startLSN},
 
 		conn: conn,
 		pool: pool,
