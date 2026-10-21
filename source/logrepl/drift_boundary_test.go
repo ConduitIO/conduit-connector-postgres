@@ -327,7 +327,9 @@ func TestDrift338_Upgrade(t *testing.T) {
 // change key, so every build with the change-key resume reads it as exact.
 // Its only extra field is schema_drift_marker (the destination's source-only
 // proof, 20261015-drift-marker-source-signal.md), which no other position
-// carries and which older builds ignore.
+// carries and which older builds ignore. slot_identity (#442) is on every
+// position, the marker's included, so a restart from the marker recognises
+// its slot.
 func TestDrift338_PositionFormat(t *testing.T) {
 	tc := boundaryCases()[0]
 	ctx := test.Context(t)
@@ -345,13 +347,15 @@ func TestDrift338_PositionFormat(t *testing.T) {
 	for k := range raw {
 		switch k {
 		case "version", "type", "last_lsn", "tx_commit_lsn", "tx_seq", "schema_history", "snapshot_low_watermark_lsn",
-			"schema_drift_marker":
+			"schema_drift_marker", "slot_identity":
 		default:
 			t.Fatalf("marker position carries an unexpected field %q", k)
 		}
 	}
 	is.Equal(mp.SchemaDriftMarker, marker.Metadata[MetadataSchemaDriftTable]) // names the drifted table
 	is.Equal(pp.SchemaDriftMarker, "")                                        // only the marker has it
+	is.True(mp.SlotIdentity != "")                                            // #442
+	is.Equal(mp.SlotIdentity, pp.SlotIdentity)
 }
 
 // reformatPosition returns the same position re-marshaled: indented, keys in

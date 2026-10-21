@@ -20,6 +20,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -36,17 +37,27 @@ import (
 )
 
 // RepmgrConnString is a replication user connection string for the test postgres.
-const RepmgrConnString = "postgres://repmgr:repmgrmeroxa@127.0.0.1:5433/meroxadb?sslmode=disable"
+var RepmgrConnString = "postgres://repmgr:repmgrmeroxa@127.0.0.1:" + testPort("PG_TEST_PORT", "5433") + "/meroxadb?sslmode=disable"
 
 // RegularConnString is a non-replication user connection string for the test postgres.
-const RegularConnString = "postgres://meroxauser:meroxapass@127.0.0.1:5433/meroxadb?sslmode=disable"
+var RegularConnString = "postgres://meroxauser:meroxapass@127.0.0.1:" + testPort("PG_TEST_PORT", "5433") + "/meroxadb?sslmode=disable"
+
+// testPort returns the host port of a test service: the environment variable
+// env (also read by test/docker-compose.yml) or def. It lets the suite run
+// next to another stack that holds the default ports.
+func testPort(env, def string) string {
+	if p := os.Getenv(env); p != "" {
+		return p
+	}
+	return def
+}
 
 // BouncerConnString connects the regular user through the test PgBouncer
 // (test/docker-compose.yml, test/pgbouncer/pgbouncer.ini): transaction pooling,
 // two server connections, and prepared-statement tracking
 // (max_prepared_statements=200), so prepared statements are shared between the
 // clients of a server connection.
-const BouncerConnString = "postgres://meroxauser:meroxapass@127.0.0.1:6432/meroxadb?sslmode=disable"
+var BouncerConnString = "postgres://meroxauser:meroxapass@127.0.0.1:" + testPort("PGBOUNCER_TEST_PORT", "6432") + "/meroxadb?sslmode=disable"
 
 // TestTableAvroSchemaV1 is the Avro schema representation of the test table
 // defined through testTableCreateQuery.

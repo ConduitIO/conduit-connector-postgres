@@ -2,7 +2,7 @@ services:
   pg-0:
     image: docker.io/bitnamilegacy/postgresql-repmgr:17.5.0
     ports:
-      - "5433:5432"
+      - "${PG_TEST_PORT:-5433}:5432"
     volumes:
       - "pg_0_data:/bitnami/postgresql"
       - "./conf.d/:/bitnami/postgresql/conf/conf.d/"
@@ -31,7 +31,7 @@ services:
     image: docker.io/edoburu/pgbouncer:v1.26.0-p0
     entrypoint: [ "pgbouncer", "/etc/pgbouncer-test/pgbouncer.ini" ]
     ports:
-      - "6432:6432"
+      - "${PGBOUNCER_TEST_PORT:-6432}:6432"
     volumes:
       - "./pgbouncer/:/etc/pgbouncer-test/:ro"
     depends_on:

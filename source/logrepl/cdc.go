@@ -88,12 +88,26 @@ type CDCIterator struct {
 	// importDone is set by the first Ack in import mode, after which the
 	// version 2 position rules and the import plays no part.
 	importDone atomic.Bool
+
+	// slotIdentity is the slot identity this run writes into its positions
+	// and beacons (#442).
+	slotIdentity string
 }
 
 // afterSlotCheck is a test seam, nil in production. It runs between checkSlot
 // and the subscription, the window in which a slot can vanish. It is only
 // assigned in _test.go files (enforced by TestSeamsOnlyAssignedInTests).
 var afterSlotCheck func()
+
+// afterIdentityCheck is a test seam, nil in production. It runs between the
+// slot identity check and the subscription, the window in which a slot can be
+// swapped for another under the same name (#442).
+var afterIdentityCheck func()
+
+// afterSlotArmed is a test seam, nil in production. It runs after the slot
+// was opened or created and stamped, before NewCDCIterator returns; an error
+// fails the attempt there, as a crash before anything is saved would.
+var afterSlotArmed func() error
 
 // NewCDCIterator initializes logical replication by creating the publication and subscription manager.
 func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCIterator, error) {
@@ -107,6 +121,11 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 
 	if afterSlotCheck != nil {
 		afterSlotCheck()
+	}
+
+	server, err := internal.ReadServerInfo(ctx, pool)
+	if err != nil {
+		return nil, err
 	}
 
 	// Import mode never creates the publication (#341 S16): one created
@@ -128,6 +147,18 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 			sdk.Logger(ctx).Warn().
 				Msgf("Publication %q already exists.", c.PublicationName)
 		}
+	}
+
+	ident, err := resolveSlotIdentity(ctx, pool, c, server)
+	if err != nil {
+		return nil, err
+	}
+	// Every position of this run carries the identity (the handler copies it
+	// from its base position).
+	c.StartPosition.SlotIdentity = ident.identity
+
+	if afterIdentityCheck != nil {
+		afterIdentityCheck()
 	}
 
 	// Using a buffered channel here so that the handler can send a batch
@@ -163,19 +194,22 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	// a taken gap too (see internal.SlotCreatedError).
 	warnIfSlotCreatedForSavedPosition(ctx, c, sub, err)
 	if err != nil {
-		if c.Import != nil && errors.Is(err, internal.ErrMissingSlot) {
-			// The slot went away after the preflight. Import mode never
-			// creates one: say so with the import's code.
-			return nil, &dbzoffset.Error{
-				Code: dbzoffset.CodeSlotMissing, Path: slotNamePath,
-				Message: fmt.Sprintf("replication slot %q does not exist (it was dropped after the preflight)", c.SlotName),
-				Fix:     "Go back to Debezium with the manual runbook, gated by `conduit migrate kafka-connect --check-rollback`, then redo the cutover. Import mode never creates a slot.",
-			}
+		return nil, subscriptionError(ctx, pool, c, err)
+	}
+
+	// rotate gives the run a new identity once it accepted a slot that is
+	// not the saved position's (see slotIdentityCheck.rotated). It runs
+	// before the stream starts, so the handler and the beacons are not in
+	// use yet.
+	rotate := func(id string) {
+		handler.basePosition.SlotIdentity = id
+		if sub.Beacons != nil {
+			sub.Beacons.SetIdentity(id)
 		}
-		if c.Import == nil && errors.Is(err, internal.ErrMissingSlot) {
-			return nil, newSlotGapError(c.SlotName, slotGapPositions{saved: describeSavedPosition(c), newSlotStart: currentWAL(ctx, pool)})
-		}
-		return nil, fmt.Errorf("failed to initialize subscription: %w", err)
+	}
+	if err := armSlotIdentity(ctx, pool, c, sub, ident, server, rotate); err != nil {
+		_ = sub.Teardown(ctx)
+		return nil, err
 	}
 
 	if key := (internal.ChangeKey{CommitLSN: c.TxCommitLSN, Seq: c.TxSeq}); key.Known() {
@@ -197,10 +231,11 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	handler.changeKey = sub.CurrentChange
 
 	return &CDCIterator{
-		config:    c,
-		batchesCh: batchesCh,
-		sub:       sub,
-		handler:   handler,
+		config:       c,
+		batchesCh:    batchesCh,
+		sub:          sub,
+		handler:      handler,
+		slotIdentity: ident.identity,
 	}, nil
 }
 
@@ -232,18 +267,167 @@ func warnIfSlotCreatedForSavedPosition(ctx context.Context, c CDCConfig, sub *in
 	// dropped after checkSlot and one created by a call that then failed: the
 	// retry would find a healthy slot and log nothing.
 	//
-	// Known limit (#442): if a third party drops the slot and creates it again
-	// under the same name between checkSlot and our CREATE, the create fails
-	// with a duplicate error and no warning fires. newSubscription cannot tell
-	// that from an intact slot reached through the create path (allowWALGap
-	// with a healthy slot also ends in a duplicate), so reporting "took the
-	// create path" would warn falsely. Closing it needs a slot identity in the
-	// position (#442).
+	// A third party that drops the slot and creates it again under the same
+	// name between checkSlot and our CREATE makes the create fail with a
+	// duplicate error, so nothing is warned here. That slot is caught by the
+	// slot identity (#442): VerifyHeld sees its confirmed_flush_lsn past the
+	// one the identity check accepted (armSlotIdentity).
 	if c.Import != nil || !hasSavedPosition(c) {
 		return
 	}
 	if point, created := internal.CreatedSlot(sub, err); created {
 		warnGapAccepted(ctx, c, point)
+	}
+}
+
+// subscriptionError maps the error of opening or creating the subscription
+// to the coded error the operator acts on.
+func subscriptionError(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, err error) error {
+	if !errors.Is(err, internal.ErrMissingSlot) {
+		return fmt.Errorf("failed to initialize subscription: %w", err)
+	}
+	if c.Import != nil {
+		// The slot went away after the preflight. Import mode never
+		// creates one: say so with the import's code.
+		return &dbzoffset.Error{
+			Code: dbzoffset.CodeSlotMissing, Path: slotNamePath,
+			Message: fmt.Sprintf("replication slot %q does not exist (it was dropped after the preflight)", c.SlotName),
+			Fix:     "Go back to Debezium with the manual runbook, gated by `conduit migrate kafka-connect --check-rollback`, then redo the cutover. Import mode never creates a slot.",
+		}
+	}
+	return newSlotGapError(c.SlotName, slotGapPositions{saved: describeSavedPosition(c), newSlotStart: currentWAL(ctx, pool)})
+}
+
+// resolveSlotIdentity decides the slot identity of this run and, for a saved
+// position, checks that the existing slot is the position's slot.
+//
+// Invariant 3 (#442): a slot that exists and is healthy can still be a
+// different slot under the same name, created after the pipeline stopped.
+// Checked here, before the subscription takes the slot, and again once the
+// stream holds it (armSlotIdentity's VerifyHeld), for a slot swapped in
+// between.
+func resolveSlotIdentity(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, server internal.ServerInfo) (slotIdentityCheck, error) {
+	if c.Import != nil || !hasSavedPosition(c) {
+		// A fresh start or an import: a new identity history begins here.
+		return slotIdentityCheck{identity: internal.NewSlotIdentity()}, nil
+	}
+	ident, err := checkSlotIdentity(ctx, pool, c, server)
+	if err != nil {
+		return ident, err
+	}
+	switch ident.outcome {
+	case identityReplaced:
+		if !c.AllowWALGap {
+			return ident, newSlotReplacedError(c.SlotName, describeSavedPosition(c), ident.confirmed)
+		}
+		warnReplacedAccepted(ctx, c, ident.confirmed)
+		ident.rotate()
+	case identityNotChecked:
+		// The slot is missing: this run either refuses (no allowWALGap) or
+		// accepts a slot that is not the position's (it creates one, or one
+		// came back). Either way the new slot must not carry the position's
+		// identity.
+		ident.rotate()
+	}
+	logSlotIdentity(ctx, c, ident)
+	return ident, nil
+}
+
+// armSlotIdentity finishes the slot identity work once the subscription
+// opened (or created) the slot: the gap and replacement warnings, the check
+// once the stream holds the slot, and the run's first beacon.
+func armSlotIdentity(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, sub *internal.Subscription, ident slotIdentityCheck, server internal.ServerInfo, rotate func(string)) error {
+	saved := c.Import == nil && hasSavedPosition(c)
+	if saved {
+		// A third party that drops the slot and creates it again under the
+		// same name between checkSlot and our CREATE makes the create fail
+		// with a duplicate error, so TXSnapshotID stays empty. That slot is
+		// caught by VerifyHeld: its confirmed_flush_lsn is past the one the
+		// identity check accepted.
+		switch {
+		case sub.TXSnapshotID != "":
+			// Created by this call: warned by warnIfSlotCreatedForSavedPosition.
+		case ident.outcome == identityNotChecked:
+			// The slot was missing when its identity was checked, and someone
+			// created it again before the subscription opened it: it cannot
+			// be the position's slot.
+			if !c.AllowWALGap {
+				return newSlotReplacedError(c.SlotName, describeSavedPosition(c), sub.ConfirmedFlushLSN)
+			}
+			warnReplacedAccepted(ctx, c, sub.ConfirmedFlushLSN)
+		}
+	}
+	if server.BeaconsSupported() {
+		sub.Beacons = internal.NewBeacons(pool, c.SlotName, ident.identity)
+		warnEmitMessagePublic(ctx, pool, server.Version)
+	}
+	// Invariant 3 (#442): stamp the slot with this run's identity. The stamp
+	// is the beacon a restart finds before the next one is written, and it
+	// fails the start loudly when the role may not write beacons, instead of
+	// an idle slot that silently never advances.
+	//
+	// A position that already has an identity on a slot this run did not
+	// create is stamped only once the stream holds the slot and VerifyHeld
+	// accepted it: a beacon written into a slot swapped in after the identity
+	// check would make that slot pass the check on the next start. Its
+	// earlier beacons cover a restart until then. Every other start stamps
+	// now: a slot this run created is held by the creating connection until
+	// the stream starts, a fresh start has nothing to lose, and a legacy
+	// position (no identity) is adopted either way. Stamping now matters for
+	// a snapshot, which can run for hours before the stream starts. A
+	// rotated identity is stamped now too: no earlier position names it, so
+	// no slot can pass a check with it.
+	stampNow := !saved || ident.legacy || ident.rotated || sub.TXSnapshotID != ""
+	if saved {
+		sub.VerifyHeld = verifyHeldSlot(c, heldConfirmedLimit(sub, ident), sub.Beacons, !stampNow, server.Version, rotate)
+	}
+	if sub.Beacons != nil && stampNow {
+		if err := sub.Beacons.Emit(ctx); err != nil {
+			return newSlotBeaconError(c.SlotName, server.Version, err)
+		}
+	}
+	if afterSlotArmed != nil {
+		return afterSlotArmed()
+	}
+	return nil
+}
+
+// heldConfirmedLimit is the highest confirmed_flush_lsn the slot may have
+// once the stream holds it: what the identity check accepted, or, for a slot
+// this run created, what the subscription read right after creating it (the
+// creating connection holds the slot until the stream starts).
+func heldConfirmedLimit(sub *internal.Subscription, ident slotIdentityCheck) pglogrepl.LSN {
+	if sub.TXSnapshotID == "" && ident.confirmed != 0 {
+		return ident.confirmed
+	}
+	return sub.ConfirmedFlushLSN
+}
+
+// verifyHeldSlot returns the check run once the stream holds the slot
+// (Subscription.VerifyHeld). With stamp, it also writes the run's first
+// beacon once the slot is accepted.
+//
+// Invariant 3 (#442): nothing but this run can move the slot between the
+// identity check and the stream start, and this run sends nothing before the
+// check. A confirmed_flush_lsn past limit means the slot was dropped and
+// created again (or moved by another client) in between.
+func verifyHeldSlot(c CDCConfig, limit pglogrepl.LSN, beacons *internal.Beacons, stamp bool, serverVersion int, rotate func(string)) func(context.Context, internal.ReadReplicationSlotResult) error {
+	return func(ctx context.Context, slot internal.ReadReplicationSlotResult) error {
+		if slot.ConfirmedFlushLSN > limit {
+			if !c.AllowWALGap {
+				return newSlotReplacedError(c.SlotName, describeSavedPosition(c), slot.ConfirmedFlushLSN)
+			}
+			warnReplacedAccepted(ctx, c, slot.ConfirmedFlushLSN)
+			// The accepted slot gets an identity of its own, stamped now.
+			rotate(internal.NewSlotIdentity())
+			stamp = true
+		}
+		if beacons != nil && stamp {
+			if err := beacons.Emit(ctx); err != nil {
+				return newSlotBeaconError(c.SlotName, serverVersion, err)
+			}
+		}
+		return nil
 	}
 }
 
@@ -577,6 +761,12 @@ func (i *CDCIterator) subscriberReady() bool {
 	default:
 		return false
 	}
+}
+
+// SlotIdentity returns the slot identity this run carries in its positions
+// (#442).
+func (i *CDCIterator) SlotIdentity() string {
+	return i.slotIdentity
 }
 
 // TXSnapshotID returns the transaction snapshot which is received

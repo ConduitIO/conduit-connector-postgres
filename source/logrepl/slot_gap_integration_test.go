@@ -25,7 +25,6 @@ import (
 	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
-	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -229,18 +228,22 @@ func TestCombinedIterator_SlotDropped_SnapshotPosition_FailsLoudly(t *testing.T)
 	is.Equal(gap.Code, CodeSlotWALGap)
 }
 
-// An intact slot resumes as before, including after the pipeline sat idle and
-// the slot's confirmed_flush_lsn moved past the saved record LSN. This is why
-// the check is "the slot is missing", not "the slot's LSN is past the saved
-// LSN": the connector itself reports the server's WAL end once everything is
-// acked, so a healthy slot is routinely ahead of the last record.
-func TestCombinedIterator_IntactSlot_ResumesAfterIdle(t *testing.T) {
+// A slot that another client advanced past the saved position (here
+// pg_replication_slot_advance to the current WAL) no longer decodes the
+// pipeline's identity beacon, so it is refused like a replaced slot (#442):
+// the advance may have skipped changes the pipeline never delivered. Before
+// #442 this test resumed, because the check could not tell such a slot from
+// one the connector advanced itself while idle. The connector's own idle
+// advance stops at a beacon and resumes without a refusal; that is
+// TestSlotIdentity_IdleAdvancedSlot_ResumesWithoutFalsePositive.
+func TestCombinedIterator_ExternallyAdvancedSlot_Refused(t *testing.T) {
 	ctx := test.Context(t)
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	is := is.New(t)
 
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	requireIdentityServer(ctx, t, pool)
 	table := test.SetupTestTable(ctx, t, pool)
 	other := test.SetupTestTable(ctx, t, pool)
 	t.Cleanup(func() {
@@ -248,41 +251,38 @@ func TestCombinedIterator_IntactSlot_ResumesAfterIdle(t *testing.T) {
 	})
 
 	pos := slotGapRun1(ctx, t, pool, table)
-	pp, err := position.ParseSDKPosition(pos)
-	is.NoErr(err)
-	saved, err := pp.LSN()
-	is.NoErr(err)
 
-	// Move WAL on an unrelated table, then advance the idle slot to the current
-	// WAL end, as main's connector does by reporting the server's WAL end once
-	// everything is acked. Nothing of the watched table is skipped: the
-	// "while-stopped" row is written after the advance. The slot stays inactive
-	// briefly after Teardown, so the advance retries.
 	slotGapInsert(ctx, t, pool, other, "noise")
-	_, err = pool.Exec(ctx, "SELECT pg_switch_wal()")
+	_, err := pool.Exec(ctx, "SELECT pg_switch_wal()")
 	is.NoErr(err)
-	var advErr error
+	slotGapAdvance(ctx, t, pool, table)
+
+	_, err = NewCombinedIterator(ctx, pool, slotGapConfig(table, pos, false))
+	is.Equal(CodeOf(err), CodeSlotReplaced)
+
+	// The documented way past it after a deliberate advance.
+	conf := slotGapConfig(table, pos, false)
+	conf.AllowWALGap = true
+	it, err := NewCombinedIterator(ctx, pool, conf)
+	is.NoErr(err)
+	slotGapInsert(ctx, t, pool, table, "after-reopen")
+	is.Equal(slotGapReadKeys(ctx, t, it, 1), []string{"after-reopen"})
+	is.NoErr(it.Teardown(ctx))
+}
+
+// slotGapAdvance moves the slot to the current WAL end, as another client
+// would. The slot stays active briefly after Teardown, so it retries.
+func slotGapAdvance(ctx context.Context, t *testing.T, pool *pgxpool.Pool, slot string) {
+	t.Helper()
+	var err error
 	for i := 0; i < 50; i++ {
-		_, advErr = pool.Exec(ctx, "SELECT pg_replication_slot_advance($1, pg_current_wal_lsn())", table)
-		if advErr == nil {
-			break
+		_, err = pool.Exec(ctx, "SELECT pg_replication_slot_advance($1, pg_current_wal_lsn())", slot)
+		if err == nil {
+			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	is.NoErr(advErr)
-	slotGapInsert(ctx, t, pool, table, "while-stopped")
-
-	slot, err := internal.ReadReplicationSlot(ctx, pool, table)
-	is.NoErr(err)
-	t.Logf("saved LSN %s, slot restart_lsn %s, confirmed_flush_lsn %s", saved, slot.RestartLSN, slot.ConfirmedFlushLSN)
-	is.True(slot.ConfirmedFlushLSN > saved) // the slot is ahead of the saved record, and must still resume
-
-	it, err := NewCombinedIterator(ctx, pool, slotGapConfig(table, pos, false))
-	is.NoErr(err)
-	keys := slotGapReadKeys(ctx, t, it, 1)
-	is.Equal(keys, []string{"while-stopped"})
-	t.Logf("saved LSN %s resumed on the intact slot", saved)
-	is.NoErr(it.Teardown(ctx))
+	t.Fatalf("advance slot %q: %v", slot, err)
 }
 
 // logrepl.allowWALGap is the explicit opt-in: the pipeline starts on the new

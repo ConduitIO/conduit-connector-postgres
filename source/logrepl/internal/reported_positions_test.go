@@ -27,7 +27,10 @@ func TestReportedPositions(t *testing.T) {
 		name                                       string
 		walWritten, walFlushed, serverWALEnd, last pglogrepl.LSN
 		allAcked                                   bool
-		wantWrite, wantFlush                       pglogrepl.LSN
+		// idleCap is the last received identity beacon (#442); 0 in a case
+		// means no beacons (noCap).
+		idleCap              pglogrepl.LSN
+		wantWrite, wantFlush pglogrepl.LSN
 	}{
 		{
 			name:       "nothing outstanding, nothing newer: report the ack",
@@ -69,12 +72,40 @@ func TestReportedPositions(t *testing.T) {
 			walWritten: 0x868, walFlushed: 0x868, last: 0x958, allAcked: true,
 			wantWrite: 0x958, wantFlush: 0x958,
 		},
+		{
+			// #442: the idle advance stops at the last received beacon.
+			name:       "nothing outstanding: idle advance stops at the beacon cap",
+			walWritten: 100, walFlushed: 100, serverWALEnd: 500, allAcked: true, idleCap: 300,
+			wantWrite: 300, wantFlush: 300,
+		},
+		{
+			// #442: the cap never holds back acked records. The drift escape
+			// hatch needs the slot to confirm the marker's LSN, and the saved
+			// position proves the slot up to there by itself.
+			name:       "acked records past the cap are still reported",
+			walWritten: 700, walFlushed: 700, serverWALEnd: 900, allAcked: true, idleCap: 300,
+			wantWrite: 700, wantFlush: 700,
+		},
+		{
+			name:       "cap above the WAL end: advance to the WAL end",
+			walWritten: 100, walFlushed: 100, serverWALEnd: 500, allAcked: true, idleCap: 800,
+			wantWrite: 500, wantFlush: 500,
+		},
+		{
+			name:       "cap never lowers what was already reported",
+			walWritten: 100, walFlushed: 100, serverWALEnd: 500, last: 400, allAcked: true, idleCap: 300,
+			wantWrite: 400, wantFlush: 400,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			is := is.New(t)
-			gotWrite, gotFlush := reportedPositions(tt.walWritten, tt.walFlushed, tt.serverWALEnd, tt.last, tt.allAcked)
+			idleCap := tt.idleCap
+			if idleCap == 0 {
+				idleCap = noCap
+			}
+			gotWrite, gotFlush := reportedPositions(tt.walWritten, tt.walFlushed, tt.serverWALEnd, tt.last, tt.allAcked, idleCap)
 			is.Equal(gotFlush, tt.wantFlush)
 			is.Equal(gotWrite, tt.wantWrite)
 		})
@@ -148,7 +179,7 @@ func TestReportedPositions_Model(t *testing.T) {
 // and asserts its properties. It returns the reported flush position.
 func checkReport(t *testing.T, seq int, s *Subscription, walEnd pglogrepl.LSN, outstanding []modelChange, emittedAny bool) pglogrepl.LSN {
 	t.Helper()
-	write, flush := reportedPositions(s.walWritten, s.walFlushed, walEnd, s.reportedFlush, s.allAcked())
+	write, flush := reportedPositions(s.walWritten, s.walFlushed, walEnd, s.reportedFlush, s.allAcked(), noCap)
 	for _, c := range outstanding {
 		if flush >= c.commit {
 			t.Fatalf("sequence %d: reported flush %s at or past commit %s of unacked change (lsn %s, seq %d)",

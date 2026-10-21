@@ -151,7 +151,8 @@ func NewCombinedIterator(ctx context.Context, pool *pgxpool.Pool, conf Config) (
 	if err != nil {
 		sdk.Logger(ctx).Debug().
 			Err(err).
-			Msgf("failed to parse position: %s", string(conf.Position))
+			Int("position_bytes", len(conf.Position)).
+			Msg("failed to parse position") // never the position itself: it holds the slot identity key (#442)
 
 		return nil, fmt.Errorf("failed to create logrepl iterator: %w", err)
 	}
@@ -180,6 +181,10 @@ func NewCombinedIterator(ctx context.Context, pool *pgxpool.Pool, conf Config) (
 	// restart_lsn may have advanced past the original snapshot point). Only capture
 	// it when this run will actually snapshot; a pure CDC start has no snapshot to
 	// reconcile against.
+	// #442: snapshot records carry the run's slot identity too, so a restart
+	// mid-snapshot can recognise its slot.
+	pos.SlotIdentity = c.cdcIterator.SlotIdentity()
+
 	willSnapshot := c.conf.WithSnapshot && pos.Type != position.TypeCDC
 	if willSnapshot && pos.SnapshotLowWatermarkLSN == "" && c.cdcIterator.TXSnapshotID() != "" {
 		pos.SnapshotLowWatermarkLSN = c.cdcIterator.LowWatermarkLSN().String()

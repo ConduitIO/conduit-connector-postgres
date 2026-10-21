@@ -125,11 +125,85 @@ loss: the skipped changes are never delivered, and the connector logs a warning
 when it takes the setting. Remove it after the pipeline has resumed, or the next
 lost slot is accepted with a warning only.
 
-**Limit of the check.** The connector detects a slot that is missing. It cannot
-detect a slot that was dropped and created again under the same name by someone
-else between two runs: the new slot exists and looks like an idle healthy one,
-because the position does not carry a slot identity. Do not drop and recreate the
-slot of a running pipeline by hand.
+#### Resuming on a replication slot that was replaced
+
+A slot dropped and created again under the same name exists and is healthy, but it
+starts at the WAL of its creation, so the changes between the saved position and
+then are gone just the same. Postgres gives a slot no identity to tell it from the
+original, so the connector keeps one itself (since v0.17.5). Every position carries
+a random slot identity, and the connector writes it into the WAL as a logical
+decoding message under the prefix `conduit.postgres.slot_identity` (a beacon). It
+never advances an idle slot past the last beacon it wrote, so its own slot always
+still holds one. On a resume whose slot is past the saved position, the connector
+reads the slot without consuming it (`pg_logical_slot_peek_binary_changes`) and
+looks for the beacon. A slot that holds none is refused with the error code
+`postgres.source.slot_replaced`, which names the slot, the saved position and the
+slot's `confirmed_flush_lsn`. The same refusal covers a slot that another client
+advanced or consumed past the position (`pg_replication_slot_advance`,
+`pg_logical_slot_get_changes`), since the changes it skipped were not delivered
+either. A slot swapped between the check and the start of streaming is refused once
+streaming holds it. Recover as from a lost slot: re-snapshot, or accept the loss with
+`logrepl.allowWALGap: true` for one start.
+
+What it needs and what it costs:
+
+- The connector's role must be able to call `pg_logical_emit_message`, which
+  Postgres grants to `PUBLIC` by default. If it was revoked, the connector refuses to
+  start with `postgres.source.slot_beacon_failed`; grant it back with
+  `GRANT EXECUTE ON FUNCTION pg_logical_emit_message(boolean, text, text) TO <role>`
+  (Postgres 14 to 16) or
+  `GRANT EXECUTE ON FUNCTION pg_logical_emit_message(boolean, text, text, boolean) TO <role>`
+  (Postgres 17+). Peeking needs `REPLICATION`, which the connector already needs.
+- A beacon holds a random nonce, a WAL position and an HMAC-SHA256 made with a secret
+  key that exists only in the pipeline's position (Conduit's position store). The key
+  never reaches the database or a log (logs show an 8-digit fingerprint), so a role that
+  can call `pg_logical_emit_message` cannot forge a beacon, and a genuine one copied into
+  a replaced slot is refused. Treat the position store as sensitive. A beacon holds no
+  row data and no configuration.
+- Hardening: `pg_logical_emit_message` lets any role that can connect write messages into
+  the WAL. Consider `REVOKE EXECUTE ON FUNCTION <signature above> FROM PUBLIC` together
+  with the `GRANT` to the connector's role; the connector logs
+  `postgres.source.slot_beacon_public` at start while PUBLIC still has it.
+- `logrepl.allowWALGap` gives the slot it accepts a new key. A restart from a position
+  saved before that is refused again until the pipeline saved a new position, so an
+  attempt that created the slot and failed before saving never passes for the original. Other logical consumers of the database that decode messages, such
+  as Debezium with messages enabled, see the beacons; Debezium can filter them with
+  `message.prefix.exclude.list`.
+- One small transaction per start, and at most one per status interval (10 seconds)
+  while the pipeline is idle, after it acked records or once the server has written at
+  least 512 bytes of WAL since the last beacon. An idle database stays idle. An idle
+  slot reaches the WAL end about two status intervals after the last ack.
+- Postgres 13 cannot send logical decoding messages to the connector, and a standby
+  cannot write them. There the check is the one before v0.17.5: the connector logs
+  `postgres.source.slot_identity_unsupported` and resumes on a slot past the position.
+
+Upgrading from v0.17.4 or earlier: a saved position from those versions has no slot
+identity. If the slot is not past it, it is proven by the position alone. Otherwise
+(the usual case, since older versions advance an idle slot to the WAL end) the
+connector cannot tell whether the slot was replaced before the upgrade. It takes the
+slot over, logs `postgres.source.slot_identity_unverified` once, and from then on
+refuses a replaced slot. If you suspect the slot of a pipeline was dropped and
+created again before the upgrade, re-snapshot it instead.
+
+Failover (Postgres 17+, `failover = true` slots synchronized to a standby): the
+identity survives a promotion when the primary lists the standby's physical slot in
+`synchronized_standby_slots`, the setting Postgres requires for a failover that keeps
+logical consumers consistent. Without it the standby can lag behind the beacon the
+slot was advanced to, and the first start after a promotion can be refused with
+`postgres.source.slot_replaced` (no data is lost; check the slot and start once with
+`logrepl.allowWALGap: true`). After a promotion, set `synchronized_standby_slots` on
+the new primary to slots that exist there: decoding a failover slot waits for every
+slot it names.
+
+Moving the slot by hand: `pg_upgrade` (which recreates logical slots), a manual
+`pg_replication_slot_advance`, and a rollback to v0.17.4 or earlier that ran while
+the pipeline was idle all move the slot past the last beacon. The next start is
+refused with `postgres.source.slot_replaced`. When you know nothing was skipped,
+start once with `logrepl.allowWALGap: true` and remove it after the pipeline resumed.
+`pg_upgrade` also refuses to migrate a slot that has not decoded all WAL, and the
+latest beacon is always ahead of the slot. Advance the stopped pipeline's slot with
+`pg_replication_slot_advance` before the upgrade, and only once the pipeline has
+delivered every change to the destination.
 
 #### Invalidated replication slots
 
@@ -261,7 +335,10 @@ sends the delete without the key. Check with
    Advancing to `<c>` is what skips the transaction. Advancing to the change LSN
    (`<a>`) or to the commit LSN `<b>` itself does not: Postgres replays the transaction
    and the pipeline fails on the same delete.
-6. Start the pipeline.
+6. Start the pipeline. The advance moved the slot past the pipeline's saved position,
+   so the connector can refuse it with `postgres.source.slot_replaced` (see "Resuming
+   on a replication slot that was replaced"). If it does, start it once with
+   `logrepl.allowWALGap: true`, and remove the setting once it runs.
 
 **Skipping the transaction skips that change, and it skips the whole transaction,
 including its other changes to captured tables.** Skipping data is your decision and the
@@ -607,13 +684,16 @@ pipelines:
           cdcMode: "auto"
           # LogreplAllowWALGap lets the connector resume from a saved position
           # when the replication slot no longer exists and has to be created
-          # again. A new slot starts at the current WAL, so every change between
-          # the saved position and the slot's creation is skipped and never
-          # delivered: this setting accepts that DATA LOSS. Leave it false (the
-          # default) and the connector refuses to start with the error
-          # `postgres.source.slot_wal_gap` instead. Use it only after deciding
-          # that the destination can be repaired some other way, and remove it
-          # once the pipeline has resumed.
+          # again, or when the slot that exists is not the one the position was
+          # taken from (it was dropped and created again under the same name, or
+          # another client advanced it). Such a slot starts after the saved
+          # position, so every change in between is skipped and never delivered:
+          # this setting accepts that DATA LOSS. Leave it false (the default)
+          # and the connector refuses to start with the error
+          # `postgres.source.slot_wal_gap` or `postgres.source.slot_replaced`
+          # instead. Use it only after deciding that the destination can be
+          # repaired some other way, and remove it once the pipeline has
+          # resumed.
           # Type: bool
           # Required: no
           logrepl.allowWALGap: "false"

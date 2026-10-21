@@ -74,6 +74,7 @@ type b1ChildSpec struct {
 	run          int
 	total        int
 	haltExpected bool
+	settleSlot   bool   // PGCHAOS_SETTLE_SLOT: wait for the slot to pass the last acked commit before Teardown
 	park         string // "name:nth[,name:nth...]" for PGCHAOS_PARK, "" to not park
 	ledgerPath   string
 	table        string
@@ -128,6 +129,9 @@ func b1SpawnChild(t *testing.T, s b1ChildSpec) *childProcess {
 	}
 	if s.park != "" {
 		env = append(env, "PGCHAOS_PARK="+s.park)
+	}
+	if s.settleSlot {
+		env = append(env, envSettleSlot+"="+envValueTrue)
 	}
 	return spawnChildWithEnv(t, env)
 }
@@ -812,13 +816,18 @@ func TestB1_AC7_RestartHaltTruthfulMessage(t *testing.T) {
 	_, regPool, table, slot, pub, ledgerPath := b1Setup(t)
 
 	// Run 1: clean run to a checkpoint with the OLD shape. The baseline DML is
-	// the first CDC record and the old shape's real first-seen LSN.
+	// the first CDC record and the old shape's real first-seen LSN. It stops
+	// only once the slot is past the baseline's commit (settleSlot): the
+	// connector advances an idle slot a beacon at a time (#442), and a slot
+	// left below the commit would send run 2 the old shape's relation message
+	// again, which is the in-run drift path, not FM7.
 	cp := b1SpawnChild(t, b1ChildSpec{
-		run: 1, total: 5, haltExpected: false,
+		run: 1, total: 5, haltExpected: false, settleSlot: true,
 		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
 	})
 	b1Baseline(t, cp, regPool, table)
 	cp.waitForMarker(t, "DONE", 60*time.Second)
+	cp.waitForMarker(t, "SETTLED", 120*time.Second)
 	cp.waitExit(t, 30*time.Second)
 	b1AssertNoHalt(t, cp)
 

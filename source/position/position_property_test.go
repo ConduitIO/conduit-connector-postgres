@@ -38,6 +38,19 @@ func genLSN(t *rapid.T, label string) string {
 	return ""
 }
 
+// genSlotIdentity draws a slot identity as the connector writes it (#442):
+// random, derived from a legacy position, or absent.
+func genSlotIdentity(t *rapid.T) string {
+	switch rapid.IntRange(0, 2).Draw(t, "slot identity kind") {
+	case 1:
+		return rapid.StringMatching(`[0-9a-f]{64}`).Draw(t, "random slot identity")
+	case 2:
+		return "l" + rapid.StringMatching(`[0-9a-f]{64}`).Draw(t, "legacy slot identity")
+	default:
+		return ""
+	}
+}
+
 // genPosition draws any position this connector can write. Table names are
 // arbitrary valid UTF-8 strings, since a quoted Postgres identifier can hold
 // any character. Invalid UTF-8 is left out: encoding/json writes it as
@@ -51,6 +64,7 @@ func genPosition(t *rapid.T) Position {
 		SnapshotLowWatermarkLSN: genLSN(t, "low watermark"),
 		TxCommitLSN:             genLSN(t, "tx commit lsn"),
 		TxSeq:                   rapid.Uint64().Draw(t, "tx seq"),
+		SlotIdentity:            genSlotIdentity(t),
 	}
 	for _, table := range rapid.SliceOfNDistinct(rapid.String(), 0, 3, rapid.ID[string]).Draw(t, "snapshot tables") {
 		if p.Snapshots == nil {

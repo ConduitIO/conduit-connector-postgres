@@ -122,3 +122,27 @@ func TestCDCPosition_PropertyUnknownKeyIsLegacy(t *testing.T) {
 		}
 	})
 }
+
+// TestCDCPosition_PropertyCarriesSlotIdentity (#442): every CDC position the
+// handler writes, the drift marker's included, carries the run's slot
+// identity unchanged and the current format version, whatever its change
+// key. A restart from any of them must recognise its slot.
+func TestCDCPosition_PropertyCarriesSlotIdentity(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		id := rapid.StringMatching(`l?[0-9a-f]{64}`).Draw(t, "identity")
+		h := &CDCHandler{basePosition: position.Position{SlotIdentity: id}}
+		for _, k := range streamKeys(t) {
+			lsn := pglogrepl.LSN(rapid.Uint64Range(1, math.MaxUint64).Draw(t, "change lsn"))
+			raws := [][]byte{h.buildPositionAt(lsn, k), h.buildMarkerPosition(lsn, k, "public.t")}
+			for _, raw := range raws {
+				p, err := position.ParseSDKPosition(raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if p.SlotIdentity != id || p.Version != position.CurrentPositionVersion {
+					t.Fatalf("position %s: identity %q version %d, want %q version %d", raw, p.SlotIdentity, p.Version, id, position.CurrentPositionVersion)
+				}
+			}
+		}
+	})
+}

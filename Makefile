@@ -53,6 +53,15 @@ test-chaos:
 		docker compose -f test/docker-compose.chaos.yml down --volumes; \
 		exit $$ret
 
+.PHONY: test-failover
+test-failover:
+	# Slot identity across a failover (#442): a Postgres 17+ primary with a
+	# failover slot and a standby that synchronizes it, then promotes
+	# (test/failover). run.sh starts its own compose project on ephemeral ports
+	# and removes it with `down -v`. PG_IMAGE picks the version (default
+	# postgres:17). Not part of `make test`.
+	test/failover/run.sh
+
 .PHONY: test-debezium
 test-debezium:
 	# End-to-end test of the Debezium offset import against real Debezium
