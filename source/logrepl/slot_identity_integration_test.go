@@ -831,17 +831,20 @@ func TestSlotIdentity_WALHistoryUnverified_WarnsOnlyForLegacy(t *testing.T) {
 	sysid := mustParse(t, pos).SystemIdentifier
 	is.True(sysid != "")
 
+	// The v4 position first: the legacy start below takes the slot over
+	// with a new key, after which the v4 position's key proves nothing.
 	lctx, logs := slotIDLogs(ctx)
-	it, err := NewCombinedIterator(lctx, pool, slotGapConfig(table, slotIDLegacy(t, pos), false))
-	is.NoErr(err)
-	is.NoErr(it.Teardown(ctx))
-	is.Equal(strings.Count(logs.String(), string(CodeWALHistoryUnverified)), 1)
-	is.True(strings.Contains(logs.String(), internal.IdentityFingerprint(sysid)))
-	is.True(!strings.Contains(logs.String(), sysid)) // a fingerprint, not the identifier
-
-	lctx, logs = slotIDLogs(ctx)
-	it, err = NewCombinedIterator(lctx, pool, slotGapConfig(table, pos, false))
+	it, err := NewCombinedIterator(lctx, pool, slotGapConfig(table, pos, false))
 	is.NoErr(err)
 	is.NoErr(it.Teardown(ctx))
 	is.Equal(strings.Count(logs.String(), string(CodeWALHistoryUnverified)), 0)
+
+	lctx, logs = slotIDLogs(ctx)
+	it, err = NewCombinedIterator(lctx, pool, slotGapConfig(table, slotIDLegacy(t, pos), false))
+	is.NoErr(err)
+	is.NoErr(it.Teardown(ctx))
+	is.Equal(strings.Count(logs.String(), string(CodeWALHistoryUnverified)), 1)
+	is.True(strings.Contains(logs.String(), `"level":"warn","code":"`+string(CodeWALHistoryUnverified)))
+	is.True(strings.Contains(logs.String(), internal.IdentityFingerprint(sysid)))
+	is.True(!strings.Contains(logs.String(), sysid)) // a fingerprint, not the identifier
 }
