@@ -148,18 +148,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		c.SchemaDriftPolicy,
 	)
 
-	newSub := internal.CreateSubscription
-	switch {
-	case c.Import != nil:
-		// Import mode never creates the slot: a slot created now would start
-		// at the current WAL and miss everything since Debezium's offset.
-		newSub = internal.OpenSubscription
-	case hasSavedPosition(c) && !c.AllowWALGap:
-		// Invariant 3: a saved position never creates a slot. checkSlot
-		// already looked, but a slot dropped after that read must not be
-		// recreated at the current WAL either.
-		newSub = internal.OpenSubscription
-	}
+	newSub := subscriptionOpener(c)
 	sub, err := newSub(
 		ctx,
 		pool,
@@ -185,20 +174,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		return nil, fmt.Errorf("failed to initialize subscription: %w", err)
 	}
 
-	// sub.TXSnapshotID is set only when CREATE_REPLICATION_SLOT succeeded in
-	// this call. With a saved position that is the accepted gap (allowWALGap
-	// is the only way here), including a slot dropped after checkSlot.
-	//
-	// Known limit (#442): if a third party drops the slot and creates it again
-	// under the same name between checkSlot and our CREATE, the create fails
-	// with a duplicate error, TXSnapshotID stays empty and no warning fires.
-	// newSubscription cannot tell that from an intact slot reached through the
-	// create path (allowWALGap with a healthy slot also ends in a duplicate), so
-	// reporting "took the create path" would warn falsely. Closing it needs a
-	// slot identity in the position (#442).
-	if c.Import == nil && hasSavedPosition(c) && sub.TXSnapshotID != "" {
-		warnGapAccepted(ctx, c, sub.StartLSN.String())
-	}
+	warnIfSlotCreatedForSavedPosition(ctx, c, sub)
 
 	if key := (internal.ChangeKey{CommitLSN: c.TxCommitLSN, Seq: c.TxSeq}); key.Known() {
 		// Exact resume point from a position that carries its change key
@@ -224,6 +200,43 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		sub:       sub,
 		handler:   handler,
 	}, nil
+}
+
+// subscriptionOpener picks how NewCDCIterator gets its subscription: creating
+// the slot only for a fresh start (or the explicit allowWALGap opt-in).
+func subscriptionOpener(c CDCConfig) func(context.Context, *pgxpool.Pool, string, string, []string, pglogrepl.LSN, internal.Handler) (*internal.Subscription, error) {
+	newSub := internal.CreateSubscription
+	switch {
+	case c.Import != nil:
+		// Import mode never creates the slot: a slot created now would start
+		// at the current WAL and miss everything since Debezium's offset.
+		newSub = internal.OpenSubscription
+	case hasSavedPosition(c) && !c.AllowWALGap:
+		// Invariant 3: a saved position never creates a slot. checkSlot
+		// already looked, but a slot dropped after that read must not be
+		// recreated at the current WAL either.
+		newSub = internal.OpenSubscription
+	}
+	return newSub
+}
+
+// warnIfSlotCreatedForSavedPosition logs the accepted data loss when the
+// subscription created the slot although the config carries a saved position.
+func warnIfSlotCreatedForSavedPosition(ctx context.Context, c CDCConfig, sub *internal.Subscription) {
+	// sub.TXSnapshotID is set only when CREATE_REPLICATION_SLOT succeeded in
+	// this call. With a saved position that is the accepted gap (allowWALGap
+	// is the only way here), including a slot dropped after checkSlot.
+	//
+	// Known limit (#442): if a third party drops the slot and creates it again
+	// under the same name between checkSlot and our CREATE, the create fails
+	// with a duplicate error, TXSnapshotID stays empty and no warning fires.
+	// newSubscription cannot tell that from an intact slot reached through the
+	// create path (allowWALGap with a healthy slot also ends in a duplicate), so
+	// reporting "took the create path" would warn falsely. Closing it needs a
+	// slot identity in the position (#442).
+	if c.Import == nil && hasSavedPosition(c) && sub.TXSnapshotID != "" {
+		warnGapAccepted(ctx, c, sub.StartLSN.String())
+	}
 }
 
 // applyImport replaces the subscription's resume point with the import's
