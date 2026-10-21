@@ -210,9 +210,16 @@ func TestFailover_SlotIdentitySurvivesPromotion(t *testing.T) {
 	p2, err := position.ParseSDKPosition(pos2)
 	is.NoErr(err)
 	is.True(p2.Timeline > pp.Timeline) // positions follow the new timeline
-	var switchPoint pglogrepl.LSN
+	// The switch point, from the new timeline's history file ("1<TAB>lsn<TAB>reason").
+	var history string
 	is.NoErr(standby.QueryRow(ctx,
-		"SELECT redo_lsn FROM pg_control_checkpoint()").Scan(&switchPoint)) // at or after the switch
+		"SELECT pg_read_file('pg_wal/' || substr(pg_walfile_name(pg_current_wal_lsn()), 1, 8) || '.history')").Scan(&history))
+	fields := strings.Fields(strings.SplitN(strings.TrimSpace(history), "\n", 2)[0])
+	is.True(len(fields) >= 2)
+	switchPoint, err := pglogrepl.ParseLSN(fields[1])
+	is.NoErr(err)
+	t.Logf("timeline switch point %s, saved position bound %s", switchPoint, bound)
+	is.True(bound <= switchPoint) // why the resume above passed
 	past := pp
 	ahead := (switchPoint + 0x100).String()
 	past.LastLSN, past.TxCommitLSN = ahead, ahead
