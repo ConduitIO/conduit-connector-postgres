@@ -55,7 +55,7 @@ jobs:
           connector-name: postgres
           version: ${{ github.ref_name }}
           build-command: |
-            CGO_ENABLED=0 go build -o "$OUTPUT_PATH" ./cmd/connector
+            CGO_ENABLED=0 go build -trimpath -o "$OUTPUT_PATH" ./cmd/connector
 
       - name: Format subjects for the SLSA generator
         id: hash
