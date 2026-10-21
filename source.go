@@ -111,17 +111,19 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 		fallthrough
 	case source.CDCModeLogrepl:
 		i, err := logrepl.NewCombinedIterator(ctx, s.pool, logrepl.Config{
-			Position:          pos,
-			SlotName:          s.config.LogreplSlotName,
-			PublicationName:   s.config.LogreplPublicationName,
-			Tables:            s.config.Tables,
-			TableKeys:         s.tableKeys,
-			WithSnapshot:      s.config.SnapshotMode == source.SnapshotModeInitial,
-			WithAvroSchema:    s.config.WithAvroSchema,
-			BatchSize:         *s.config.BatchSize,
-			SchemaDriftPolicy: s.config.LogreplSchemaDriftPolicy,
-			AllowWALGap:       s.config.LogreplAllowWALGap,
-			Import:            imp,
+			Position:             pos,
+			SlotName:             s.config.LogreplSlotName,
+			PublicationName:      s.config.LogreplPublicationName,
+			Tables:               s.config.Tables,
+			TableKeys:            s.tableKeys,
+			WithSnapshot:         s.config.SnapshotMode == source.SnapshotModeInitial,
+			WithAvroSchema:       s.config.WithAvroSchema,
+			BatchSize:            *s.config.BatchSize,
+			SchemaDriftPolicy:    s.config.LogreplSchemaDriftPolicy,
+			AllowWALGap:          s.config.LogreplAllowWALGap,
+			IdentityCheckTimeout: s.config.LogreplSlotIdentityCheckTimeout,
+			BeaconFailureTimeout: s.config.LogreplSlotIdentityBeaconFailureTimeout,
+			Import:               imp,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create logical replication iterator: %w", err)

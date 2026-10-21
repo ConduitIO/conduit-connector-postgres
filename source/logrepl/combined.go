@@ -86,6 +86,10 @@ type Config struct {
 	// AllowWALGap accepts the data loss of resuming from a saved position on a
 	// replication slot that no longer exists (see checkSlotCoversPosition).
 	AllowWALGap bool
+	// IdentityCheckTimeout and BeaconFailureTimeout tune the slot identity
+	// (#442); zero means the default. See CDCConfig.
+	IdentityCheckTimeout time.Duration
+	BeaconFailureTimeout time.Duration
 	// Import is the Debezium offset import (#341), set only for a pipeline
 	// with no position, after dbzoffset.Preflight passed. WithSnapshot is
 	// false with it.
@@ -184,6 +188,7 @@ func NewCombinedIterator(ctx context.Context, pool *pgxpool.Pool, conf Config) (
 	// #442: snapshot records carry the run's slot identity too, so a restart
 	// mid-snapshot can recognise its slot.
 	pos.SlotIdentity = c.cdcIterator.SlotIdentity()
+	pos.SystemIdentifier, pos.Timeline = c.cdcIterator.walHistory.SystemID, c.cdcIterator.walHistory.Timeline
 
 	willSnapshot := c.conf.WithSnapshot && pos.Type != position.TypeCDC
 	if willSnapshot && pos.SnapshotLowWatermarkLSN == "" && c.cdcIterator.TXSnapshotID() != "" {
@@ -317,10 +322,12 @@ func (c *CombinedIterator) initCDCIterator(ctx context.Context, pos position.Pos
 		// Seed the handler with the start position so DBZ-3 carry-forward fields
 		// (e.g. SnapshotLowWatermarkLSN) survive across the snapshot->CDC handoff
 		// and every subsequent CDC restart.
-		StartPosition:     pos,
-		SchemaDriftPolicy: c.conf.SchemaDriftPolicy,
-		Import:            c.conf.Import,
-		AllowWALGap:       c.conf.AllowWALGap,
+		StartPosition:        pos,
+		SchemaDriftPolicy:    c.conf.SchemaDriftPolicy,
+		Import:               c.conf.Import,
+		AllowWALGap:          c.conf.AllowWALGap,
+		IdentityCheckTimeout: c.conf.IdentityCheckTimeout,
+		BeaconFailureTimeout: c.conf.BeaconFailureTimeout,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create CDC iterator: %w", err)

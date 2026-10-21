@@ -91,6 +91,7 @@ func slotIDLegacy(t *testing.T, p opencdc.Position) opencdc.Position {
 		t.Fatal(err)
 	}
 	pp.Version, pp.SlotIdentity = 3, ""
+	pp.SystemIdentifier, pp.Timeline = "", 0
 	b, err := json.Marshal(pp)
 	if err != nil {
 		t.Fatal(err)
@@ -485,6 +486,8 @@ func TestSlotIdentity_UpgradeFromV0173_AdoptsThenEnforces(t *testing.T) {
 	upgraded := posOf(t, recs[0])
 	is.Equal(upgraded.Version, position.CurrentPositionVersion)
 	is.Equal(len(upgraded.SlotIdentity), 64) // a new random key, not one derived from the position
+	is.True(upgraded.SystemIdentifier != "") // the legacy position learns its WAL history (#447 B3)
+	is.True(upgraded.Timeline >= 1)
 
 	slotIDRecreate(ctx, t, pool, table, "lost-1")
 	_, err = NewCombinedIterator(ctx, pool, slotGapConfig(table, recs[0].Position, false))
@@ -636,10 +639,209 @@ func TestSlotIdentity_UnsupportedServer_WarnsAndResumes(t *testing.T) {
 	slotGapAdvance(ctx, t, pool, table)
 	slotGapInsert(ctx, t, pool, table, "while-stopped")
 
+	is.Equal(mustParse(t, pos).SlotIdentity, "") // no identity is written where none can be kept
+
 	lctx, logs := slotIDLogs(ctx)
 	it, err := NewCombinedIterator(lctx, pool, slotGapConfig(table, pos, false))
 	is.NoErr(err)
 	is.Equal(slotGapReadKeys(ctx, t, it, 1), []string{"while-stopped"})
 	is.NoErr(it.Teardown(ctx))
 	is.True(strings.Contains(logs.String(), string(CodeSlotIdentityUnsupported)))
+
+	// #447 N5: a position that carries an identity (written on a primary
+	// that can keep one) is never accepted unproven here.
+	withID := slotIDRewrite(t, pos, func(p *position.Position) { p.SlotIdentity = internal.NewSlotIdentity() })
+	_, err = NewCombinedIterator(ctx, pool, slotGapConfig(table, withID, false))
+	is.Equal(CodeOf(err), CodeSlotIdentityUnprovable)
+}
+
+// #447 review B1: the walsender of a running pipeline dies while the
+// connector's pool stays healthy (a half-open replication connection), the
+// slot goes inactive, and someone drops and recreates it with rows written in
+// between. A beacon the old run writes after that must not vouch for the
+// replacement: the write fails (the slot is not held by this run's stream),
+// and the next start is refused. Before the fix the beacon was written, the
+// new slot decoded it, and the restart delivered only "after".
+func TestSlotIdentity_BeaconAfterWalsenderLoss_DoesNotVouchForReplacement(t *testing.T) {
+	ctx := test.Context(t)
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	is := is.New(t)
+	pool, table := slotIDSetup(ctx, t)
+
+	it, err := NewCombinedIterator(ctx, pool, slotGapConfig(table, opencdc.Position{}, false))
+	is.NoErr(err)
+	slotGapInsert(ctx, t, pool, table, "acked")
+	recs, err := it.NextN(ctx, 1)
+	is.NoErr(err)
+	is.NoErr(it.Ack(ctx, recs[0].Position))
+	pos := recs[0].Position
+
+	// The stream's walsender goes away; the connector does not notice yet.
+	_, err = pool.Exec(ctx, "SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots WHERE slot_name = $1", table)
+	is.NoErr(err)
+	slotGapWaitInactive(ctx, t, pool, table)
+	slotIDRecreate(ctx, t, pool, table, "lost-1", "lost-2")
+
+	// The old run writes its next beacon.
+	err = it.cdcIterator.sub.Beacons.Emit(ctx)
+	is.True(err != nil) // refused: the slot is not held by this run's stream
+	t.Logf("emit after the walsender loss: %v", err)
+	_ = it.Teardown(ctx)
+
+	slotGapInsert(ctx, t, pool, table, "after")
+	it2, err := NewCombinedIterator(ctx, pool, slotGapConfig(table, pos, false))
+	if err == nil {
+		slotGapDiagnose(ctx, t, pool, table, it2)
+	}
+	is.Equal(CodeOf(err), CodeSlotReplaced)
+}
+
+// #447 review B2: a fresh start creates the slot and snapshots for a long
+// time before the stream starts. On Postgres 17 the slot is inactive right
+// after CREATE, so it can be dropped and recreated mid-snapshot. The stream
+// must refuse the replacement at the handoff. Before the fix it streamed from
+// the new slot and lost "during-snapshot" and "lost-while-gone".
+func TestSlotIdentity_FreshStartSlotReplacedMidSnapshot_Refused(t *testing.T) {
+	ctx := test.Context(t)
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	is := is.New(t)
+	pool, table := slotIDSetup(ctx, t)
+	slotGapInsert(ctx, t, pool, table, "s1", "s2", "s3", "s4", "s5", "s6")
+
+	it, err := NewCombinedIterator(ctx, pool, slotGapConfig(table, opencdc.Position{}, true))
+	is.NoErr(err)
+	defer func() { _ = it.Teardown(context.Background()) }()
+	recs, err := it.NextN(ctx, 2)
+	is.NoErr(err)
+	for _, r := range recs {
+		is.NoErr(it.Ack(ctx, r.Position))
+	}
+
+	slotGapInsert(ctx, t, pool, table, "during-snapshot")
+	slotGapWaitInactive(ctx, t, pool, table)
+	slotIDRecreate(ctx, t, pool, table, "lost-while-gone")
+	slotGapInsert(ctx, t, pool, table, "after")
+
+	var cdcKeys []string
+	var nextErr error
+	for deadline := time.Now().Add(60 * time.Second); time.Now().Before(deadline) && nextErr == nil && len(cdcKeys) < 3; {
+		rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
+		recs, err := it.NextN(rctx, 10)
+		rcancel()
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				continue
+			}
+			nextErr = err
+			break
+		}
+		for _, r := range recs {
+			if mustParse(t, r.Position).Type == position.TypeCDC {
+				cdcKeys = append(cdcKeys, string(r.Payload.After.(opencdc.StructuredData)["key"].([]byte)))
+			}
+			is.NoErr(it.Ack(ctx, r.Position))
+		}
+	}
+	if nextErr == nil {
+		t.Fatalf("SILENT SKIP: the stream started on the replaced slot; delivered %v, never during-snapshot and lost-while-gone", cdcKeys)
+	}
+	is.Equal(CodeOf(nextErr), CodeSlotReplaced)
+}
+
+// slotIDRewrite returns the position with its fields changed by f, written
+// with the current format version.
+func slotIDRewrite(t *testing.T, p opencdc.Position, f func(*position.Position)) opencdc.Position {
+	t.Helper()
+	pp := mustParse(t, p)
+	f(&pp)
+	return pp.ToSDKPosition()
+}
+
+// #447 review B3: an LSN means something only within one WAL history. The
+// slot (and even its beacons) can look fine on a server that is not on the
+// position's history, and the position's change key would skip the changes
+// the new history has at the same LSNs. Each case is refused with
+// wal_history_changed; logrepl.allowWALGap accepts it with a warning that is
+// not the DATA LOSS one (after a pg_upgrade nothing is lost).
+func TestSlotIdentity_WALHistoryChanged_Refused(t *testing.T) {
+	ctx := test.Context(t)
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	is := is.New(t)
+	pool, table := slotIDSetup(ctx, t)
+
+	pos := slotGapRun1(ctx, t, pool, table)
+	pp := mustParse(t, pos)
+	is.True(pp.SystemIdentifier != "") // every position names its history
+	is.True(pp.Timeline >= 1)
+	var current pglogrepl.LSN
+	is.NoErr(pool.QueryRow(ctx, "SELECT pg_current_wal_lsn()").Scan(&current))
+
+	for name, rewrite := range map[string]func(*position.Position){
+		// A different server at the same address, or a cluster restored as a
+		// new one, or pg_upgrade.
+		"other cluster": func(p *position.Position) { p.SystemIdentifier = "1" },
+		// Restored from a backup taken on a later timeline.
+		"earlier timeline": func(p *position.Position) { p.Timeline++ },
+		// Restored from a backup, snapshot or VM image taken before the
+		// position: same cluster and timeline, but the WAL is behind it.
+		"WAL behind the position": func(p *position.Position) {
+			ahead := (current + 64<<20).String()
+			p.LastLSN, p.TxCommitLSN = ahead, ahead
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			is := is.New(t)
+			bad := slotIDRewrite(t, pos, rewrite)
+			it, err := NewCombinedIterator(ctx, pool, slotGapConfig(table, bad, false))
+			if err == nil {
+				_ = it.Teardown(ctx)
+				t.Fatal("SILENT SKIP: resumed on another WAL history")
+			}
+			is.Equal(CodeOf(err), CodeWALHistoryChanged)
+			is.True(strings.Contains(err.Error(), "pg_upgrade"))
+
+			lctx, logs := slotIDLogs(ctx)
+			conf := slotGapConfig(table, bad, false)
+			conf.AllowWALGap = true
+			it, err = NewCombinedIterator(lctx, pool, conf)
+			if err == nil {
+				_ = it.Teardown(ctx)
+			}
+			is.True(strings.Contains(logs.String(), "WAL HISTORY CHANGE ACCEPTED"))
+			is.True(!strings.Contains(logs.String(), "DATA LOSS ACCEPTED (logrepl.allowWALGap): the replication slot was gone"))
+		})
+	}
+}
+
+// A legacy position (no system identifier) cannot have its WAL history
+// checked: the start says so once, with wal_history_unverified and a
+// fingerprint of the server's system identifier, and the next position
+// names the history. A position that carries one is checked silently.
+func TestSlotIdentity_WALHistoryUnverified_WarnsOnlyForLegacy(t *testing.T) {
+	ctx := test.Context(t)
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	is := is.New(t)
+	pool, table := slotIDSetup(ctx, t)
+
+	pos := slotGapRun1(ctx, t, pool, table)
+	sysid := mustParse(t, pos).SystemIdentifier
+	is.True(sysid != "")
+
+	lctx, logs := slotIDLogs(ctx)
+	it, err := NewCombinedIterator(lctx, pool, slotGapConfig(table, slotIDLegacy(t, pos), false))
+	is.NoErr(err)
+	is.NoErr(it.Teardown(ctx))
+	is.Equal(strings.Count(logs.String(), string(CodeWALHistoryUnverified)), 1)
+	is.True(strings.Contains(logs.String(), internal.IdentityFingerprint(sysid)))
+	is.True(!strings.Contains(logs.String(), sysid)) // a fingerprint, not the identifier
+
+	lctx, logs = slotIDLogs(ctx)
+	it, err = NewCombinedIterator(lctx, pool, slotGapConfig(table, pos, false))
+	is.NoErr(err)
+	is.NoErr(it.Teardown(ctx))
+	is.Equal(strings.Count(logs.String(), string(CodeWALHistoryUnverified)), 0)
 }

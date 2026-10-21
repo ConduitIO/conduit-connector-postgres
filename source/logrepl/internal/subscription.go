@@ -385,6 +385,13 @@ func (s *Subscription) Run(ctx context.Context) error {
 		close(s.ready) // ready to fail.
 		return err
 	}
+	if s.Beacons != nil {
+		// From here on a beacon may only be written while this walsender
+		// holds the slot (#447 B1, Beacons.Emit).
+		if pc, err := s.pgConn(); err == nil {
+			s.Beacons.SetStreamPID(pc.PID())
+		}
+	}
 	// Invariant 3 (import mode): refuse a slot that moved past Lc before
 	// anything is sent on the stream. This runs before replicating is set,
 	// so doneReplication sends no final standby status update: on servers

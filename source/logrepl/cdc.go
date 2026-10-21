@@ -64,6 +64,12 @@ type CDCConfig struct {
 	// AllowWALGap accepts the data loss of resuming from a saved position on
 	// a replication slot that had to be created again (see checkSlotCoversPosition).
 	AllowWALGap bool
+	// IdentityCheckTimeout bounds the slot identity check's peek (#442);
+	// zero means defaultIdentityCheckTimeout.
+	IdentityCheckTimeout time.Duration
+	// BeaconFailureTimeout is how long failing beacons may hold an idle slot
+	// back (internal.Beacons.Abandoned); zero means the default.
+	BeaconFailureTimeout time.Duration
 }
 
 // CDCIterator asynchronously listens for events from the logical replication
@@ -92,6 +98,9 @@ type CDCIterator struct {
 	// slotIdentity is the slot identity this run writes into its positions
 	// and beacons (#442).
 	slotIdentity string
+	// walHistory is the server's WAL history this run writes into its
+	// positions (#447 B3).
+	walHistory internal.WALHistory
 }
 
 // afterSlotCheck is a test seam, nil in production. It runs between checkSlot
@@ -127,6 +136,18 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	if err != nil {
 		return nil, err
 	}
+	// Invariant 3 (#447 B3): an LSN means something only within one WAL
+	// history. Checked before anything else looks at LSNs.
+	history, err := internal.ReadWALHistory(ctx, pool)
+	if err != nil {
+		return nil, err
+	}
+	if c.Import == nil && hasSavedPosition(c) {
+		if err := checkWALHistory(ctx, pool, c, history); err != nil {
+			return nil, err
+		}
+	}
+	c.StartPosition.SystemIdentifier, c.StartPosition.Timeline = history.SystemID, history.Timeline
 
 	// Import mode never creates the publication (#341 S16): one created
 	// after the slot's start makes pgoutput skip the earlier WAL of its
@@ -236,6 +257,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		sub:          sub,
 		handler:      handler,
 		slotIdentity: ident.identity,
+		walHistory:   history,
 	}, nil
 }
 
@@ -308,7 +330,11 @@ func subscriptionError(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, err
 // between.
 func resolveSlotIdentity(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, server internal.ServerInfo) (slotIdentityCheck, error) {
 	if c.Import != nil || !hasSavedPosition(c) {
-		// A fresh start or an import: a new identity history begins here.
+		// A fresh start or an import: a new identity history begins here
+		// (none on a server that cannot carry beacons).
+		if !server.BeaconsSupported() {
+			return slotIdentityCheck{}, nil
+		}
 		return slotIdentityCheck{identity: internal.NewSlotIdentity()}, nil
 	}
 	ident, err := checkSlotIdentity(ctx, pool, c, server)
@@ -316,6 +342,12 @@ func resolveSlotIdentity(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, s
 		return ident, err
 	}
 	switch ident.outcome {
+	case identityUnprovable:
+		if !c.AllowWALGap {
+			return ident, newSlotUnprovableError(c.SlotName, describeSavedPosition(c), ident.confirmed, server)
+		}
+		warnReplacedAccepted(ctx, c, ident.confirmed)
+		ident.rotate()
 	case identityReplaced:
 		if !c.AllowWALGap {
 			return ident, newSlotReplacedError(c.SlotName, describeSavedPosition(c), ident.confirmed)
@@ -330,6 +362,12 @@ func resolveSlotIdentity(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, s
 		ident.rotate()
 	}
 	logSlotIdentity(ctx, c, ident)
+	if !server.BeaconsSupported() {
+		// This server cannot keep a beacon ahead of the slot, so this run's
+		// positions carry no identity: a later start must not mistake the
+		// unprotected stretch for a proven one.
+		ident.identity = ""
+	}
 	return ident, nil
 }
 
@@ -357,33 +395,50 @@ func armSlotIdentity(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, sub *
 			warnReplacedAccepted(ctx, c, sub.ConfirmedFlushLSN)
 		}
 	}
-	if server.BeaconsSupported() {
+	limit := heldConfirmedLimit(sub, ident)
+	if server.BeaconsSupported() && ident.identity != "" {
 		sub.Beacons = internal.NewBeacons(pool, c.SlotName, ident.identity)
+		sub.Beacons.SetPreStreamLimit(limit)
+		sub.Beacons.SetFailureTimeout(c.BeaconFailureTimeout)
 		warnEmitMessagePublic(ctx, pool, server.Version)
+	}
+	// Invariant 3 (#442, #447 B2): VerifyHeld runs on every start but an
+	// import (which has checkImportSlot): the slot is not held by anyone
+	// between this point and the stream start, which can be hours later
+	// after a snapshot, and on Postgres 17 not even right after CREATE. A
+	// slot replaced in that window has a confirmed_flush_lsn past limit.
+	if c.Import == nil {
+		sub.VerifyHeld = verifyHeldSlot(c, limit, sub.Beacons, false, server.Version, rotate)
 	}
 	// Invariant 3 (#442): stamp the slot with this run's identity. The stamp
 	// is the beacon a restart finds before the next one is written, and it
 	// fails the start loudly when the role may not write beacons, instead of
-	// an idle slot that silently never advances.
+	// an idle slot that silently never advances. Emit's guard writes it only
+	// while the slot is inactive and not past limit, so a stamp can never
+	// land in a slot that replaced this run's (#447 B1).
 	//
 	// A position that already has an identity on a slot this run did not
 	// create is stamped only once the stream holds the slot and VerifyHeld
-	// accepted it: a beacon written into a slot swapped in after the identity
-	// check would make that slot pass the check on the next start. Its
-	// earlier beacons cover a restart until then. Every other start stamps
-	// now: a slot this run created is held by the creating connection until
-	// the stream starts, a fresh start has nothing to lose, and a legacy
-	// position (no identity) is adopted either way. Stamping now matters for
-	// a snapshot, which can run for hours before the stream starts. A
-	// rotated identity is stamped now too: no earlier position names it, so
-	// no slot can pass a check with it.
+	// accepted it: its earlier beacons cover a restart until then. Every
+	// other start stamps now, which matters for a snapshot that runs for
+	// hours before the stream starts: a slot this run created, a fresh start
+	// (nothing saved to lose), a legacy position (adopted either way), and a
+	// rotated identity (no earlier position names it, so no slot can pass a
+	// check with it).
 	stampNow := !saved || ident.legacy || ident.rotated || sub.TXSnapshotID != ""
-	if saved {
-		sub.VerifyHeld = verifyHeldSlot(c, heldConfirmedLimit(sub, ident), sub.Beacons, !stampNow, server.Version, rotate)
+	if sub.VerifyHeld != nil && !stampNow {
+		sub.VerifyHeld = verifyHeldSlot(c, limit, sub.Beacons, true, server.Version, rotate)
 	}
 	if sub.Beacons != nil && stampNow {
-		if err := sub.Beacons.Emit(ctx); err != nil {
-			return newSlotBeaconError(c.SlotName, server.Version, err)
+		err := sub.Beacons.Emit(ctx)
+		switch {
+		case errors.Is(err, internal.ErrSlotInUse) && sub.VerifyHeld != nil:
+			// Another connection streams from the slot: the stream start
+			// fails on it with its own error. Should it succeed (the other
+			// connection let go), stamp once the stream holds the slot.
+			sub.VerifyHeld = verifyHeldSlot(c, limit, sub.Beacons, true, server.Version, rotate)
+		case err != nil:
+			return beaconError(c, server.Version, err)
 		}
 	}
 	if afterSlotArmed != nil {
@@ -393,14 +448,29 @@ func armSlotIdentity(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, sub *
 }
 
 // heldConfirmedLimit is the highest confirmed_flush_lsn the slot may have
-// once the stream holds it: what the identity check accepted, or, for a slot
-// this run created, what the subscription read right after creating it (the
-// creating connection holds the slot until the stream starts).
+// until the stream holds it: what the identity check accepted, or, for a
+// slot this run created or a fresh start, what the subscription read right
+// after creating or opening it. Nothing holds the slot in between (on
+// Postgres 17 it is inactive right after CREATE_REPLICATION_SLOT), and a slot
+// that replaced it was created later, so its confirmed_flush_lsn is past
+// this.
 func heldConfirmedLimit(sub *internal.Subscription, ident slotIdentityCheck) pglogrepl.LSN {
 	if sub.TXSnapshotID == "" && ident.confirmed != 0 {
 		return ident.confirmed
 	}
 	return sub.ConfirmedFlushLSN
+}
+
+// beaconError maps a failed stamp: a slot that is not this run's any more is
+// refused like a replaced one, anything else is slot_beacon_failed.
+func beaconError(c CDCConfig, serverVersion int, err error) error {
+	if errors.Is(err, internal.ErrSlotNotHeld) {
+		e := newSlotReplacedError(c.SlotName, describeSavedPosition(c), 0)
+		e.Message = fmt.Sprintf("replication slot %q changed after this start checked it (%v): it was dropped and created again, "+
+			"or another client moved it. Common causes: a third party recreating the slot, another pipeline or tool consuming it", c.SlotName, err)
+		return e
+	}
+	return newSlotBeaconError(c.SlotName, serverVersion, err)
 }
 
 // verifyHeldSlot returns the check run once the stream holds the slot
@@ -424,7 +494,7 @@ func verifyHeldSlot(c CDCConfig, limit pglogrepl.LSN, beacons *internal.Beacons,
 		}
 		if beacons != nil && stamp {
 			if err := beacons.Emit(ctx); err != nil {
-				return newSlotBeaconError(c.SlotName, serverVersion, err)
+				return beaconError(c, serverVersion, err)
 			}
 		}
 		return nil

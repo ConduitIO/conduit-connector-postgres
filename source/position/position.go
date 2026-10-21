@@ -144,6 +144,18 @@ type Position struct {
 	// accepts a slot that is not the position's (logrepl.allowWALGap). Empty
 	// on a position written before format version 4.
 	SlotIdentity string `json:"slot_identity,omitempty"`
+
+	// SystemIdentifier and Timeline name the WAL history the position was
+	// written on (#447): the cluster's system identifier and its timeline
+	// at the time, from IDENTIFY_SYSTEM. An LSN means something only within
+	// one history, so a resume on another cluster, an earlier timeline, a
+	// timeline that left this one before the position, or a server whose
+	// WAL is behind the position (a restored backup or VM image) is refused
+	// (logrepl.checkWALHistory). Carried forward onto every position, and
+	// updated to the server's current values by every start. Empty on a
+	// position written before format version 4.
+	SystemIdentifier string `json:"system_identifier,omitempty"`
+	Timeline         int32  `json:"timeline,omitempty"`
 }
 
 type SnapshotPositions map[string]SnapshotPosition

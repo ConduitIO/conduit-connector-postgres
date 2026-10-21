@@ -46,6 +46,9 @@ const (
 	// decoding messages. Beacons are authenticated, so this does not weaken
 	// the check; revoking it is the recommended hardening.
 	CodeSlotBeaconPublic Code = "postgres.source.slot_beacon_public"
+	// CodeSlotIdentityUnprovable: the position carries an identity, the slot
+	// is past it, and the server cannot check the identity (#447 N5).
+	CodeSlotIdentityUnprovable Code = "postgres.source.slot_identity_unprovable"
 	// CodeSlotIdentityUnsupported is logged, not returned: the server cannot
 	// carry identity beacons (before Postgres 14, or a standby), so only the
 	// saved-position bound is checked.
@@ -74,6 +77,10 @@ const (
 	// identityReplaced: the position has an identity, and the slot is past
 	// the position and holds no beacon with it.
 	identityReplaced
+	// identityUnprovable: the position has an identity, the slot is past it,
+	// and this server cannot decode beacons to prove it (before Postgres 14,
+	// or a standby before 16). Refused unless allowWALGap.
+	identityUnprovable
 )
 
 func (o identityOutcome) String() string {
@@ -88,6 +95,8 @@ func (o identityOutcome) String() string {
 		return "not checked (server cannot carry beacons)"
 	case identityReplaced:
 		return "replaced"
+	case identityUnprovable:
+		return "cannot be proven on this server"
 	default:
 		return "not checked"
 	}
@@ -134,10 +143,12 @@ func coveredThrough(c CDCConfig) pglogrepl.LSN {
 	return c.LSN
 }
 
-// findBeaconTimeout bounds the identity check's peek. A healthy slot holds
-// its beacon right after confirmed_flush_lsn, so the peek is quick; it blocks
-// only when Postgres makes decoding wait (synchronized_standby_slots).
-const findBeaconTimeout = 2 * time.Minute
+// defaultIdentityCheckTimeout bounds the identity check's peek unless
+// configured (logrepl.slotIdentity.checkTimeout). The peek decodes from the
+// slot's restart_lsn, which a long-running transaction can hold far back,
+// and on Postgres 17+ it waits for synchronized_standby_slots; a timeout
+// fails the start, which is then retried, so it must be generous.
+const defaultIdentityCheckTimeout = 10 * time.Minute
 
 // checkSlotIdentity decides whether the existing slot is the slot the saved
 // position was taken from. It only reads: it peeks the slot, it never
@@ -173,21 +184,33 @@ func checkSlotIdentity(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, ser
 	case res.bound != 0 && res.confirmed <= res.bound:
 		res.outcome = identityCovered
 		return res, nil
-	case !server.BeaconsSupported():
+	case !server.BeaconsSupported() && res.legacy:
+		// No identity to check, and none can be kept on this server.
 		res.outcome = identityUnsupported
+		return res, nil
+	case !server.BeaconsSupported() && !canPeekMessages(server):
+		// #447 N5: a position that carries an identity is never accepted
+		// unproven. This server can neither write beacons nor decode them.
+		res.outcome = identityUnprovable
 		return res, nil
 	case res.legacy:
 		res.outcome = identityAdopted
 		return res, nil
 	}
 
-	pctx, cancel := context.WithTimeout(ctx, findBeaconTimeout)
+	timeout := c.IdentityCheckTimeout
+	if timeout <= 0 {
+		timeout = defaultIdentityCheckTimeout
+	}
+	pctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	found, lsn, err := internal.FindBeacon(pctx, pool, c.SlotName, c.PublicationName, res.identity, res.confirmed)
 	if err != nil {
 		if pctx.Err() != nil && ctx.Err() == nil {
-			err = fmt.Errorf("%w (on Postgres 17+, decoding a failover slot waits for every physical slot in "+
-				"synchronized_standby_slots to confirm the WAL; check that each one exists and its standby is connected)", err)
+			err = fmt.Errorf("%w (after %s, logrepl.slotIdentity.checkTimeout: the check decodes the slot from its restart_lsn, "+
+				"which a long-running transaction can hold far back; on Postgres 17+ decoding a failover slot also waits for "+
+				"every physical slot in synchronized_standby_slots to confirm the WAL, so check that each one exists and its "+
+				"standby is connected)", err, timeout)
 		}
 		return res, fmt.Errorf("failed to check the identity of replication slot %q: %w", c.SlotName, err)
 	}
@@ -197,6 +220,26 @@ func checkSlotIdentity(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, ser
 		res.outcome = identityReplaced
 	}
 	return res, nil
+}
+
+// canPeekMessages reports whether this server can decode beacons for the
+// identity check even though it cannot write them: a standby on Postgres 16
+// or later decodes logical slots, and beacons arrive in its WAL from the
+// primary.
+func canPeekMessages(s internal.ServerInfo) bool {
+	return s.InRecovery && s.Version >= 160000
+}
+
+func newSlotUnprovableError(slot, saved string, confirmed pglogrepl.LSN, server internal.ServerInfo) *SlotError {
+	return &SlotError{
+		Code: CodeSlotIdentityUnprovable,
+		Path: slotNamePath,
+		Message: fmt.Sprintf("replication slot %q is past the pipeline's saved position (%s), at %s, and the position carries a "+
+			"slot identity this server cannot check (version %d%s): it cannot tell this slot from one dropped and created "+
+			"again under the same name", slot, saved, confirmed, server.Version, map[bool]string{true: ", a standby", false: ""}[server.InRecovery]),
+		Fix: "Point the source at the primary (or a standby on Postgres 16 or later). If you know the slot is the pipeline's, " +
+			"start once with `logrepl.allowWALGap: true` and remove it after the first record was delivered",
+	}
 }
 
 // slotInUseWait is how long the identity check waits for a slot that is
@@ -281,10 +324,12 @@ func logSlotIdentity(ctx context.Context, c CDCConfig, r slotIdentityCheck) {
 			Str("slot_identity_fp", internal.IdentityFingerprint(r.identity)).
 			Stringer("confirmed_flush_lsn", r.confirmed).
 			Str("saved_position", describeSavedPosition(c)).
-			Msg("the saved position predates slot identities (written before v0.17.5), and the replication slot is past it, " +
-				"so it cannot be proven to be the same slot. It is taken over and stamped; from now on a slot dropped and " +
-				"created again under the same name is refused. If the slot was replaced before this upgrade, changes after " +
-				"the saved position may be missing")
+			Uint64("unproven_wal_bytes", uint64(r.confirmed-r.bound)).
+			Msg("the saved position predates slot identities (written before v0.17.5), and the replication slot is past it " +
+				"by unproven_wal_bytes, so it cannot be proven to be the same slot. It is taken over and stamped. Protection " +
+				"begins at the first record saved after the upgrade: from then on a slot dropped and created again under " +
+				"the same name is refused. If the slot was replaced since the last delivered record, the changes in " +
+				"that gap may be missing; re-snapshot the pipeline")
 	case identityUnsupported:
 		sdk.Logger(ctx).Warn().
 			Str("code", string(CodeSlotIdentityUnsupported)).

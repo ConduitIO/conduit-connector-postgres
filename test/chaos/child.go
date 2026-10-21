@@ -383,7 +383,8 @@ func buildLedgerEntry(run int, table string, rec opencdc.Record) (LedgerEntry, e
 			entry.DeliveryKey = "drift:" + entry.DeliveryKey
 		}
 	default:
-		return LedgerEntry{}, fmt.Errorf("unexpected position type %q (raw position %q)", pos.Type, rec.Position)
+		// Not the raw position: it holds the slot identity key (#442).
+		return LedgerEntry{}, fmt.Errorf("unexpected position type %q (%d-byte position)", pos.Type, len(rec.Position))
 	}
 
 	return entry, nil

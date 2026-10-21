@@ -347,7 +347,7 @@ func TestDrift338_PositionFormat(t *testing.T) {
 	for k := range raw {
 		switch k {
 		case "version", "type", "last_lsn", "tx_commit_lsn", "tx_seq", "schema_history", "snapshot_low_watermark_lsn",
-			"schema_drift_marker", "slot_identity":
+			"schema_drift_marker", "slot_identity", "system_identifier", "timeline":
 		default:
 			t.Fatalf("marker position carries an unexpected field %q", k)
 		}

@@ -707,7 +707,9 @@ func (h *CDCHandler) positionAt(lsn pglogrepl.LSN, key internal.ChangeKey) posit
 		SchemaHistory:           h.basePosition.SchemaHistory,
 		// Invariant 3 (#442): every position names the slot identity, so a
 		// restart from any of them can recognise its slot.
-		SlotIdentity: h.basePosition.SlotIdentity,
+		SlotIdentity:     h.basePosition.SlotIdentity,
+		SystemIdentifier: h.basePosition.SystemIdentifier,
+		Timeline:         h.basePosition.Timeline,
 	}
 }
 

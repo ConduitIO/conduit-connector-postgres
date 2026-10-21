@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/source/dbzoffset"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
@@ -93,6 +94,25 @@ type Config struct {
 	// the destination can be repaired some other way, and remove it once the
 	// pipeline has resumed.
 	LogreplAllowWALGap bool `json:"logrepl.allowWALGap" default:"false"`
+
+	// LogreplSlotIdentityCheckTimeout bounds the replication slot identity
+	// check at start (#442), which reads the slot without consuming it to
+	// find the connector's identity beacon. It decodes from the slot's
+	// restart_lsn, so a long-running transaction that holds restart_lsn far
+	// back makes it slower; on Postgres 17+ it also waits for the standbys in
+	// synchronized_standby_slots. When it times out the start fails and is
+	// retried.
+	LogreplSlotIdentityCheckTimeout time.Duration `json:"logrepl.slotIdentity.checkTimeout" default:"10m"`
+
+	// LogreplSlotIdentityBeaconFailureTimeout is how long the connector keeps
+	// an idle replication slot from advancing past its last identity beacon
+	// while new beacons cannot be written (#442). After it, the slot advances
+	// without a beacon so its WAL cannot fill the disk, the connector logs
+	// `postgres.source.slot_beacon_unavailable` as an error, and the next
+	// start is refused with `postgres.source.slot_replaced` unless a record
+	// was saved since (an outage, never a loss). The WAL held back meanwhile
+	// is at most what the server writes in this time.
+	LogreplSlotIdentityBeaconFailureTimeout time.Duration `json:"logrepl.slotIdentity.beaconFailureTimeout" default:"5m"`
 
 	// WithAvroSchema determines whether the connector should attach an avro schema on each
 	// record.

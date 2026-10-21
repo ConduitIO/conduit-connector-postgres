@@ -66,6 +66,10 @@ func genPosition(t *rapid.T) Position {
 		TxSeq:                   rapid.Uint64().Draw(t, "tx seq"),
 		SlotIdentity:            genSlotIdentity(t),
 	}
+	if rapid.Bool().Draw(t, "wal history set") {
+		p.SystemIdentifier = strconv.FormatUint(rapid.Uint64().Draw(t, "system identifier"), 10)
+		p.Timeline = rapid.Int32Range(1, 1<<30).Draw(t, "timeline")
+	}
 	for _, table := range rapid.SliceOfNDistinct(rapid.String(), 0, 3, rapid.ID[string]).Draw(t, "snapshot tables") {
 		if p.Snapshots == nil {
 			p.Snapshots = SnapshotPositions{}

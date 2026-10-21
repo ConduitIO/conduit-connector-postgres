@@ -79,26 +79,35 @@ func TestNextFindBeaconLimit(t *testing.T) {
 	is.Equal(rounds, 6) // 1024, 8192, ..., 2^23, then 2^24
 }
 
-// Only the pending beacon moves the cap, to the WAL position read before it
-// was written; other prefixes, other content and a late copy do not.
+// Only one of this run's beacons moves the cap, to the WAL position read
+// before it was written; other prefixes, other content and a second copy do
+// not. A beacon whose Emit returned an error still counts when the stream
+// delivers it (it may have committed before the error).
 func TestBeacons_Observe(t *testing.T) {
 	is := is.New(t)
 	b := NewBeacons(nil, "slot", "abc")
-	b.pending = &pendingBeacon{content: beaconContent("abc", "slot", "1", 0x100), start: 0x100, at: time.Now()}
+	p := b.record(0x100)
 
-	is.True(!b.observe(&pglogrepl.LogicalDecodingMessage{Prefix: "other", Content: []byte(b.pending.content), LSN: 0x180}))
-	// A valid beacon with another nonce (an earlier one, or a copy) is not
-	// the one this emission recorded.
-	is.True(!b.observe(&pglogrepl.LogicalDecodingMessage{Prefix: BeaconPrefix, Content: []byte(beaconContent("abc", "slot", "2", 0x100)), LSN: 0x180}))
+	is.True(!b.observe(&pglogrepl.LogicalDecodingMessage{Prefix: "other", Content: []byte(p.content), LSN: 0x180}))
+	// A valid beacon with another nonce (not one this run wrote) is ignored.
+	is.True(!b.observe(&pglogrepl.LogicalDecodingMessage{Prefix: BeaconPrefix, Content: []byte(beaconContent("abc", "slot", "other", 0x100)), LSN: 0x180}))
 	is.Equal(b.Cap(), pglogrepl.LSN(0))
 
-	is.True(b.observe(&pglogrepl.LogicalDecodingMessage{Prefix: BeaconPrefix, Content: []byte(beaconContent("abc", "slot", "1", 0x100)), LSN: 0x180}))
+	is.True(b.observe(&pglogrepl.LogicalDecodingMessage{Prefix: BeaconPrefix, Content: []byte(p.content), LSN: 0x180}))
 	is.Equal(b.Cap(), pglogrepl.LSN(0x100)) // the start, not the end the stream reports
 	is.Equal(b.lastEnd, pglogrepl.LSN(0x180))
-	is.True(b.pending == nil)
 
-	// The same beacon again (a re-send after a reconnect) is no longer pending.
-	is.True(!b.observe(&pglogrepl.LogicalDecodingMessage{Prefix: BeaconPrefix, Content: []byte(beaconContent("abc", "slot", "1", 0x100)), LSN: 0x180}))
+	// The same beacon again (a re-send after a reconnect) is not counted twice.
+	is.True(!b.observe(&pglogrepl.LogicalDecodingMessage{Prefix: BeaconPrefix, Content: []byte(p.content), LSN: 0x180}))
+
+	// Older attempts stay recognised, newest first, up to maxBeaconAttempts.
+	var ps []pendingBeacon
+	for i := 0; i < maxBeaconAttempts+2; i++ {
+		ps = append(ps, b.record(pglogrepl.LSN(0x200+i)))
+	}
+	is.True(!b.observe(&pglogrepl.LogicalDecodingMessage{Prefix: BeaconPrefix, Content: []byte(ps[0].content), LSN: 0x300})) // dropped
+	is.True(b.observe(&pglogrepl.LogicalDecodingMessage{Prefix: BeaconPrefix, Content: []byte(ps[5].content), LSN: 0x300}))
+	is.Equal(b.Cap(), ps[5].start)
 }
 
 // maybeRequest keeps an idle server idle: it does not ask for a beacon while
@@ -107,38 +116,32 @@ func TestBeacons_MaybeRequestThresholds(t *testing.T) {
 	is := is.New(t)
 	now := time.Now()
 	b := NewBeacons(nil, "slot", "abc")
+	b.SetFailureTimeout(time.Hour) // abandonment is TestBeacons_AbandonedAfterFailureTimeout
 	b.now = func() time.Time { return now }
 	emitted := make(chan struct{}, 10)
 	b.emit = func(context.Context) error { emitted <- struct{}{}; return errors.New("not emitted in this test") }
 	b.cap, b.lastEnd = 0x1000, 0x1048
 	ctx := context.Background()
+	inflight := func() bool { b.mu.Lock(); defer b.mu.Unlock(); return b.inflight }
 
 	b.maybeRequest(ctx, 0x1048+minBeaconWAL-1, 0x900)
-	is.True(b.pending == nil) // our own beacon and a running_xacts record do not count
+	is.True(!inflight()) // our own beacon and a running_xacts record do not count
 	is.Equal(len(emitted), 0)
 
-	b.pending = &pendingBeacon{content: "x", at: now}
+	b.inflight, b.inflightAt = true, now
 	b.maybeRequest(ctx, 0x100000, 0x900)
-	is.Equal(b.pending.content, "x") // one beacon at a time
-	is.Equal(len(emitted), 0)
+	is.Equal(len(emitted), 0) // one beacon at a time
 
-	b.pending.at = now.Add(-staleBeaconAfter - time.Second)
+	b.inflightAt = now.Add(-staleBeaconAfter - time.Second)
 	b.maybeRequest(ctx, 0x100000, 0x900)
 	select {
-	case <-emitted: // a stale beacon is no longer waited for
+	case <-emitted: // a stale emission is no longer waited for
 	case <-time.After(5 * time.Second):
 		t.Fatal("no new beacon after the pending one went stale")
 	}
-	// The failed emission frees the slot for the next request.
-	for deadline := time.Now().Add(5 * time.Second); ; {
-		b.mu.Lock()
-		p := b.pending
-		b.mu.Unlock()
-		if p == nil {
-			break
-		}
+	for deadline := time.Now().Add(5 * time.Second); inflight(); {
 		if time.Now().After(deadline) {
-			t.Fatal("a failed emission left a placeholder behind")
+			t.Fatal("a failed emission stayed in flight")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -148,6 +151,60 @@ func TestBeacons_MaybeRequestThresholds(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no retry after a failed emission")
 	}
+}
+
+// #447 S1: beacons that keep failing for longer than the failure timeout
+// are abandoned: the cap is dropped (the slot's WAL cannot fill the disk) and
+// an error carrying the retained bytes is logged. Before that, the cap holds.
+func TestBeacons_AbandonedAfterFailureTimeout(t *testing.T) {
+	is := is.New(t)
+	now := time.Now()
+	b := NewBeacons(nil, "slot", "abc")
+	b.SetFailureTimeout(time.Minute)
+	b.now = func() time.Time { return now }
+	done := make(chan struct{}, 10)
+	b.emit = func(context.Context) error { done <- struct{}{}; return errors.New("permission denied") }
+	b.cap, b.lastEnd = 0x1000, 0x1048
+	ctx := context.Background()
+	wait := func() {
+		t.Helper()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("no emission")
+		}
+		for deadline := time.Now().Add(5 * time.Second); ; {
+			b.mu.Lock()
+			f := b.inflight
+			b.mu.Unlock()
+			if !f {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("still in flight")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	b.maybeRequest(ctx, 0x100000, 0x900)
+	wait()
+	is.True(!b.Abandoned())
+	is.Equal(b.Cap(), pglogrepl.LSN(0x1000))
+	is.Equal(b.RetainedBytes(0x100000), uint64(0x100000-0x1000))
+
+	now = now.Add(30 * time.Second)
+	b.maybeRequest(ctx, 0x100000, 0x900)
+	wait()
+	is.True(!b.Abandoned()) // within the timeout
+
+	now = now.Add(31 * time.Second)
+	b.maybeRequest(ctx, 0x100000, 0x900)
+	is.True(b.Abandoned())
+	is.Equal(b.Cap(), noCap)
+	is.Equal(b.RetainedBytes(0x100000), uint64(0))
+	b.maybeRequest(ctx, 0x200000, 0x900)
+	is.Equal(len(done), 0) // no more emissions once abandoned
 }
 
 // Records acked past the cap ask for a beacon even with little new WAL, so
@@ -218,8 +275,9 @@ func TestFindBeacon(t *testing.T) {
 	is.True(!found) // a new slot holds no beacon
 
 	b := NewBeacons(pool, slot, "abc")
+	b.SetPreStreamLimit(confirmedFlush(ctx, t, pool, slot))
 	is.NoErr(b.Emit(ctx))
-	start := b.pending.start
+	start := b.attempts[len(b.attempts)-1].start
 	var afterCommit pglogrepl.LSN
 	is.NoErr(pool.QueryRow(ctx, "SELECT pg_current_wal_lsn()").Scan(&afterCommit))
 
@@ -321,9 +379,10 @@ func TestFindBeacon_RefusesForgedAndCopiedBeacons(t *testing.T) {
 
 	// A genuine beacon, copied into the slot after it was recreated.
 	b := NewBeacons(pool, slot, key)
+	b.SetPreStreamLimit(confirmedFlush(ctx, t, pool, slot))
 	is.NoErr(b.Emit(ctx))
 	is.True(found())
-	genuine := b.pending.content
+	genuine := b.attempts[len(b.attempts)-1].content
 	_, err := pool.Exec(ctx, "SELECT pg_drop_replication_slot($1)", slot)
 	is.NoErr(err)
 	_, err = pool.Exec(ctx, "SELECT pg_create_logical_replication_slot($1, 'pgoutput')", slot)
@@ -351,4 +410,41 @@ func TestFindBeacon_ExhaustedAtClampedLimit(t *testing.T) {
 	_, _, err := FindBeacon(ctx, pool, slot, slot, NewSlotIdentity(), confirmedFlush(ctx, t, pool, slot))
 	is.True(errors.Is(err, ErrBeaconSearchExhausted))
 	is.True(strings.Contains(err.Error(), "read "))
+}
+
+// #447 B1: Emit writes a beacon only into the slot this run holds. While
+// the stream runs that is the slot whose active_pid is this run's walsender;
+// before it, an inactive slot not past the limit the run checked it at. A
+// missing slot, a slot held by someone else, and a slot past the limit (one
+// created after the check starts later) are refused, and nothing is written.
+func TestBeacons_EmitOnlyIntoTheHeldSlot(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	requireBeacons(ctx, t, pool)
+	slot, _ := beaconSlot(ctx, t, pool)
+	key := NewSlotIdentity()
+	found := func() bool {
+		t.Helper()
+		ok, _, err := FindBeacon(ctx, pool, slot, slot, key, confirmedFlush(ctx, t, pool, slot))
+		is.NoErr(err)
+		return ok
+	}
+	confirmed := confirmedFlush(ctx, t, pool, slot)
+
+	b := NewBeacons(pool, slot, key)
+	b.SetPreStreamLimit(confirmed - 1) // checked at an earlier point: this slot is newer
+	is.True(errors.Is(b.Emit(ctx), ErrSlotNotHeld))
+
+	b.SetPreStreamLimit(confirmed)
+	b.SetStreamPID(1) // "our walsender" is not the holder
+	is.True(errors.Is(b.Emit(ctx), ErrSlotNotHeld))
+	is.True(!found()) // nothing was written
+
+	b2 := NewBeacons(pool, "conduit_no_such_slot", key)
+	is.True(errors.Is(b2.Emit(ctx), ErrSlotNotHeld))
+
+	b.SetStreamPID(0)
+	is.NoErr(b.Emit(ctx)) // inactive and at the limit: this run's slot
+	is.True(found())
 }

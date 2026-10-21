@@ -203,6 +203,23 @@ func TestFailover_SlotIdentitySurvivesPromotion(t *testing.T) {
 	is.True(strings.Contains(logs.String(), "identity beacon found"))
 	t.Logf("run 2 on the promoted standby: %s", logs.String())
 
+	// The promotion moved the new primary to a new timeline. The position
+	// from the old one is on the shared part of the history, so it resumed
+	// above. A position past the switch point is not: the old timeline's
+	// changes after it are not in this server's WAL (#447 B3).
+	p2, err := position.ParseSDKPosition(pos2)
+	is.NoErr(err)
+	is.True(p2.Timeline > pp.Timeline) // positions follow the new timeline
+	var switchPoint pglogrepl.LSN
+	is.NoErr(standby.QueryRow(ctx,
+		"SELECT redo_lsn FROM pg_control_checkpoint()").Scan(&switchPoint)) // at or after the switch
+	past := pp
+	ahead := (switchPoint + 0x100).String()
+	past.LastLSN, past.TxCommitLSN = ahead, ahead
+	_, err = logrepl.NewCombinedIterator(ctx, standby, config(table, past.ToSDKPosition()))
+	is.Equal(logrepl.CodeOf(err), logrepl.CodeWALHistoryChanged)
+	t.Logf("position past the switch point: %v", err)
+
 	// A slot recreated under the same name on the new primary is refused.
 	waitFor(t, "the slot to be released", 30*time.Second, func() bool {
 		_, err := standby.Exec(ctx, "SELECT pg_drop_replication_slot($1)", table)

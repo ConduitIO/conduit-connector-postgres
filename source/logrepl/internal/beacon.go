@@ -25,6 +25,7 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -278,19 +279,43 @@ func isBeaconFor(data []byte, identity, slot string, minStart pglogrepl.LSN) boo
 // in a server crash, and with synchronized_standby_slots a failover standby
 // has it too.
 //
-// Emit and the background emission started by maybeRequest touch only the
-// pending beacon, under mu. observe, maybeRequest and Cap run on the
-// subscription's Run goroutine.
+// A beacon may only be written into the slot this run holds (Emit's guard):
+// one written into a slot that replaced it would vouch for the replacement.
+//
+// Emit and the background emission started by maybeRequest touch the
+// attempts and failure state under mu. observe, maybeRequest and Cap run on
+// the subscription's Run goroutine.
 type Beacons struct {
 	pool     *pgxpool.Pool
 	slot     string
 	identity string // secret: never logged
+	// failureTimeout is how long beacons may keep failing while they hold
+	// an idle slot back before the cap is dropped (see Abandoned).
+	failureTimeout time.Duration
 	// now is time.Now and emit is Emit; test seams.
 	now  func() time.Time
 	emit func(context.Context) error
 
-	mu      sync.Mutex
-	pending *pendingBeacon
+	// streamPID is the backend PID of this run's walsender once
+	// START_REPLICATION succeeded, 0 before. preStreamLimit is the highest
+	// confirmed_flush_lsn the slot may have before the stream holds it.
+	streamPID      atomic.Uint32
+	preStreamLimit atomic.Uint64
+
+	mu sync.Mutex
+	// inflight: an emission is running (since inflightAt).
+	inflight   bool
+	inflightAt time.Time
+	// attempts are the beacons written or attempted by this run, by nonce,
+	// most recent last. A beacon whose Emit returned an error can still have
+	// committed (the error came after the commit), so the stream delivering
+	// one of them moves the cap.
+	attempts []pendingBeacon
+	// failingSince is when emissions started failing in a row, zero while
+	// the last one succeeded. abandoned is set once they failed for longer
+	// than failureTimeout.
+	failingSince time.Time
+	abandoned    atomic.Bool
 
 	// Only on the Run goroutine.
 	cap     pglogrepl.LSN
@@ -298,10 +323,16 @@ type Beacons struct {
 }
 
 type pendingBeacon struct {
+	nonce   string
 	content string
 	start   pglogrepl.LSN // WAL insert position read before the emission
-	at      time.Time
 }
+
+// maxBeaconAttempts bounds Beacons.attempts.
+const maxBeaconAttempts = 16
+
+// DefaultBeaconFailureTimeout is Beacons.failureTimeout unless configured.
+const DefaultBeaconFailureTimeout = 5 * time.Minute
 
 // EmitMessageSignature is the pg_logical_emit_message variant beacons call on
 // a server of the given version (server_version_num), as GRANT names it.
@@ -313,12 +344,31 @@ func EmitMessageSignature(serverVersion int) string {
 	return "pg_logical_emit_message(boolean, text, text)"
 }
 
-// NewBeacons returns the beacon writer of slot for the identity key.
+// NewBeacons returns the beacon writer of slot for the identity key. Before
+// the stream starts, the slot may be written to only while its
+// confirmed_flush_lsn is at or below preStreamLimit (SetPreStreamLimit).
 func NewBeacons(pool *pgxpool.Pool, slot, identity string) *Beacons {
-	b := &Beacons{pool: pool, slot: slot, identity: identity, now: time.Now}
+	b := &Beacons{pool: pool, slot: slot, identity: identity, failureTimeout: DefaultBeaconFailureTimeout, now: time.Now}
 	b.emit = b.Emit
 	return b
 }
+
+// SetFailureTimeout sets how long beacon failures may hold an idle slot back
+// (see Abandoned). Call before the stream starts.
+func (b *Beacons) SetFailureTimeout(d time.Duration) {
+	if d > 0 {
+		b.failureTimeout = d
+	}
+}
+
+// SetPreStreamLimit sets the highest confirmed_flush_lsn the slot may have
+// for a beacon written before the stream holds it: what the identity check
+// accepted, or the slot's position right after this run created it.
+func (b *Beacons) SetPreStreamLimit(lsn pglogrepl.LSN) { b.preStreamLimit.Store(uint64(lsn)) }
+
+// SetStreamPID records the backend PID of this run's walsender, from then on
+// the only holder a beacon may be written for.
+func (b *Beacons) SetStreamPID(pid uint32) { b.streamPID.Store(pid) }
 
 // SetIdentity replaces the identity key before the stream starts (a rotated
 // identity, see logrepl.slotIdentityCheck). It must not race an emission.
@@ -339,69 +389,170 @@ func EmitMessagePublic(ctx context.Context, pool *pgxpool.Pool, serverVersion in
 	return public, err
 }
 
-// Emit writes a beacon and waits until it is durable. It fails if the role
-// may not call pg_logical_emit_message.
-//
-// The beacon is a transactional message committed with synchronous_commit
-// on, so it is flushed when Emit returns: a restart right after it (or a
-// server crash) still finds it. A non-transactional message is not flushed
-// before Postgres 17, and a peek or a stream reads only flushed WAL; a quick
-// restart then missed the beacon and refused an intact slot (measured on
-// Postgres 14 to 16). Postgres decodes the message at its transaction's
-// commit, which is after the insert position read first, so the slot still
-// decodes it while its confirmed_flush_lsn is at or below Cap.
-func (b *Beacons) Emit(ctx context.Context) error {
-	p := &pendingBeacon{at: b.now()}
-	// The insert position is read first and the pending beacon recorded
-	// before the emission, so a beacon the stream delivers back at once is
-	// always recognised. The stream must deliver exactly this content (its
-	// nonce included) to move the cap.
-	if err := b.pool.QueryRow(ctx, "SELECT pg_current_wal_insert_lsn()").Scan(&p.start); err != nil {
-		return fmt.Errorf("failed to read the WAL insert position: %w", err)
-	}
-	b.mu.Lock()
-	p.content = beaconContent(b.identity, b.slot, randomHex(16), p.start)
-	b.pending = p
-	b.mu.Unlock()
+// ErrSlotNotHeld means the beacon was not written because the slot is not
+// the one this run holds (or verified before the stream started).
+var ErrSlotNotHeld = errors.New("the replication slot is not the one this run holds")
 
+// ErrSlotInUse is ErrSlotNotHeld for a slot another connection streams from
+// before this run's stream started: the stream start fails on it anyway.
+var ErrSlotInUse = fmt.Errorf("%w: it is in use by another connection", ErrSlotNotHeld)
+
+// Emit writes a beacon and waits until it is durable. It fails if the role
+// may not call pg_logical_emit_message, and it refuses to write a beacon
+// into a slot this run does not hold (ErrSlotNotHeld).
+//
+// The guard, all inside the beacon's own transaction:
+//
+//  1. The transaction takes an xid first (pg_current_xact_id).
+//  2. It checks the slot: while the stream runs, active_pid must be this
+//     run's walsender; before it, the slot must be inactive with a
+//     confirmed_flush_lsn at or below the limit this run verified or
+//     created it with.
+//  3. Only then it reads the WAL insert position and writes the message.
+//
+// A slot that passes the check is this run's slot at that moment. A slot
+// created after the check cannot decode the beacon: creating a logical slot
+// waits for every transaction that holds an xid when it starts building its
+// snapshot to finish, and its consistent point is after their commits, so a
+// slot created while the beacon's transaction is open never decodes it
+// (Postgres skips transactions that committed before a slot's consistent
+// point). A slot created before the check either fails the check (another
+// walsender, or a confirmed_flush_lsn past the limit, since a slot created
+// later starts later) or is this run's slot.
+//
+// The transaction commits with synchronous_commit = local: flushed to the
+// local WAL before Emit returns, so a restart or a server crash right after
+// still finds it, but never waiting for a synchronous standby that is down.
+// A failover standby needs no stronger commit: the cap moves only when the
+// stream delivers the beacon, which with synchronized_standby_slots happens
+// only after the standbys confirmed it. Postgres decodes the message at its
+// transaction's commit, which is after the insert position read in step 3,
+// so the slot still decodes it while its confirmed_flush_lsn is at or below
+// Cap.
+func (b *Beacons) Emit(ctx context.Context) error {
 	err := pgx.BeginFunc(ctx, b.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, "SET LOCAL synchronous_commit TO on"); err != nil {
+		if _, err := tx.Exec(ctx, "SET LOCAL synchronous_commit TO local"); err != nil {
 			return err
 		}
+		if _, err := tx.Exec(ctx, "SELECT pg_current_xact_id()"); err != nil {
+			return fmt.Errorf("failed to assign the beacon's transaction id: %w", err)
+		}
+		if err := b.checkHeld(ctx, tx); err != nil {
+			return err
+		}
+		var start pglogrepl.LSN
+		if err := tx.QueryRow(ctx, "SELECT pg_current_wal_insert_lsn()").Scan(&start); err != nil {
+			return fmt.Errorf("failed to read the WAL insert position: %w", err)
+		}
+		p := b.record(start)
 		_, err := tx.Exec(ctx, "SELECT pg_logical_emit_message(true, $1, $2::text)", BeaconPrefix, p.content)
 		return err
 	})
 	if err != nil {
-		b.mu.Lock()
-		if b.pending == p {
-			b.pending = nil
+		if errors.Is(err, ErrSlotNotHeld) {
+			return err
 		}
-		b.mu.Unlock()
 		return fmt.Errorf("failed to write the slot identity beacon (pg_logical_emit_message): %w", err)
 	}
 	return nil
 }
 
-// Cap is the highest flush position an idle advance may report.
-func (b *Beacons) Cap() pglogrepl.LSN { return b.cap }
+// checkHeld is Emit's guard (step 2).
+func (b *Beacons) checkHeld(ctx context.Context, tx pgx.Tx) error {
+	var active bool
+	var pid *int32
+	var confirmed *pglogrepl.LSN
+	err := tx.QueryRow(ctx,
+		"SELECT active, active_pid, confirmed_flush_lsn FROM pg_replication_slots WHERE slot_name = $1",
+		b.slot).Scan(&active, &pid, &confirmed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: slot %q does not exist", ErrSlotNotHeld, b.slot)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read replication slot %q: %w", b.slot, err)
+	}
+	if want := b.streamPID.Load(); want != 0 {
+		if pid == nil || int64(*pid) != int64(want) {
+			return fmt.Errorf("%w: slot %q is not held by this run's walsender (PID %d)", ErrSlotNotHeld, b.slot, want)
+		}
+		return nil
+	}
+	limit := pglogrepl.LSN(b.preStreamLimit.Load())
+	switch {
+	case active:
+		return fmt.Errorf("%w (slot %q)", ErrSlotInUse, b.slot)
+	case confirmed == nil || *confirmed > limit:
+		return fmt.Errorf("%w: slot %q moved past the position this run checked it at", ErrSlotNotHeld, b.slot)
+	}
+	return nil
+}
+
+// record remembers an attempt before it is written, so a beacon the stream
+// delivers back at once is always recognised.
+func (b *Beacons) record(start pglogrepl.LSN) pendingBeacon {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	nonce := randomHex(16)
+	p := pendingBeacon{nonce: nonce, start: start, content: beaconContent(b.identity, b.slot, nonce, start)}
+	b.attempts = append(b.attempts, p)
+	if len(b.attempts) > maxBeaconAttempts {
+		b.attempts = b.attempts[len(b.attempts)-maxBeaconAttempts:]
+	}
+	return p
+}
+
+// Cap is the highest flush position an idle advance may report: the start
+// of the last received beacon, or no cap once beacons were abandoned.
+func (b *Beacons) Cap() pglogrepl.LSN {
+	if b.abandoned.Load() {
+		return noCap
+	}
+	return b.cap
+}
+
+// Abandoned reports whether beacons kept failing for longer than the
+// failure timeout. The subscription then advances an idle slot without a
+// cap again, so the server's disk is safe, and this run's slot can no longer
+// be proven: the next start from a position past the last beacon is refused
+// (an outage, never a loss).
+func (b *Beacons) Abandoned() bool { return b.abandoned.Load() }
+
+// RetainedBytes is how much WAL the cap holds back: serverWALEnd minus Cap.
+func (b *Beacons) RetainedBytes(serverWALEnd pglogrepl.LSN) uint64 {
+	if b.abandoned.Load() || serverWALEnd <= b.cap {
+		return 0
+	}
+	return uint64(serverWALEnd - b.cap)
+}
 
 // observe handles a logical decoding message from the stream. It reports
-// whether the message was the pending beacon, in which case Cap moves up to
-// that beacon's start.
+// whether the message was one of this run's beacons (matched by its exact
+// content, nonce included), in which case Cap moves up to that beacon's
+// start.
 func (b *Beacons) observe(m *pglogrepl.LogicalDecodingMessage) bool {
 	if m.Prefix != BeaconPrefix {
 		return false
 	}
 	b.mu.Lock()
-	p := b.pending
-	if p == nil || string(m.Content) != p.content {
-		b.mu.Unlock()
+	var found *pendingBeacon
+	for i := len(b.attempts) - 1; i >= 0; i-- {
+		if b.attempts[i].content == string(m.Content) {
+			p := b.attempts[i]
+			found = &p
+			b.attempts = append(b.attempts[:i], b.attempts[i+1:]...)
+			break
+		}
+	}
+	if found != nil {
+		b.inflight = false
+		b.failingSince = time.Time{}
+	}
+	b.mu.Unlock()
+	if found == nil {
 		return false
 	}
-	b.pending = nil
-	b.mu.Unlock()
-	if p.start > b.cap {
-		b.cap = p.start
+	if found.start > b.cap {
+		b.cap = found.start
 	}
 	if m.LSN > b.lastEnd {
 		b.lastEnd = m.LSN
@@ -418,40 +569,69 @@ func (b *Beacons) observe(m *pglogrepl.LogicalDecodingMessage) bool {
 //     so nothing is delivered twice); or
 //   - the server has written at least minBeaconWAL bytes since the last
 //     received beacon, which keeps an idle database idle.
+//
+// It also decides when to give up (see Abandoned): once emissions have been
+// failing for longer than the failure timeout while the cap holds WAL back.
 func (b *Beacons) maybeRequest(ctx context.Context, serverWALEnd, walFlushed pglogrepl.LSN) {
-	if serverWALEnd <= b.cap {
+	if b.abandoned.Load() || serverWALEnd <= b.cap {
 		return
 	}
 	if walFlushed <= b.cap && serverWALEnd < b.lastEnd+minBeaconWAL {
 		return
 	}
+	now := b.now()
 	b.mu.Lock()
-	if b.pending != nil && b.now().Sub(b.pending.at) < staleBeaconAfter {
+	if !b.failingSince.IsZero() && now.Sub(b.failingSince) > b.failureTimeout {
+		b.abandoned.Store(true)
+		b.mu.Unlock()
+		sdk.Logger(ctx).Error().
+			Str("code", CodeBeaconUnavailable).
+			Str("slot", b.slot).
+			Uint64("retained_wal_bytes", uint64(serverWALEnd-b.cap)).
+			Dur("failing_for", now.Sub(b.failingSince)).
+			Msg("slot identity beacons kept failing; the replication slot is advanced without them from now on so its WAL " +
+				"does not fill the disk. The slot can no longer be proven: the next start will be refused with " +
+				"postgres.source.slot_replaced unless the pipeline saves a record first")
+		return
+	}
+	if b.inflight && now.Sub(b.inflightAt) < staleBeaconAfter {
 		b.mu.Unlock()
 		return
 	}
-	// A pending beacon this old is stale: stop waiting for it. The
-	// placeholder keeps a second status update from starting another
-	// emission while this one runs; Emit replaces it.
-	b.pending = &pendingBeacon{at: b.now()}
+	if b.inflight && b.failingSince.IsZero() {
+		// Written but never delivered back: as good as failed.
+		b.failingSince = b.inflightAt
+	}
+	// An emission this old is stale: stop waiting for it (its beacon still
+	// counts if the stream delivers it, see attempts).
+	b.inflight, b.inflightAt = true, now
 	b.mu.Unlock()
 
 	go func() {
 		ectx, cancel := context.WithTimeout(ctx, beaconEmitTimeout)
 		defer cancel()
-		if err := b.emit(ectx); err != nil {
-			b.mu.Lock()
-			if b.pending != nil && b.pending.content == "" {
-				b.pending = nil
+		err := b.emit(ectx)
+		b.mu.Lock()
+		if err != nil {
+			b.inflight = false
+			if b.failingSince.IsZero() {
+				b.failingSince = b.now()
 			}
-			b.mu.Unlock()
-			if ctx.Err() == nil {
-				sdk.Logger(ctx).Warn().Err(err).
-					Msg("could not write a slot identity beacon; the idle replication slot is not advanced until one is written")
-			}
+		}
+		b.mu.Unlock()
+		if err != nil && ctx.Err() == nil {
+			sdk.Logger(ctx).Warn().Err(err).
+				Str("code", CodeBeaconUnavailable).
+				Str("slot", b.slot).
+				Uint64("retained_wal_bytes", uint64(serverWALEnd-b.cap)).
+				Msg("could not write a slot identity beacon; the idle replication slot is not advanced past the last one until one is written")
 		}
 	}()
 }
+
+// CodeBeaconUnavailable is the code logged while beacons cannot be written
+// at runtime (logrepl.CodeSlotBeaconUnavailable).
+const CodeBeaconUnavailable = "postgres.source.slot_beacon_unavailable"
 
 // noCap is the idle-advance cap when beacons are not in use.
 const noCap = pglogrepl.LSN(math.MaxUint64)
