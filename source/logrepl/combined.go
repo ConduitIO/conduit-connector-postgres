@@ -149,9 +149,11 @@ func (c Config) Validate() error {
 func NewCombinedIterator(ctx context.Context, pool *pgxpool.Pool, conf Config) (*CombinedIterator, error) {
 	pos, err := position.ParseSDKPosition(conf.Position)
 	if err != nil {
+		// The position holds snapshot key values, so only its size is logged.
 		sdk.Logger(ctx).Debug().
 			Err(err).
-			Msgf("failed to parse position: %s", string(conf.Position))
+			Int("position_length", len(conf.Position)).
+			Msg("failed to parse position")
 
 		return nil, fmt.Errorf("failed to create logrepl iterator: %w", err)
 	}
