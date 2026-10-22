@@ -34,13 +34,13 @@ import (
 // written after the restore: they are delivered, or the start is refused with
 // a code.
 //
-// KNOWN GAP (see cases.txt). When this test was added, the source resumed on
-// the restored slot without complaint and did not deliver the post-restore
-// rows whose commit LSN is at or below the saved position: with 10 rows
-// written after the restore none arrived, and with 60 exactly the first 10
-// did not (the number of rows run 2 had delivered before the restore). This
-// is silent loss, not a documented limitation, and the test stays red on
-// purpose; run.sh requires it to fail and flips the run red once it passes.
+// This was a known gap when the test was added: the source resumed on the
+// restored slot without complaint and did not deliver the post-restore rows
+// whose commit LSN is at or below the saved position (with 10 rows written
+// after the restore none arrived). Since #447 the saved position names its
+// transaction's xid and commit time, the restored history does not have that
+// transaction at that LSN, and the start is refused with
+// postgres.source.wal_history_changed.
 func TestExternalState_SnapshotRestore(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
@@ -112,5 +112,5 @@ func TestExternalState_SnapshotRestore(t *testing.T) {
 		got, openErr = d.ids, d.err
 	}
 	requireLoudOrDelivered(t, "resume after a volume snapshot restore", openErr, got, c,
-		"postgres.source.slot_wal_gap", "postgres.source.slot_invalidated")
+		"postgres.source.slot_wal_gap", "postgres.source.slot_invalidated", "postgres.source.wal_history_changed")
 }
