@@ -96,7 +96,8 @@ func Test_FetcherRun_NumericNonFinite(t *testing.T) {
 					is.True(strings.Contains(msg, "postgres.source.numeric_not_representable"))
 					is.True(strings.Contains(msg, table))
 					is.True(strings.Contains(msg, `"v"`))
-					is.True(strings.Contains(msg, "(row id=1)"))
+					is.True(strings.Contains(msg, "(row columns id, key hash "))
+					is.True(!strings.Contains(msg, "id=1"))
 					is.True(strings.Contains(msg, fmt.Sprintf("%q", tc.text)))
 					return
 				}

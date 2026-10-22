@@ -801,7 +801,8 @@ func TestRelationSetValues_NumericNonFinite(t *testing.T) {
 					is.True(strings.HasPrefix(msg, "postgres.source.numeric_not_representable: "))
 					is.True(strings.Contains(msg, `"orders"`))
 					is.True(strings.Contains(msg, `"total"`))
-					is.True(strings.Contains(msg, "(row id=7)"))
+					is.True(strings.Contains(msg, "(row columns id, key hash "))
+					is.True(!strings.Contains(msg, "id=7"))
 					is.True(strings.Contains(msg, fmt.Sprintf("%q", tc.text)))
 					return
 				}
