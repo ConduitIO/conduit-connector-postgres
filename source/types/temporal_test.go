@@ -346,3 +346,14 @@ func TestMultirangeArraysPassThrough(t *testing.T) {
 		})
 	}
 }
+
+// An out-of-range timestamp is record data: the error names the type, not the value.
+func TestTemporalNotRepresentableError_OutOfRangeDoesNotEchoTheValue(t *testing.T) {
+	is := is.New(t)
+
+	_, err := types.FormatFor(types.EncodingAvro, pgtype.TimestampOID, time.Date(294276, 1, 1, 0, 0, 0, 0, time.UTC))
+	located, ok := types.LocateTemporal(err, "orders", "created")
+	is.True(ok)
+	is.True(!strings.Contains(located.Error(), "294276"))
+	is.True(strings.Contains(located.Error(), "out of range"))
+}

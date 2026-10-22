@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // keyHashSalt is random per process, so a logged hash cannot be reversed by
@@ -49,4 +50,16 @@ func KeyHash(key map[string]any) string {
 		fmt.Fprintf(mac, "%q=%#v;", name, key[name])
 	}
 	return hex.EncodeToString(mac.Sum(nil)[:8])
+}
+
+// RowRef names a row in an error by the columns of its key and a salted hash
+// of the key values, never by the values themselves. Errors reach the DLQ, the
+// API and CLI output.
+func RowRef(key map[string]any) string {
+	names := make([]string, 0, len(key))
+	for name := range key {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return fmt.Sprintf("columns %s, key hash %s", strings.Join(names, ","), KeyHash(key))
 }

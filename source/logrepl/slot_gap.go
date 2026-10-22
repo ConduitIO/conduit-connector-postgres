@@ -147,6 +147,7 @@ func checkSlot(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) error {
 	health, err := internal.ReadSlotHealth(ctx, pool, c.SlotName)
 	switch {
 	case err == nil:
+		// guard: logrepl-slot-invalidated-refused tests=InvalidatedSlot env=CONDUIT_PG_SLOT_INVALIDATION=1
 		if health.Invalidated() {
 			return newSlotInvalidatedError(c.SlotName, health)
 		}

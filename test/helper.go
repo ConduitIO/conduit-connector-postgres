@@ -20,6 +20,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -35,18 +36,31 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// RepmgrConnString is a replication user connection string for the test postgres.
-const RepmgrConnString = "postgres://repmgr:repmgrmeroxa@127.0.0.1:5433/meroxadb?sslmode=disable"
+// envPort returns the value of the environment variable name, or def. The
+// compose stack in test/docker-compose.yml publishes the same variables, so a
+// suite that starts its own project (test/externalstate) can run next to a
+// developer's `make test` stack without sharing a port.
+func envPort(name, def string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return def
+}
+
+// RepmgrConnString is a replication user connection string for the test postgres
+// (port CONDUIT_PG_TEST_PORT, default 5433).
+var RepmgrConnString = "postgres://repmgr:repmgrmeroxa@127.0.0.1:" + envPort("CONDUIT_PG_TEST_PORT", "5433") + "/meroxadb?sslmode=disable"
 
 // RegularConnString is a non-replication user connection string for the test postgres.
-const RegularConnString = "postgres://meroxauser:meroxapass@127.0.0.1:5433/meroxadb?sslmode=disable"
+var RegularConnString = "postgres://meroxauser:meroxapass@127.0.0.1:" + envPort("CONDUIT_PG_TEST_PORT", "5433") + "/meroxadb?sslmode=disable"
 
 // BouncerConnString connects the regular user through the test PgBouncer
 // (test/docker-compose.yml, test/pgbouncer/pgbouncer.ini): transaction pooling,
 // two server connections, and prepared-statement tracking
 // (max_prepared_statements=200), so prepared statements are shared between the
 // clients of a server connection.
-const BouncerConnString = "postgres://meroxauser:meroxapass@127.0.0.1:6432/meroxadb?sslmode=disable"
+// The port is CONDUIT_PG_TEST_BOUNCER_PORT, default 6432.
+var BouncerConnString = "postgres://meroxauser:meroxapass@127.0.0.1:" + envPort("CONDUIT_PG_TEST_BOUNCER_PORT", "6432") + "/meroxadb?sslmode=disable"
 
 // TestTableAvroSchemaV1 is the Avro schema representation of the test table
 // defined through testTableCreateQuery.
