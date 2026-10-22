@@ -17,7 +17,6 @@ package internal
 import (
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	pginternal "github.com/conduitio/conduit-connector-postgres/internal"
@@ -113,13 +112,15 @@ func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]a
 			if located, ok := types.LocateError(decodeErr, rel.RelationName, col.Name); ok {
 				return nil, types.WithRow(located, keyText(rel, row))
 			}
-			// The decoder's error repeats the value it could not parse (for
-			// example strconv's `parsing "..."`), and errors reach the DLQ,
-			// the API and CLI output: report the column, the size and a hash
-			// of the value instead.
+			// The decoder's error repeats the value it could not parse, or
+			// part of it: strconv's `parsing "..."`, an array element, a
+			// range bound, a point coordinate. Errors reach the DLQ, the API
+			// and CLI output, so the cause text is not passed on: only the
+			// column, the type of the error, the value's size and a salted
+			// hash are. The original error stays in the chain.
 			return nil, &scrubbedError{
-				msg: fmt.Sprintf("failed to decode value for column %q (%d bytes, value hash %s): %s",
-					col.Name, len(tuple.Data), pginternal.KeyHash(map[string]any{col.Name: string(tuple.Data)}), scrubValue(decodeErr.Error(), tuple.Data)),
+				msg: fmt.Sprintf("failed to decode value for column %q (%d bytes, value hash %s): %T (details not shown: they can quote the value)",
+					col.Name, len(tuple.Data), pginternal.KeyHash(map[string]any{col.Name: string(tuple.Data)}), rootCause(decodeErr)),
 				err: decodeErr,
 			}
 		}
@@ -177,22 +178,15 @@ type scrubbedError struct {
 func (e *scrubbedError) Error() string { return e.msg }
 func (e *scrubbedError) Unwrap() error { return e.err }
 
-// scrubValue removes a value from an error message: its quoted forms always
-// ("v" and 'v'), and its raw text when it is long enough not to mangle
-// unrelated parts of the message.
-func scrubValue(msg string, value []byte) string {
-	v := string(value)
-	if v == "" {
-		return msg
+// rootCause returns the innermost error of err's chain.
+func rootCause(err error) error {
+	for {
+		next := errors.Unwrap(err)
+		if next == nil {
+			return err
+		}
+		err = next
 	}
-	q := strconv.Quote(v)
-	for _, form := range []string{q, "'" + v + "'", `"` + v + `"`} {
-		msg = strings.ReplaceAll(msg, form, `"<value>"`)
-	}
-	if len(v) >= 4 {
-		msg = strings.ReplaceAll(msg, v, "<value>")
-	}
-	return msg
 }
 
 // keyText names the row of a tuple by the columns Postgres flags as part of the

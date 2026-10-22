@@ -149,7 +149,7 @@ func (NumericFormatter) BigRatFromNumeric(num pgtype.Numeric) (*big.Rat, error) 
 	}
 	v, ok := new(big.Rat).SetString(text)
 	if !ok {
-		return nil, fmt.Errorf("numeric %q is not a valid number", text)
+		return nil, fmt.Errorf("numeric value (%d bytes) is not a valid number", len(text))
 	}
 	return v, nil
 }
