@@ -17,12 +17,17 @@ therefore writes its own:
 - The connector writes a beacon authenticated with that key (HMAC-SHA256) into the WAL as a logical decoding message in a
   transaction of its own, a **beacon** (`pg_logical_emit_message`, prefix
   `conduit.postgres.slot_identity`).
-- It **never advances an idle slot past the last beacon it received back** from the
-  stream. Advancing for acked records is unchanged.
+- A beacon certifies a WAL position `r` before which the run needed nothing more (every
+  change committed before it was delivered and acked). The connector **never advances an
+  idle slot past the `r` of the last beacon it received back** from the stream. Advancing
+  for acked records is unchanged.
 - On resume, a slot whose `confirmed_flush_lsn` is at or below the saved position's commit
-  LSN is accepted (it loses nothing, whichever slot it is). A slot past it is accepted only
-  if it still decodes a beacon with the position's identity, which the connector finds by
-  peeking the slot. Otherwise the start is refused with `postgres.source.slot_replaced`.
+  LSN is accepted (it loses nothing, whichever slot it is) once the transaction at that LSN
+  is checked to be the position's. A slot past it is accepted only if it still decodes a
+  beacon with the position's identity whose `r` covers its `confirmed_flush_lsn`, which the
+  connector finds by peeking the slot. Otherwise the start is refused with
+  `postgres.source.slot_replaced`, which also covers the pipeline's own slot moved by
+  another client past changes the pipeline never delivered.
 - The slot is checked again once the stream holds it, which closes the window between the
   check and `START_REPLICATION`.
 
@@ -195,8 +200,30 @@ hex digits of its SHA-256 (`internal.IdentityFingerprint`).
    nothing; a stamp that fails this way refuses the start with `slot_replaced`.
 3. It reads `pg_current_wal_insert_lsn()` (L0), records the attempt (exact content, nonce
    included), and writes `pg_logical_emit_message(true, 'conduit.postgres.slot_identity',
-   'v=2;n=<nonce>;l=<L0>;mac=<hex>')`, where the nonce is 128 random bits and `mac =
-   HMAC-SHA256(key, "conduit.postgres.slot_identity/v2" ‖ slot ‖ nonce ‖ L0)`.
+   'v=3;n=<nonce>;l=<L0>;r=<R>;mac=<hex>')`, where the nonce is 128 random bits and `mac =
+   HMAC-SHA256(key, "conduit.postgres.slot_identity/v3" ‖ slot ‖ nonce ‖ L0 ‖ R)`.
+
+**What a beacon certifies** (#447 round-4 B3). `R` is a WAL position before which this run
+needs nothing more from the slot, and `R <= L0`:
+
+- a beacon the stream asks for (`maybeRequest`) is requested only while every emitted record
+  is acked, and certifies the `serverWALEnd` of that moment: the walsender has sent every
+  transaction that commits before the WAL end it reported, all of them were delivered, and
+  all were acked, so the saved position is past all of their changes;
+- the stamp a run writes when it opens the slot (`Emit`) certifies the pre-stream limit, the
+  `confirmed_flush_lsn` this run checked the slot at or created it with: it accepted the
+  slot there, so it needs nothing from before it.
+
+So a slot whose `confirmed_flush_lsn` is at or below the `R` of a beacon it still decodes
+loses nothing, whoever moved it there. v2 beacons had no `R`, and "the slot decodes one of
+our beacons" was taken as "the slot is where the connector put it". The review reproduced
+the gap on 17: run 2 stamps the slot, receives a transaction R it never acks, and stops;
+another client consumes the idle slot with `pg_logical_slot_get_binary_changes` until it has
+taken R. The slot is still the pipeline's and still decodes the stamp, which was written after
+R, so the restart was accepted and R was lost
+(`TestSlotIdentity_ConsumedByAnotherClientBelowTheLastBeacon_Refused`: accepted before, refused
+with `slot_replaced` after). With `R` the stamp covers only the point run 2 started from,
+which is before R.
 
 **Why the guard is enough.** A slot that passes step 2 is this run's slot at that moment.
 A slot created *after* step 2 cannot decode the beacon: creating a logical slot waits for
@@ -225,11 +252,12 @@ committed (the error can come after the commit); the last 16 attempts are kept.
 
 A beacon proves the slot on resume (`verifyBeacon`) only if its MAC verifies, compared in
 constant time (`hmac.Equal`), **and** its `l` is at or after the slot's
-`confirmed_flush_lsn`. The second condition stops a replay: a genuine beacon of the old
-slot, copied into a replaced slot by someone who can read the WAL, carries an `l` from the
-old slot's history, which is before the new slot's creation and so before its
-`confirmed_flush_lsn`. A genuine beacon that proves its slot always passes it, because an
-idle advance stops at `Cap`, which is that beacon's `l`.
+`confirmed_flush_lsn`, **and** its `r` is too (with `r <= l`). The second condition stops a
+replay: a genuine beacon of the old slot, copied into a replaced slot by someone who can
+read the WAL, carries an `l` from the old slot's history, which is before the new slot's
+creation and so before its `confirmed_flush_lsn`. The third is the certification above. A
+genuine beacon that proves its slot always passes both, because an idle advance stops at
+`Cap`, which is that beacon's `r`, and its `l` is at or past its `r`.
 
 Transactional with a local synchronous commit, because a non-transactional message is not
 flushed before 17 (F5). The first version of this change emitted it non-transactionally:
@@ -242,8 +270,7 @@ after the insert position read first.
 The stream asks pgoutput for messages (`"messages" 'true'`) when beacons are in use. The
 subscription takes every logical decoding message out of the stream before the handler,
 so no message, ours or anyone else's, becomes a record or counts in a change key. When the
-stream delivers the pending beacon, `Beacons.Cap` becomes the insert position read before
-it. The stream delivers only flushed WAL, and with `synchronized_standby_slots` only WAL the
+stream delivers the pending beacon, `Beacons.Cap` becomes its `r`. The stream delivers only flushed WAL, and with `synchronized_standby_slots` only WAL the
 listed standbys confirmed, so a beacon that moved the cap survives a server crash and is
 on a failover standby.
 
@@ -278,10 +305,10 @@ refused with `slot_replaced` (no beacon after `confirmed_flush_lsn`), an outage,
 loss. The retained WAL is bounded by the timeout times the WAL rate.
 
 **Recovery** (#447 re-review S4). An abandoned run keeps writing beacons at every status
-update. While one is on its way, the idle advance waits at its start (a probe cap, released
-again if it goes stale), so when the stream delivers it, it is at or past the reported
-flush: the slot decodes it, and the identity re-arms (cap = its start, logged "can be
-proven again"). A beacon delivered behind the reported flush does not re-arm. The outage
+update. While one is on its way, the idle advance waits at its `r` (a probe cap, released
+again if it goes stale), so when the stream delivers it, its `r` is at or past the
+reported flush: it vouches for the slot, and the identity re-arms (cap = its `r`, logged
+"can be proven again"). A beacon whose `r` is behind the reported flush does not re-arm. The outage
 heals itself once the cause is fixed while the pipeline runs
 (`TestSlotIdentity_BeaconsAbandonedThenRecover`: revoke `EXECUTE`, abandon, a restart is
 refused; restore it, a beacon arrives, a restart is accepted; `TestBeacons_AbandonedBeaconsRearm`).
@@ -298,8 +325,8 @@ before it stops (`PGCHAOS_SETTLE_SLOT`); its assertions are unchanged.
 
 `confirmed_flush_lsn <= max(last acked record's LSN, Cap)`, where the last acked record's
 LSN is below its transaction's commit LSN, which is at or below the saved position's
-`tx_commit_lsn` (acks are FIFO and come after the position is durable), and `Cap` is at or
-below the start of a durable beacon. Postgres can only lower `confirmed_flush_lsn` from
+`tx_commit_lsn` (acks are FIFO and come after the position is durable), and `Cap` is the
+`r` of a durable beacon, at or below its start. Postgres can only lower `confirmed_flush_lsn` from
 there (a crash restores the last persisted value; servers before 14.19, 15.14, 16.10 and
 17.6 also let a lower report move it back), which keeps the bound.
 
@@ -315,7 +342,8 @@ handling) and decides:
    nothing after the position is skipped, whichever slot this is.
 2. Otherwise, if beacons are supported: peek the slot
    (`pg_logical_slot_peek_binary_changes(slot, NULL, n, ..., 'messages', 'true')`, never
-   consuming) for a beacon that verifies, in rounds of 1024, 8192, ... changes. Each round's
+   consuming) for a beacon that verifies and covers `confirmed_flush_lsn` (its `l` and its
+   `r` at or past it), in rounds of 1024, 8192, ... changes. Each round's
    limit is clamped to 2^24 before the query (`nextFindBeaconLimit`), and the search fails
    with `ErrBeaconSearchExhausted` once a round at the clamped limit is full, so it never
    asks for more. A two-minute timeout bounds it. Found: **beacon**.
@@ -425,16 +453,34 @@ slot is at or below the bound (covered), and n1 to n3, committed at the LSNs the
 claims delivered, were skipped. So v4 positions also carry `tx_xid` and `tx_commit_time`
 from pgoutput's BEGIN, and a covered resume checks the transaction (`verifyCoveredTransaction`):
 
-- with `pg_walinspect` installed and usable (Postgres 15+, a role that may read the WAL),
-  the record at `tx_commit_lsn` must be a commit with that xid;
-- otherwise the slot is peeked (never consumed, under `checkTimeout`) for the first
-  transaction it decodes whose commit LSN is at or after the bound: it must commit exactly
-  at `tx_commit_lsn`, with that xid and that commit time. The slot decodes it again because
-  its commit is at or after `confirmed_flush_lsn`.
+the slot is peeked (never consumed, under `checkTimeout`) for the first transaction it
+decodes whose commit LSN is at or after the position's: it must commit exactly there, with
+that xid and that commit time. The slot decodes it again because its commit is at or after
+`confirmed_flush_lsn`. Postgres decodes a prepared transaction at its `COMMIT PREPARED`, with
+its own xid and that commit's time, which is what the position recorded
+(`TestSlotIdentity_PreparedTransactionPosition_ResumesCovered`).
 
-A drift marker's key can be one below its change's (#338), naming no transaction, so its
-position carries no xid or commit time and a resume from it skips this check
-(`TestCDCPosition_TxIdentityOnlyForRealCommits`; the B1 chaos scenarios resume from markers).
+The first version read the commit record with `pg_walinspect` when it was installed. The
+round-4 review found two ways that was wrong, and it is gone: `pg_get_wal_record_info(lsn)`
+returns the *next* record when `lsn` falls inside one, and the code compared only its xid
+(the commit time is only in the record's description), so a restored history that reused the
+position's xid for a transaction committing just after `tx_commit_lsn` was accepted and its
+rows lost (B1, reproduced on 15 and 17; the `walinspect` scenario of `test/restore/run.sh`);
+and a `COMMIT PREPARED` record has xid 0 there, so a position taken in a prepared transaction
+was refused (S1). Parsing the description per version would make the check depend on a
+text format; the slot gives the same answer for every version.
+
+A drift marker's key is one below its change's commit LSN (#338, `ChangeKey.Predecessor`).
+Its position names the transaction it halted before, the one that commits right after the
+key (`namesCurrentTx`), and the check looks for it there (`savedTransaction`). The first
+version gave markers no xid and skipped the check for them, which the round-4 review
+reproduced as a silent loss after a restore on 17 (B2, the `drift` scenario).
+
+A position written before v0.17.5 names no xid and no commit time. Its change key still names
+a commit LSN, so the check requires at least a transaction committing exactly there
+(`TestSlotIdentity_UpgradeFromV0173_CoveredButNoCommitThere_Refused`). A restore whose new
+history happens to commit a transaction at exactly that LSN passes this weaker check; the
+next position the run saves names its xid.
 A restored server writes other transactions at those LSNs. Its xids restart from the
 snapshot too, so the review's restore produced the same xid at the same LSN; the commit
 time tells them apart. Otherwise the start is refused with `wal_history_changed`
@@ -554,7 +600,8 @@ either way; the revoke keeps other roles from writing messages into the WAL at a
 | Slot dropped and recreated between runs | Its `confirmed_flush_lsn` is past the position and it holds no beacon: `slot_replaced` | 3 |
 | Recreated after the check, before the stream | `VerifyHeld` refuses it before anything is sent; no stamp is written into it, so a retry is refused too | 3 |
 | Recreated between `checkSlot` and our CREATE with `allowWALGap` | CREATE fails with a duplicate, `VerifyHeld` sees the newer slot, one DATA LOSS warning | 3 |
-| Another client advances or consumes the slot | Same as a replacement: `slot_replaced` (the skipped changes were not delivered) | 3 |
+| Another client advances or consumes the slot past what the pipeline delivered | `slot_replaced`: no beacon covers the new `confirmed_flush_lsn` (the skipped changes were not delivered), also when the pipeline had received but not acked them | 3 |
+| Another client advances or consumes the slot only over delivered changes | Accepted: a beacon still covers it, nothing undelivered was skipped | 3 |
 | Connector killed (SIGKILL) at any point | Reports never passed the cap or the acked records, so a beacon or the position still proves the slot | 1, 3 |
 | Server crash right after a beacon | The beacon is committed synchronously, and the cap moves only once the stream delivered it, so it is durable | 3, 5 |
 | Server crash moves `confirmed_flush_lsn` back | Lower is always within the bound | 3 |
@@ -672,9 +719,17 @@ its own review; until then v0.14.x keeps #444's missing-slot check and the docum
   `TestSlotIdentity_UnsupportedServer_WarnsAndResumes` also checks that a position carrying
   an identity is refused (N5). `TestB1_AC7_RestartHaltUnsettled` is AC7 without the settle
   step (N4).
+- #447 round-4 review, each failing on `85da517` and passing after: the `walinspect` and
+  `drift` scenarios of `test/restore/run.sh` (B1, B2),
+  `TestSlotIdentity_ConsumedByAnotherClientBelowTheLastBeacon_Refused` (B3),
+  `TestSlotIdentity_PreparedTransactionPosition_ResumesCovered` (S1); unit `TestSameTransaction`
+  (same xid and LSN with another commit time, a commit just after the LSN),
+  `TestCDCPosition_TxIdentityNamesTheDecidingTransaction` (markers), `TestBeaconContent_Verify`
+  (`r`); `TestSlotIdentity_UpgradeFromV0173_CoveredButNoCommitThere_Refused` (legacy positions);
+  `TestSlotIdentity_LateBeaconFromAStoppedRun_Refused` (from the review's scratch tests).
 - #447 re-review: `test/restore/run.sh` (S2, a real same-timeline restore of the data
-  volume), `TestSlotIdentity_CoveredResume_VerifiesTheTransaction` (with and without
-  `pg_walinspect`), `TestSlotIdentity_LegacyPositionPastCurrentWAL_Refused` (S3),
+  volume), `TestSlotIdentity_CoveredResume_VerifiesTheTransaction` (with `pg_walinspect`
+  installed and without, which no longer matters), `TestSlotIdentity_LegacyPositionPastCurrentWAL_Refused` (S3),
   `TestSlotIdentity_StandbyLocalSlot_Refused` and `TestSlotIdentity_StandbyNeverProvesAnIdentity`
   (S1), `TestSlotIdentity_BeaconsAbandonedThenRecover` and `TestBeacons_AbandonedBeaconsRearm`
   (S4), `TestBeacons_SlotCreatedAfterTheGuardDoesNotDecodeTheBeacon` (the xid, M3),
@@ -689,6 +744,16 @@ its own review; until then v0.14.x keeps #444's missing-slot check and the docum
   path passes.
 
 ## Not verified
+
+- What the round-4 change still cannot detect, for DeVaris to accept or not:
+  - another client that moves the slot only up to what a beacon certifies: nothing
+    undelivered is skipped then, so this is not a loss. (A move between the identity check
+    and `START_REPLICATION` is caught by `VerifyHeld`, which refuses any
+    `confirmed_flush_lsn` past the one checked.)
+  - a pre-v0.17.5 position on a restored server whose new history commits a transaction at
+    exactly the position's commit LSN (no xid to compare);
+  - beacons abandoned after `beaconFailureTimeout`: the idle slot is advanced without
+    them, and a restart is refused, not accepted (an outage, not a loss).
 - The pg_upgrade runbook (whether pg_upgrade keeps the system identifier, and the slot
   migration path) is reasoned from the Postgres documentation, not run.
 

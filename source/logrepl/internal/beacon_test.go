@@ -35,7 +35,7 @@ func TestBeaconContent_Verify(t *testing.T) {
 	is.Equal(len(key), 64)
 	is.True(key != NewSlotIdentity()) // random
 
-	c := []byte(beaconContent(key, "slot", "n1", 0x100))
+	c := []byte(beaconContent(key, "slot", "n1", 0x100, 0x100))
 	is.True(!strings.Contains(string(c), key)) // the key is never in the WAL
 	is.True(verifyBeacon(c, key, "slot", 0x100))
 	is.True(verifyBeacon(c, key, "slot", 0x80))
@@ -43,12 +43,23 @@ func TestBeaconContent_Verify(t *testing.T) {
 	is.True(!verifyBeacon(c, NewSlotIdentity(), "slot", 0)) // another key
 	is.True(!verifyBeacon(c, key, "other", 0))              // another slot
 
+	// #447 round-4 B3: a beacon vouches only for a slot at or below what it
+	// certifies (r), even one written after the slot's confirmed_flush_lsn:
+	// a slot another client moved past r skipped changes never delivered.
+	c2 := []byte(beaconContent(key, "slot", "n2", 0x200, 0x150))
+	is.True(verifyBeacon(c2, key, "slot", 0x150))
+	is.True(!verifyBeacon(c2, key, "slot", 0x151))                                                 // past r, below l
+	is.True(!verifyBeacon([]byte(beaconContent(key, "slot", "n3", 0x100, 0x200)), key, "slot", 0)) // r past l: never written
+
 	// Tampering with any authenticated field breaks the MAC.
 	is.True(!verifyBeacon([]byte(strings.Replace(string(c), "n=n1", "n=n2", 1)), key, "slot", 0))
 	is.True(!verifyBeacon([]byte(strings.Replace(string(c), "l=0/100", "l=0/200", 1)), key, "slot", 0))
-	// The v1 format named the identity in clear; it proves nothing now.
+	is.True(!verifyBeacon([]byte(strings.Replace(string(c2), "r=0/150", "r=0/1FF", 1)), key, "slot", 0))
+	// Earlier formats prove nothing now: v1 named the identity in clear, v2
+	// certified nothing.
 	is.True(!verifyBeacon([]byte("v=1;id="+key+";n=x"), key, "slot", 0))
-	for _, junk := range []string{"", "v=2", "v=2;n=x;l=0/100", "v=2;n=x;l=zz;mac=00", "v=2;n=x;l=0/100;mac=zz"} {
+	is.True(!verifyBeacon([]byte(strings.Replace(string(c), "v=3", "v=2", 1)), key, "slot", 0))
+	for _, junk := range []string{"", "v=3", "v=3;n=x;l=0/100", "v=3;n=x;l=0/100;mac=00", "v=3;n=x;l=zz;r=0/0;mac=00", "v=3;n=x;l=0/100;r=zz;mac=00", "v=3;n=x;l=0/100;r=0/0;mac=zz"} {
 		is.True(!verifyBeacon([]byte(junk), key, "slot", 0))
 	}
 }
@@ -80,25 +91,25 @@ func TestNextFindBeaconLimit(t *testing.T) {
 	is.Equal(rounds, 6) // 1024, 8192, ..., 2^23, then 2^24
 }
 
-// Only one of this run's beacons moves the cap, to the WAL position read
-// before it was written; other prefixes, other content and a second copy do
+// Only one of this run's beacons moves the cap, to what it certifies (r);
+// other prefixes, other content and a second copy do
 // not. A beacon whose Emit returned an error still counts when the stream
 // delivers it (it may have committed before the error).
 func TestBeacons_Observe(t *testing.T) {
 	is := is.New(t)
 	b := NewBeacons(nil, "slot", "abc")
-	p := b.record(0x100)
+	p := b.record(0x100, 0xF0)
 
 	is.True(!b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Transactional: true, Prefix: "other", Content: []byte(p.content), LSN: 0x180}, 0))
 	// Beacons are transactional; the same content written outside a
 	// transaction is not one of this run's beacons.
 	is.True(!b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Prefix: BeaconPrefix, Content: []byte(p.content), LSN: 0x180}, 0))
 	// A valid beacon with another nonce (not one this run wrote) is ignored.
-	is.True(!b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Transactional: true, Prefix: BeaconPrefix, Content: []byte(beaconContent("abc", "slot", "other", 0x100)), LSN: 0x180}, 0))
+	is.True(!b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Transactional: true, Prefix: BeaconPrefix, Content: []byte(beaconContent("abc", "slot", "other", 0x100, 0xF0)), LSN: 0x180}, 0))
 	is.Equal(b.Cap(), pglogrepl.LSN(0))
 
 	is.True(b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Transactional: true, Prefix: BeaconPrefix, Content: []byte(p.content), LSN: 0x180}, 0))
-	is.Equal(b.Cap(), pglogrepl.LSN(0x100)) // the start, not the end the stream reports
+	is.Equal(b.Cap(), pglogrepl.LSN(0xF0)) // r: neither the start nor the end the stream reports
 	is.Equal(b.lastEnd, pglogrepl.LSN(0x180))
 
 	// The same beacon again (a re-send after a reconnect) is not counted twice.
@@ -107,11 +118,11 @@ func TestBeacons_Observe(t *testing.T) {
 	// Older attempts stay recognised, newest first, up to maxBeaconAttempts.
 	var ps []pendingBeacon
 	for i := 0; i < maxBeaconAttempts+2; i++ {
-		ps = append(ps, b.record(pglogrepl.LSN(0x200+i)))
+		ps = append(ps, b.record(pglogrepl.LSN(0x200+i), pglogrepl.LSN(0x200+i)))
 	}
 	is.True(!b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Transactional: true, Prefix: BeaconPrefix, Content: []byte(ps[0].content), LSN: 0x300}, 0)) // dropped
 	is.True(b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Transactional: true, Prefix: BeaconPrefix, Content: []byte(ps[5].content), LSN: 0x300}, 0))
-	is.Equal(b.Cap(), ps[5].start)
+	is.Equal(b.Cap(), ps[5].covered)
 }
 
 // maybeRequest keeps an idle server idle: it does not ask for a beacon while
@@ -123,7 +134,10 @@ func TestBeacons_MaybeRequestThresholds(t *testing.T) {
 	b.SetFailureTimeout(time.Hour) // abandonment is TestBeacons_AbandonedAfterFailureTimeout
 	b.now = func() time.Time { return now }
 	emitted := make(chan struct{}, 10)
-	b.emit = func(context.Context) error { emitted <- struct{}{}; return errors.New("not emitted in this test") }
+	b.emit = func(context.Context, pglogrepl.LSN) error {
+		emitted <- struct{}{}
+		return errors.New("not emitted in this test")
+	}
 	b.cap.Store(0x1000)
 	b.lastEnd = 0x1048
 	ctx := context.Background()
@@ -168,7 +182,7 @@ func TestBeacons_AbandonedAfterFailureTimeout(t *testing.T) {
 	b.SetFailureTimeout(time.Minute)
 	b.now = func() time.Time { return now }
 	done := make(chan struct{}, 10)
-	b.emit = func(context.Context) error { done <- struct{}{}; return errors.New("permission denied") }
+	b.emit = func(context.Context, pglogrepl.LSN) error { done <- struct{}{}; return errors.New("permission denied") }
 	b.cap.Store(0x1000)
 	b.lastEnd = 0x1048
 	ctx := context.Background()
@@ -221,7 +235,7 @@ func TestBeacons_MaybeRequestAfterAcks(t *testing.T) {
 	is := is.New(t)
 	b := NewBeacons(nil, "slot", "abc")
 	emitted := make(chan struct{}, 1)
-	b.emit = func(context.Context) error { emitted <- struct{}{}; return nil }
+	b.emit = func(context.Context, pglogrepl.LSN) error { emitted <- struct{}{}; return nil }
 	b.cap.Store(0x1000)
 	b.lastEnd = 0x1048
 
@@ -284,8 +298,14 @@ func TestFindBeacon(t *testing.T) {
 
 	b := NewBeacons(pool, slot, "abc")
 	b.SetPreStreamLimit(confirmedFlush(ctx, t, pool, slot))
+	// WAL between the slot's position and the beacon, so the beacon starts
+	// after what it certifies (the stamp certifies the pre-stream limit).
+	_, err = pool.Exec(ctx, "SELECT pg_logical_emit_message(false, 'test', repeat('x', 100))")
+	is.NoErr(err)
 	is.NoErr(b.Emit(ctx))
 	start := b.attempts[len(b.attempts)-1].start
+	covered := b.attempts[len(b.attempts)-1].covered
+	is.True(covered < start)
 	var afterCommit pglogrepl.LSN
 	is.NoErr(pool.QueryRow(ctx, "SELECT pg_current_wal_lsn()").Scan(&afterCommit))
 
@@ -298,12 +318,17 @@ func TestFindBeacon(t *testing.T) {
 	is.NoErr(err)
 	is.True(!found) // another pipeline's identity is not ours
 
+	is.Equal(confirmedFlush(ctx, t, pool, slot), covered) // at what the beacon certifies: found above
+
+	// #447 round-4 B3: moved past what the beacon certifies, the slot still
+	// decodes the beacon, but it may have skipped changes the pipeline never
+	// delivered, so the beacon does not vouch for it.
 	_, err = pool.Exec(ctx, "SELECT pg_replication_slot_advance($1, $2)", slot, start)
 	is.NoErr(err)
 	is.Equal(confirmedFlush(ctx, t, pool, slot), start)
 	found, _, err = FindBeacon(ctx, pool, slot, slot, "abc", confirmedFlush(ctx, t, pool, slot))
 	is.NoErr(err)
-	is.True(found) // confirmed at the beacon's start: still decoded
+	is.True(!found)
 
 	_, err = pool.Exec(ctx, "SELECT pg_replication_slot_advance($1, $2)", slot, afterCommit)
 	is.NoErr(err)
@@ -380,9 +405,9 @@ func TestFindBeacon_RefusesForgedAndCopiedBeacons(t *testing.T) {
 
 	var now pglogrepl.LSN
 	is.NoErr(pool.QueryRow(ctx, "SELECT pg_current_wal_insert_lsn()").Scan(&now))
-	emit("v=1;id=" + key + ";n=x")                                   // the identity in clear
-	emit(beaconContent(NewSlotIdentity(), slot, "forged", now))      // the right slot, a guessed key
-	emit("v=2;n=forged;l=" + now.String() + ";mac=" + randomHex(32)) // a random MAC
+	emit("v=1;id=" + key + ";n=x")                                                          // the identity in clear
+	emit(beaconContent(NewSlotIdentity(), slot, "forged", now, now))                        // the right slot, a guessed key
+	emit("v=3;n=forged;l=" + now.String() + ";r=" + now.String() + ";mac=" + randomHex(32)) // a random MAC
 	is.True(!found())
 
 	// A genuine beacon, copied into the slot after it was recreated.
@@ -468,8 +493,8 @@ func TestBeacons_CommittedButEmitErrored_StillRaisesCap(t *testing.T) {
 	b.lastEnd = 0x1048
 	var written pendingBeacon
 	done := make(chan struct{}, 1)
-	b.emit = func(context.Context) error {
-		written = b.record(0x5000) // what Emit does before the write; the commit then succeeds
+	b.emit = func(context.Context, pglogrepl.LSN) error {
+		written = b.record(0x5000, 0x5000) // what Emit does before the write; the commit then succeeds
 		done <- struct{}{}
 		return errors.New("unexpected EOF reading the COMMIT response")
 	}
@@ -495,9 +520,10 @@ func TestBeacons_CommittedButEmitErrored_StillRaisesCap(t *testing.T) {
 }
 
 // #447 re-review S4: abandoned beacons are retried. While an attempt is on
-// its way the idle advance waits at its start (the probe), so the delivered
-// beacon is past the reported flush and re-arms the identity. A beacon
-// delivered behind the reported flush does not re-arm.
+// its way the idle advance waits at what it certifies (the probe, the WAL
+// end when it was requested), so the delivered beacon certifies the reported
+// flush and re-arms the identity. A beacon that certifies less than the
+// reported flush does not re-arm.
 func TestBeacons_AbandonedBeaconsRearm(t *testing.T) {
 	is := is.New(t)
 	b := NewBeacons(nil, "slot", "abc")
@@ -505,11 +531,20 @@ func TestBeacons_AbandonedBeaconsRearm(t *testing.T) {
 	b.abandoned.Store(true)
 	is.Equal(b.Cap(), noCap) // nothing in flight: no cap at all
 
-	b.mu.Lock()
-	b.inflight = true
-	b.mu.Unlock()
-	late := b.record(0x2000)
-	is.Equal(b.Cap(), pglogrepl.LSN(0x2000)) // the probe holds the advance
+	written := make(chan pendingBeacon, 1)
+	b.emit = func(_ context.Context, covered pglogrepl.LSN) error {
+		written <- b.record(0x2100, covered)
+		return nil
+	}
+	b.maybeRequest(context.Background(), 0x2000, 0x900) // requested at WAL end 0x2000
+	var late pendingBeacon
+	select {
+	case late = <-written:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no emission")
+	}
+	is.Equal(late.covered, pglogrepl.LSN(0x2000)) // it certifies the WAL end it was requested at
+	is.Equal(b.Cap(), pglogrepl.LSN(0x2000))      // the probe holds the advance
 	// Delivered, but the slot was already reported past it (from before the
 	// probe): it cannot prove the slot, no re-arm.
 	is.True(b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Transactional: true, Prefix: BeaconPrefix, Content: []byte(late.content), LSN: 0x2048}, 0x3000))
@@ -518,15 +553,15 @@ func TestBeacons_AbandonedBeaconsRearm(t *testing.T) {
 	b.mu.Lock()
 	b.inflight = true
 	b.mu.Unlock()
-	p := b.record(0x4000)
-	is.True(b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Transactional: true, Prefix: BeaconPrefix, Content: []byte(p.content), LSN: 0x4048}, 0x3000))
+	p := b.record(0x4100, 0x4000)
+	is.True(b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Transactional: true, Prefix: BeaconPrefix, Content: []byte(p.content), LSN: 0x4148}, 0x3000))
 	is.True(!b.Abandoned())
 	is.Equal(b.Cap(), pglogrepl.LSN(0x4000))
 
 	// Abandoned beacons keep being requested, even with nothing to advance.
 	b.abandoned.Store(true)
 	asked := make(chan struct{}, 1)
-	b.emit = func(context.Context) error { asked <- struct{}{}; return errors.New("still revoked") }
+	b.emit = func(context.Context, pglogrepl.LSN) error { asked <- struct{}{}; return errors.New("still revoked") }
 	b.maybeRequest(context.Background(), 0x4000, 0x900)
 	select {
 	case <-asked:
@@ -638,4 +673,35 @@ func TestSubscription_StartCanceledReportsTheContextError(t *testing.T) {
 	<-sub.Ready()
 	is.True(errors.Is(sub.StartErr(), context.Canceled))
 	is.NoErr(sub.Teardown(ctx))
+}
+
+// #447 re-review S5 (M1), the Emit side: a beacon whose commit succeeded
+// although Emit returns an error stays among the attempts, so the stream
+// still recognises it when it delivers it.
+func TestBeacons_EmitErrorAfterCommitKeepsTheAttempt(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	requireBeacons(ctx, t, pool)
+	slot, _ := beaconSlot(ctx, t, pool)
+	b := NewBeacons(pool, slot, NewSlotIdentity())
+	b.SetPreStreamLimit(confirmedFlush(ctx, t, pool, slot))
+	errLost := errors.New("connection lost while reading the COMMIT response")
+	AfterBeaconCommit = func() error { return errLost }
+	t.Cleanup(func() { AfterBeaconCommit = nil })
+	is.True(errors.Is(b.Emit(ctx), errLost))
+	AfterBeaconCommit = nil
+
+	b.mu.Lock()
+	n := len(b.attempts)
+	var content string
+	if n > 0 {
+		content = b.attempts[n-1].content
+	}
+	b.mu.Unlock()
+	is.Equal(n, 1) // kept
+	found, _, err := FindBeacon(ctx, pool, slot, slot, b.identity, confirmedFlush(ctx, t, pool, slot))
+	is.NoErr(err)
+	is.True(found) // it did commit
+	is.True(b.observe(ctx, &pglogrepl.LogicalDecodingMessage{Transactional: true, Prefix: BeaconPrefix, Content: []byte(content), LSN: 0x1}, 0))
 }

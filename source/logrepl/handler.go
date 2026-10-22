@@ -17,6 +17,7 @@ package logrepl
 import (
 	"context"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"sync"
@@ -704,10 +705,9 @@ func (h *CDCHandler) positionAt(lsn pglogrepl.LSN, key internal.ChangeKey) posit
 	var commitTime int64
 	if key.Known() {
 		commit, seq = formatLSN(key.CommitLSN), key.Seq
-		if h.txInfo != nil && key.CommitLSN == h.currentChangeKey().CommitLSN {
-			// #447 re-review S2: the transaction the key's commit LSN names.
-			// Only when it is a real commit LSN: a drift marker's key can be
-			// one below its change's (#338), which names no transaction.
+		if h.txInfo != nil && namesCurrentTx(key, h.currentChangeKey()) {
+			// #447 re-review S2: the transaction the key names, so a resume
+			// can check that its commit LSN still names it.
 			x, ct := h.txInfo()
 			xid, commitTime = x, ct.UnixMicro()
 		}
@@ -727,6 +727,20 @@ func (h *CDCHandler) positionAt(lsn pglogrepl.LSN, key internal.ChangeKey) posit
 		TxXid:            xid,
 		TxCommitTime:     commitTime,
 	}
+}
+
+// namesCurrentTx reports whether key names the transaction of the change
+// being handled (cur): it is a key of that transaction, or a drift marker's
+// key (C-1, MaxUint64) just before its first change (#338,
+// internal.ChangeKey.Predecessor). A marker's key names no transaction of
+// its own, so without this its position would carry no xid and a resume
+// from it would skip the transaction check (#447 round-4 B2); see
+// savedTransaction for the reading side.
+func namesCurrentTx(key, cur internal.ChangeKey) bool {
+	if key.CommitLSN == cur.CommitLSN {
+		return true
+	}
+	return key.Seq == math.MaxUint64 && key.CommitLSN+1 == cur.CommitLSN
 }
 
 // currentChangeKey returns the key of the change being handled (its

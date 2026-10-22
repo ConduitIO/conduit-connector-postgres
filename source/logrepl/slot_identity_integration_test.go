@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -217,6 +218,7 @@ func TestSlotIdentity_ForgedBeacons_StillRefused(t *testing.T) {
 	for _, forged := range []string{
 		"v=1;id=" + identity + ";n=forged",
 		"v=2;n=forged;l=" + now.String() + ";mac=" + strings.Repeat("ab", 32),
+		"v=3;n=forged;l=" + now.String() + ";r=" + now.String() + ";mac=" + strings.Repeat("ab", 32),
 	} {
 		_, err := pool.Exec(ctx, "SELECT pg_logical_emit_message(true, $1, $2::text)", internal.BeaconPrefix, forged)
 		is.NoErr(err)
@@ -508,10 +510,13 @@ func TestSlotIdentity_UpgradeFromV0173_CoveredSlotIsProven(t *testing.T) {
 	test.CreatePublication(t, pool, table, []string{table})
 	test.CreateReplicationSlot(t, pool, table)
 
-	// A position committed after the slot's start, as v0.17.3 writes it.
-	var now string
-	is.NoErr(pool.QueryRow(ctx, "SELECT pg_current_wal_lsn()::text").Scan(&now))
-	legacy := opencdc.Position(fmt.Sprintf(`{"version":3,"type":2,"last_lsn":%q,"tx_commit_lsn":%q,"tx_seq":1}`, now, now))
+	// A position committed after the slot's start, as v0.17.3 writes it: the
+	// commit LSN of a transaction the slot decodes.
+	slotGapInsert(ctx, t, pool, table, "r1")
+	tx, ok, err := internal.FirstTxFrom(ctx, pool, table, table, 0)
+	is.NoErr(err)
+	is.True(ok)
+	legacy := opencdc.Position(fmt.Sprintf(`{"version":3,"type":2,"last_lsn":%q,"tx_commit_lsn":%q,"tx_seq":1}`, tx.FinalLSN, tx.FinalLSN))
 	is.True(slotIDConfirmed(ctx, t, pool, table) <= slotIDBound(t, legacy))
 
 	lctx, logs := slotIDLogs(ctx)
@@ -520,6 +525,33 @@ func TestSlotIdentity_UpgradeFromV0173_CoveredSlotIsProven(t *testing.T) {
 	is.NoErr(it.Teardown(ctx))
 	is.True(strings.Contains(logs.String(), identityCovered.String()))
 	is.True(!strings.Contains(logs.String(), string(CodeSlotIdentityUnverified)))
+}
+
+// #447 round-4 B2 (the reviewer's S2 for legacy positions): a pre-v0.17.5
+// position names no xid, but its change key still names a commit LSN. On a
+// server restored on the same timeline whose new WAL passed it, nothing
+// commits there any more, and the covered resume is refused instead of
+// skipping what the new history wrote at those LSNs.
+func TestSlotIdentity_UpgradeFromV0173_CoveredButNoCommitThere_Refused(t *testing.T) {
+	ctx := test.Context(t)
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	is := is.New(t)
+	pool, table := slotIDSetup(ctx, t)
+	test.CreatePublication(t, pool, table, []string{table})
+	test.CreateReplicationSlot(t, pool, table)
+
+	// The slot's start is covered, but no transaction commits at the
+	// position's commit LSN: the first one the slot decodes commits later.
+	var now string
+	is.NoErr(pool.QueryRow(ctx, "SELECT pg_current_wal_insert_lsn()::text").Scan(&now))
+	slotGapInsert(ctx, t, pool, table, "n1")
+	legacy := opencdc.Position(fmt.Sprintf(`{"version":3,"type":2,"last_lsn":%q,"tx_commit_lsn":%q,"tx_seq":1}`, now, now))
+	is.True(slotIDConfirmed(ctx, t, pool, table) <= slotIDBound(t, legacy))
+
+	_, err := NewCombinedIterator(ctx, pool, slotGapConfig(table, legacy, false))
+	is.Equal(CodeOf(err), CodeWALHistoryChanged)
+	is.True(strings.Contains(err.Error(), "committed at LSN "+now))
 }
 
 // Upgrade: a run that resumes from a v0.17.3 position and stops before it
@@ -855,10 +887,13 @@ func TestSlotIdentity_WALHistoryUnverified_WarnsOnlyForLegacy(t *testing.T) {
 // #447 re-review S2: a covered resume (the slot at or below the position's
 // commit) also checks that the commit LSN still names the position's
 // transaction: the slot decodes it again, with the same xid and commit
-// timestamp (or pg_walinspect reads its commit record). A position whose
-// transaction is not there (here: its xid changed, as on a server restored
-// on the same timeline whose new WAL reuses the LSNs; the real restore is
-// test/restore) is refused with wal_history_changed.
+// timestamp. A position whose transaction is not there (here: its xid, its
+// commit time or its commit LSN changed, as on a server restored on the same
+// timeline whose new WAL reuses the LSNs and the xids; the real restores are
+// test/restore) is refused with wal_history_changed. With pg_walinspect
+// installed the result is the same (#447 round-4 B1: the check once read
+// the commit record there, compared only the xid, and took the next record
+// for an LSN inside one).
 func TestSlotIdentity_CoveredResume_VerifiesTheTransaction(t *testing.T) {
 	for _, walinspect := range []bool{false, true} {
 		t.Run(fmt.Sprintf("pg_walinspect=%v", walinspect), func(t *testing.T) {
@@ -890,12 +925,17 @@ func TestSlotIdentity_CoveredResume_VerifiesTheTransaction(t *testing.T) {
 			// The refusals first: they change nothing, so the slot stays
 			// covered for the real position after them.
 			for name, f := range map[string]func(*position.Position){
-				"other xid":         func(p *position.Position) { p.TxXid++ },
-				"other commit time": func(p *position.Position) { p.TxCommitTime++ },
+				"other xid":                           func(p *position.Position) { p.TxXid++ },
+				"same xid and LSN, other commit time": func(p *position.Position) { p.TxCommitTime++ },
+				"same xid and time, a commit LSN one byte before the commit (inside a record)": func(p *position.Position) {
+					l, err := pglogrepl.ParseLSN(p.TxCommitLSN)
+					if err != nil {
+						t.Fatal(err)
+					}
+					p.TxCommitLSN = (l - 1).String()
+				},
 			} {
-				if walinspect && name == "other commit time" {
-					continue // pg_walinspect does not report the commit time; the xid decides
-				}
+				t.Logf("refused: %s", name)
 				bad := slotIDRewrite(t, pos, f)
 				_, err := NewCombinedIterator(ctx, pool, slotGapConfig(table, bad, false))
 				is.Equal(CodeOf(err), CodeWALHistoryChanged)
@@ -935,6 +975,9 @@ func TestSlotIdentity_LegacyPositionPastCurrentWAL_Refused(t *testing.T) {
 		t.Fatal("SILENT SKIP: a legacy position past the server's WAL was accepted")
 	}
 	is.Equal(CodeOf(err), CodeWALHistoryChanged)
+	// Refused by this check, before the transaction check (which would
+	// refuse it too: nothing commits past the WAL end).
+	is.True(strings.Contains(err.Error(), "past the server's current WAL position"))
 	is.Equal(strings.Count(logs.String(), string(CodeWALHistoryUnverified)), 1)
 }
 
@@ -1103,18 +1146,23 @@ func TestSlotIdentity_CommittedButEmitErrored_StreamRaisesCap(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	before := b.Cap()
-	slotGapInsert(ctx, t, pool, table, "wal") // so the next beacon starts later
+	// Every beacon the stream asks for from now on commits, then Emit
+	// returns an error, as if the COMMIT response was lost.
+	var lost atomic.Int32
 	errLost := errors.New("connection lost while reading the COMMIT response")
-	internal.AfterBeaconCommit = func() error { return errLost }
+	internal.AfterBeaconCommit = func() error { lost.Add(1); return errLost }
 	t.Cleanup(func() { internal.AfterBeaconCommit = nil })
-	is.True(errors.Is(b.Emit(ctx), errLost))
-	internal.AfterBeaconCommit = nil
-	for deadline := time.Now().Add(20 * time.Second); b.Cap() <= before; {
+	slotGapInsert(ctx, t, pool, table, "acked") // acked past the cap: the stream asks for a beacon
+	recs, err := it.NextN(ctx, 1)
+	is.NoErr(err)
+	is.NoErr(it.Ack(ctx, recs[0].Position))
+	for deadline := time.Now().Add(60 * time.Second); b.Cap() <= before; {
 		if time.Now().After(deadline) {
-			t.Fatal("the committed beacon did not raise the cap")
+			t.Fatalf("the committed beacon did not raise the cap (%d emissions errored after their commit)", lost.Load())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	is.True(lost.Load() > 0) // the cap was raised by a beacon whose Emit errored
 }
 
 // #447 re-review N1: the guard identifies this run's walsender by PID and
@@ -1251,4 +1299,156 @@ func TestSlotIdentity_StandbyLocalSlot_Refused(t *testing.T) {
 	is.NoErr(err)
 	t.Logf("standby-local slot at %s, position bound %s: %s", local, bound, res.outcome)
 	is.Equal(res.outcome, identityUnprovable) // before the fix: "identity beacon found"
+}
+
+// #447 round-4 B3: another client consumes the pipeline's own idle slot
+// past a transaction the pipeline received but never acked (here with
+// pg_logical_slot_get_binary_changes, one change at a time). The slot is
+// the pipeline's and still decodes the stamp written when the run opened it,
+// but the stamp certifies only the slot position that run checked, which is
+// before the consumed transaction: the restart is refused instead of
+// resuming past it. From the review's scratch test, which delivered only
+// [after] and lost R.
+func TestSlotIdentity_ConsumedByAnotherClientBelowTheLastBeacon_Refused(t *testing.T) {
+	ctx, cancel := context.WithTimeout(test.Context(t), 2*time.Minute)
+	defer cancel()
+	is := is.New(t)
+	pool, table := slotIDSetup(ctx, t)
+	p := slotGapRun1(ctx, t, pool, table)
+	slotGapWaitInactive(ctx, t, pool, table)
+	slotGapInsert(ctx, t, pool, table, "R-consumed-by-another-client")
+
+	// Run 2 stamps (after R), receives R, and stops before the ack.
+	it, err := NewCombinedIterator(ctx, pool, slotGapConfig(table, p, false))
+	is.NoErr(err)
+	rctx, c := context.WithTimeout(ctx, 10*time.Second)
+	recs, err := it.NextN(rctx, 10)
+	c()
+	is.NoErr(err)
+	is.True(len(recs) > 0)
+	// Hold R unacked past a status interval (10 seconds), so the stream
+	// gets the chance to ask for beacons while it is in flight: none may
+	// certify past R.
+	time.Sleep(12 * time.Second)
+	is.NoErr(it.Teardown(ctx))
+	slotGapWaitInactive(ctx, t, pool, table)
+	before := slotIDConfirmed(ctx, t, pool, table)
+
+	// Another client consumes until it has taken R (the key column is
+	// bytea, so its text form is hex).
+	for i := 0; ; i++ {
+		is.True(i < 50)
+		var cnt int
+		var hit bool
+		is.NoErr(pool.QueryRow(ctx, `SELECT count(*), coalesce(bool_or(position('R-consumed'::bytea IN data) > 0
+			       OR position(convert_to(encode('R-consumed'::bytea, 'hex'), 'UTF8') IN data) > 0), false)
+			FROM pg_logical_slot_get_binary_changes($1, NULL, 1, 'proto_version', '1', 'publication_names', $2)`, table, table).Scan(&cnt, &hit))
+		if hit {
+			break
+		}
+		is.True(cnt > 0)
+	}
+	after := slotIDConfirmed(ctx, t, pool, table)
+	t.Logf("another client moved the slot %s -> %s; position bound %s", before, after, slotIDBound(t, p))
+	is.True(after > slotIDBound(t, p))
+
+	_, err = NewCombinedIterator(ctx, pool, slotGapConfig(table, p, false))
+	is.Equal(CodeOf(err), CodeSlotReplaced)
+}
+
+// A beacon writer of a run that has stopped, in stream mode and before the
+// stream, cannot write into a slot that was dropped and created again under
+// the same name, and the restart is refused. From the review's scratch test
+// of 85da517.
+func TestSlotIdentity_LateBeaconFromAStoppedRun_Refused(t *testing.T) {
+	ctx, cancel := context.WithTimeout(test.Context(t), 2*time.Minute)
+	defer cancel()
+	is := is.New(t)
+	pool, table := slotIDSetup(ctx, t)
+
+	it, err := NewCombinedIterator(ctx, pool, slotGapConfig(table, nil, false))
+	is.NoErr(err)
+	slotGapInsert(ctx, t, pool, table, "a1")
+	var p opencdc.Position
+	for deadline := time.Now().Add(20 * time.Second); p == nil && time.Now().Before(deadline); {
+		rctx, c := context.WithTimeout(ctx, 5*time.Second)
+		recs, err := it.NextN(rctx, 10)
+		c()
+		if err != nil {
+			continue
+		}
+		for _, r := range recs {
+			is.NoErr(it.Ack(ctx, r.Position))
+			p = r.Position
+		}
+	}
+	is.True(p != nil)
+	old := it.cdcIterator.sub.Beacons
+	is.True(old != nil)
+	is.NoErr(it.Teardown(ctx))
+	slotGapWaitInactive(ctx, t, pool, table)
+
+	slotIDRecreate(ctx, t, pool, table, "lost-1")
+
+	err = old.Emit(ctx) // stream mode: the old run's walsender is gone
+	is.True(errors.Is(err, internal.ErrSlotNotHeld))
+	pre := internal.NewBeacons(pool, table, "k") // before the stream, with a limit the new slot is past
+	pre.SetPreStreamLimit(slotIDConfirmed(ctx, t, pool, table) - 1)
+	err = pre.Emit(ctx)
+	is.True(errors.Is(err, internal.ErrSlotNotHeld))
+
+	_, err = NewCombinedIterator(ctx, pool, slotGapConfig(table, p, false))
+	is.Equal(CodeOf(err), CodeSlotReplaced)
+}
+
+// #447 round-4 S1: a position whose transaction was a prepared transaction
+// resumes covered. Its commit is a COMMIT PREPARED record, whose xid
+// pg_walinspect reports as 0 (the real one is only in its description), so
+// the check that read it there refused the resume. The check reads the slot,
+// which decodes the transaction at COMMIT PREPARED with its own xid and
+// commit time, the ones the position recorded. pg_walinspect is installed
+// when the server allows it, to show it plays no part.
+func TestSlotIdentity_PreparedTransactionPosition_ResumesCovered(t *testing.T) {
+	ctx, cancel := context.WithTimeout(test.Context(t), 2*time.Minute)
+	defer cancel()
+	is := is.New(t)
+	pool, table := slotIDSetup(ctx, t)
+	var maxPrepared int
+	is.NoErr(pool.QueryRow(ctx, "SELECT current_setting('max_prepared_transactions')::int").Scan(&maxPrepared))
+	if maxPrepared == 0 {
+		t.Skip("max_prepared_transactions is 0 (test/conf.d sets it for the test stack)")
+	}
+	_, _ = pool.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS pg_walinspect")
+
+	it, err := NewCombinedIterator(ctx, pool, slotGapConfig(table, opencdc.Position{}, false))
+	is.NoErr(err)
+	gid := "conduit-" + table
+	conn, err := pool.Acquire(ctx)
+	is.NoErr(err)
+	_, err = conn.Exec(ctx, "BEGIN")
+	is.NoErr(err)
+	_, err = conn.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (key) VALUES ('prepared')`, table))
+	is.NoErr(err)
+	_, err = conn.Exec(ctx, fmt.Sprintf("PREPARE TRANSACTION '%s'", gid))
+	is.NoErr(err)
+	conn.Release()
+	_, err = pool.Exec(ctx, fmt.Sprintf("COMMIT PREPARED '%s'", gid))
+	is.NoErr(err)
+
+	recs, err := it.NextN(ctx, 1)
+	is.NoErr(err)
+	is.NoErr(it.Ack(ctx, recs[0].Position))
+	p := recs[0].Position
+	is.NoErr(it.Teardown(ctx))
+	slotGapWaitInactive(ctx, t, pool, table)
+	pp, err := position.ParseSDKPosition(p)
+	is.NoErr(err)
+	is.True(pp.TxXid != 0)
+	is.True(slotIDConfirmed(ctx, t, pool, table) <= slotIDBound(t, p)) // covered: the transaction check runs
+
+	lctx, logs := slotIDLogs(ctx)
+	it, err = NewCombinedIterator(lctx, pool, slotGapConfig(table, p, false))
+	is.NoErr(err)
+	is.NoErr(it.Teardown(ctx))
+	is.True(strings.Contains(logs.String(), identityCovered.String()))
 }

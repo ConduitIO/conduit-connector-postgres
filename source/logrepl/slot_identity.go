@@ -157,10 +157,13 @@ const defaultIdentityCheckTimeout = 10 * time.Minute
 // Invariant 3 (#442): a slot whose confirmed_flush_lsn is past the saved
 // position decodes from there on, so the changes in between are lost unless
 // they were delivered before the stop. The connector advances its own idle
-// slot past the position only up to an identity beacon (reportedPositions),
-// so such a slot is accepted only if it still decodes a beacon with the
-// position's identity. A slot created again under the same name starts after
-// every beacon the pipeline wrote and decodes none.
+// slot past the position only up to what an identity beacon certifies (r,
+// reportedPositions), so such a slot is accepted only if it still decodes a
+// beacon with the position's identity that covers its confirmed_flush_lsn
+// (internal.FindBeacon). A slot created again under the same name starts
+// after every beacon the pipeline wrote and decodes none; the pipeline's own
+// slot that another client moved past what its beacons cover (#447 round-4
+// B3) decodes none that covers it.
 func checkSlotIdentity(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, server internal.ServerInfo) (slotIdentityCheck, error) {
 	res := slotIdentityCheck{identity: c.StartPosition.SlotIdentity}
 	if res.identity == "" {
@@ -270,13 +273,15 @@ func newSlotReplacedError(slot string, saved string, confirmed pglogrepl.LSN) *S
 	return &SlotError{
 		Code: CodeSlotReplaced,
 		Path: slotNamePath,
-		Message: fmt.Sprintf("replication slot %q exists, but it is not the slot the pipeline's saved position (%s) was taken from: "+
-			"its confirmed_flush_lsn %s is past the saved position, and it holds none of the identity beacons this pipeline "+
-			"keeps ahead of its slot. Postgres would stream from %s, so every change between the saved position and there "+
-			"would be skipped and lost. Common causes: the slot was dropped and created again under the same name (by hand, "+
-			"by another pipeline or tool, or by pg_upgrade), another client advanced or consumed it "+
-			"(pg_replication_slot_advance, pg_logical_slot_get_changes), the pipeline ran on a connector version before "+
-			"v0.17.5 after this one, or a failover to a standby that was not listed in synchronized_standby_slots",
+		Message: fmt.Sprintf("replication slot %q cannot be resumed from the pipeline's saved position (%s): its "+
+			"confirmed_flush_lsn %s is past the saved position, and it holds no identity beacon of this pipeline that "+
+			"covers that point (one written after it, naming a position at or past it before which every change was "+
+			"delivered). Postgres would stream from %s, so the changes between the saved position and there that the "+
+			"pipeline never delivered would be skipped and lost. Common causes: the slot was dropped and created again "+
+			"under the same name (by hand, by another pipeline or tool, or by pg_upgrade), another client advanced or "+
+			"consumed it past changes the pipeline had not delivered, including ones it had received but not acked when it "+
+			"stopped (pg_replication_slot_advance, pg_logical_slot_get_changes), the pipeline ran on a connector version "+
+			"before v0.17.5 after this one, or a failover to a standby that was not listed in synchronized_standby_slots",
 			slot, saved, confirmed, confirmed),
 		Fix: "If you advanced the slot yourself on purpose (for example to skip a transaction, see the README), start once with " +
 			"`logrepl.allowWALGap: true` and remove it after the pipeline has resumed. Otherwise either re-snapshot (stop the " +

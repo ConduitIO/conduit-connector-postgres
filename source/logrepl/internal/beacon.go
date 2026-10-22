@@ -47,10 +47,22 @@ import (
 // pipeline stopped starts after every beacon and decodes none, which is how a
 // replaced slot is told from the original (FindBeacon).
 //
+// A beacon also certifies how far the slot may be from the pipeline's point of
+// view: r, a WAL position before which this run needed nothing more (every
+// change committed before it was delivered and acked when the beacon was
+// requested, or, for the stamp written when a run opens the slot, the slot
+// position the run checked or created). A slot whose confirmed_flush_lsn is
+// at or below r loses nothing, whoever moved it there; a slot past r would
+// skip changes the pipeline never delivered (#447 round-4 B3: another client
+// consuming an idle slot). FindBeacon therefore accepts a slot only on a
+// beacon written after its confirmed_flush_lsn whose r is at or past it, and
+// the subscription never advances an idle slot past the r of the last beacon
+// it received (Cap).
+//
 // The identity is a secret key. It lives only in the pipeline's positions
 // (Conduit's position store), never in the database and never in a log. A
-// beacon carries a nonce, the WAL insert position read before it was written,
-// and HMAC-SHA256(key, slot, nonce, position). Any role may call
+// beacon carries a nonce, the WAL insert position read before it was written
+// (l), r, and HMAC-SHA256(key, slot, nonce, l, r). Any role may call
 // pg_logical_emit_message (PUBLIC has EXECUTE by default), so the content
 // must not be forgeable from what the database shows: without the key no
 // valid MAC can be made, and a genuine beacon copied into a replaced slot is
@@ -105,56 +117,71 @@ func IdentityFingerprint(identity string) string {
 	return hex.EncodeToString(sum[:])[:8]
 }
 
-// beaconMAC authenticates a beacon of slot, written after WAL position start,
-// with the identity key.
-func beaconMAC(key, slot, nonce string, start pglogrepl.LSN) []byte {
+// beaconMAC authenticates a beacon of slot, written after WAL position start
+// and certifying covered (r), with the identity key.
+func beaconMAC(key, slot, nonce string, start, covered pglogrepl.LSN) []byte {
 	m := hmac.New(sha256.New, []byte(key))
-	m.Write([]byte("conduit.postgres.slot_identity/v2\x00" + slot + "\x00" + nonce + "\x00" + start.String()))
+	m.Write([]byte("conduit.postgres.slot_identity/v3\x00" + slot + "\x00" + nonce + "\x00" + start.String() + "\x00" + covered.String()))
 	return m.Sum(nil)
 }
 
-func beaconContent(key, slot, nonce string, start pglogrepl.LSN) string {
-	return "v=2;n=" + nonce + ";l=" + start.String() + ";mac=" + hex.EncodeToString(beaconMAC(key, slot, nonce, start))
+func beaconContent(key, slot, nonce string, start, covered pglogrepl.LSN) string {
+	return "v=3;n=" + nonce + ";l=" + start.String() + ";r=" + covered.String() +
+		";mac=" + hex.EncodeToString(beaconMAC(key, slot, nonce, start, covered))
 }
 
 // verifyBeacon reports whether content is a beacon authenticated with key for
-// slot, written after minStart. The MAC is compared in constant time.
+// slot that vouches for a slot at confirmed (its confirmed_flush_lsn): one
+// written after confirmed (l >= confirmed) that certifies at least confirmed
+// (r >= confirmed). The MAC is compared in constant time.
 //
-// minStart is the slot's confirmed_flush_lsn. A genuine beacon that proves
-// the slot was written after it: the subscription advances an idle slot at
-// most to the start position of a received beacon (Beacons.Cap). A genuine
-// beacon of the old slot that someone copied into a replaced slot carries a
-// start position below the new slot's confirmed_flush_lsn, which is after
-// every WAL position of the old slot's history, so it is refused.
-func verifyBeacon(content []byte, key, slot string, minStart pglogrepl.LSN) bool {
-	var nonce, start, mac string
+// Invariant 3 (#442, #447 round-4 B3): r >= confirmed means every change
+// that commits before confirmed was delivered and acked (or was never needed,
+// see the stamp), so streaming from confirmed loses nothing, whoever moved
+// the slot there; the subscription advances an idle slot at most to the r of
+// a received beacon (Beacons.Cap), so its own slot always has one. A slot
+// another client consumed or advanced past r is refused even though it is
+// the pipeline's slot: the changes it skipped were never delivered. A genuine
+// beacon of the old slot copied into a replaced slot is refused because its
+// l is below the new slot's confirmed_flush_lsn, which is after every WAL
+// position of the old slot's history.
+func verifyBeacon(content []byte, key, slot string, confirmed pglogrepl.LSN) bool {
+	var nonce, start, covered, mac string
 	for _, field := range strings.Split(string(content), ";") {
 		k, v, _ := strings.Cut(field, "=")
 		switch k {
 		case "v":
-			if v != "2" {
+			if v != "3" {
 				return false
 			}
 		case "n":
 			nonce = v
 		case "l":
 			start = v
+		case "r":
+			covered = v
 		case "mac":
 			mac = v
 		}
 	}
-	if nonce == "" || start == "" || mac == "" {
+	if nonce == "" || start == "" || covered == "" || mac == "" {
 		return false
 	}
-	lsn, err := pglogrepl.ParseLSN(start)
-	if err != nil || lsn < minStart {
+	l, err := pglogrepl.ParseLSN(start)
+	if err != nil {
+		return false
+	}
+	// r <= l (Emit never certifies past the insert position it read), so
+	// r >= confirmed also puts l at or past confirmed.
+	r, err := pglogrepl.ParseLSN(covered)
+	if err != nil || r < confirmed || r > l {
 		return false
 	}
 	got, err := hex.DecodeString(mac)
 	if err != nil {
 		return false
 	}
-	return hmac.Equal(got, beaconMAC(key, slot, nonce, lsn))
+	return hmac.Equal(got, beaconMAC(key, slot, nonce, l, r))
 }
 
 // ServerInfo is what decides whether this server can carry beacons.
@@ -206,8 +233,9 @@ func nextFindBeaconLimit(limit, maxRows int) int {
 var ErrBeaconSearchExhausted = errors.New("the slot holds too many changes to search for a beacon")
 
 // FindBeacon reports whether the slot still decodes a beacon authenticated
-// with the identity key and written after confirmed (the slot's
-// confirmed_flush_lsn, see verifyBeacon). It peeks (never consumes) the slot
+// with the identity key that vouches for confirmed (the slot's
+// confirmed_flush_lsn): written after it, and certifying at least it (see
+// verifyBeacon). It peeks (never consumes) the slot
 // from its confirmed_flush_lsn to the current end of the WAL, so the slot
 // must not be in use. The connecting role needs the REPLICATION attribute,
 // as for streaming.
@@ -253,8 +281,8 @@ func FindBeacon(ctx context.Context, pool *pgxpool.Pool, slot, publication, iden
 }
 
 // isBeaconFor reports whether a pgoutput message is a beacon of slot
-// authenticated with the identity key and written after minStart.
-func isBeaconFor(data []byte, identity, slot string, minStart pglogrepl.LSN) bool {
+// authenticated with the identity key that vouches for a slot at confirmed.
+func isBeaconFor(data []byte, identity, slot string, confirmed pglogrepl.LSN) bool {
 	msg, err := pglogrepl.Parse(data)
 	if err != nil {
 		return false
@@ -263,18 +291,18 @@ func isBeaconFor(data []byte, identity, slot string, minStart pglogrepl.LSN) boo
 	if !ok || m.Prefix != BeaconPrefix || !m.Transactional {
 		return false // beacons are always transactional (Emit)
 	}
-	return verifyBeacon(m.Content, identity, slot, minStart)
+	return verifyBeacon(m.Content, identity, slot, confirmed)
 }
 
 // Beacons writes the beacons of one subscription and tracks the last one the
 // stream delivered back.
 //
-// Invariant 3 (#442): Cap is the WAL insert position read just before the
-// last received beacon was written, so the beacon's record starts at or after
-// it. The subscription never advances an idle slot past Cap, so after a stop
-// the slot's confirmed_flush_lsn is at or below the start of a beacon it will
-// decode again (or at or below the saved position, see
-// position.CoveredThrough). Cap only moves when the stream delivers the
+// Invariant 3 (#442): Cap is the r of the last received beacon (see
+// verifyBeacon), which is at or below the WAL insert position read just
+// before it was written, so the beacon's record starts at or after it. The
+// subscription never advances an idle slot past Cap, so after a stop the
+// slot's confirmed_flush_lsn is at or below the r of a beacon it will decode
+// again (or at or below the saved position, see position.CoveredThrough). Cap only moves when the stream delivers the
 // beacon: the walsender sends only flushed WAL, so the beacon cannot be lost
 // in a server crash, and with synchronized_standby_slots a failover standby
 // has it too.
@@ -292,9 +320,9 @@ type Beacons struct {
 	// failureTimeout is how long beacons may keep failing while they hold
 	// an idle slot back before the cap is dropped (see Abandoned).
 	failureTimeout time.Duration
-	// now is time.Now and emit is Emit; test seams.
+	// now is time.Now and emit is emitCovering; test seams.
 	now  func() time.Time
-	emit func(context.Context) error
+	emit func(ctx context.Context, covered pglogrepl.LSN) error
 
 	// streamPID and streamStart identify this run's walsender once
 	// START_REPLICATION succeeded: its backend PID and its
@@ -316,15 +344,15 @@ type Beacons struct {
 	attempts []pendingBeacon
 	// failingSince is when emissions started failing in a row, zero while
 	// the last one succeeded. abandoned is set once they failed for longer
-	// than failureTimeout. probe is, while abandoned, the start of the
-	// latest attempt written since: the idle advance waits at it until the
-	// stream delivers that beacon, so the beacon is past the reported flush
-	// and re-arms the identity (see observe).
+	// than failureTimeout. probe is, while abandoned, the r of the latest
+	// attempt requested since: the idle advance waits at it until the
+	// stream delivers that beacon, so the beacon certifies the reported
+	// flush and re-arms the identity (see observe).
 	failingSince time.Time
 	abandoned    atomic.Bool
 	probe        pglogrepl.LSN
 
-	// cap is the start of the last received beacon.
+	// cap is the r of the last received beacon.
 	cap atomic.Uint64
 	// lastEnd is only on the Run goroutine.
 	lastEnd pglogrepl.LSN
@@ -333,7 +361,8 @@ type Beacons struct {
 type pendingBeacon struct {
 	nonce   string
 	content string
-	start   pglogrepl.LSN // WAL insert position read before the emission
+	start   pglogrepl.LSN // l: WAL insert position read before the emission
+	covered pglogrepl.LSN // r: what the beacon certifies (verifyBeacon)
 }
 
 // maxBeaconAttempts bounds Beacons.attempts.
@@ -357,7 +386,7 @@ func EmitMessageSignature(serverVersion int) string {
 // confirmed_flush_lsn is at or below preStreamLimit (SetPreStreamLimit).
 func NewBeacons(pool *pgxpool.Pool, slot, identity string) *Beacons {
 	b := &Beacons{pool: pool, slot: slot, identity: identity, failureTimeout: DefaultBeaconFailureTimeout, now: time.Now}
-	b.emit = b.Emit
+	b.emit = b.emitCovering
 	return b
 }
 
@@ -371,7 +400,9 @@ func (b *Beacons) SetFailureTimeout(d time.Duration) {
 
 // SetPreStreamLimit sets the highest confirmed_flush_lsn the slot may have
 // for a beacon written before the stream holds it: what the identity check
-// accepted, or the slot's position right after this run created it.
+// accepted, or the slot's position right after this run created it. It is
+// also what the stamp (Emit) certifies: the run accepted the slot there, so
+// it needs nothing from before it.
 func (b *Beacons) SetPreStreamLimit(lsn pglogrepl.LSN) { b.preStreamLimit.Store(uint64(lsn)) }
 
 // SetStreamHolder records this run's walsender, from then on the only holder
@@ -463,7 +494,18 @@ var (
 // transaction's commit, which is after the insert position read in step 3,
 // so the slot still decodes it while its confirmed_flush_lsn is at or below
 // Cap.
+//
+// Emit writes the stamp: it certifies the pre-stream limit (see
+// SetPreStreamLimit and verifyBeacon). The beacons the subscription asks for
+// while it streams certify more (maybeRequest).
 func (b *Beacons) Emit(ctx context.Context) error {
+	return b.emitCovering(ctx, pglogrepl.LSN(b.preStreamLimit.Load()))
+}
+
+// emitCovering is Emit for a beacon that certifies covered (r, see
+// verifyBeacon). The caller guarantees it: every change that commits before
+// covered was delivered and acked, or is not needed by this run.
+func (b *Beacons) emitCovering(ctx context.Context, covered pglogrepl.LSN) error {
 	err := pgx.BeginFunc(ctx, b.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, "SET LOCAL synchronous_commit TO local"); err != nil {
 			return err
@@ -481,7 +523,7 @@ func (b *Beacons) Emit(ctx context.Context) error {
 		if err := tx.QueryRow(ctx, "SELECT pg_current_wal_insert_lsn()").Scan(&start); err != nil {
 			return fmt.Errorf("failed to read the WAL insert position: %w", err)
 		}
-		p := b.record(start)
+		p := b.record(start, minLSN(covered, start))
 		_, err := tx.Exec(ctx, "SELECT pg_logical_emit_message(true, $1, $2::text)", BeaconPrefix, p.content)
 		return err
 	})
@@ -536,26 +578,23 @@ func (b *Beacons) checkHeld(ctx context.Context, tx pgx.Tx) error {
 
 // record remembers an attempt before it is written, so a beacon the stream
 // delivers back at once is always recognised.
-func (b *Beacons) record(start pglogrepl.LSN) pendingBeacon {
+func (b *Beacons) record(start, covered pglogrepl.LSN) pendingBeacon {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	nonce := randomHex(16)
-	p := pendingBeacon{nonce: nonce, start: start, content: beaconContent(b.identity, b.slot, nonce, start)}
+	p := pendingBeacon{nonce: nonce, start: start, covered: covered, content: beaconContent(b.identity, b.slot, nonce, start, covered)}
 	b.attempts = append(b.attempts, p)
 	if len(b.attempts) > maxBeaconAttempts {
 		b.attempts = b.attempts[len(b.attempts)-maxBeaconAttempts:]
 	}
-	if b.abandoned.Load() && start > b.probe {
-		b.probe = start
-	}
 	return p
 }
 
-// Cap is the highest flush position an idle advance may report: the start
-// of the last received beacon. Once beacons were abandoned, there is no cap,
-// except while an attempt written since is on its way: the advance then
-// waits at that attempt's start so that, when the stream delivers it, it is
-// past the reported flush and re-arms the identity.
+// Cap is the highest flush position an idle advance may report: the r of
+// the last received beacon. Once beacons were abandoned, there is no cap,
+// except while an attempt requested since is on its way: the advance then
+// waits at that attempt's r so that, when the stream delivers it, it
+// certifies the reported flush and re-arms the identity.
 func (b *Beacons) Cap() pglogrepl.LSN {
 	if b.abandoned.Load() {
 		b.mu.Lock()
@@ -588,10 +627,10 @@ func (b *Beacons) RetainedBytes(serverWALEnd pglogrepl.LSN) uint64 {
 
 // observe handles a logical decoding message from the stream. It reports
 // whether the message was one of this run's beacons (matched by its exact
-// content, nonce included), in which case Cap moves up to that beacon's
-// start. reportedFlush is the highest flush position already reported: a
-// beacon delivered while beacons were abandoned re-arms them only if its
-// start is at or past it, because only then does the slot still decode it.
+// content, nonce included), in which case Cap moves up to that beacon's r.
+// reportedFlush is the highest flush position already reported: a beacon
+// delivered while beacons were abandoned re-arms them only if its r is at or
+// past it, because only then does it vouch for the slot (verifyBeacon).
 func (b *Beacons) observe(ctx context.Context, m *pglogrepl.LogicalDecodingMessage, reportedFlush pglogrepl.LSN) bool {
 	if m.Prefix != BeaconPrefix || !m.Transactional {
 		return false // beacons are always transactional (Emit)
@@ -612,7 +651,7 @@ func (b *Beacons) observe(ctx context.Context, m *pglogrepl.LogicalDecodingMessa
 		switch {
 		case !b.abandoned.Load():
 			b.failingSince = time.Time{}
-		case found.start >= reportedFlush:
+		case found.covered >= reportedFlush:
 			b.abandoned.Store(false)
 			b.failingSince, b.probe = time.Time{}, 0
 			rearmed = true
@@ -622,8 +661,8 @@ func (b *Beacons) observe(ctx context.Context, m *pglogrepl.LogicalDecodingMessa
 	if found == nil {
 		return false
 	}
-	if c := pglogrepl.LSN(b.cap.Load()); found.start > c || rearmed {
-		b.cap.Store(uint64(maxLSN(found.start, c)))
+	if c := pglogrepl.LSN(b.cap.Load()); found.covered > c || rearmed {
+		b.cap.Store(uint64(maxLSN(found.covered, c)))
 	}
 	if m.LSN > b.lastEnd {
 		b.lastEnd = m.LSN
@@ -638,7 +677,11 @@ func (b *Beacons) observe(ctx context.Context, m *pglogrepl.LogicalDecodingMessa
 }
 
 // maybeRequest starts writing a new beacon in the background when an idle
-// slot could advance past Cap and no beacon is on its way, because either
+// slot could advance past Cap and no beacon is on its way. The subscription
+// calls it only while every emitted record is acked, so the beacon certifies
+// serverWALEnd (r, see verifyBeacon): the walsender sent every transaction
+// that commits before the WAL end it reported, and all of them were
+// delivered and acked. It asks because either
 //
 //   - records were acked past Cap (walFlushed): without a new beacon the slot
 //     would stay below the last acked transaction's commit, and a restart
@@ -690,12 +733,15 @@ func (b *Beacons) maybeRequest(ctx context.Context, serverWALEnd, walFlushed pgl
 	// An emission this old is stale: stop waiting for it (its beacon still
 	// counts if the stream delivers it, see attempts).
 	b.inflight, b.inflightAt = true, now
+	if abandoned && serverWALEnd > b.probe {
+		b.probe = serverWALEnd
+	}
 	b.mu.Unlock()
 
 	go func() {
 		ectx, cancel := context.WithTimeout(ctx, beaconEmitTimeout)
 		defer cancel()
-		err := b.emit(ectx)
+		err := b.emit(ectx, serverWALEnd)
 		b.mu.Lock()
 		if err != nil {
 			b.inflight = false

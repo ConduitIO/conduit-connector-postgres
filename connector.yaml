@@ -131,16 +131,22 @@ specification:
     then are gone just the same. Postgres gives a slot no identity to tell it from the
     original, so the connector keeps one itself (since v0.17.5). Every position carries
     a random slot identity, and the connector writes it into the WAL as a logical
-    decoding message under the prefix `conduit.postgres.slot_identity` (a beacon). It
-    never advances an idle slot past the last beacon it wrote, so its own slot always
-    still holds one. On a resume whose slot is past the saved position, the connector
-    reads the slot without consuming it (`pg_logical_slot_peek_binary_changes`) and
-    looks for the beacon. A slot that holds none is refused with the error code
-    `postgres.source.slot_replaced`, which names the slot, the saved position and the
-    slot's `confirmed_flush_lsn`. The same refusal covers a slot that another client
-    advanced or consumed past the position (`pg_replication_slot_advance`,
-    `pg_logical_slot_get_changes`), since the changes it skipped were not delivered
-    either. A slot swapped between the check (or, on a fresh start, its creation) and the
+    decoding message under the prefix `conduit.postgres.slot_identity` (a beacon). A
+    beacon also names a WAL position before which the pipeline needed nothing more when
+    it was written: every change committed before it had been delivered and acked (or,
+    for the beacon written when a run opens the slot, the slot position that run
+    checked). The connector never advances an idle slot past that position of the last
+    beacon it received, so its own slot always still holds a beacon that covers it. On
+    a resume whose slot is past the saved position, the connector reads the slot without
+    consuming it (`pg_logical_slot_peek_binary_changes`) and looks for a beacon written
+    after the slot's `confirmed_flush_lsn` whose position is at or past it. A slot that
+    holds none is refused with the error code `postgres.source.slot_replaced`, which
+    names the slot, the saved position and the slot's `confirmed_flush_lsn`. The same
+    refusal covers the pipeline's own slot when another client advanced or consumed it
+    (`pg_replication_slot_advance`, `pg_logical_slot_get_changes`) past changes the
+    pipeline had not delivered, including changes the pipeline had received but not
+    acked when it stopped. A slot another client moved only over changes the pipeline
+    had already delivered and acked loses nothing and is accepted. A slot swapped between the check (or, on a fresh start, its creation) and the
     start of streaming is refused once streaming holds it, also after a snapshot of hours.
     A beacon is written only while this pipeline's own stream holds the slot (or, before
     streaming starts, while the slot is idle and where the pipeline checked it), so a beacon
@@ -155,12 +161,14 @@ specification:
     snapshot or VM image) are refused instead of resuming at LSNs that now name other
     changes. A restore on the same timeline whose new WAL has already passed the position
     when the pipeline starts is caught by the position's transaction: every position also
-    names the xid and commit time of its transaction, and a resume whose slot is at or below
-    the position checks that the slot (or `pg_walinspect`, when installed) still has that
-    transaction at that LSN. On Postgres 15+, a publication or row filter changed since the
-    position can hide the transaction and refuse a database that was not restored; start
-    once with `logrepl.allowWALGap: true` then. Re-snapshot pipelines after restoring their
-    source database.
+    names the xid and commit time of the transaction it was taken in (for a schema drift
+    marker, of the transaction it halted before), and a resume whose slot is at or below
+    the position checks that the slot still decodes that transaction, with the same xid and
+    commit time, at that commit LSN. A position written before v0.17.5 names no xid; the
+    check then requires a transaction committing at its commit LSN. On Postgres 15+, a
+    publication or row filter changed since the position can hide the transaction and
+    refuse a database that was not restored; start once with `logrepl.allowWALGap: true`
+    then. Re-snapshot pipelines after restoring their source database.
 
     What it needs and what it costs:
 
@@ -197,7 +205,8 @@ specification:
     - One small transaction per start, and at most one per status interval (10 seconds)
       while the pipeline is idle, after it acked records or once the server has written at
       least 512 bytes of WAL since the last beacon. An idle database stays idle. An idle
-      slot reaches the WAL end about two status intervals after the last ack. Beacons commit
+      slot reaches the WAL end as of the last beacon about two status intervals after the
+      last ack (the beacon itself, and WAL written after it, stay until the next one). Beacons commit
       with `synchronous_commit = local`, so a synchronous standby that is down does not block
       them.
     - If beacons cannot be written while the pipeline runs (the connector logs

@@ -16,8 +16,8 @@ package logrepl
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
@@ -156,20 +156,28 @@ func checkWALHistory(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, h int
 // same LSNs; once its WAL has passed the bound, neither the system
 // identifier, the timeline nor the WAL position tells it apart, and the
 // restored slot is genuinely covered. The position's transaction tells: the
-// slot decodes the transaction that commits at TxCommitLSN again (its
-// commit is at or after confirmed_flush_lsn), so the first transaction it
-// decodes from the bound on must be that one: the same commit LSN, xid and
-// commit timestamp. pg_walinspect, when installed and usable, reads the
-// commit record at TxCommitLSN directly instead.
+// slot decodes it again (its commit is at or after confirmed_flush_lsn), so
+// the first transaction the slot decodes from its commit LSN on must be that
+// one: the same commit LSN, xid and commit timestamp (a restored server
+// reuses xids, so the xid alone proves nothing). It is read from the slot
+// itself, never from pg_walinspect: pg_get_wal_record_info returns the next
+// record for an LSN inside one, and its commit records carry no commit time
+// in a column and xid 0 for COMMIT PREPARED (#447 round-4 B1, S1).
+//
+// The transaction is savedTransaction's: the key's commit LSN, or for a
+// drift marker, whose key sits one below its change's commit LSN (#338), the
+// commit LSN after it (#447 round-4 B2). A position that names no xid
+// (written before this check) still names a commit LSN; at least a commit
+// must be there.
 //
 // False positive: on Postgres 15+ pgoutput skips a transaction with no
 // changes for the publication, so a publication (or row filter) changed
 // since the position can hide the transaction; the start is then refused
 // with wal_history_changed, and logrepl.allowWALGap accepts it.
 func verifyCoveredTransaction(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) error {
-	p := c.StartPosition
-	if p.TxXid == 0 || c.TxCommitLSN == 0 {
-		return nil // written before this check, or no transaction to name
+	want, ok := savedTransaction(c)
+	if !ok {
+		return nil // no transaction to name
 	}
 	timeout := c.IdentityCheckTimeout
 	if timeout <= 0 {
@@ -178,38 +186,28 @@ func verifyCoveredTransaction(ctx context.Context, pool *pgxpool.Pool, c CDCConf
 	pctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	want := internal.TxAt{FinalLSN: c.TxCommitLSN, Xid: p.TxXid, CommitTime: time.UnixMicro(p.TxCommitTime)}
-	var got internal.TxAt
-	var ok bool
-	var how string
-	got, ok, err := internal.CommitRecordAt(pctx, pool, c.TxCommitLSN)
-	switch {
-	case errors.Is(err, internal.ErrWALInspectUnavailable):
-		how = "the slot decodes"
-		got, ok, err = internal.FirstTxFrom(pctx, pool, c.SlotName, c.PublicationName, c.TxCommitLSN)
-		if err != nil {
-			return fmt.Errorf("failed to check the saved position's transaction: %w", err)
-		}
-	case err != nil:
+	got, found, err := internal.FirstTxFrom(pctx, pool, c.SlotName, c.PublicationName, want.FinalLSN)
+	if err != nil {
 		return fmt.Errorf("failed to check the saved position's transaction: %w", err)
-	default:
-		how = "the WAL holds (pg_walinspect)"
-		got.CommitTime = want.CommitTime // pg_walinspect does not report it; xid and LSN decide
 	}
-	if ok && got.FinalLSN == want.FinalLSN && got.Xid == want.Xid && got.CommitTime.Equal(want.CommitTime) {
+	if found && sameTransaction(want, got) {
 		return nil
 	}
 	var seen string
-	if ok {
-		seen = fmt.Sprintf("the first transaction %s from there commits at %s with xid %d at %s",
-			how, got.FinalLSN, got.Xid, got.CommitTime.UTC().Format(time.RFC3339Nano))
+	if found {
+		seen = fmt.Sprintf("the first transaction the slot decodes from there commits at %s with xid %d at %s",
+			got.FinalLSN, got.Xid, got.CommitTime.UTC().Format(time.RFC3339Nano))
 	} else {
-		seen = "no transaction " + how + " from there"
+		seen = "the slot decodes no transaction from there"
 	}
-	reason := fmt.Sprintf("the saved position's transaction (xid %d, committed at LSN %s at %s) is not in this server's WAL: %s. "+
+	named := fmt.Sprintf("xid %d, committed at LSN %s at %s", want.Xid, want.FinalLSN, want.CommitTime.UTC().Format(time.RFC3339Nano))
+	if want.Xid == 0 {
+		named = fmt.Sprintf("committed at LSN %s", want.FinalLSN)
+	}
+	reason := fmt.Sprintf("the saved position's transaction (%s) is not in this server's WAL: %s. "+
 		"The server was restored to an earlier point (a backup, snapshot or VM image) and its new WAL reuses those LSNs. "+
 		"(On Postgres 15+ a publication or row filter changed since the position can also hide the transaction.)",
-		want.Xid, want.FinalLSN, want.CommitTime.UTC().Format(time.RFC3339Nano), seen)
+		named, seen)
 	if c.AllowWALGap {
 		sdk.Logger(ctx).Warn().
 			Str("code", string(CodeWALHistoryChanged)).
@@ -225,4 +223,39 @@ func verifyCoveredTransaction(ctx context.Context, pool *pgxpool.Pool, c CDCConf
 			"If the publication or its row filter was changed since the last delivered record and the database was not " +
 			"restored, start once with `logrepl.allowWALGap: true` and remove it after a record was delivered",
 	}
+}
+
+// savedTransaction is the transaction the saved position's change key names
+// (verifyCoveredTransaction): its commit LSN, and the xid and commit time
+// when the position carries them (Xid 0 when it does not). A drift marker's
+// key is (C-1, MaxUint64), the predecessor of its change's first key
+// (internal.ChangeKey.Predecessor), so the transaction it names commits at C.
+// ok is false when the key names no transaction.
+func savedTransaction(c CDCConfig) (internal.TxAt, bool) {
+	if c.TxCommitLSN == 0 || c.TxSeq == 0 {
+		return internal.TxAt{}, false
+	}
+	commit := c.TxCommitLSN
+	if c.TxSeq == math.MaxUint64 {
+		commit++
+	}
+	p := c.StartPosition
+	t := internal.TxAt{FinalLSN: commit, Xid: p.TxXid}
+	if p.TxXid != 0 {
+		t.CommitTime = time.UnixMicro(p.TxCommitTime)
+	}
+	return t, true
+}
+
+// sameTransaction reports whether got, the first transaction the slot
+// decodes from want's commit LSN, is want: the same commit LSN, and when want
+// names one, the same xid and commit time.
+func sameTransaction(want, got internal.TxAt) bool {
+	if got.FinalLSN != want.FinalLSN {
+		return false
+	}
+	if want.Xid == 0 {
+		return true // a position written before the xid was recorded
+	}
+	return got.Xid == want.Xid && got.CommitTime.Equal(want.CommitTime)
 }

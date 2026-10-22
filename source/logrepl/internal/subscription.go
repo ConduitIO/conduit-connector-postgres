@@ -78,8 +78,8 @@ type Subscription struct {
 	// Beacons writes and tracks the slot identity beacons (#442), nil when
 	// the server cannot carry them (before Postgres 14, or a standby). When
 	// set, the stream asks pgoutput for logical decoding messages, and an
-	// idle slot is never advanced past the last beacon received (see
-	// reportedPositions). Set before Run.
+	// idle slot is never advanced past what the last beacon received
+	// certifies (Beacons.Cap, see reportedPositions). Set before Run.
 	Beacons *Beacons
 	// VerifyHeld, when set, checks the slot once START_REPLICATION holds it,
 	// before anything is sent on the stream (#442): a slot dropped and
@@ -929,8 +929,9 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 //     the last keepalive). The test compares change keys, not LSNs: rows of a
 //     multi-row insert share an LSN, so "walFlushed == walWritten" would claim
 //     everything is acked after the first of them is.
-//   - That idle advance goes no further than idleCap, the start of the last
-//     slot identity beacon received (#442; noCap without beacons). The
+//   - That idle advance goes no further than idleCap, what the last slot
+//     identity beacon received certifies (Beacons.Cap, #442; noCap without
+//     beacons). The
 //     acked baseline is never capped: it is at or below the saved position,
 //     which proves the slot by itself (position.CoveredThrough), and the
 //     drift escape hatch needs the slot to confirm the marker's LSN.
@@ -947,8 +948,9 @@ func reportedPositions(walWritten, walFlushed, serverWALEnd, lastReported pglogr
 	// Postgres discard the WAL that record depends on, and a crash before the
 	// destination wrote it would lose it.
 	//
-	// Invariant 3 (#442): and never past the last received identity beacon,
-	// so a stopped slot still decodes a beacon after its confirmed_flush_lsn.
+	// Invariant 3 (#442): and never past what the last received identity
+	// beacon certifies, so a stopped slot still decodes a beacon that covers
+	// its confirmed_flush_lsn.
 	if allAcked {
 		flush = maxLSN(flush, minLSN(serverWALEnd, idleCap))
 	}

@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/jackc/pglogrepl"
@@ -148,31 +149,74 @@ func TestCDCPosition_PropertyCarriesSlotIdentity(t *testing.T) {
 	})
 }
 
-// TestCDCPosition_TxIdentityOnlyForRealCommits (#447 re-review S2): a
-// position names its transaction's xid and commit time only when its change
-// key's commit LSN is that transaction's. A drift marker's key one below its
-// change (#338) names no transaction, so its position carries neither, and a
-// resume from it skips the transaction check instead of failing it.
-func TestCDCPosition_TxIdentityOnlyForRealCommits(t *testing.T) {
+// TestCDCPosition_TxIdentityNamesTheDecidingTransaction (#447 re-review S2,
+// round-4 B2): a position names the xid and commit time of the transaction
+// its change key decides about. For a record that is its own transaction.
+// A drift marker's key sits one below its change's commit LSN (#338,
+// ChangeKey.Predecessor); it names the transaction that commits right
+// after, the marker's change's, so a resume from a marker checks that
+// transaction (savedTransaction). Any other key that is not the current
+// transaction's names none.
+func TestCDCPosition_TxIdentityNamesTheDecidingTransaction(t *testing.T) {
 	cur := internal.ChangeKey{CommitLSN: 0x5000, Seq: 1}
 	commit := time.UnixMicro(1_792_000_000_000_000)
 	h := &CDCHandler{
 		changeKey: func() internal.ChangeKey { return cur },
 		txInfo:    func() (uint32, time.Time) { return 777, commit },
 	}
-	p, err := position.ParseSDKPosition(h.buildPositionAt(0x4f00, cur))
-	if err != nil {
-		t.Fatal(err)
+	pos := func(p opencdc.Position) position.Position {
+		t.Helper()
+		pp, err := position.ParseSDKPosition(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pp
 	}
-	if p.TxXid != 777 || p.TxCommitTime != commit.UnixMicro() {
+	if p := pos(h.buildPositionAt(0x4f00, cur)); p.TxXid != 777 || p.TxCommitTime != commit.UnixMicro() {
 		t.Fatalf("record position: xid %d commit time %d, want 777 %d", p.TxXid, p.TxCommitTime, commit.UnixMicro())
 	}
-	below := internal.ChangeKey{CommitLSN: cur.CommitLSN - 1, Seq: math.MaxUint64}
-	m, err := position.ParseSDKPosition(h.buildMarkerPosition(0x4f00, below, "public.t"))
-	if err != nil {
-		t.Fatal(err)
+	m := pos(h.buildMarkerPosition(0x4f00, cur.Predecessor(), "public.t"))
+	if m.TxXid != 777 || m.TxCommitTime != commit.UnixMicro() {
+		t.Fatalf("marker position one below carries xid %d commit time %d, want its change's 777 %d", m.TxXid, m.TxCommitTime, commit.UnixMicro())
 	}
-	if m.TxXid != 0 || m.TxCommitTime != 0 {
-		t.Fatalf("marker position one below carries xid %d commit time %d, want none", m.TxXid, m.TxCommitTime)
+	got, ok := savedTransaction(CDCConfig{StartPosition: m, TxCommitLSN: cur.CommitLSN - 1, TxSeq: math.MaxUint64})
+	if !ok || got.FinalLSN != cur.CommitLSN || got.Xid != 777 || !got.CommitTime.Equal(commit) {
+		t.Fatalf("a marker position names %+v (ok %v), want the transaction committing at %s", got, ok, cur.CommitLSN)
+	}
+	// A key that is neither the current transaction's nor its predecessor
+	// names nothing.
+	other := internal.ChangeKey{CommitLSN: cur.CommitLSN - 2, Seq: math.MaxUint64}
+	if o := pos(h.buildMarkerPosition(0x4f00, other, "public.t")); o.TxXid != 0 || o.TxCommitTime != 0 {
+		t.Fatalf("an unrelated key carries xid %d commit time %d, want none", o.TxXid, o.TxCommitTime)
+	}
+}
+
+// sameTransaction (#447 round-4 B1): the commit LSN, the xid and the commit
+// time must all match. A restored server reuses xids and can commit at the
+// same LSN, so a different commit time alone refuses; a position without an
+// xid (written before it was recorded) needs only a commit at the LSN.
+func TestSameTransaction(t *testing.T) {
+	at := time.UnixMicro(1_792_000_000_000_000)
+	want := internal.TxAt{FinalLSN: 0x5000, Xid: 740, CommitTime: at}
+	for _, c := range []struct {
+		name string
+		got  internal.TxAt
+		same bool
+	}{
+		{"the same transaction", internal.TxAt{FinalLSN: 0x5000, Xid: 740, CommitTime: at}, true},
+		{"same xid and LSN, another commit time", internal.TxAt{FinalLSN: 0x5000, Xid: 740, CommitTime: at.Add(time.Microsecond)}, false},
+		{"same xid and time, a later commit (the LSN falls inside a record)", internal.TxAt{FinalLSN: 0x5010, Xid: 740, CommitTime: at}, false},
+		{"another xid", internal.TxAt{FinalLSN: 0x5000, Xid: 741, CommitTime: at}, false},
+	} {
+		if got := sameTransaction(want, c.got); got != c.same {
+			t.Errorf("%s: sameTransaction = %v, want %v", c.name, got, c.same)
+		}
+	}
+	legacy := internal.TxAt{FinalLSN: 0x5000}
+	if !sameTransaction(legacy, internal.TxAt{FinalLSN: 0x5000, Xid: 9, CommitTime: at}) {
+		t.Error("a position without an xid: any commit at its LSN is it")
+	}
+	if sameTransaction(legacy, internal.TxAt{FinalLSN: 0x5008, Xid: 9, CommitTime: at}) {
+		t.Error("a position without an xid: a commit at another LSN is not it")
 	}
 }
