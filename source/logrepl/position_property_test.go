@@ -17,6 +17,7 @@ package logrepl
 import (
 	"math"
 	"testing"
+	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
@@ -145,4 +146,33 @@ func TestCDCPosition_PropertyCarriesSlotIdentity(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestCDCPosition_TxIdentityOnlyForRealCommits (#447 re-review S2): a
+// position names its transaction's xid and commit time only when its change
+// key's commit LSN is that transaction's. A drift marker's key one below its
+// change (#338) names no transaction, so its position carries neither, and a
+// resume from it skips the transaction check instead of failing it.
+func TestCDCPosition_TxIdentityOnlyForRealCommits(t *testing.T) {
+	cur := internal.ChangeKey{CommitLSN: 0x5000, Seq: 1}
+	commit := time.UnixMicro(1_792_000_000_000_000)
+	h := &CDCHandler{
+		changeKey: func() internal.ChangeKey { return cur },
+		txInfo:    func() (uint32, time.Time) { return 777, commit },
+	}
+	p, err := position.ParseSDKPosition(h.buildPositionAt(0x4f00, cur))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.TxXid != 777 || p.TxCommitTime != commit.UnixMicro() {
+		t.Fatalf("record position: xid %d commit time %d, want 777 %d", p.TxXid, p.TxCommitTime, commit.UnixMicro())
+	}
+	below := internal.ChangeKey{CommitLSN: cur.CommitLSN - 1, Seq: math.MaxUint64}
+	m, err := position.ParseSDKPosition(h.buildMarkerPosition(0x4f00, below, "public.t"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.TxXid != 0 || m.TxCommitTime != 0 {
+		t.Fatalf("marker position one below carries xid %d commit time %d, want none", m.TxXid, m.TxCommitTime)
+	}
 }

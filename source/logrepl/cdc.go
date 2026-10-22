@@ -425,25 +425,21 @@ func armSlotIdentity(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, sub *
 	// while the slot is inactive and not past limit, so a stamp can never
 	// land in a slot that replaced this run's (#447 B1).
 	//
-	// A position that already has an identity on a slot this run did not
-	// create is stamped only once the stream holds the slot and VerifyHeld
-	// accepted it: its earlier beacons cover a restart until then. Every
-	// other start stamps now, which matters for a snapshot that runs for
-	// hours before the stream starts: a slot this run created, a fresh start
-	// (nothing saved to lose), a legacy position (adopted either way), and a
-	// rotated identity (no earlier position names it, so no slot can pass a
-	// check with it).
-	stampNow := !saved || ident.legacy || ident.rotated || sub.TXSnapshotID != ""
-	if sub.VerifyHeld != nil && !stampNow {
-		sub.VerifyHeld = verifyHeldSlot(c, limit, sub.Beacons, true, server.Version, rotate)
-	}
-	if sub.Beacons != nil && stampNow {
+	// Every start stamps now, which matters for a snapshot that runs for
+	// hours before the stream starts. The guard makes that safe for a slot
+	// swapped in after the identity check too (the first version stamped a
+	// position's existing slot only inside VerifyHeld for that reason): such
+	// a slot is past limit, so the stamp is refused and the start with it.
+	if sub.Beacons != nil {
 		err := sub.Beacons.Emit(ctx)
 		switch {
-		case errors.Is(err, internal.ErrSlotInUse) && sub.VerifyHeld != nil:
-			// Another connection streams from the slot: the stream start
-			// fails on it with its own error. Should it succeed (the other
-			// connection let go), stamp once the stream holds the slot.
+		case errors.Is(err, internal.ErrSlotInUse) && sub.VerifyHeld != nil,
+			errors.Is(err, internal.ErrSlotNotHeld) && c.AllowWALGap && sub.VerifyHeld != nil:
+			// Another connection streams from the slot (the stream start
+			// fails on it with its own error), or the slot was swapped after
+			// the check and allowWALGap accepts that: stamp once the stream
+			// holds the slot, after VerifyHeld warned and gave the accepted
+			// slot an identity of its own.
 			sub.VerifyHeld = verifyHeldSlot(c, limit, sub.Beacons, true, server.Version, rotate)
 		case err != nil:
 			return beaconError(c, server.Version, err)

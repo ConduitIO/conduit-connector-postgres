@@ -260,8 +260,8 @@ func isBeaconFor(data []byte, identity, slot string, minStart pglogrepl.LSN) boo
 		return false
 	}
 	m, ok := msg.(*pglogrepl.LogicalDecodingMessage)
-	if !ok || m.Prefix != BeaconPrefix {
-		return false
+	if !ok || m.Prefix != BeaconPrefix || !m.Transactional {
+		return false // beacons are always transactional (Emit)
 	}
 	return verifyBeacon(m.Content, identity, slot, minStart)
 }
@@ -593,8 +593,8 @@ func (b *Beacons) RetainedBytes(serverWALEnd pglogrepl.LSN) uint64 {
 // beacon delivered while beacons were abandoned re-arms them only if its
 // start is at or past it, because only then does the slot still decode it.
 func (b *Beacons) observe(ctx context.Context, m *pglogrepl.LogicalDecodingMessage, reportedFlush pglogrepl.LSN) bool {
-	if m.Prefix != BeaconPrefix {
-		return false
+	if m.Prefix != BeaconPrefix || !m.Transactional {
+		return false // beacons are always transactional (Emit)
 	}
 	b.mu.Lock()
 	var found *pendingBeacon

@@ -348,16 +348,19 @@ This also closes #445's limit: with `allowWALGap`, a slot recreated after the ch
 gets the DATA LOSS warning. A slot that was missing at the check and is back when the
 subscription opens it is treated the same way.
 
-When to write the run's first beacon (the stamp) matters. A stamp written into a slot that
-was swapped in after the check would make that slot pass the next start's check. So a
-position with an identity, on a slot this run did not create, is stamped inside
-`VerifyHeld`, after the slot was accepted. Its earlier beacons cover a restart until then.
-Every other start is stamped in `NewCDCIterator`, through the guard (the slot inactive and
-not past the limit): a slot this run created, a fresh start (nothing saved to lose), a
-legacy position (adopted either way), and a rotated identity. Stamping at once matters for
-a snapshot, which can run for hours before the stream starts. A stamp the guard refuses
-fails the start with `slot_replaced`; any other failed stamp with
-`postgres.source.slot_beacon_failed` and the `GRANT` that fixes it.
+When to write the run's first beacon (the stamp) matters: a stamp written into a slot that
+was swapped in after the check would make that slot pass the next start's check. Every
+start stamps in `NewCDCIterator`, through the guard: the slot inactive and not past the
+limit the check accepted (or the creation point). A slot swapped in after the check is past
+it, so the stamp is refused and the start with it (`slot_replaced`), or, with
+`allowWALGap`, the stamp waits for `VerifyHeld`, which warns, gives the accepted slot a new
+key and stamps it once the stream holds it. A slot in use by another connection defers the
+stamp the same way (the stream start then fails with its own error). Stamping at once
+matters for a snapshot, which can run for hours before the stream starts. (The first
+version stamped a position's existing slot only inside `VerifyHeld`; the guard made that
+unnecessary.) Any other failed stamp fails the start with `postgres.source.slot_beacon_failed`
+and the `GRANT` that fixes it. A beacon is recognised only as a transactional message, as
+`Emit` writes it.
 
 ### 6. Positions without an identity: learn on the first resume
 
@@ -429,6 +432,9 @@ from pgoutput's BEGIN, and a covered resume checks the transaction (`verifyCover
   at `tx_commit_lsn`, with that xid and that commit time. The slot decodes it again because
   its commit is at or after `confirmed_flush_lsn`.
 
+A drift marker's key can be one below its change's (#338), naming no transaction, so its
+position carries no xid or commit time and a resume from it skips this check
+(`TestCDCPosition_TxIdentityOnlyForRealCommits`; the B1 chaos scenarios resume from markers).
 A restored server writes other transactions at those LSNs. Its xids restart from the
 snapshot too, so the review's restore produced the same xid at the same LSN; the commit
 time tells them apart. Otherwise the start is refused with `wal_history_changed`

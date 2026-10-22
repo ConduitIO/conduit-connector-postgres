@@ -703,8 +703,10 @@ func (h *CDCHandler) positionAt(lsn pglogrepl.LSN, key internal.ChangeKey) posit
 	var commitTime int64
 	if key.Known() {
 		commit, seq = formatLSN(key.CommitLSN), key.Seq
-		if h.txInfo != nil {
+		if h.txInfo != nil && key.CommitLSN == h.currentChangeKey().CommitLSN {
 			// #447 re-review S2: the transaction the key's commit LSN names.
+			// Only when it is a real commit LSN: a drift marker's key can be
+			// one below its change's (#338), which names no transaction.
 			x, ct := h.txInfo()
 			xid, commitTime = x, ct.UnixMicro()
 		}

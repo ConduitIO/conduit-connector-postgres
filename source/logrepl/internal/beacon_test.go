@@ -89,25 +89,28 @@ func TestBeacons_Observe(t *testing.T) {
 	b := NewBeacons(nil, "slot", "abc")
 	p := b.record(0x100)
 
-	is.True(!b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Prefix: "other", Content: []byte(p.content), LSN: 0x180}, 0))
+	is.True(!b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Transactional: true, Prefix: "other", Content: []byte(p.content), LSN: 0x180}, 0))
+	// Beacons are transactional; the same content written outside a
+	// transaction is not one of this run's beacons.
+	is.True(!b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Prefix: BeaconPrefix, Content: []byte(p.content), LSN: 0x180}, 0))
 	// A valid beacon with another nonce (not one this run wrote) is ignored.
-	is.True(!b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Prefix: BeaconPrefix, Content: []byte(beaconContent("abc", "slot", "other", 0x100)), LSN: 0x180}, 0))
+	is.True(!b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Transactional: true, Prefix: BeaconPrefix, Content: []byte(beaconContent("abc", "slot", "other", 0x100)), LSN: 0x180}, 0))
 	is.Equal(b.Cap(), pglogrepl.LSN(0))
 
-	is.True(b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Prefix: BeaconPrefix, Content: []byte(p.content), LSN: 0x180}, 0))
+	is.True(b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Transactional: true, Prefix: BeaconPrefix, Content: []byte(p.content), LSN: 0x180}, 0))
 	is.Equal(b.Cap(), pglogrepl.LSN(0x100)) // the start, not the end the stream reports
 	is.Equal(b.lastEnd, pglogrepl.LSN(0x180))
 
 	// The same beacon again (a re-send after a reconnect) is not counted twice.
-	is.True(!b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Prefix: BeaconPrefix, Content: []byte(p.content), LSN: 0x180}, 0))
+	is.True(!b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Transactional: true, Prefix: BeaconPrefix, Content: []byte(p.content), LSN: 0x180}, 0))
 
 	// Older attempts stay recognised, newest first, up to maxBeaconAttempts.
 	var ps []pendingBeacon
 	for i := 0; i < maxBeaconAttempts+2; i++ {
 		ps = append(ps, b.record(pglogrepl.LSN(0x200+i)))
 	}
-	is.True(!b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Prefix: BeaconPrefix, Content: []byte(ps[0].content), LSN: 0x300}, 0)) // dropped
-	is.True(b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Prefix: BeaconPrefix, Content: []byte(ps[5].content), LSN: 0x300}, 0))
+	is.True(!b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Transactional: true, Prefix: BeaconPrefix, Content: []byte(ps[0].content), LSN: 0x300}, 0)) // dropped
+	is.True(b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Transactional: true, Prefix: BeaconPrefix, Content: []byte(ps[5].content), LSN: 0x300}, 0))
 	is.Equal(b.Cap(), ps[5].start)
 }
 
@@ -483,7 +486,7 @@ func TestBeacons_CommittedButEmitErrored_StillRaisesCap(t *testing.T) {
 			t.Fatal("emission did not finish")
 		}
 	}
-	ok := b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Prefix: BeaconPrefix, Content: []byte(written.content), LSN: 0x5100}, 0x1000)
+	ok := b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Transactional: true, Prefix: BeaconPrefix, Content: []byte(written.content), LSN: 0x5100}, 0x1000)
 	is.True(ok)
 	is.Equal(b.Cap(), pglogrepl.LSN(0x5000))
 	b.mu.Lock()
@@ -509,14 +512,14 @@ func TestBeacons_AbandonedBeaconsRearm(t *testing.T) {
 	is.Equal(b.Cap(), pglogrepl.LSN(0x2000)) // the probe holds the advance
 	// Delivered, but the slot was already reported past it (from before the
 	// probe): it cannot prove the slot, no re-arm.
-	is.True(b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Prefix: BeaconPrefix, Content: []byte(late.content), LSN: 0x2048}, 0x3000))
+	is.True(b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Transactional: true, Prefix: BeaconPrefix, Content: []byte(late.content), LSN: 0x2048}, 0x3000))
 	is.True(b.Abandoned())
 
 	b.mu.Lock()
 	b.inflight = true
 	b.mu.Unlock()
 	p := b.record(0x4000)
-	is.True(b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Prefix: BeaconPrefix, Content: []byte(p.content), LSN: 0x4048}, 0x3000))
+	is.True(b.observe(context.Background(), &pglogrepl.LogicalDecodingMessage{Transactional: true, Prefix: BeaconPrefix, Content: []byte(p.content), LSN: 0x4048}, 0x3000))
 	is.True(!b.Abandoned())
 	is.Equal(b.Cap(), pglogrepl.LSN(0x4000))
 
