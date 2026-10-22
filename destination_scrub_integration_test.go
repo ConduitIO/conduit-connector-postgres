@@ -39,8 +39,8 @@ func TestDestination_Write_ErrorsDoNotContainRowValues(t *testing.T) {
 		"value does not encode":    {"", opencdc.StructuredData{"qty": secret}},
 		"unique violation":         {"CREATE UNIQUE INDEX ON %[1]q (note)", opencdc.StructuredData{"note": secret}},
 		"check failure quotes row": {"ALTER TABLE %[1]q ADD CHECK (note <> '" + secret + "')", opencdc.StructuredData{"note": secret}},
-		"trigger raise": {`CREATE FUNCTION %[1]q_f() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'rejected ` + secret + `'; END $$;
-			CREATE TRIGGER t BEFORE INSERT ON %[1]q FOR EACH ROW EXECUTE FUNCTION %[1]q_f()`, opencdc.StructuredData{"note": "x"}},
+		"trigger raise": {`CREATE FUNCTION "%[1]s_f"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'rejected ` + secret + `'; END $$;
+			CREATE TRIGGER t BEFORE INSERT ON %[1]q FOR EACH ROW EXECUTE FUNCTION "%[1]s_f"()`, opencdc.StructuredData{"note": "x"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			is := is.New(t)

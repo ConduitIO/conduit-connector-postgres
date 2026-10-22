@@ -45,6 +45,13 @@ func TestScrubExecError(t *testing.T) {
 			err := scrubExecError(pgErr)
 			is.True(strings.HasPrefix(err.Error(), "SQLSTATE "+pgErr.Code))
 			is.True(!strings.Contains(err.Error(), "SECRET"))
+			// Which cases the scrub is needed for: pgconn's Error() prints the
+			// message but not the detail, so the unique and CHECK cases
+			// (value only in the detail) pass without the scrub too; they
+			// guard against pgx printing the detail one day. Every other case
+			// prints the value without it, so it fails without the scrub.
+			detailOnly := pgErr.Code == "23505" || pgErr.Code == "23514"
+			is.Equal(strings.Contains(pgErr.Error(), "SECRET"), !detailOnly)
 			var got *pgconn.PgError
 			is.True(errors.As(err, &got)) // the chain is kept
 			is.Equal(got.Code, pgErr.Code)
