@@ -484,6 +484,7 @@ func (h *CDCHandler) handleDelete(
 	// and acks), so the row would silently survive. Open refuses tables whose
 	// replica identity does not cover the key column; this catches the same
 	// condition if the identity is changed while the pipeline runs.
+	// guard: logrepl-delete-null-key-refused tests=^TestHandler_Delete_NullKeyHalts$
 	if err := h.requireDeleteKey(key, rel.RelationName, lsn); err != nil {
 		return err
 	}

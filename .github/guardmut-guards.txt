@@ -1,0 +1,9 @@
+# Every `// guard:` marker in source/logrepl. tools/guardmut fails when a name
+# here has no marker (deleted or renamed) and when a marker is missing here. The
+# workflow also fails a PR that removes a line unless its body has
+# `guardmut-removed: <reason>`. Sorted; one name per line.
+logrepl-checkslot-refusal
+logrepl-delete-null-key-refused
+logrepl-gap-accepted-warning
+logrepl-import-slot-ahead-refused
+logrepl-slot-invalidated-refused

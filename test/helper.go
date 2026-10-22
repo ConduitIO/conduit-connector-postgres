@@ -36,28 +36,31 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// RepmgrConnString is a replication user connection string for the test postgres.
-var RepmgrConnString = "postgres://repmgr:repmgrmeroxa@127.0.0.1:" + testPort("PG_TEST_PORT", "5433") + "/meroxadb?sslmode=disable"
-
-// RegularConnString is a non-replication user connection string for the test postgres.
-var RegularConnString = "postgres://meroxauser:meroxapass@127.0.0.1:" + testPort("PG_TEST_PORT", "5433") + "/meroxadb?sslmode=disable"
-
-// testPort returns the host port of a test service: the environment variable
-// env (also read by test/docker-compose.yml) or def. It lets the suite run
-// next to another stack that holds the default ports.
-func testPort(env, def string) string {
-	if p := os.Getenv(env); p != "" {
-		return p
+// envPort returns the value of the environment variable name, or def. The
+// compose stack in test/docker-compose.yml publishes the same variables, so a
+// suite that starts its own project (test/externalstate) can run next to a
+// developer's `make test` stack without sharing a port.
+func envPort(name, def string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
 	}
 	return def
 }
+
+// RepmgrConnString is a replication user connection string for the test postgres
+// (port CONDUIT_PG_TEST_PORT, default 5433).
+var RepmgrConnString = "postgres://repmgr:repmgrmeroxa@127.0.0.1:" + envPort("CONDUIT_PG_TEST_PORT", "5433") + "/meroxadb?sslmode=disable"
+
+// RegularConnString is a non-replication user connection string for the test postgres.
+var RegularConnString = "postgres://meroxauser:meroxapass@127.0.0.1:" + envPort("CONDUIT_PG_TEST_PORT", "5433") + "/meroxadb?sslmode=disable"
 
 // BouncerConnString connects the regular user through the test PgBouncer
 // (test/docker-compose.yml, test/pgbouncer/pgbouncer.ini): transaction pooling,
 // two server connections, and prepared-statement tracking
 // (max_prepared_statements=200), so prepared statements are shared between the
 // clients of a server connection.
-var BouncerConnString = "postgres://meroxauser:meroxapass@127.0.0.1:" + testPort("PGBOUNCER_TEST_PORT", "6432") + "/meroxadb?sslmode=disable"
+// The port is CONDUIT_PG_TEST_BOUNCER_PORT, default 6432.
+var BouncerConnString = "postgres://meroxauser:meroxapass@127.0.0.1:" + envPort("CONDUIT_PG_TEST_BOUNCER_PORT", "6432") + "/meroxadb?sslmode=disable"
 
 // TestTableAvroSchemaV1 is the Avro schema representation of the test table
 // defined through testTableCreateQuery.
