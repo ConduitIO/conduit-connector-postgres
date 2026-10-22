@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/matryer/is"
 	"github.com/rs/zerolog"
@@ -847,4 +849,405 @@ func TestSlotIdentity_WALHistoryUnverified_WarnsOnlyForLegacy(t *testing.T) {
 	is.True(strings.Contains(logs.String(), `"level":"warn","code":"`+string(CodeWALHistoryUnverified)))
 	is.True(strings.Contains(logs.String(), internal.IdentityFingerprint(sysid)))
 	is.True(!strings.Contains(logs.String(), sysid)) // a fingerprint, not the identifier
+}
+
+// #447 re-review S2: a covered resume (the slot at or below the position's
+// commit) also checks that the commit LSN still names the position's
+// transaction: the slot decodes it again, with the same xid and commit
+// timestamp (or pg_walinspect reads its commit record). A position whose
+// transaction is not there (here: its xid changed, as on a server restored
+// on the same timeline whose new WAL reuses the LSNs; the real restore is
+// test/restore) is refused with wal_history_changed.
+func TestSlotIdentity_CoveredResume_VerifiesTheTransaction(t *testing.T) {
+	for _, walinspect := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pg_walinspect=%v", walinspect), func(t *testing.T) {
+			ctx := test.Context(t)
+			ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+			defer cancel()
+			is := is.New(t)
+			pool, table := slotIDSetup(ctx, t)
+			if walinspect {
+				info, err := internal.ReadServerInfo(ctx, pool)
+				is.NoErr(err)
+				if info.Version < 150000 {
+					t.Skip("pg_walinspect needs Postgres 15")
+				}
+				if _, err := pool.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS pg_walinspect"); err != nil {
+					t.Skipf("pg_walinspect not available: %v", err)
+				}
+				t.Cleanup(func() { _, _ = pool.Exec(context.Background(), "DROP EXTENSION IF EXISTS pg_walinspect") })
+			}
+
+			pos := slotGapRun1(ctx, t, pool, table)
+			pp := mustParse(t, pos)
+			is.True(pp.TxXid != 0)
+			is.True(pp.TxCommitTime != 0)
+			// The run stopped right after its ack, so the slot is at or below
+			// the commit: covered.
+			is.True(slotIDConfirmed(ctx, t, pool, table) <= slotIDBound(t, pos))
+
+			// The refusals first: they change nothing, so the slot stays
+			// covered for the real position after them.
+			for name, f := range map[string]func(*position.Position){
+				"other xid":         func(p *position.Position) { p.TxXid++ },
+				"other commit time": func(p *position.Position) { p.TxCommitTime++ },
+			} {
+				if walinspect && name == "other commit time" {
+					continue // pg_walinspect does not report the commit time; the xid decides
+				}
+				bad := slotIDRewrite(t, pos, f)
+				_, err := NewCombinedIterator(ctx, pool, slotGapConfig(table, bad, false))
+				is.Equal(CodeOf(err), CodeWALHistoryChanged)
+				is.True(strings.Contains(err.Error(), "restored"))
+			}
+			is.True(slotIDConfirmed(ctx, t, pool, table) <= slotIDBound(t, pos))
+
+			lctx, logs := slotIDLogs(ctx)
+			it, err := NewCombinedIterator(lctx, pool, slotGapConfig(table, pos, false))
+			is.NoErr(err) // the real transaction: accepted
+			is.NoErr(it.Teardown(ctx))
+			is.True(strings.Contains(logs.String(), identityCovered.String()))
+		})
+	}
+}
+
+// #447 re-review S3: a legacy position (no WAL history) still gets the check
+// that needs none: a position past the server's current WAL is refused.
+func TestSlotIdentity_LegacyPositionPastCurrentWAL_Refused(t *testing.T) {
+	ctx := test.Context(t)
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	is := is.New(t)
+	pool, table := slotIDSetup(ctx, t)
+	pos := slotGapRun1(ctx, t, pool, table)
+	var current pglogrepl.LSN
+	is.NoErr(pool.QueryRow(ctx, "SELECT pg_current_wal_lsn()").Scan(&current))
+	legacy := slotIDLegacy(t, slotIDRewrite(t, pos, func(p *position.Position) {
+		ahead := (current + 64<<20).String()
+		p.LastLSN, p.TxCommitLSN = ahead, ahead
+	}))
+	is.True(!strings.Contains(string(legacy), "system_identifier"))
+	lctx, logs := slotIDLogs(ctx)
+	it, err := NewCombinedIterator(lctx, pool, slotGapConfig(table, legacy, false))
+	if err == nil {
+		_ = it.Teardown(ctx)
+		t.Fatal("SILENT SKIP: a legacy position past the server's WAL was accepted")
+	}
+	is.Equal(CodeOf(err), CodeWALHistoryChanged)
+	is.Equal(strings.Count(logs.String(), string(CodeWALHistoryUnverified)), 1)
+}
+
+// #447 re-review S1: a standby never proves a position's identity. A slot it
+// can decode is a slot of the standby, never the primary's, and it would find
+// the beacons the primary wrote for its own slot (reproduced on 17 with a
+// standby-local slot under the same name: test/failover). The check refuses
+// without peeking. Driven here with the standby's ServerInfo against a
+// primary slot whose beacon is right there.
+func TestSlotIdentity_StandbyNeverProvesAnIdentity(t *testing.T) {
+	ctx := test.Context(t)
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	is := is.New(t)
+	pool, table := slotIDSetup(ctx, t)
+	pos := slotGapRun1(ctx, t, pool, table)
+	slotGapInsert(ctx, t, pool, table, "noise")
+	slotGapAdvance(ctx, t, pool, table) // past the bound: the beacon would be the proof
+	pp := mustParse(t, pos)
+	lsn, _ := pp.LSN()
+	commit, _ := pp.TxCommit()
+	c := CDCConfig{LSN: lsn, TxCommitLSN: commit, TxSeq: pp.TxSeq, SlotName: table, PublicationName: table, StartPosition: pp}
+	info, err := internal.ReadServerInfo(ctx, pool)
+	is.NoErr(err)
+	for _, v := range []int{160000, 170000, info.Version} {
+		res, err := checkSlotIdentity(ctx, pool, c, internal.ServerInfo{Version: v, InRecovery: true})
+		is.NoErr(err)
+		is.Equal(res.outcome, identityUnprovable)
+	}
+}
+
+// #447 re-review S4: beacons that keep failing are abandoned (the slot
+// advances uncapped, the disk is safe) and a restart in that state is
+// refused. The connector keeps trying: once beacons can be written again the
+// first one delivered re-arms the identity, and a restart is accepted again.
+// Driven by revoking pg_logical_emit_message in a database of its own.
+func TestSlotIdentity_BeaconsAbandonedThenRecover(t *testing.T) {
+	ctx := test.Context(t)
+	ctx, cancel := context.WithTimeout(ctx, 300*time.Second)
+	defer cancel()
+	is := is.New(t)
+	admin := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	requireIdentityServer(ctx, t, admin)
+	name := test.RandomIdentifier(t)
+	_, err := admin.Exec(ctx, fmt.Sprintf(`CREATE ROLE %s LOGIN REPLICATION PASSWORD 'pw'`, name))
+	is.NoErr(err)
+	_, err = admin.Exec(ctx, fmt.Sprintf(`CREATE DATABASE %s OWNER %s`, name, name))
+	is.NoErr(err)
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = admin.Exec(bg, "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name=$1", name)
+		_, _ = admin.Exec(bg, fmt.Sprintf(`DROP DATABASE IF EXISTS %s WITH (FORCE)`, name))
+		_, _ = admin.Exec(bg, fmt.Sprintf(`DROP ROLE IF EXISTS %s`, name))
+	})
+	dbAdmin := test.ConnectPool(ctx, t, strings.Replace(test.RepmgrConnString, "/meroxadb?", "/"+name+"?", 1))
+	info, err := internal.ReadServerInfo(ctx, dbAdmin)
+	is.NoErr(err)
+	sig := internal.EmitMessageSignature(info.Version)
+	for _, q := range []string{
+		fmt.Sprintf("CREATE TABLE %s (id bigserial PRIMARY KEY, key text)", name),
+		fmt.Sprintf("ALTER TABLE %s OWNER TO %s", name, name),
+		"CREATE TABLE noise (id bigserial PRIMARY KEY, v text)",
+		"GRANT ALL ON noise TO PUBLIC", "GRANT ALL ON SEQUENCE noise_id_seq TO PUBLIC",
+	} {
+		_, err = dbAdmin.Exec(ctx, q)
+		is.NoErr(err)
+	}
+	pool := test.ConnectPool(ctx, t, strings.Replace(strings.Replace(test.RepmgrConnString, "/meroxadb?", "/"+name+"?", 1), "repmgr:repmgrmeroxa", name+":pw", 1))
+	conf := Config{Tables: []string{name}, TableKeys: map[string]string{name: "id"},
+		PublicationName: name, SlotName: name, BatchSize: 2, BeaconFailureTimeout: 2 * time.Second}
+	ins := func(k string) {
+		t.Helper()
+		_, err := pool.Exec(ctx, fmt.Sprintf("INSERT INTO %s (key) VALUES ($1)", name), k)
+		is.NoErr(err)
+	}
+	advancedPast := func(b pglogrepl.LSN) bool {
+		t.Helper()
+		for deadline := time.Now().Add(90 * time.Second); time.Now().Before(deadline); {
+			_, _ = pool.Exec(ctx, "INSERT INTO noise (v) VALUES (repeat('x', 600))")
+			if slotIDConfirmed(ctx, t, admin, name) > b+1024 {
+				return true
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		return false
+	}
+	run := func(p opencdc.Position) (*CombinedIterator, opencdc.Position, *syncBuffer) {
+		t.Helper()
+		lctx, logs := slotIDLogs(ctx)
+		c := conf
+		c.Position = p
+		it, err := NewCombinedIterator(lctx, pool, c)
+		is.NoErr(err)
+		ins(fmt.Sprintf("k-%d", time.Now().UnixNano()))
+		recs, err := it.NextN(ctx, 1)
+		is.NoErr(err)
+		is.NoErr(it.Ack(ctx, recs[0].Position))
+		return it, recs[0].Position, logs
+	}
+
+	// 1. Abandoned, then stopped before beacons work again: refused.
+	it, pos, logs := run(nil)
+	_, err = dbAdmin.Exec(ctx, "REVOKE EXECUTE ON FUNCTION "+sig+" FROM PUBLIC")
+	is.NoErr(err)
+	is.True(advancedPast(slotIDBound(t, pos))) // uncapped: the disk is safe
+	is.True(strings.Contains(logs.String(), `"level":"error","code":"`+internal.CodeBeaconUnavailable))
+	is.NoErr(it.Teardown(ctx))
+	_, err = dbAdmin.Exec(ctx, "GRANT EXECUTE ON FUNCTION "+sig+" TO PUBLIC")
+	is.NoErr(err)
+	c := conf
+	c.Position = pos
+	_, err = NewCombinedIterator(ctx, pool, c)
+	is.Equal(CodeOf(err), CodeSlotReplaced) // before a re-arm: refused
+
+	// 2. Abandoned while running, then beacons work again: the identity
+	// re-arms, and a restart is accepted.
+	c.AllowWALGap = true // get past the refusal above once
+	c.Position = pos
+	lctx, logs := slotIDLogs(ctx)
+	it, err = NewCombinedIterator(lctx, pool, c)
+	is.NoErr(err)
+	ins("after-takeover")
+	recs, err := it.NextN(ctx, 1)
+	is.NoErr(err)
+	is.NoErr(it.Ack(ctx, recs[0].Position))
+	pos2 := recs[0].Position
+	_, err = dbAdmin.Exec(ctx, "REVOKE EXECUTE ON FUNCTION "+sig+" FROM PUBLIC")
+	is.NoErr(err)
+	is.True(advancedPast(slotIDBound(t, pos2)))
+	is.True(strings.Contains(logs.String(), `"level":"error","code":"`+internal.CodeBeaconUnavailable))
+	_, err = dbAdmin.Exec(ctx, "GRANT EXECUTE ON FUNCTION "+sig+" TO PUBLIC")
+	is.NoErr(err)
+	for deadline := time.Now().Add(90 * time.Second); !strings.Contains(logs.String(), "can be proven again"); {
+		if time.Now().After(deadline) {
+			t.Fatal("beacons did not re-arm after EXECUTE was granted again")
+		}
+		_, _ = pool.Exec(ctx, "INSERT INTO noise (v) VALUES (repeat('x', 600))")
+		time.Sleep(500 * time.Millisecond)
+	}
+	is.NoErr(it.Teardown(ctx))
+	c.AllowWALGap = false
+	c.Position = pos2
+	lctx, logs = slotIDLogs(ctx)
+	it, err = NewCombinedIterator(lctx, pool, c)
+	is.NoErr(err) // re-armed: proven again
+	is.NoErr(it.Teardown(ctx))
+	is.True(strings.Contains(logs.String(), identityBeacon.String()) || strings.Contains(logs.String(), identityCovered.String()))
+}
+
+// #447 re-review S5 (M1), integration: a beacon that committed although
+// Emit returned an error still raises the cap when the stream delivers it.
+func TestSlotIdentity_CommittedButEmitErrored_StreamRaisesCap(t *testing.T) {
+	ctx := test.Context(t)
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	is := is.New(t)
+	pool, table := slotIDSetup(ctx, t)
+	it, err := NewCombinedIterator(ctx, pool, slotGapConfig(table, opencdc.Position{}, false))
+	is.NoErr(err)
+	defer func() { _ = it.Teardown(context.Background()) }()
+	b := it.cdcIterator.sub.Beacons
+	for deadline := time.Now().Add(20 * time.Second); b.Cap() == 0; { // the stamp came back
+		if time.Now().After(deadline) {
+			t.Fatal("the stamp never came back")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	before := b.Cap()
+	slotGapInsert(ctx, t, pool, table, "wal") // so the next beacon starts later
+	errLost := errors.New("connection lost while reading the COMMIT response")
+	internal.AfterBeaconCommit = func() error { return errLost }
+	t.Cleanup(func() { internal.AfterBeaconCommit = nil })
+	is.True(errors.Is(b.Emit(ctx), errLost))
+	internal.AfterBeaconCommit = nil
+	for deadline := time.Now().Add(20 * time.Second); b.Cap() <= before; {
+		if time.Now().After(deadline) {
+			t.Fatal("the committed beacon did not raise the cap")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// #447 re-review N1: the guard identifies this run's walsender by PID and
+// backend_start. A different walsender that holds the replacement slot
+// under the same PID (PID reuse, simulated by pointing the old run at the
+// impostor's PID with the old walsender's backend_start) is not it: the
+// beacon is refused and the restart is refused. From the review's scratch
+// test, which accepted the replaced slot before this.
+func TestSlotIdentity_PIDReuse_Refused(t *testing.T) {
+	ctx := test.Context(t)
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	is := is.New(t)
+	pool, table := slotIDSetup(ctx, t)
+
+	it, err := NewCombinedIterator(ctx, pool, slotGapConfig(table, opencdc.Position{}, false))
+	is.NoErr(err)
+	slotGapInsert(ctx, t, pool, table, "acked")
+	recs, err := it.NextN(ctx, 1)
+	is.NoErr(err)
+	is.NoErr(it.Ack(ctx, recs[0].Position))
+	pos := recs[0].Position
+	var oldStart time.Time
+	is.NoErr(pool.QueryRow(ctx, `SELECT a.backend_start FROM pg_replication_slots s JOIN pg_stat_activity a ON a.pid = s.active_pid
+		WHERE s.slot_name = $1`, table).Scan(&oldStart))
+
+	_, err = pool.Exec(ctx, "SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots WHERE slot_name = $1", table)
+	is.NoErr(err)
+	slotGapWaitInactive(ctx, t, pool, table)
+	slotIDRecreate(ctx, t, pool, table, "lost-1", "lost-2")
+
+	// An impostor walsender on the replacement slot.
+	cfg := pool.Config().ConnConfig.Config.Copy()
+	cfg.RuntimeParams["replication"] = "database"
+	rc, err := pgconn.ConnectConfig(ctx, cfg)
+	is.NoErr(err)
+	is.NoErr(pglogrepl.StartReplication(ctx, rc, table, 0, pglogrepl.StartReplicationOptions{
+		PluginArgs: []string{"proto_version '1'", fmt.Sprintf("publication_names '%s'", table)}}))
+	var pid int32
+	for i := 0; i < 50 && pid == 0; i++ {
+		_ = pool.QueryRow(ctx, "SELECT coalesce(active_pid,0) FROM pg_replication_slots WHERE slot_name=$1", table).Scan(&pid)
+		time.Sleep(100 * time.Millisecond)
+	}
+	is.Equal(int64(pid), int64(rc.PID()))
+	it.cdcIterator.sub.Beacons.SetStreamHolder(rc.PID(), oldStart) // the old walsender's PID, reused
+	err = it.cdcIterator.sub.Beacons.Emit(ctx)
+	is.True(errors.Is(err, internal.ErrSlotNotHeld))
+	_ = rc.Close(ctx)
+	_ = it.Teardown(ctx)
+	slotGapWaitInactive(ctx, t, pool, table)
+
+	slotGapInsert(ctx, t, pool, table, "after")
+	it2, err := NewCombinedIterator(ctx, pool, slotGapConfig(table, pos, false))
+	if err == nil {
+		slotGapDiagnose(ctx, t, pool, table, it2)
+	}
+	is.Equal(CodeOf(err), CodeSlotReplaced)
+}
+
+// #447 re-review S1, on a real standby (run by test/failover/run.sh, which
+// sets FAILOVER_PRIMARY_URL and FAILOVER_STANDBY_URL; skipped otherwise). An
+// operator creates a slot on the standby under the pipeline's slot name,
+// after a row the pipeline never delivered. The standby decodes the beacons
+// the primary wrote for its own slot, so a beacon search there "found" one
+// (the review reproduced it on 17). The check must refuse it unproven.
+func TestSlotIdentity_StandbyLocalSlot_Refused(t *testing.T) {
+	pu, su := os.Getenv("FAILOVER_PRIMARY_URL"), os.Getenv("FAILOVER_STANDBY_URL")
+	if pu == "" || su == "" {
+		t.Skip("needs the failover stack: test/failover/run.sh")
+	}
+	ctx := test.Context(t)
+	ctx, cancel := context.WithTimeout(ctx, 240*time.Second)
+	defer cancel()
+	is := is.New(t)
+	primary := test.ConnectPool(ctx, t, pu)
+	standby := test.ConnectPool(ctx, t, su)
+	table := fmt.Sprintf("standby_local_%d", time.Now().UnixNano()%1e9)
+	test.SetupEmptyTestTableWithName(ctx, t, primary, table)
+	t.Cleanup(func() {
+		_, _ = standby.Exec(context.Background(), "SELECT pg_drop_replication_slot($1)", table)
+		_ = Cleanup(context.Background(), CleanupConfig{URL: pu, SlotName: table, PublicationName: table})
+	})
+
+	pos := slotGapRun1(ctx, t, primary, table) // run 1 on the primary
+	bound := slotIDBound(t, pos)
+	slotGapInsert(ctx, t, primary, table, "lost") // never delivered
+
+	// A slot on the standby under the same name (logical decoding on a
+	// standby needs a standby snapshot from the primary).
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(200 * time.Millisecond):
+				_, _ = primary.Exec(context.Background(), "SELECT pg_log_standby_snapshot()")
+			}
+		}
+	}()
+	_, err := standby.Exec(ctx, "SELECT pg_create_logical_replication_slot($1, 'pgoutput')", table)
+	close(stop)
+	is.NoErr(err)
+	local := slotIDConfirmed(ctx, t, standby, table)
+	is.True(local > bound) // created after the undelivered row
+
+	// Run 2 on the primary stamps the primary's slot; the standby replays it.
+	it, err := NewCombinedIterator(ctx, primary, slotGapConfig(table, pos, false))
+	is.NoErr(err)
+	time.Sleep(2 * time.Second)
+	is.NoErr(it.Teardown(ctx))
+	var end pglogrepl.LSN
+	is.NoErr(primary.QueryRow(ctx, "SELECT pg_current_wal_lsn()").Scan(&end))
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		var r pglogrepl.LSN
+		is.NoErr(standby.QueryRow(ctx, "SELECT pg_last_wal_replay_lsn()").Scan(&r))
+		if r >= end {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the standby did not replay")
+		}
+	}
+
+	server, err := internal.ReadServerInfo(ctx, standby)
+	is.NoErr(err)
+	is.True(server.InRecovery)
+	pp := mustParse(t, pos)
+	lsn, _ := pp.LSN()
+	commit, _ := pp.TxCommit()
+	res, err := checkSlotIdentity(ctx, standby, CDCConfig{
+		LSN: lsn, TxCommitLSN: commit, TxSeq: pp.TxSeq, SlotName: table, PublicationName: table, StartPosition: pp,
+	}, server)
+	is.NoErr(err)
+	t.Logf("standby-local slot at %s, position bound %s: %s", local, bound, res.outcome)
+	is.Equal(res.outcome, identityUnprovable) // before the fix: "identity beacon found"
 }

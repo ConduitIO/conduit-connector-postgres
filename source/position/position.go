@@ -156,6 +156,18 @@ type Position struct {
 	// position written before format version 4.
 	SystemIdentifier string `json:"system_identifier,omitempty"`
 	Timeline         int32  `json:"timeline,omitempty"`
+
+	// TxXid and TxCommitTime are the xid and the commit timestamp (Unix
+	// microseconds) of the transaction that commits at TxCommitLSN, from
+	// pgoutput's BEGIN message (#447 re-review S2). With TxCommitLSN they
+	// name one transaction of one WAL history: a resume that the position's
+	// bound covers checks that the slot decodes exactly this transaction at
+	// TxCommitLSN, which a server restored to an earlier point on the same
+	// timeline, whose new WAL reuses the LSNs, does not
+	// (logrepl.verifyCoveredTransaction). Set with the change key; empty on
+	// snapshot positions and on positions written before this check.
+	TxXid        uint32 `json:"tx_xid,omitempty"`
+	TxCommitTime int64  `json:"tx_commit_time,omitempty"`
 }
 
 type SnapshotPositions map[string]SnapshotPosition

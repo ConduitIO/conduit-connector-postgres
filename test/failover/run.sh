@@ -34,14 +34,24 @@ dc() { docker compose -p "$project" -f "$compose_file" "$@"; }
 cleanup() { dc down --volumes --remove-orphans >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-dc up --quiet-pull -d --wait --wait-timeout 300 primary standby
-
-primary_port=$(dc port primary 5432 | sed 's/.*://')
-standby_port=$(dc port standby 5432 | sed 's/.*://')
-export FAILOVER_PRIMARY_URL="postgres://postgres:postgres@127.0.0.1:$primary_port/postgres?sslmode=disable"
-export FAILOVER_STANDBY_URL="postgres://postgres:postgres@127.0.0.1:$standby_port/postgres?sslmode=disable"
+up() {
+  dc up --quiet-pull -d --wait --wait-timeout 300 primary standby
+  primary_port=$(dc port primary 5432 | sed 's/.*://')
+  standby_port=$(dc port standby 5432 | sed 's/.*://')
+  export FAILOVER_PRIMARY_URL="postgres://postgres:postgres@127.0.0.1:$primary_port/postgres?sslmode=disable"
+  export FAILOVER_STANDBY_URL="postgres://postgres:postgres@127.0.0.1:$standby_port/postgres?sslmode=disable"
+}
 export FAILOVER_SYNC_STANDBY_SLOTS=${FAILOVER_SYNC_STANDBY_SLOTS-standby1}
-
 cd "$root"
+
+# A slot on the standby is never the primary's (#447 re-review S1). On a
+# stack of its own: a standby-local logical slot disturbs the slot sync the
+# failover test then waits for.
+up
+# shellcheck disable=SC2086
+go test -count=1 -timeout 5m ${GOTEST_FLAGS:--v} -run '^TestSlotIdentity_StandbyLocalSlot_Refused$' ./source/logrepl/
+dc down --volumes --remove-orphans >/dev/null 2>&1
+
+up
 # shellcheck disable=SC2086
 go test -tags failover -count=1 -timeout 15m ${GOTEST_FLAGS:--v} ./test/failover/...

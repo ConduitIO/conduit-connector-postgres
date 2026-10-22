@@ -16,7 +16,9 @@ package logrepl
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -61,8 +63,9 @@ func historyBound(c CDCConfig) pglogrepl.LSN {
 //   - a server whose WAL is behind the position: restored from a backup,
 //     snapshot or VM image taken before the position, on the same timeline.
 //
-// A position without a system identifier (written before this check) is not
-// checked; the run writes the server's history into its positions.
+// A position without a system identifier (written before this check) gets
+// only the last check, and a wal_history_unverified warning; the run writes
+// the server's history into its positions.
 //
 // Invariant 3: in all of these the slot and its beacons can look fine (a
 // restored slot is a genuine earlier state of this run's slot), and the
@@ -70,6 +73,8 @@ func historyBound(c CDCConfig) pglogrepl.LSN {
 // LSNs.
 func checkWALHistory(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, h internal.WALHistory) error {
 	p := c.StartPosition
+	bound := historyBound(c)
+	var reason string
 	if p.SystemIdentifier == "" {
 		// The same bootstrap as a legacy slot identity: nothing to compare
 		// with on this run, so say so instead of passing silently.
@@ -84,11 +89,11 @@ func checkWALHistory(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, h int
 				"another server at the same address would go unnoticed). Protection starts once the next position is " +
 				"saved: it names this server's history. If the source database was restored or replaced since the " +
 				"pipeline last delivered a record, re-snapshot the pipeline")
-		return nil
+		// #447 S3: the one check that needs no history in the position
+		// still applies below (WAL behind the position).
 	}
-	bound := historyBound(c)
-	var reason string
 	switch {
+	case p.SystemIdentifier == "":
 	case p.SystemIdentifier != h.SystemID:
 		reason = fmt.Sprintf("the server's system identifier is %s, but the saved position was written on %s: this is "+
 			"another cluster (pg_upgrade, a different server at the same address, or a backup restored as a new cluster)",
@@ -138,5 +143,86 @@ func checkWALHistory(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, h int
 			"start once with `logrepl.allowWALGap: true` and remove it after the first record was delivered. Otherwise " +
 			"(a restore, point-in-time recovery, a failover to a lagging standby) re-snapshot: stop the pipeline, delete this " +
 			"source connector and create it again so it has no position",
+	}
+}
+
+// verifyCoveredTransaction checks a resume that the saved position's bound
+// covers (identityCovered) against the WAL itself (#447 re-review S2).
+//
+// Invariant 3: "confirmed_flush_lsn at or below the position's commit LSN
+// loses nothing" holds only if that LSN still names the position's
+// transaction. A server restored on the same timeline to a point before the
+// position (a volume snapshot, a VM image) writes new transactions at the
+// same LSNs; once its WAL has passed the bound, neither the system
+// identifier, the timeline nor the WAL position tells it apart, and the
+// restored slot is genuinely covered. The position's transaction tells: the
+// slot decodes the transaction that commits at TxCommitLSN again (its
+// commit is at or after confirmed_flush_lsn), so the first transaction it
+// decodes from the bound on must be that one: the same commit LSN, xid and
+// commit timestamp. pg_walinspect, when installed and usable, reads the
+// commit record at TxCommitLSN directly instead.
+//
+// False positive: on Postgres 15+ pgoutput skips a transaction with no
+// changes for the publication, so a publication (or row filter) changed
+// since the position can hide the transaction; the start is then refused
+// with wal_history_changed, and logrepl.allowWALGap accepts it.
+func verifyCoveredTransaction(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) error {
+	p := c.StartPosition
+	if p.TxXid == 0 || c.TxCommitLSN == 0 {
+		return nil // written before this check, or no transaction to name
+	}
+	timeout := c.IdentityCheckTimeout
+	if timeout <= 0 {
+		timeout = defaultIdentityCheckTimeout
+	}
+	pctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	want := internal.TxAt{FinalLSN: c.TxCommitLSN, Xid: p.TxXid, CommitTime: time.UnixMicro(p.TxCommitTime)}
+	var got internal.TxAt
+	var ok bool
+	var how string
+	got, ok, err := internal.CommitRecordAt(pctx, pool, c.TxCommitLSN)
+	switch {
+	case errors.Is(err, internal.ErrWALInspectUnavailable):
+		how = "the slot decodes"
+		got, ok, err = internal.FirstTxFrom(pctx, pool, c.SlotName, c.PublicationName, c.TxCommitLSN)
+		if err != nil {
+			return fmt.Errorf("failed to check the saved position's transaction: %w", err)
+		}
+	case err != nil:
+		return fmt.Errorf("failed to check the saved position's transaction: %w", err)
+	default:
+		how = "the WAL holds (pg_walinspect)"
+		got.CommitTime = want.CommitTime // pg_walinspect does not report it; xid and LSN decide
+	}
+	if ok && got.FinalLSN == want.FinalLSN && got.Xid == want.Xid && got.CommitTime.Equal(want.CommitTime) {
+		return nil
+	}
+	var seen string
+	if ok {
+		seen = fmt.Sprintf("the first transaction %s from there commits at %s with xid %d at %s",
+			how, got.FinalLSN, got.Xid, got.CommitTime.UTC().Format(time.RFC3339Nano))
+	} else {
+		seen = "no transaction " + how + " from there"
+	}
+	reason := fmt.Sprintf("the saved position's transaction (xid %d, committed at LSN %s at %s) is not in this server's WAL: %s. "+
+		"The server was restored to an earlier point (a backup, snapshot or VM image) and its new WAL reuses those LSNs. "+
+		"(On Postgres 15+ a publication or row filter changed since the position can also hide the transaction.)",
+		want.Xid, want.FinalLSN, want.CommitTime.UTC().Format(time.RFC3339Nano), seen)
+	if c.AllowWALGap {
+		sdk.Logger(ctx).Warn().
+			Str("code", string(CodeWALHistoryChanged)).
+			Str("slot", c.SlotName).
+			Msg("WAL HISTORY CHANGE ACCEPTED (logrepl.allowWALGap): " + reason)
+		return nil
+	}
+	return &SlotError{
+		Code:    CodeWALHistoryChanged,
+		Path:    slotNamePath,
+		Message: fmt.Sprintf("the pipeline's saved position (%s) was written on another WAL history: %s", describeSavedPosition(c), reason),
+		Fix: "Re-snapshot: stop the pipeline, delete this source connector and create it again so it has no position. " +
+			"If the publication or its row filter was changed since the last delivered record and the database was not " +
+			"restored, start once with `logrepl.allowWALGap: true` and remove it after a record was delivered",
 	}
 }

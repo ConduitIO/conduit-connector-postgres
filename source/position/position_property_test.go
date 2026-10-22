@@ -66,6 +66,10 @@ func genPosition(t *rapid.T) Position {
 		TxSeq:                   rapid.Uint64().Draw(t, "tx seq"),
 		SlotIdentity:            genSlotIdentity(t),
 	}
+	if p.TxCommitLSN != "" && rapid.Bool().Draw(t, "tx identity set") {
+		p.TxXid = rapid.Uint32Range(3, 1<<31).Draw(t, "tx xid")
+		p.TxCommitTime = rapid.Int64Range(1, 1<<53).Draw(t, "tx commit time")
+	}
 	if rapid.Bool().Draw(t, "wal history set") {
 		p.SystemIdentifier = strconv.FormatUint(rapid.Uint64().Draw(t, "system identifier"), 10)
 		p.Timeline = rapid.Int32Range(1, 1<<30).Draw(t, "timeline")

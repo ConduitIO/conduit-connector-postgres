@@ -1,0 +1,32 @@
+# Stack for the same-timeline restore test (test/restore, #447 re-review
+# S2). Run it only through test/restore/run.sh, which gives it a unique
+# compose project name, snapshots and restores the data volume between the
+# test's phases, and removes everything with `down -v`. Published on an
+# ephemeral loopback port.
+services:
+  pg:
+    image: ${PG_IMAGE:-postgres:17}
+    ports:
+      - "127.0.0.1::5432"
+    environment:
+      POSTGRES_PASSWORD: postgres
+      # A data directory on the named volume below, which run.sh snapshots
+      # and restores. (The images' own VOLUME would hold it in an anonymous
+      # volume otherwise.)
+      PGDATA: /pgvol/data
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=20
+      - -c
+      - max_wal_senders=20
+    volumes:
+      - "pgdata:/pgvol"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 1s
+      retries: 60
+volumes:
+  pgdata:

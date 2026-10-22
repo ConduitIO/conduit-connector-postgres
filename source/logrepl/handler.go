@@ -182,6 +182,10 @@ type CDCHandler struct {
 	// in tests that drive the handler without a subscription; positions then
 	// carry no key and resume with the legacy rule.
 	changeKey func() internal.ChangeKey
+	// txInfo returns the xid and commit timestamp of the transaction being
+	// handled (internal.Subscription.CurrentTx), under the same rules as
+	// changeKey. Nil without a subscription.
+	txInfo func() (uint32, time.Time)
 
 	// afterMarkerQueued is a test seam, nil in production. emitDriftMarker
 	// calls it immediately after the marker has been handed to the batch
@@ -695,8 +699,15 @@ func (h *CDCHandler) buildPositionAt(lsn pglogrepl.LSN, key internal.ChangeKey) 
 func (h *CDCHandler) positionAt(lsn pglogrepl.LSN, key internal.ChangeKey) position.Position {
 	var commit string
 	var seq uint64
+	var xid uint32
+	var commitTime int64
 	if key.Known() {
 		commit, seq = formatLSN(key.CommitLSN), key.Seq
+		if h.txInfo != nil {
+			// #447 re-review S2: the transaction the key's commit LSN names.
+			x, ct := h.txInfo()
+			xid, commitTime = x, ct.UnixMicro()
+		}
 	}
 	return position.Position{
 		Type:                    position.TypeCDC,
@@ -710,6 +721,8 @@ func (h *CDCHandler) positionAt(lsn pglogrepl.LSN, key internal.ChangeKey) posit
 		SlotIdentity:     h.basePosition.SlotIdentity,
 		SystemIdentifier: h.basePosition.SystemIdentifier,
 		Timeline:         h.basePosition.Timeline,
+		TxXid:            xid,
+		TxCommitTime:     commitTime,
 	}
 }
 

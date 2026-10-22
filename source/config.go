@@ -107,11 +107,12 @@ type Config struct {
 	// LogreplSlotIdentityBeaconFailureTimeout is how long the connector keeps
 	// an idle replication slot from advancing past its last identity beacon
 	// while new beacons cannot be written (#442). After it, the slot advances
-	// without a beacon so its WAL cannot fill the disk, the connector logs
-	// `postgres.source.slot_beacon_unavailable` as an error, and the next
-	// start is refused with `postgres.source.slot_replaced` unless a record
-	// was saved since (an outage, never a loss). The WAL held back meanwhile
-	// is at most what the server writes in this time.
+	// without a beacon so its WAL cannot fill the disk, and the connector
+	// logs `postgres.source.slot_beacon_unavailable` as an error. Until a
+	// beacon is written and delivered again, a restart is refused with
+	// `postgres.source.slot_replaced` (an outage, never a loss). The connector
+	// keeps trying, and recovers on its own once beacons can be written. The
+	// WAL held back meanwhile is at most what the server writes in this time.
 	LogreplSlotIdentityBeaconFailureTimeout time.Duration `json:"logrepl.slotIdentity.beaconFailureTimeout" default:"5m"`
 
 	// WithAvroSchema determines whether the connector should attach an avro schema on each

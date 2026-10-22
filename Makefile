@@ -62,6 +62,14 @@ test-failover:
 	# postgres:17). Not part of `make test`.
 	test/failover/run.sh
 
+.PHONY: test-restore
+test-restore:
+	# A resume on a server restored on the same timeline (#447): snapshots and
+	# restores a Postgres data volume between phases (test/restore). Own compose
+	# project on an ephemeral port, removed with `down -v`. PG_IMAGE picks the
+	# version (default postgres:17). Not part of `make test`.
+	test/restore/run.sh
+
 .PHONY: test-debezium
 test-debezium:
 	# End-to-end test of the Debezium offset import against real Debezium

@@ -79,7 +79,7 @@ const (
 	identityReplaced
 	// identityUnprovable: the position has an identity, the slot is past it,
 	// and this server cannot decode beacons to prove it (before Postgres 14,
-	// or a standby before 16). Refused unless allowWALGap.
+	// or any standby). Refused unless allowWALGap.
 	identityUnprovable
 )
 
@@ -188,9 +188,12 @@ func checkSlotIdentity(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, ser
 		// No identity to check, and none can be kept on this server.
 		res.outcome = identityUnsupported
 		return res, nil
-	case !server.BeaconsSupported() && !canPeekMessages(server):
+	case !server.BeaconsSupported():
 		// #447 N5: a position that carries an identity is never accepted
-		// unproven. This server can neither write beacons nor decode them.
+		// unproven, and this server cannot prove it. A standby cannot
+		// either, even one that decodes: a slot it can decode is a slot of
+		// the standby, never the primary's, and it would find the beacons
+		// the primary wrote for its own slot (#447 re-review S1).
 		res.outcome = identityUnprovable
 		return res, nil
 	case res.legacy:
@@ -222,14 +225,6 @@ func checkSlotIdentity(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, ser
 	return res, nil
 }
 
-// canPeekMessages reports whether this server can decode beacons for the
-// identity check even though it cannot write them: a standby on Postgres 16
-// or later decodes logical slots, and beacons arrive in its WAL from the
-// primary.
-func canPeekMessages(s internal.ServerInfo) bool {
-	return s.InRecovery && s.Version >= 160000
-}
-
 func newSlotUnprovableError(slot, saved string, confirmed pglogrepl.LSN, server internal.ServerInfo) *SlotError {
 	return &SlotError{
 		Code: CodeSlotIdentityUnprovable,
@@ -237,8 +232,9 @@ func newSlotUnprovableError(slot, saved string, confirmed pglogrepl.LSN, server 
 		Message: fmt.Sprintf("replication slot %q is past the pipeline's saved position (%s), at %s, and the position carries a "+
 			"slot identity this server cannot check (version %d%s): it cannot tell this slot from one dropped and created "+
 			"again under the same name", slot, saved, confirmed, server.Version, map[bool]string{true: ", a standby", false: ""}[server.InRecovery]),
-		Fix: "Point the source at the primary (or a standby on Postgres 16 or later). If you know the slot is the pipeline's, " +
-			"start once with `logrepl.allowWALGap: true` and remove it after the first record was delivered",
+		Fix: "Point the source at the primary the pipeline was reading from. A slot on a standby is a slot of the standby, " +
+			"not the primary's, so it can never prove the position. If you know the slot covers the position, start once " +
+			"with `logrepl.allowWALGap: true` and remove it after the first record was delivered",
 	}
 }
 

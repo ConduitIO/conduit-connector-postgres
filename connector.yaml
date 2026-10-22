@@ -153,9 +153,14 @@ specification:
     recovery or failover that left the position's timeline before the position, a restore
     to an earlier timeline, and a server whose WAL is behind the position (a restored backup,
     snapshot or VM image) are refused instead of resuming at LSNs that now name other
-    changes. One case cannot be detected: a restore on the same timeline whose new WAL has
-    already passed the position when the pipeline starts. Re-snapshot pipelines after
-    restoring their source database.
+    changes. A restore on the same timeline whose new WAL has already passed the position
+    when the pipeline starts is caught by the position's transaction: every position also
+    names the xid and commit time of its transaction, and a resume whose slot is at or below
+    the position checks that the slot (or `pg_walinspect`, when installed) still has that
+    transaction at that LSN. On Postgres 15+, a publication or row filter changed since the
+    position can hide the transaction and refuse a database that was not restored; start
+    once with `logrepl.allowWALGap: true` then. Re-snapshot pipelines after restoring their
+    source database.
 
     What it needs and what it costs:
 
@@ -199,9 +204,11 @@ specification:
       `postgres.source.slot_beacon_unavailable` with `retained_wal_bytes`), the idle slot is
       held at the last beacon for at most `logrepl.slotIdentity.beaconFailureTimeout`
       (default 5 minutes; the WAL held back is at most that time's worth). Then the slot
-      advances without beacons, so its WAL cannot fill the disk, the connector logs the
-      same code as an error, and the next start is refused with `slot_replaced` unless a
-      record was delivered since. Fix the cause (usually the `GRANT` above) and start once
+      advances without beacons, so its WAL cannot fill the disk, and the connector logs the
+      same code as an error. Until a beacon is written and delivered again, a restart is
+      refused with `slot_replaced`. The connector keeps trying: fix the cause (usually the
+      `GRANT` above) while the pipeline runs, and it recovers on its own (it logs that the
+      slot can be proven again). If the pipeline was stopped in that state, start it once
       with `logrepl.allowWALGap: true`.
     - The check reads the slot from its `restart_lsn`; a long-running transaction can hold
       that far back and make it slow. `logrepl.slotIdentity.checkTimeout` (default 10
@@ -210,8 +217,9 @@ specification:
       cannot write them. There positions carry no identity and the check is the one before
       v0.17.5: the connector logs `postgres.source.slot_identity_unsupported` and resumes on
       a slot past the position. A position that does carry an identity (written on a
-      primary) is checked on a standby on Postgres 16 or later, which can decode the
-      primary's beacons, and refused elsewhere with `postgres.source.slot_identity_unprovable`.
+      primary) is never accepted unproven there: it is refused with
+      `postgres.source.slot_identity_unprovable`. A slot on a standby is a slot of the
+      standby, never the primary's, even when it can decode the primary's beacons.
 
     Upgrading from v0.17.4 or earlier:
 
@@ -804,11 +812,12 @@ specification:
           LogreplSlotIdentityBeaconFailureTimeout is how long the connector keeps
           an idle replication slot from advancing past its last identity beacon
           while new beacons cannot be written (#442). After it, the slot advances
-          without a beacon so its WAL cannot fill the disk, the connector logs
-          `postgres.source.slot_beacon_unavailable` as an error, and the next
-          start is refused with `postgres.source.slot_replaced` unless a record
-          was saved since (an outage, never a loss). The WAL held back meanwhile
-          is at most what the server writes in this time.
+          without a beacon so its WAL cannot fill the disk, and the connector
+          logs `postgres.source.slot_beacon_unavailable` as an error. Until a
+          beacon is written and delivered again, a restart is refused with
+          `postgres.source.slot_replaced` (an outage, never a loss). The connector
+          keeps trying, and recovers on its own once beacons can be written. The
+          WAL held back meanwhile is at most what the server writes in this time.
         type: duration
         default: 5m
         validations: []

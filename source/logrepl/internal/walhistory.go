@@ -18,12 +18,16 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/source/cpool"
+	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -98,4 +102,82 @@ func ParseSwitchPoint(history []byte, from int32) (pglogrepl.LSN, bool, error) {
 		return lsn, true, nil
 	}
 	return 0, false, sc.Err()
+}
+
+// TxAt is the transaction a slot decodes, or the WAL holds, at a commit LSN
+// (#447 re-review S2).
+type TxAt struct {
+	FinalLSN   pglogrepl.LSN
+	Xid        uint32
+	CommitTime time.Time // zero when the source does not tell (pg_walinspect)
+}
+
+// FirstTxFrom peeks (never consumes) the slot for the first transaction it
+// decodes whose commit LSN (BEGIN's final LSN) is at or after from. ok is
+// false when the slot decodes none up to the end of the WAL. Same limits and
+// requirements as FindBeacon.
+func FirstTxFrom(ctx context.Context, pool *pgxpool.Pool, slot, publication string, from pglogrepl.LSN) (TxAt, bool, error) {
+	maxRows := findBeaconMaxRows
+	for limit := min(findBeaconFirstRound, maxRows); ; limit = nextFindBeaconLimit(limit, maxRows) {
+		var rows int64
+		var begins [][]byte
+		err := pool.QueryRow(ctx, `
+			SELECT count(*), coalesce(array_agg(data ORDER BY n) FILTER (WHERE get_byte(data, 0) = 66), '{}')
+			FROM pg_logical_slot_peek_binary_changes($1, NULL, $2,
+			     'proto_version', '1', 'publication_names', $3) WITH ORDINALITY AS t(lsn, xid, data, n)`,
+			slot, limit, publication).Scan(&rows, &begins)
+		if err != nil {
+			return TxAt{}, false, fmt.Errorf("failed to peek replication slot %q for the saved position's transaction: %w", slot, err)
+		}
+		for _, data := range begins {
+			msg, err := pglogrepl.Parse(data)
+			if err != nil {
+				return TxAt{}, false, fmt.Errorf("failed to parse a BEGIN message: %w", err)
+			}
+			b, ok := msg.(*pglogrepl.BeginMessage)
+			if !ok || b.FinalLSN < from {
+				continue
+			}
+			return TxAt{FinalLSN: b.FinalLSN, Xid: b.Xid, CommitTime: b.CommitTime}, true, nil
+		}
+		if rows < int64(limit) {
+			return TxAt{}, false, nil
+		}
+		if limit >= maxRows {
+			return TxAt{}, false, fmt.Errorf("replication slot %q: %w (read %d changes)", slot, ErrBeaconSearchExhausted, rows)
+		}
+	}
+}
+
+// ErrWALInspectUnavailable means pg_walinspect is not installed or the role
+// may not use it.
+var ErrWALInspectUnavailable = errors.New("pg_walinspect is not available")
+
+// CommitRecordAt reads the WAL record at lsn with pg_walinspect (Postgres
+// 15+, when installed and the role may read the WAL): ok is true when it is
+// a commit record, with its xid. ErrWALInspectUnavailable when the extension
+// cannot be used; any other read error (no record starts there) is ok=false.
+func CommitRecordAt(ctx context.Context, pool *pgxpool.Pool, lsn pglogrepl.LSN) (TxAt, bool, error) {
+	var installed bool
+	if err := pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_walinspect')").Scan(&installed); err != nil {
+		return TxAt{}, false, err
+	}
+	if !installed {
+		return TxAt{}, false, ErrWALInspectUnavailable
+	}
+	var rm, typ string
+	var xid *int64
+	err := pool.QueryRow(ctx,
+		"SELECT resource_manager, record_type, xid::text::bigint FROM pg_get_wal_record_info($1)", lsn).Scan(&rm, &typ, &xid)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && (pgErr.Code == pgerrcode.InsufficientPrivilege || pgErr.Code == pgerrcode.UndefinedFunction) {
+		return TxAt{}, false, ErrWALInspectUnavailable
+	}
+	if err != nil {
+		return TxAt{}, false, nil // no record starts at lsn
+	}
+	if rm != "Transaction" || !strings.HasPrefix(typ, "COMMIT") || xid == nil {
+		return TxAt{}, false, nil
+	}
+	return TxAt{FinalLSN: lsn, Xid: uint32(*xid)}, true, nil //nolint:gosec // an xid fits in 32 bits
 }

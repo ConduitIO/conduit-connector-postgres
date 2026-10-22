@@ -87,6 +87,11 @@ type Subscription struct {
 	// is refused there. An error stops the subscription like
 	// checkImportSlot's. Set before Run.
 	VerifyHeld func(context.Context, ReadReplicationSlotResult) error
+	// StreamStarted, when set, runs right after START_REPLICATION succeeded
+	// with the backend PID of this run's walsender (or the error that kept
+	// it from being known), before VerifyHeld. An error stops the
+	// subscription like VerifyHeld's. Set before Run.
+	StreamStarted func(ctx context.Context, walsenderPID uint32, err error) error
 
 	pool *pgxpool.Pool
 
@@ -161,6 +166,11 @@ type Subscription struct {
 	// on that goroutine).
 	change  ChangeKey
 	emitted ChangeKey
+	// changeXid and changeCommitTime are the xid and commit timestamp of
+	// the transaction being handled, from its BeginMessage. Only on the Run
+	// goroutine, like change.
+	changeXid        uint32
+	changeCommitTime time.Time
 
 	// acked is the key of the last record the engine acked (see Ack). Acks
 	// arrive on another goroutine, hence the mutex.
@@ -385,11 +395,21 @@ func (s *Subscription) Run(ctx context.Context) error {
 		close(s.ready) // ready to fail.
 		return err
 	}
-	if s.Beacons != nil {
-		// From here on a beacon may only be written while this walsender
-		// holds the slot (#447 B1, Beacons.Emit).
-		if pc, err := s.pgConn(); err == nil {
-			s.Beacons.SetStreamPID(pc.PID())
+	// From here on a beacon may only be written while this walsender holds
+	// the slot (#447 B1, Beacons.Emit). Not knowing which walsender that is
+	// fails the start (#447 N2): skipping it would leave the guard in its
+	// before-the-stream mode, which an active slot can never pass.
+	if s.StreamStarted != nil {
+		var pid uint32
+		pc, perr := s.pgConn()
+		if perr == nil {
+			pid = pc.PID()
+		}
+		if err := s.StreamStarted(lctx, pid, perr); err != nil {
+			s.closeConnForRefusal()
+			s.startErr, s.doneErr = err, err
+			close(s.ready) // ready to fail.
+			return err
 		}
 	}
 	// Invariant 3 (import mode): refuse a slot that moved past Lc before
@@ -546,11 +566,12 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 		// Neither ours nor anyone else's is a change: never handed to the
 		// handler, never counted in a change key.
 		if s.Beacons != nil {
-			s.Beacons.observe(m)
+			s.Beacons.observe(ctx, m, s.reportedFlush)
 		}
 		return nil
 	case *pglogrepl.BeginMessage:
 		s.change = ChangeKey{CommitLSN: m.FinalLSN}
+		s.changeXid, s.changeCommitTime = m.Xid, m.CommitTime
 		if s.Import != nil {
 			s.Import.Begin(m.FinalLSN, m.Xid, m.CommitTime)
 		}
@@ -609,6 +630,13 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 	}
 
 	return nil
+}
+
+// CurrentTx returns the xid and commit timestamp of the transaction being
+// handled (#447 re-review S2). Like CurrentChange, only on the subscription
+// goroutine.
+func (s *Subscription) CurrentTx() (uint32, time.Time) {
+	return s.changeXid, s.changeCommitTime
 }
 
 // CurrentChange returns the key of the change being handled. The handler

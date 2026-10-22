@@ -250,6 +250,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	// The handler stamps each record's position with the subscription's
 	// current change key. Set before the subscription goroutine starts.
 	handler.changeKey = sub.CurrentChange
+	handler.txInfo = sub.CurrentTx
 
 	return &CDCIterator{
 		config:       c,
@@ -342,6 +343,12 @@ func resolveSlotIdentity(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, s
 		return ident, err
 	}
 	switch ident.outcome {
+	case identityCovered:
+		// #447 re-review S2: covered only if the bound still names the
+		// position's transaction in this WAL.
+		if err := verifyCoveredTransaction(ctx, pool, c); err != nil {
+			return ident, err
+		}
 	case identityUnprovable:
 		if !c.AllowWALGap {
 			return ident, newSlotUnprovableError(c.SlotName, describeSavedPosition(c), ident.confirmed, server)
@@ -401,6 +408,7 @@ func armSlotIdentity(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, sub *
 		sub.Beacons.SetPreStreamLimit(limit)
 		sub.Beacons.SetFailureTimeout(c.BeaconFailureTimeout)
 		warnEmitMessagePublic(ctx, pool, server.Version)
+		sub.StreamStarted = streamHolderHook(pool, c.SlotName, server.Version, sub.Beacons)
 	}
 	// Invariant 3 (#442, #447 B2): VerifyHeld runs on every start but an
 	// import (which has checkImportSlot): the slot is not held by anyone
@@ -445,6 +453,23 @@ func armSlotIdentity(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, sub *
 		return afterSlotArmed()
 	}
 	return nil
+}
+
+// streamHolderHook returns Subscription.StreamStarted for beacons: it
+// records which walsender holds the slot, by PID and backend_start, or
+// refuses to stream (#447 B1, re-review N1 and N2).
+func streamHolderHook(pool *pgxpool.Pool, slot string, serverVersion int, beacons *internal.Beacons) func(context.Context, uint32, error) error {
+	return func(ctx context.Context, pid uint32, err error) error {
+		if err == nil {
+			var start time.Time
+			if start, err = internal.WalsenderStart(ctx, pool, pid); err == nil {
+				beacons.SetStreamHolder(pid, start)
+				return nil
+			}
+		}
+		return newSlotBeaconError(slot, serverVersion,
+			fmt.Errorf("could not identify this run's walsender, so no beacon could be written safely: %w", err))
+	}
 }
 
 // heldConfirmedLimit is the highest confirmed_flush_lsn the slot may have
