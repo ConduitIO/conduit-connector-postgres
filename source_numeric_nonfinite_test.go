@@ -200,12 +200,13 @@ func TestSource_NumericNonFinite(t *testing.T) {
 						// Avro decimal cannot hold it: halt with an actionable error.
 						is.True(err != nil) // expected the source to halt
 						msg := err.Error()
-						is.True(strings.Contains(msg, numericErrorCode))          // stable error code
-						is.True(strings.Contains(msg, table))                     // names the table
-						is.True(strings.Contains(msg, `"v"`))                     // names the column
-						is.True(strings.Contains(msg, fmt.Sprintf("%q", v.text))) // names the value
-						is.True(strings.Contains(msg, "withAvroSchema=false"))    // the fix that works from the WAL
-						is.True(strings.Contains(msg, "(row id=1)"))              // names the row
+						is.True(strings.Contains(msg, numericErrorCode))             // stable error code
+						is.True(strings.Contains(msg, table))                        // names the table
+						is.True(strings.Contains(msg, `"v"`))                        // names the column
+						is.True(strings.Contains(msg, fmt.Sprintf("%q", v.text)))    // names the value
+						is.True(strings.Contains(msg, "withAvroSchema=false"))       // the fix that works from the WAL
+						is.True(strings.Contains(msg, "(row columns id, key hash ")) // names the row by key columns and hash
+						is.True(!strings.Contains(msg, "id=1"))
 						return
 					}
 
