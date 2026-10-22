@@ -821,6 +821,8 @@ func (d *Destination) execBatch(ctx context.Context, b *pgx.Batch, p *writePlan)
 	}
 }
 
+const labelTable = "table"
+
 // scrubbedExecError is an execution error without the text that quotes row
 // values. The original stays in the chain, so classification (SQLSTATE,
 // pgx.ErrPreprocessingBatch) keeps working.
@@ -850,7 +852,7 @@ func scrubExecError(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && (strings.HasPrefix(pgErr.Code, "22") || strings.HasPrefix(pgErr.Code, "23")) {
 		var where []string
-		for _, kv := range [][2]string{{"table", pgErr.TableName}, {"column", pgErr.ColumnName}, {"constraint", pgErr.ConstraintName}} {
+		for _, kv := range [][2]string{{labelTable, pgErr.TableName}, {"column", pgErr.ColumnName}, {"constraint", pgErr.ConstraintName}} {
 			if kv[1] != "" {
 				where = append(where, fmt.Sprintf("%s %q", kv[0], kv[1]))
 			}
