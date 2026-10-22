@@ -90,6 +90,11 @@ type CDCIterator struct {
 	importDone atomic.Bool
 }
 
+// afterSlotCheck is a test seam, nil in production. It runs between checkSlot
+// and the subscription, the window in which a slot can vanish. It is only
+// assigned in _test.go files (enforced by TestSeamsOnlyAssignedInTests).
+var afterSlotCheck func()
+
 // NewCDCIterator initializes logical replication by creating the publication and subscription manager.
 func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCIterator, error) {
 	// Invariant 3: before anything is created, so a refusal leaves no slot
@@ -98,6 +103,10 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		if err := checkSlot(ctx, pool, c); err != nil {
 			return nil, err
 		}
+	}
+
+	if afterSlotCheck != nil {
+		afterSlotCheck()
 	}
 
 	// Import mode never creates the publication (#341 S16): one created
@@ -140,18 +149,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		c.SchemaDriftPolicy,
 	)
 
-	newSub := internal.CreateSubscription
-	switch {
-	case c.Import != nil:
-		// Import mode never creates the slot: a slot created now would start
-		// at the current WAL and miss everything since Debezium's offset.
-		newSub = internal.OpenSubscription
-	case hasSavedPosition(c) && !c.AllowWALGap:
-		// Invariant 3: a saved position never creates a slot. checkSlot
-		// already looked, but a slot dropped after that read must not be
-		// recreated at the current WAL either.
-		newSub = internal.OpenSubscription
-	}
+	newSub := subscriptionOpener(c)
 	sub, err := newSub(
 		ctx,
 		pool,
@@ -161,6 +159,9 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		c.LSN,
 		handler.Handle,
 	)
+	// Before the error return: a slot created by a call that then failed is
+	// a taken gap too (see internal.SlotCreatedError).
+	warnIfSlotCreatedForSavedPosition(ctx, c, sub, err)
 	if err != nil {
 		if c.Import != nil && errors.Is(err, internal.ErrMissingSlot) {
 			// The slot went away after the preflight. Import mode never
@@ -201,6 +202,49 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		sub:       sub,
 		handler:   handler,
 	}, nil
+}
+
+// subscriptionOpener picks how NewCDCIterator gets its subscription: creating
+// the slot only for a fresh start (or the explicit allowWALGap opt-in).
+func subscriptionOpener(c CDCConfig) func(context.Context, *pgxpool.Pool, string, string, []string, pglogrepl.LSN, internal.Handler) (*internal.Subscription, error) {
+	newSub := internal.CreateSubscription
+	switch {
+	case c.Import != nil:
+		// Import mode never creates the slot: a slot created now would start
+		// at the current WAL and miss everything since Debezium's offset.
+		newSub = internal.OpenSubscription
+	case hasSavedPosition(c) && !c.AllowWALGap:
+		// Invariant 3: a saved position never creates a slot. checkSlot
+		// already looked, but a slot dropped after that read must not be
+		// recreated at the current WAL either.
+		newSub = internal.OpenSubscription
+	}
+	return newSub
+}
+
+// warnIfSlotCreatedForSavedPosition logs the accepted data loss when the call
+// created the slot although the config carries a saved position, whether the
+// call then succeeded or failed.
+func warnIfSlotCreatedForSavedPosition(ctx context.Context, c CDCConfig, sub *internal.Subscription, err error) {
+	// A slot was created in this call only if CREATE_REPLICATION_SLOT
+	// succeeded (internal.CreatedSlot). With a saved position that is the
+	// accepted gap (allowWALGap is the only way here), including a slot
+	// dropped after checkSlot and one created by a call that then failed: the
+	// retry would find a healthy slot and log nothing.
+	//
+	// Known limit (#442): if a third party drops the slot and creates it again
+	// under the same name between checkSlot and our CREATE, the create fails
+	// with a duplicate error and no warning fires. newSubscription cannot tell
+	// that from an intact slot reached through the create path (allowWALGap
+	// with a healthy slot also ends in a duplicate), so reporting "took the
+	// create path" would warn falsely. Closing it needs a slot identity in the
+	// position (#442).
+	if c.Import != nil || !hasSavedPosition(c) {
+		return
+	}
+	if point, created := internal.CreatedSlot(sub, err); created {
+		warnGapAccepted(ctx, c, point)
+	}
 }
 
 // applyImport replaces the subscription's resume point with the import's
