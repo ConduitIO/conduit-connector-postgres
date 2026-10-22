@@ -184,12 +184,7 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to update fetch limit: %w", err)
 	}
 
-	sdk.Logger(ctx).Info().
-		Int("fetchSize", f.conf.FetchSize).
-		Str("tx.snapshot", f.conf.TXSnapshotID).
-		Int64("startAt", f.lastRead).
-		Int64("snapshotEnd", f.snapshotEnd).
-		Msgf("starting fetcher %s", f.cursorName)
+	f.logStart(ctx)
 
 	closeCursor, err := f.createCursor(ctx, tx)
 	if err != nil {
@@ -268,6 +263,17 @@ func (f *FetchWorker) updateSnapshotEnd(ctx context.Context, tx pgx.Tx) error {
 	}
 
 	return nil
+}
+
+// logStart logs the start of the fetcher. The range bounds are values of the
+// key column, which is record data, so only salted hashes of them are logged.
+func (f *FetchWorker) logStart(ctx context.Context) {
+	sdk.Logger(ctx).Info().
+		Int("fetchSize", f.conf.FetchSize).
+		Str("tx.snapshot", f.conf.TXSnapshotID).
+		Str("startAtHash", internal.KeyHash(map[string]any{f.conf.Key: f.lastRead})).
+		Str("snapshotEndHash", internal.KeyHash(map[string]any{f.conf.Key: f.snapshotEnd})).
+		Msgf("starting fetcher %s", f.cursorName)
 }
 
 func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
