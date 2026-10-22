@@ -259,7 +259,7 @@ func applyImport(ctx context.Context, sub *internal.Subscription, imp *dbzoffset
 	// confirmed_flush_lsn. The preflight checked F <= Lc; the slot was read
 	// again by OpenSubscription, and is checked again once streaming holds
 	// it (Subscription.checkImportSlot).
-	// guard: logrepl-import-slot-ahead-refused
+	// guard: logrepl-import-slot-ahead-refused tests=^TestCDCIterator_ImportRefusesSlotPastLc$
 	if sub.ConfirmedFlushLSN > plan.SkipCommitsBelow {
 		return &dbzoffset.Error{
 			Code: dbzoffset.CodeSlotAhead, Path: slotNamePath,

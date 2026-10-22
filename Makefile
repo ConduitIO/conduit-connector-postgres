@@ -16,17 +16,30 @@ test:
 		docker compose -f test/docker-compose.yml down --volumes; \
 		exit $$ret
 
+# Guard mutation gate (tools/guardmut, docs/guard-markers.md). Own compose
+# project (pgguardmut) on its own host ports, so it never touches, reuses or
+# removes a developer's `make test` stack (project "test", port 5433); only the
+# pgguardmut project is torn down (`down -v`).
+GUARDMUT_PG_PORT ?= 56170
+GUARDMUT_BOUNCER_PORT ?= 56171
+GUARDMUT_RUN = env -u CONDUIT_PG_SLOT_INVALIDATION CONDUIT_PG_TEST_PORT=$(GUARDMUT_PG_PORT) \
+	CONDUIT_PG_TEST_BOUNCER_PORT=$(GUARDMUT_BOUNCER_PORT) go run ./guardmut -root .. -dirs source/logrepl \
+	-baseline ../.github/guardmut-baseline.txt -guards ../.github/guardmut-guards.txt -timeout 15m $(GUARDMUT_FLAGS)
 .PHONY: guardmut
 guardmut:
-	# Removes each `// guard:` marked guard in turn and requires the package
-	# tests to fail (tools/guardmut, docs/guard-markers.md). Survivors fail
-	# unless listed with a justification in .github/guardmut-baseline.txt.
-	# The tests need the compose Postgres, as `make test` does. Mutants run
-	# one at a time because they share that database.
-	docker compose -f test/docker-compose.yml up --force-recreate --quiet-pull -d --wait pg-0
-	cd tools && go run ./guardmut -root .. -dirs source/logrepl -baseline ../.github/guardmut-baseline.txt \
-		-timeout 15m -budget 40m $(GUARDMUT_FLAGS); ret=$$?; \
-		docker compose -f ../test/docker-compose.yml down --volumes; \
+	# Mutants run one at a time because they share the database. Guards whose
+	# test needs CONDUIT_PG_SLOT_INVALIDATION=1 run ALONE and last, as in
+	# `make test`: that mode sets max_slot_wal_keep_size cluster-wide.
+	@case "$(GUARDMUT_PG_PORT) $(GUARDMUT_BOUNCER_PORT)" in *5433*|*5434*|*6432*) echo "refusing ports 5433, 5434 and 6432: they belong to make test and make test-chaos"; exit 1;; esac
+	CONDUIT_PG_TEST_PORT=$(GUARDMUT_PG_PORT) CONDUIT_PG_TEST_BOUNCER_PORT=$(GUARDMUT_BOUNCER_PORT) \
+		docker compose -p pgguardmut -f test/docker-compose.yml up --force-recreate --quiet-pull -d --wait pg-0
+	cd tools && $(GUARDMUT_RUN) -without-env CONDUIT_PG_SLOT_INVALIDATION -budget 30m; ret=$$?; \
+		if [ $$ret -eq 0 ]; then \
+			echo "guards that need slot invalidation: alone, after the others"; \
+			$(GUARDMUT_RUN) -with-env CONDUIT_PG_SLOT_INVALIDATION -budget 20m; ret=$$?; \
+		fi; \
+		CONDUIT_PG_TEST_PORT=$(GUARDMUT_PG_PORT) CONDUIT_PG_TEST_BOUNCER_PORT=$(GUARDMUT_BOUNCER_PORT) \
+			docker compose -p pgguardmut -f ../test/docker-compose.yml down --volumes; \
 		exit $$ret
 
 .PHONY: test-tls
