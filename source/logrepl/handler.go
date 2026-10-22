@@ -403,7 +403,8 @@ func (h *CDCHandler) handleUpdate(
 	if err != nil {
 		// this is not a critical error, old values are optional, just log it
 		// we use level "trace" intentionally to not clog up the logs in production
-		sdk.Logger(ctx).Trace().Err(err).Msg("could not parse old values from UpdateMessage")
+		// The error can carry the row's key, so only its type is logged.
+		sdk.Logger(ctx).Trace().Str("error_type", fmt.Sprintf("%T", err)).Msg("could not parse old values from UpdateMessage")
 	}
 
 	// Invariant 6: RelationSet.Values omits columns that arrived as unchanged

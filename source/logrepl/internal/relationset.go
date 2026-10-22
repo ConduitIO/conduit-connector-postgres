@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strings"
 
+	pginternal "github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/types"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -111,7 +112,17 @@ func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]a
 			if located, ok := types.LocateError(decodeErr, rel.RelationName, col.Name); ok {
 				return nil, types.WithRow(located, keyText(rel, row))
 			}
-			return nil, fmt.Errorf("failed to decode value for column %q: %w", col.Name, decodeErr)
+			// The decoder's error repeats the value it could not parse, or
+			// part of it: strconv's `parsing "..."`, an array element, a
+			// range bound, a point coordinate. Errors reach the DLQ, the API
+			// and CLI output, so the cause text is not passed on: only the
+			// column, the type of the error, the value's size and a salted
+			// hash are. The original error stays in the chain.
+			return nil, &scrubbedError{
+				msg: fmt.Sprintf("failed to decode value for column %q (%d bytes, value hash %s): %T (details not shown: they can quote the value)",
+					col.Name, len(tuple.Data), pginternal.KeyHash(map[string]any{col.Name: string(tuple.Data)}), rootCause(decodeErr)),
+				err: decodeErr,
+			}
 		}
 
 		values[col.Name] = v
@@ -155,6 +166,27 @@ func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, data []
 	}
 
 	return v, nil
+}
+
+// scrubbedError carries a message without the offending value and keeps the
+// original error in the chain so errors.Is and errors.As keep working.
+type scrubbedError struct {
+	msg string
+	err error
+}
+
+func (e *scrubbedError) Error() string { return e.msg }
+func (e *scrubbedError) Unwrap() error { return e.err }
+
+// rootCause returns the innermost error of err's chain.
+func rootCause(err error) error {
+	for {
+		next := errors.Unwrap(err)
+		if next == nil {
+			return err
+		}
+		err = next
+	}
 }
 
 // keyText names the row of a tuple by the columns Postgres flags as part of the

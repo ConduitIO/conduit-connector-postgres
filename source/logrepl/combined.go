@@ -153,10 +153,12 @@ func (c Config) Validate() error {
 func NewCombinedIterator(ctx context.Context, pool *pgxpool.Pool, conf Config) (*CombinedIterator, error) {
 	pos, err := position.ParseSDKPosition(conf.Position)
 	if err != nil {
+		// The position holds snapshot key values and the slot identity key
+		// (#442), so only its size is logged.
 		sdk.Logger(ctx).Debug().
 			Err(err).
-			Int("position_bytes", len(conf.Position)).
-			Msg("failed to parse position") // never the position itself: it holds the slot identity key (#442)
+			Int("position_length", len(conf.Position)).
+			Msg("failed to parse position")
 
 		return nil, fmt.Errorf("failed to create logrepl iterator: %w", err)
 	}
