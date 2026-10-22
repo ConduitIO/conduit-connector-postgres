@@ -17,8 +17,10 @@ package snapshot
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/matryer/is"
@@ -45,4 +47,39 @@ func TestFetchWorker_StartLogDoesNotContainKeyBounds(t *testing.T) {
 	is.True(strings.Contains(out, internal.KeyHash(map[string]any{"id": int64(8675309)})))
 	is.True(!strings.Contains(out, "8675309"))
 	is.True(!strings.Contains(out, "9988776"))
+}
+
+// The progress line must not let a reader work out the end of the range, the
+// largest key value: rows together with a percentage of the range did
+// (snapshotEnd = rows * 100 / completed_perc).
+func TestFetchWorker_ProgressLogDoesNotRevealSnapshotEnd(t *testing.T) {
+	logLine := func(snapshotEnd int64, nfetched int) map[string]any {
+		var buf bytes.Buffer
+		ctx := zerolog.New(&buf).WithContext(context.Background())
+		f := &FetchWorker{conf: FetchConfig{Key: "id", Table: "orders", FetchSize: 10}, snapshotEnd: snapshotEnd}
+		f.logProgress(ctx, nfetched, time.Now().Add(-time.Minute))
+		var out map[string]any
+		if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	allowed := map[string]bool{"level": true, "rows": true, "table": true, "elapsed": true, "rate_per_min": true, "message": true}
+	for _, nfetched := range []int{1, 1234, 5000000} {
+		a, b := logLine(9988776, nfetched), logLine(77, nfetched)
+		for k := range a {
+			if !allowed[k] {
+				t.Errorf("progress line has the field %q, which can depend on the end of the range", k)
+			}
+		}
+		// the same line for two very different ends of the range
+		is.New(t).Equal(len(a), len(b))
+		is.New(t).Equal(a["rows"], b["rows"])
+		is.New(t).Equal(a["rows"], float64(nfetched))
+		for _, line := range []map[string]any{a, b} {
+			enc, _ := json.Marshal(line)
+			is.New(t).True(!strings.Contains(string(enc), "9988776"))
+		}
+	}
 }

@@ -206,13 +206,7 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 
 		nfetched += n
 
-		sdk.Logger(ctx).Info().
-			Int("rows", nfetched).
-			Str("table", f.conf.Table).
-			Dur("elapsed", time.Since(start)).
-			Str("completed_perc", fmt.Sprintf("%.2f", (float64(nfetched)/float64(f.snapshotEnd))*100)).
-			Str("rate_per_min", fmt.Sprintf("%.0f", float64(nfetched)/time.Since(start).Minutes())).
-			Msg("fetching rows")
+		f.logProgress(ctx, nfetched, start)
 	}
 
 	sdk.Logger(ctx).Info().
@@ -222,6 +216,19 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 		Msgf("%q snapshot completed", f.conf.Table)
 
 	return nil
+}
+
+// logProgress logs how many rows were fetched. It does not log a percentage
+// or anything else computed from the end of the range: the end is the largest
+// key value, which is record data, and rows with a percentage gives it away
+// (rows * 100 / percentage).
+func (f *FetchWorker) logProgress(ctx context.Context, nfetched int, start time.Time) {
+	sdk.Logger(ctx).Info().
+		Int("rows", nfetched).
+		Str("table", f.conf.Table).
+		Dur("elapsed", time.Since(start)).
+		Str("rate_per_min", fmt.Sprintf("%.0f", float64(nfetched)/time.Since(start).Minutes())).
+		Msg("fetching rows")
 }
 
 func (f *FetchWorker) createCursor(ctx context.Context, tx pgx.Tx) (func(), error) {
