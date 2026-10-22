@@ -1,0 +1,43 @@
+# Stack for the external-state suite (test/externalstate). A separate compose
+# project, volumes and host ports (56150-56169) from `make test` (5433) and
+# `make test-chaos` (5434), so the suites cannot share or downgrade a stack.
+# run.sh removes everything with `down -v`.
+name: pgextstate
+services:
+  pg:
+    image: docker.io/library/postgres:17.5
+    ports:
+      - "${EXTSTATE_PG_PORT:-56150}:5432"
+    volumes:
+      - "pgdata:/var/lib/postgresql/data"
+      - "./initdb/:/docker-entrypoint-initdb.d/:ro"
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_wal_senders=20
+      - -c
+      - max_replication_slots=20
+      # A walsender whose client went silent (half-open connection) is dropped
+      # after 10s instead of the default 60s, to keep that case short.
+      - -c
+      - wal_sender_timeout=10s
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-q", "-U", "postgres", "-h", "127.0.0.1" ]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    environment:
+      - POSTGRES_PASSWORD=extstate
+  # Sits between the connector and pg for the half-open connection case.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    ports:
+      - "${EXTSTATE_PROXY_API_PORT:-56152}:8474"
+      - "${EXTSTATE_PROXY_PORT:-56151}:15432"
+    depends_on:
+      pg:
+        condition: service_healthy
+volumes:
+  pgdata:
