@@ -65,7 +65,9 @@ func TestExternalState_SlotDroppedMidRun(t *testing.T) {
 	if openErr == nil {
 		defer teardown(t, src2)
 		sc.insert(ctx, t, conn, 6)
-		got = drain(ctx, t, src2, []int{4, 5, 6}, 30*time.Second).ids
+		// A read that fails loudly counts as a loud refusal (checked against the pinned codes), not as loss.
+		d := drain(ctx, t, src2, []int{4, 5, 6}, 30*time.Second)
+		got, openErr = d.ids, d.err
 	}
 	requireLoudOrDelivered(t, "restart after the slot was dropped mid-run", openErr, got, []int{4, 5},
 		"postgres.source.slot_wal_gap")

@@ -55,9 +55,14 @@ base_compose=${EXTSTATE_BASE_COMPOSE:-"$root/test/docker-compose.yml"}
 base_project=pgextbase
 export CONDUIT_PG_TEST_PORT=${EXTSTATE_BASE_PORT:-56153}
 export CONDUIT_PG_TEST_BOUNCER_PORT=${EXTSTATE_BASE_BOUNCER_PORT:-56154}
-case "$CONDUIT_PG_TEST_PORT $CONDUIT_PG_TEST_BOUNCER_PORT" in
-*5433* | *5434* | *6432*) echo "INFRA: refusing ports 5433, 5434 and 6432: they belong to make test and make test-chaos" >&2; exit 1 ;;
-esac
+# Every host port this suite publishes, overrides included, must stay clear of
+# the default stacks: 5433/6432 (make test) and 5434 (make test-chaos).
+for port in "$EXTSTATE_PG_PORT" "$EXTSTATE_PROXY_PORT" "$EXTSTATE_PROXY_API_PORT" \
+	"$CONDUIT_PG_TEST_PORT" "$CONDUIT_PG_TEST_BOUNCER_PORT"; do
+	case "$port" in
+	5433 | 5434 | 6432) echo "INFRA: refusing port $port: it belongs to make test or make test-chaos" >&2; exit 1 ;;
+	esac
+done
 
 up_base=0 up_ext=0
 cleanup() {

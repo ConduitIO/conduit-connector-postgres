@@ -92,9 +92,11 @@ func TestExternalState_HalfOpenReplicationConnection(t *testing.T) {
 		src2, openErr := sc.open(ctx, pgURL(superUser, superPass), pos, nil)
 		if openErr == nil {
 			defer teardown(t, src2)
-			for id := range drain(ctx, t, src2, []int{4, 5, 6}, 45*time.Second).ids {
+			d := drain(ctx, t, src2, []int{4, 5, 6}, 45*time.Second)
+			for id := range d.ids {
 				got[id] = true
 			}
+			openErr = d.err // a read error is reported with its code, not as missing rows
 		}
 		requireLoudOrDelivered(t, "restart after the half-open connection", openErr, got, []int{4, 5, 6})
 		return

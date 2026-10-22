@@ -109,9 +109,11 @@ func TestExternalState_ReplicationPrivilegeRevokedMidRun(t *testing.T) {
 	}
 	if openErr == nil {
 		defer teardown(t, src3)
-		for id := range drain(ctx, t, src3, []int{4, 5, 6}, 45*time.Second).ids {
+		d := drain(ctx, t, src3, []int{4, 5, 6}, 45*time.Second)
+		for id := range d.ids {
 			got[id] = true
 		}
+		openErr = d.err // a read error is reported with its code, not as missing rows
 	}
 	requireLoudOrDelivered(t, "restart after REPLICATION was granted again", openErr, got, []int{4, 5, 6})
 }

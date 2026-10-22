@@ -107,7 +107,9 @@ func TestExternalState_SnapshotRestore(t *testing.T) {
 	var got map[int]bool
 	if openErr == nil {
 		defer teardown(t, src3)
-		got = drain(ctx, t, src3, c, 45*time.Second).ids
+		// A read that fails loudly counts as a loud refusal (checked against the pinned codes), not as loss.
+		d := drain(ctx, t, src3, c, 45*time.Second)
+		got, openErr = d.ids, d.err
 	}
 	requireLoudOrDelivered(t, "resume after a volume snapshot restore", openErr, got, c,
 		"postgres.source.slot_wal_gap", "postgres.source.slot_invalidated")
