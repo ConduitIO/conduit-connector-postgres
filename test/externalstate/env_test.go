@@ -255,14 +255,29 @@ func coded(err error) string {
 // requireLoudOrDelivered is the suite's single assertion. got is what the
 // source delivered, want what was written while it should have been
 // delivered; openErr is the error of the start under test, if it failed.
-func requireLoudOrDelivered(t *testing.T, what string, openErr error, got map[int]bool, want []int) {
+//
+// wantCodes pins the refusals that are acceptable for THIS case. A start that
+// fails with any other code (or no code) fails the case, and a case that lists
+// no code must deliver: "some error" is not an acceptable outcome when the
+// engine is expected to recover, and an unrelated error (a timeout, an auth
+// failure) must not be able to stand in for the guard under test.
+func requireLoudOrDelivered(t *testing.T, what string, openErr error, got map[int]bool, want []int, wantCodes ...string) {
 	t.Helper()
 	if openErr != nil {
-		if coded(openErr) == "" {
+		code := coded(openErr)
+		if code == "" {
 			t.Fatalf("%s: start failed without a code: %v", what, openErr)
 		}
-		t.Logf("%s: start refused with %s (loud, acceptable)", what, coded(openErr))
-		return
+		for _, w := range wantCodes {
+			if code == w {
+				t.Logf("%s: start refused with %s (loud, acceptable)", what, code)
+				return
+			}
+		}
+		if len(wantCodes) == 0 {
+			t.Fatalf("%s: start failed with %s (%v), but this case must deliver %v", what, code, openErr, want)
+		}
+		t.Fatalf("%s: start failed with %s (%v); acceptable refusals for this case are %v", what, code, openErr, wantCodes)
 	}
 	if m := missing(got, want); len(m) > 0 {
 		t.Fatalf("SILENT LOSS (%s): the start succeeded but rows %v were never delivered (delivered %v)", what, m, keys(got))

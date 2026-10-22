@@ -19,13 +19,21 @@
 #   - a pending case is reported as PENDING and fails the run once the test
 #     that was blocking it exists, so it has to be flipped to required;
 #   - a known-gap case must fail; it fails the run if it passes.
-# Both compose stacks are removed with `down -v` on exit, pass or fail.
+#   - a known-gap case must fail WITH SILENT-loss evidence (a "SILENT" line in
+#     the test output); a failure for any other reason (infrastructure, a
+#     panic, a wrong error) is a FAIL of the run, not a known gap.
+# Both stacks are their own compose projects on their own host ports, and only
+# those projects are removed (`down -v -p <project>`) on exit, pass or fail.
+# Nothing here starts, reuses or removes the default `make test` stack
+# (project "test", port 5433) or the chaos stack (5434).
 #
 # Environment (all optional):
 #   EXTSTATE_PG_PORT / EXTSTATE_PROXY_PORT / EXTSTATE_PROXY_API_PORT
 #                         host ports of the ext stack (56150-56152)
+#   EXTSTATE_BASE_PORT / EXTSTATE_BASE_BOUNCER_PORT
+#                         host ports of the base stack (56153, 56154)
 #   EXTSTATE_BASE_COMPOSE compose file of the base stack (default
-#                         test/docker-compose.yml)
+#                         test/docker-compose.yml, run as project pgextbase)
 #   EXTSTATE_CASES        regexp of case ids to run (default: all)
 #   GOTEST_FLAGS          extra `go test` flags
 set -uo pipefail
@@ -42,6 +50,14 @@ export EXTSTATE_PG_PORT=${EXTSTATE_PG_PORT:-56150}
 export EXTSTATE_PROXY_PORT=${EXTSTATE_PROXY_PORT:-56151}
 export EXTSTATE_PROXY_API_PORT=${EXTSTATE_PROXY_API_PORT:-56152}
 base_compose=${EXTSTATE_BASE_COMPOSE:-"$root/test/docker-compose.yml"}
+# The base stack is test/docker-compose.yml under its own project and ports, so
+# it can never collide with, reuse or `down -v` a developer's `make test` stack.
+base_project=pgextbase
+export CONDUIT_PG_TEST_PORT=${EXTSTATE_BASE_PORT:-56153}
+export CONDUIT_PG_TEST_BOUNCER_PORT=${EXTSTATE_BASE_BOUNCER_PORT:-56154}
+case "$CONDUIT_PG_TEST_PORT $CONDUIT_PG_TEST_BOUNCER_PORT" in
+*5433* | *5434* | *6432*) echo "INFRA: refusing ports 5433, 5434 and 6432: they belong to make test and make test-chaos" >&2; exit 1 ;;
+esac
 
 up_base=0 up_ext=0
 cleanup() {
@@ -50,7 +66,7 @@ cleanup() {
 	fi
 	docker volume rm -f "${EXTSTATE_PROJECT}_pgsnap" >/dev/null 2>&1
 	if [ "$up_base" = 1 ]; then
-		docker compose -f "$base_compose" down -v >/dev/null 2>&1
+		docker compose -p "$base_project" -f "$base_compose" down -v >/dev/null 2>&1
 	fi
 }
 trap cleanup EXIT
@@ -60,7 +76,7 @@ ensure_stack() {
 	base)
 		if [ "$up_base" = 0 ]; then
 			up_base=1
-			docker compose -f "$base_compose" up --force-recreate --quiet-pull -d --wait || return 1
+			docker compose -p "$base_project" -f "$base_compose" up --force-recreate --quiet-pull -d --wait || return 1
 		fi ;;
 	ext)
 		if [ "$up_ext" = 0 ]; then
@@ -132,8 +148,13 @@ while IFS='|' read -r id status stack kind target regex min envs when <&3; do
 			grep -h '"Action":"output"' "$out" | jq -r .Output 2>/dev/null | tail -40
 		fi ;;
 	known-gap)
-		if [ "$nfail" -ge 1 ] && [ "$npass" = 0 ]; then
-			record "$id" KNOWN-GAP "test fails as expected: $evidence"
+		silent=$(jq -Rrs '[split("\n")[] | fromjson? | select(.Action == "output") | .Output]
+			| join("") | split("\n") | map(select(test("SILENT (LOSS|STALL)"))) | length' "$out")
+		if [ "$nfail" -ge 1 ] && [ "$npass" = 0 ] && [ "$silent" -ge 1 ]; then
+			record "$id" KNOWN-GAP "fails with silent loss, as expected: $evidence"
+		elif [ "$nfail" -ge 1 ] && [ "$npass" = 0 ]; then
+			record "$id" FAIL "known-gap test failed, but not with SILENT evidence (infrastructure or another error?): $evidence"
+			failed=1
 		elif [ "$npass" -ge 1 ]; then
 			record "$id" FAIL "known-gap test passed: the gap is closed, flip it to required in cases.txt"
 			failed=1

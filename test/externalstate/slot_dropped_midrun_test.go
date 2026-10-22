@@ -67,5 +67,6 @@ func TestExternalState_SlotDroppedMidRun(t *testing.T) {
 		sc.insert(ctx, t, conn, 6)
 		got = drain(ctx, t, src2, []int{4, 5, 6}, 30*time.Second).ids
 	}
-	requireLoudOrDelivered(t, "restart after the slot was dropped mid-run", openErr, got, []int{4, 5})
+	requireLoudOrDelivered(t, "restart after the slot was dropped mid-run", openErr, got, []int{4, 5},
+		"postgres.source.slot_wal_gap")
 }

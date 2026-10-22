@@ -109,5 +109,6 @@ func TestExternalState_SnapshotRestore(t *testing.T) {
 		defer teardown(t, src3)
 		got = drain(ctx, t, src3, c, 45*time.Second).ids
 	}
-	requireLoudOrDelivered(t, "resume after a volume snapshot restore", openErr, got, c)
+	requireLoudOrDelivered(t, "resume after a volume snapshot restore", openErr, got, c,
+		"postgres.source.slot_wal_gap", "postgres.source.slot_invalidated")
 }

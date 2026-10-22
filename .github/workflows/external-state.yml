@@ -32,6 +32,9 @@ on:
     - cron: '37 5 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   external-state:
     runs-on: ubuntu-latest

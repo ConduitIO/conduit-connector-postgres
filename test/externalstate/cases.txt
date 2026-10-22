@@ -13,7 +13,7 @@
 #               known-gap  an open data-loss gap, kept as a failing test on
 #                          purpose. The test must FAIL; if it passes the run
 #                          FAILS until the line is flipped to required.
-#   stack       base = test/docker-compose.yml (port 5433, in CI),
+#   stack       base = test/docker-compose.yml as project pgextbase (ports 56153-56154),
 #               ext  = test/externalstate/docker-compose.yml (ports 56150-56169).
 #   kind        go (target = package, regex = -run pattern) or
 #               script (target = script path, run from the repo root).

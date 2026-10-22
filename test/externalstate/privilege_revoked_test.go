@@ -91,8 +91,8 @@ func TestExternalState_ReplicationPrivilegeRevokedMidRun(t *testing.T) {
 	if src2, openErr := sc.open(ctx, url, pos, nil); openErr == nil {
 		teardown(t, src2)
 		t.Fatal("Open succeeded for a role without REPLICATION; the fault was not injected")
-	} else if coded(openErr) == "" {
-		t.Fatalf("restart without REPLICATION failed without a code: %v", openErr)
+	} else if coded(openErr) != "sqlstate:42501" {
+		t.Fatalf("restart without REPLICATION: want sqlstate:42501 (insufficient privilege), got %q: %v", coded(openErr), openErr)
 	} else {
 		t.Logf("restart without REPLICATION refused with %s", coded(openErr))
 	}
