@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"maps"
 	"math/big"
+	"net"
 	"reflect"
 	"slices"
 	"strconv"
@@ -497,7 +498,7 @@ func (d *Destination) failWrite(ctx context.Context, p *writePlan, err error) er
 		})
 		if encErr != nil {
 			err = fmt.Errorf("failed to encode record %d for table %q: %w", p.writes[idx].record,
-				p.writes[idx].table, encErr)
+				p.writes[idx].table, withholdEncodeError(encErr))
 		}
 	}
 	if table, ok := undefinedTable(p, err); ok {
@@ -800,7 +801,7 @@ func (d *Destination) execBatch(ctx context.Context, b *pgx.Batch, p *writePlan)
 	// Close drains the remaining results, resynchronizes the connection and,
 	// on an error, invalidates the statement cache for the batch.
 	if closeErr := br.Close(); firstErr == nil && closeErr != nil {
-		return "", fmt.Errorf("failed to commit batch: %w", closeErr)
+		return "", fmt.Errorf("failed to commit batch: %w", scrubExecError(closeErr))
 	}
 	nWrites := len(p.writes)
 	switch {
@@ -834,25 +835,40 @@ type scrubbedExecError struct {
 func (e *scrubbedExecError) Error() string { return e.msg }
 func (e *scrubbedExecError) Unwrap() error { return e.err }
 
+// withheldEncodeMessage replaces the text of a pgx encode error, which prints
+// the value that did not encode.
+const withheldEncodeMessage = "a statement argument could not be encoded for its column: details withheld, they quote the value"
+
+// withholdEncodeError replaces any error of encoding a statement argument.
+// pgx formats the value into it ("unable to encode %#v into binary format for
+// int8 (OID 20)") and the text of other encode failures cannot be told apart
+// from it, so none of it is kept. The original stays in the chain.
+func withholdEncodeError(err error) error {
+	return &scrubbedExecError{msg: withheldEncodeMessage, err: err}
+}
+
 // scrubExecError removes the row values from the error of a statement. Errors
-// reach the DLQ, the API and CLI output.
+// reach the DLQ, the API and CLI output. It withholds by default:
 //
-//   - A server error of class 22 (data exception: 22P02 invalid input syntax,
-//     22007 and 22008 datetime format and field overflow, ...) or class 23
-//     (integrity constraint violation, whose detail reads "Key (id)=(5) already
-//     exists") quotes the value in its message or detail. The SQLSTATE, the
-//     schema, table, column and constraint names are kept, the text is not.
-//   - pgx's "unable to encode %#v into binary format" prints the value.
+//   - Every server error (*pgconn.PgError) keeps its SQLSTATE and its schema,
+//     table, column and constraint names; the message, detail, hint, where and
+//     the rest are withheld. The server quotes values in them: "invalid input
+//     syntax for type integer: \"x\"", "Key (id)=(5) already exists", a CHECK
+//     failure's "Failing row contains (...)", and the text of a trigger's
+//     RAISE (P0001) is written by whoever wrote the trigger.
+//   - A pgx error from building the batch (pgx.ErrPreprocessingBatch) or
+//     encoding an argument prints the value. It is withheld, except when its
+//     cause is a network error, which has no row values.
 //
-// Any other error is returned as it is.
+// Any other error (a closed connection, a context error) is returned as it is.
 func scrubExecError(err error) error {
 	if err == nil {
 		return nil
 	}
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && (strings.HasPrefix(pgErr.Code, "22") || strings.HasPrefix(pgErr.Code, "23")) {
+	if errors.As(err, &pgErr) {
 		var where []string
-		for _, kv := range [][2]string{{labelTable, pgErr.TableName}, {"column", pgErr.ColumnName}, {"constraint", pgErr.ConstraintName}} {
+		for _, kv := range [][2]string{{"schema", pgErr.SchemaName}, {labelTable, pgErr.TableName}, {"column", pgErr.ColumnName}, {"constraint", pgErr.ConstraintName}} {
 			if kv[1] != "" {
 				where = append(where, fmt.Sprintf("%s %q", kv[0], kv[1]))
 			}
@@ -863,8 +879,12 @@ func scrubExecError(err error) error {
 		}
 		return &scrubbedExecError{msg: msg + ": message and detail withheld, they can quote row values", err: err}
 	}
-	if strings.Contains(err.Error(), "unable to encode") {
-		return &scrubbedExecError{msg: "a statement argument could not be encoded for its column: details withheld, they quote the value", err: err}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return err
+	}
+	if errors.As(err, new(pgx.ErrPreprocessingBatch)) || strings.Contains(err.Error(), "unable to encode") {
+		return withholdEncodeError(err)
 	}
 	return err
 }

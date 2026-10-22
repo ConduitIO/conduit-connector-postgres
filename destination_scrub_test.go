@@ -15,7 +15,10 @@
 package postgres
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"net"
 	"strings"
 	"testing"
 
@@ -32,6 +35,10 @@ func TestScrubExecError(t *testing.T) {
 		"22007 datetime":      {Code: "22007", Message: `invalid input syntax for type timestamp: "customer-SECRET-4711"`},
 		"22008 overflow":      {Code: "22008", Message: `date/time field value out of range: "customer-SECRET-4711"`},
 		"23505 unique":        {Code: "23505", Message: "duplicate key value violates unique constraint", Detail: "Key (email)=(customer-SECRET-4711) already exists.", ConstraintName: "orders_email_key"},
+		"23514 check":         {Code: "23514", Message: "new row for relation violates check constraint", Detail: "Failing row contains (1, customer-SECRET-4711).", ConstraintName: "orders_chk"},
+		"P0001 trigger raise": {Code: "P0001", Message: "bad customer-SECRET-4711", Hint: "customer-SECRET-4711", Where: "PL/pgSQL function f() line 3 customer-SECRET-4711"},
+		"42703 column":        {Code: "42703", Message: `column "customer-SECRET-4711" does not exist`},
+		"XX000 unlisted":      {Code: "XX000", Message: "internal error customer-SECRET-4711", InternalQuery: "SELECT 'customer-SECRET-4711'"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			is := is.New(t)
@@ -50,11 +57,32 @@ func TestScrubExecError(t *testing.T) {
 		is.True(strings.Contains(err.Error(), `column "qty"`))
 		is.True(strings.Contains(err.Error(), `table "orders"`))
 	})
-	t.Run("other server errors keep their text", func(t *testing.T) {
+	t.Run("classification survives", func(t *testing.T) {
 		is := is.New(t)
-		err := &pgconn.PgError{Code: "42P01", Message: `relation "orders" does not exist`}
-		is.Equal(scrubExecError(err), error(err))
+		err := scrubExecError(&pgconn.PgError{Code: "42P01", Message: `relation "orders" does not exist`})
+		is.True(!strings.Contains(err.Error(), "relation"))
+		is.True(strings.HasPrefix(err.Error(), "SQLSTATE 42P01"))
+		var got *pgconn.PgError
+		is.True(errors.As(err, &got))
 		is.Equal(scrubExecError(nil), nil)
+	})
+	t.Run("errors without row values are kept", func(t *testing.T) {
+		is := is.New(t)
+		err := context.DeadlineExceeded
+		is.Equal(scrubExecError(err), err)
+		var ne net.Error = &net.OpError{Op: "read", Err: errors.New("connection reset")}
+		is.Equal(scrubExecError(fmt.Errorf("send: %w", ne)).Error(), fmt.Sprintf("send: %v", ne))
+	})
+	t.Run("batch preprocessing error", func(t *testing.T) {
+		is := is.New(t)
+		_, encErr := pgtype.NewMap().Encode(pgtype.Int8OID, pgtype.BinaryFormatCode, "customer-SECRET-4711", nil)
+		err := scrubExecError(fmt.Errorf("wrap: %w", encErr))
+		is.True(!strings.Contains(err.Error(), "SECRET"))
+	})
+	t.Run("withholdEncodeError keeps nothing of the cause", func(t *testing.T) {
+		is := is.New(t)
+		err := withholdEncodeError(errors.New("cannot find encode plan for customer-SECRET-4711"))
+		is.Equal(err.Error(), withheldEncodeMessage)
 	})
 	t.Run("pgx encode error", func(t *testing.T) {
 		is := is.New(t)
