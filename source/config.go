@@ -100,8 +100,8 @@ type Config struct {
 	// find the connector's identity beacon. It decodes from the slot's
 	// restart_lsn, so a long-running transaction that holds restart_lsn far
 	// back makes it slower; on Postgres 17+ it also waits for the standbys in
-	// synchronized_standby_slots. When it times out the start fails and is
-	// retried.
+	// synchronized_standby_slots. When it times out the start is refused with
+	// postgres.source.slot_identity_check_failed and retried.
 	LogreplSlotIdentityCheckTimeout time.Duration `json:"logrepl.slotIdentity.checkTimeout" default:"10m"`
 
 	// LogreplSlotIdentityBeaconFailureTimeout is how long the connector keeps

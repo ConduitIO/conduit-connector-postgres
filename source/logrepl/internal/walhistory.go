@@ -109,39 +109,35 @@ type TxAt struct {
 	CommitTime time.Time
 }
 
-// FirstTxFrom peeks (never consumes) the slot for the first transaction it
-// decodes whose commit LSN (BEGIN's final LSN) is at or after from. ok is
-// false when the slot decodes none up to the end of the WAL. Same limits and
-// requirements as FindBeacon.
-func FirstTxFrom(ctx context.Context, pool *pgxpool.Pool, slot, publication string, from pglogrepl.LSN) (TxAt, bool, error) {
-	maxRows := findBeaconMaxRows
-	for limit := min(findBeaconFirstRound, maxRows); ; limit = nextFindBeaconLimit(limit, maxRows) {
-		var rows int64
-		var begins [][]byte
-		err := pool.QueryRow(ctx, `
-			SELECT count(*), coalesce(array_agg(data ORDER BY n) FILTER (WHERE get_byte(data, 0) = 66), '{}')
-			FROM pg_logical_slot_peek_binary_changes($1, NULL, $2,
-			     'proto_version', '1', 'publication_names', $3) WITH ORDINALITY AS t(lsn, xid, data, n)`,
-			slot, limit, publication).Scan(&rows, &begins)
+// TxCommittingAt peeks (never consumes) the slot for the transaction that
+// commits at lsn (its BEGIN's final LSN). ok is false when the slot decodes
+// no transaction committing there. The slot must not be in use, and the role
+// needs REPLICATION, as for FindBeacon.
+//
+// The peek is bounded by LSN, not by a number of changes: upto_lsn lsn+1
+// makes Postgres decode up to and including the record that starts at lsn
+// and stop there. A change limit stops only at a transaction boundary, so a
+// large transaction committing between the slot's confirmed_flush_lsn and
+// lsn came back whole each round and the search gave up on a position it
+// could check (#447 fresh-context review S1). Only the context bounds it.
+func TxCommittingAt(ctx context.Context, pool *pgxpool.Pool, slot, publication string, lsn pglogrepl.LSN) (TxAt, bool, error) {
+	var begins [][]byte
+	err := pool.QueryRow(ctx, `
+		SELECT coalesce(array_agg(data) FILTER (WHERE get_byte(data, 0) = 66), '{}')
+		FROM pg_logical_slot_peek_binary_changes($1, $2::pg_lsn, NULL,
+		     'proto_version', '1', 'publication_names', $3)`,
+		slot, (lsn + 1).String(), publication).Scan(&begins)
+	if err != nil {
+		return TxAt{}, false, fmt.Errorf("failed to peek replication slot %q for the saved position's transaction: %w", slot, err)
+	}
+	for _, data := range begins {
+		msg, err := pglogrepl.Parse(data)
 		if err != nil {
-			return TxAt{}, false, fmt.Errorf("failed to peek replication slot %q for the saved position's transaction: %w", slot, err)
+			return TxAt{}, false, fmt.Errorf("failed to parse a BEGIN message: %w", err)
 		}
-		for _, data := range begins {
-			msg, err := pglogrepl.Parse(data)
-			if err != nil {
-				return TxAt{}, false, fmt.Errorf("failed to parse a BEGIN message: %w", err)
-			}
-			b, ok := msg.(*pglogrepl.BeginMessage)
-			if !ok || b.FinalLSN < from {
-				continue
-			}
+		if b, ok := msg.(*pglogrepl.BeginMessage); ok && b.FinalLSN == lsn {
 			return TxAt{FinalLSN: b.FinalLSN, Xid: b.Xid, CommitTime: b.CommitTime}, true, nil
 		}
-		if rows < int64(limit) {
-			return TxAt{}, false, nil
-		}
-		if limit >= maxRows {
-			return TxAt{}, false, fmt.Errorf("replication slot %q: %w (read %d changes)", slot, ErrBeaconSearchExhausted, rows)
-		}
 	}
+	return TxAt{}, false, nil
 }

@@ -112,5 +112,5 @@ func TestExternalState_SnapshotRestore(t *testing.T) {
 		got, openErr = d.ids, d.err
 	}
 	requireLoudOrDelivered(t, "resume after a volume snapshot restore", openErr, got, c,
-		"postgres.source.slot_wal_gap", "postgres.source.slot_invalidated", "postgres.source.wal_history_changed")
+		"postgres.source.wal_history_changed")
 }

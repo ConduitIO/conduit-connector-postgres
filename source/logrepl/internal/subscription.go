@@ -952,7 +952,12 @@ func reportedPositions(walWritten, walFlushed, serverWALEnd, lastReported pglogr
 	// beacon certifies, so a stopped slot still decodes a beacon that covers
 	// its confirmed_flush_lsn.
 	if allAcked {
-		flush = maxLSN(flush, minLSN(serverWALEnd, idleCap))
+		advance := serverWALEnd
+		// guard: logrepl-idle-advance-beacon-cap tests=^TestReportedPositions|^TestSlotIdentity_IdleAdvancedSlot_ResumesWithoutFalsePositive$ pkgs=./source/logrepl
+		if advance > idleCap {
+			advance = idleCap
+		}
+		flush = maxLSN(flush, advance)
 	}
 
 	// Invariant 2: the reported flush position never decreases.

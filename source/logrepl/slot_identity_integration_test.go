@@ -513,10 +513,13 @@ func TestSlotIdentity_UpgradeFromV0173_CoveredSlotIsProven(t *testing.T) {
 	// A position committed after the slot's start, as v0.17.3 writes it: the
 	// commit LSN of a transaction the slot decodes.
 	slotGapInsert(ctx, t, pool, table, "r1")
-	tx, ok, err := internal.FirstTxFrom(ctx, pool, table, table, 0)
+	var data []byte
+	is.NoErr(pool.QueryRow(ctx, `SELECT data FROM pg_logical_slot_peek_binary_changes($1::name, NULL, NULL,
+		'proto_version', '1', 'publication_names', $2::text) WHERE get_byte(data, 0) = 66 LIMIT 1`, table, table).Scan(&data))
+	msg, err := pglogrepl.Parse(data)
 	is.NoErr(err)
-	is.True(ok)
-	legacy := opencdc.Position(fmt.Sprintf(`{"version":3,"type":2,"last_lsn":%q,"tx_commit_lsn":%q,"tx_seq":1}`, tx.FinalLSN, tx.FinalLSN))
+	commitLSN := msg.(*pglogrepl.BeginMessage).FinalLSN
+	legacy := opencdc.Position(fmt.Sprintf(`{"version":3,"type":2,"last_lsn":%q,"tx_commit_lsn":%q,"tx_seq":1}`, commitLSN, commitLSN))
 	is.True(slotIDConfirmed(ctx, t, pool, table) <= slotIDBound(t, legacy))
 
 	lctx, logs := slotIDLogs(ctx)
@@ -1531,4 +1534,29 @@ func TestSlotIdentity_LargeTransactionInFlight_SlotNeverPassesIt(t *testing.T) {
 		}
 	}
 	is.Equal(got, rows-stopAt)
+}
+
+// #447 fresh-context review S1: a check that cannot read the slot (here it
+// runs out of logrepl.slotIdentity.checkTimeout) refuses the start with a
+// code and a fix, never an uncoded error, and allowWALGap accepts the slot
+// unproven.
+func TestSlotIdentity_CheckCannotReadTheSlot_CodedRefusal(t *testing.T) {
+	ctx, cancel := context.WithTimeout(test.Context(t), 2*time.Minute)
+	defer cancel()
+	is := is.New(t)
+	pool, table := slotIDSetup(ctx, t)
+	p := slotGapRun1(ctx, t, pool, table)
+	slotGapWaitInactive(ctx, t, pool, table)
+	is.True(slotIDConfirmed(ctx, t, pool, table) <= slotIDBound(t, p)) // covered: the transaction check peeks
+
+	c := slotGapConfig(table, p, false)
+	c.IdentityCheckTimeout = time.Microsecond
+	_, err := NewCombinedIterator(ctx, pool, c)
+	is.Equal(CodeOf(err), CodeSlotIdentityCheckFailed)
+	is.True(strings.Contains(err.Error(), "checkTimeout"))
+
+	c.AllowWALGap = true
+	it, err := NewCombinedIterator(ctx, pool, c)
+	is.NoErr(err)
+	is.NoErr(it.Teardown(ctx))
 }

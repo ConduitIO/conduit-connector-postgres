@@ -221,8 +221,11 @@ What it needs and what it costs:
   slot can be proven again). If the pipeline was stopped in that state, start it once
   with `logrepl.allowWALGap: true`.
 - The check reads the slot from its `restart_lsn`; a long-running transaction can hold
-  that far back and make it slow. `logrepl.slotIdentity.checkTimeout` (default 10
-  minutes) bounds it; a timeout fails the start, which is retried.
+  that far back and make it slow, and so can a large backlog: it reads as far as it must,
+  never giving up early. `logrepl.slotIdentity.checkTimeout` (default 10 minutes) bounds
+  it; a check that times out or cannot read the slot refuses the start with
+  `postgres.source.slot_identity_check_failed`, which is retried. Raise the timeout, or
+  start once with `logrepl.allowWALGap: true` to take the slot unproven.
 - Postgres 13 cannot send logical decoding messages to the connector, and a standby
   cannot write them. There positions carry no identity and the check is the one before
   v0.17.5: the connector logs `postgres.source.slot_identity_unsupported` and resumes on
@@ -827,7 +830,8 @@ pipelines:
           # restart_lsn, so a long-running transaction that holds restart_lsn
           # far back makes it slower; on Postgres 17+ it also waits for the
           # standbys in synchronized_standby_slots. When it times out the start
-          # fails and is retried.
+          # is refused with postgres.source.slot_identity_check_failed and
+          # retried.
           # Type: duration
           # Required: no
           logrepl.slotIdentity.checkTimeout: "10m"

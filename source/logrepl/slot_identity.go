@@ -53,7 +53,28 @@ const (
 	// carry identity beacons (before Postgres 14, or a standby), so only the
 	// saved-position bound is checked.
 	CodeSlotIdentityUnsupported Code = "postgres.source.slot_identity_unsupported"
+	// CodeSlotIdentityCheckFailed: the check could not read the slot to
+	// prove it (a peek failed or ran out of logrepl.slotIdentity.checkTimeout),
+	// so it can say neither yes nor no. The start is refused; allowWALGap
+	// accepts the slot as unproven.
+	CodeSlotIdentityCheckFailed Code = "postgres.source.slot_identity_check_failed"
 )
+
+// newSlotIdentityCheckFailedError is the coded refusal for a check that
+// could not read the slot (what names what was being checked).
+func newSlotIdentityCheckFailedError(slot, what string, timeout time.Duration, err error) *SlotError {
+	return &SlotError{
+		Code: CodeSlotIdentityCheckFailed,
+		Path: slotNamePath,
+		Message: fmt.Sprintf("could not check %s of replication slot %q (%v). The check reads the slot without consuming "+
+			"it, from its restart_lsn up to the WAL it needs, within logrepl.slotIdentity.checkTimeout (%s)", what, slot, err, timeout),
+		Fix: "Raise logrepl.slotIdentity.checkTimeout if the slot holds a large backlog or a long-running transaction holds " +
+			"its restart_lsn back; on Postgres 17+ check that every physical slot in synchronized_standby_slots exists and " +
+			"its standby is connected. To start without the proof, set `logrepl.allowWALGap: true` for one start (the slot " +
+			"is then taken as unproven, and changes may be missing if it was replaced or moved) and remove it after a record " +
+			"was delivered",
+	}
+}
 
 // identityOutcome is what the identity check found out about the slot.
 type identityOutcome int
@@ -212,13 +233,20 @@ func checkSlotIdentity(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, ser
 	defer cancel()
 	found, lsn, err := internal.FindBeacon(pctx, pool, c.SlotName, c.PublicationName, res.identity, res.confirmed)
 	if err != nil {
-		if pctx.Err() != nil && ctx.Err() == nil {
-			err = fmt.Errorf("%w (after %s, logrepl.slotIdentity.checkTimeout: the check decodes the slot from its restart_lsn, "+
-				"which a long-running transaction can hold far back; on Postgres 17+ decoding a failover slot also waits for "+
-				"every physical slot in synchronized_standby_slots to confirm the WAL, so check that each one exists and its "+
-				"standby is connected)", err, timeout)
+		if ctx.Err() != nil {
+			return res, err // stopped, not a verdict
 		}
-		return res, fmt.Errorf("failed to check the identity of replication slot %q: %w", c.SlotName, err)
+		if !c.AllowWALGap {
+			return res, newSlotIdentityCheckFailedError(c.SlotName, "the identity", timeout, err)
+		}
+		// Unproven: accepted below like a replaced slot, with the DATA
+		// LOSS warning and a new identity.
+		sdk.Logger(ctx).Warn().Err(err).
+			Str("code", string(CodeSlotIdentityCheckFailed)).
+			Str("slot", c.SlotName).
+			Msg("could not check the replication slot's identity; logrepl.allowWALGap accepts it unproven")
+		res.outcome = identityReplaced
+		return res, nil
 	}
 	if found {
 		res.outcome, res.beaconLSN = identityBeacon, lsn
@@ -280,10 +308,14 @@ func newSlotReplacedError(slot string, saved string, confirmed pglogrepl.LSN) *S
 			"pipeline never delivered would be skipped and lost. Common causes: the slot was dropped and created again "+
 			"under the same name (by hand, by another pipeline or tool, or by pg_upgrade), another client advanced or "+
 			"consumed it past changes the pipeline had not delivered, including ones it had received but not acked when it "+
-			"stopped (pg_replication_slot_advance, pg_logical_slot_get_changes), the pipeline ran on a connector version "+
-			"before v0.17.5 after this one, or a failover to a standby that was not listed in synchronized_standby_slots",
+			"stopped (pg_replication_slot_advance, pg_logical_slot_get_changes), or a failover to a standby that was not "+
+			"listed in synchronized_standby_slots. Two causes lose nothing: the pipeline ran on a connector version before "+
+			"v0.17.5 after this one (a rollback, then the upgrade again), or the previous run's identity beacons could not be written "+
+			"for longer than logrepl.slotIdentity.beaconFailureTimeout (logged as postgres.source.slot_beacon_unavailable), "+
+			"so the idle slot was advanced without them; in both the slot moved only past changes that were delivered",
 			slot, saved, confirmed, confirmed),
-		Fix: "If you advanced the slot yourself on purpose (for example to skip a transaction, see the README), start once with " +
+		Fix: "If you advanced the slot yourself on purpose (for example to skip a transaction, see the README), or after a " +
+			"rollback and re-upgrade or abandoned beacons (see above), start once with " +
 			"`logrepl.allowWALGap: true` and remove it after the pipeline has resumed. Otherwise either re-snapshot (stop the " +
 			"pipeline, delete this source connector and create it again so it has no position; with snapshotMode initial every " +
 			"table is read again and every row is delivered again), or accept the loss by setting `logrepl.allowWALGap: true` " +

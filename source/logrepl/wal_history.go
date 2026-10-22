@@ -110,7 +110,7 @@ func checkWALHistory(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, h int
 		case !ok:
 			reason = fmt.Sprintf("the server's timeline %d does not descend from the saved position's timeline %d",
 				h.Timeline, p.Timeline)
-		case switchPoint < bound:
+		case leftTimelineBy(switchPoint, bound):
 			reason = fmt.Sprintf("the server's history left timeline %d at %s, before the saved position (%s): the changes "+
 				"after %s on the old timeline are not in this server's WAL (point-in-time recovery, or a failover to a "+
 				"standby that was behind)", p.Timeline, switchPoint, bound, switchPoint)
@@ -144,6 +144,15 @@ func checkWALHistory(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, h int
 			"(a restore, point-in-time recovery, a failover to a lagging standby) re-snapshot: stop the pipeline, delete this " +
 			"source connector and create it again so it has no position",
 	}
+}
+
+// leftTimelineBy reports whether a history that switched timelines at
+// switchPoint left the position's timeline before its bound did: the switch
+// point is the first LSN of the new timeline, so a bound at the switch point
+// names a record of the new timeline, not the position's (#447 fresh-context
+// review NIT: the comparison was strict).
+func leftTimelineBy(switchPoint, bound pglogrepl.LSN) bool {
+	return switchPoint <= bound
 }
 
 // verifyCoveredTransaction checks a resume that the saved position's bound
@@ -186,19 +195,29 @@ func verifyCoveredTransaction(ctx context.Context, pool *pgxpool.Pool, c CDCConf
 	pctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	got, found, err := internal.FirstTxFrom(pctx, pool, c.SlotName, c.PublicationName, want.FinalLSN)
+	got, found, err := internal.TxCommittingAt(pctx, pool, c.SlotName, c.PublicationName, want.FinalLSN)
 	if err != nil {
-		return fmt.Errorf("failed to check the saved position's transaction: %w", err)
+		if ctx.Err() != nil {
+			return err // stopped, not a verdict
+		}
+		if !c.AllowWALGap {
+			return newSlotIdentityCheckFailedError(c.SlotName, "the saved position's transaction", timeout, err)
+		}
+		sdk.Logger(ctx).Warn().Err(err).
+			Str("code", string(CodeSlotIdentityCheckFailed)).
+			Str("slot", c.SlotName).
+			Msg("could not check the saved position's transaction; logrepl.allowWALGap accepts the slot unproven")
+		return nil
 	}
 	if found && sameTransaction(want, got) {
 		return nil
 	}
 	var seen string
 	if found {
-		seen = fmt.Sprintf("the first transaction the slot decodes from there commits at %s with xid %d at %s",
-			got.FinalLSN, got.Xid, got.CommitTime.UTC().Format(time.RFC3339Nano))
+		seen = fmt.Sprintf("the transaction the slot decodes there has xid %d and commit time %s",
+			got.Xid, got.CommitTime.UTC().Format(time.RFC3339Nano))
 	} else {
-		seen = "the slot decodes no transaction from there"
+		seen = "the slot decodes no transaction committing there"
 	}
 	named := fmt.Sprintf("xid %d, committed at LSN %s at %s", want.Xid, want.FinalLSN, want.CommitTime.UTC().Format(time.RFC3339Nano))
 	if want.Xid == 0 {

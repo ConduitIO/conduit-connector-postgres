@@ -174,7 +174,11 @@ func verifyBeacon(content []byte, key, slot string, confirmed pglogrepl.LSN) boo
 	// r <= l (Emit never certifies past the insert position it read), so
 	// r >= confirmed also puts l at or past confirmed.
 	r, err := pglogrepl.ParseLSN(covered)
-	if err != nil || r < confirmed || r > l {
+	if err != nil || r > l {
+		return false
+	}
+	// guard: logrepl-beacon-covers-confirmed tests=^TestBeaconContent_Verify$|^TestSlotIdentity_ConsumedByAnotherClientBelowTheLastBeacon_Refused$ pkgs=./source/logrepl
+	if r < confirmed {
 		return false
 	}
 	got, err := hex.DecodeString(mac)
@@ -208,14 +212,19 @@ func ReadServerInfo(ctx context.Context, pool *pgxpool.Pool) (ServerInfo, error)
 	return s, nil
 }
 
-// Peek limits for FindBeacon. A healthy slot holds a beacon right after its
+// Peek rounds for FindBeacon. A healthy slot holds a beacon right after its
 // confirmed_flush_lsn (the subscription advances an idle slot only up to a
 // beacon), so the first round almost always finds it; the rounds grow for a
 // slot with a backlog of in-flight changes in front of the beacon.
 const findBeaconFirstRound = 1024
 
-// findBeaconMaxRows is the most changes FindBeacon reads from a slot; a
-// variable for tests.
+// findBeaconMaxRows is the largest change limit of a round; a variable for
+// tests. A round's limit is not a bound: pg_logical_slot_peek_binary_changes
+// stops only at a transaction boundary, so a round returns every change of a
+// transaction that reaches its limit (#447 fresh-context review S1). After
+// the round at findBeaconMaxRows the search reads the slot to the end of the
+// WAL without a limit, so a large transaction in front of the beacon costs
+// time (bounded by logrepl.slotIdentity.checkTimeout), never a wrong answer.
 var findBeaconMaxRows = 1 << 24
 
 // nextFindBeaconLimit is the change limit of the round after one with limit,
@@ -227,57 +236,66 @@ func nextFindBeaconLimit(limit, maxRows int) int {
 	return limit * 8
 }
 
-// ErrBeaconSearchExhausted means FindBeacon read findBeaconMaxRows changes
-// from the slot without reaching the end of the WAL, so it can say neither
-// yes nor no.
-var ErrBeaconSearchExhausted = errors.New("the slot holds too many changes to search for a beacon")
-
 // FindBeacon reports whether the slot still decodes a beacon authenticated
 // with the identity key that vouches for confirmed (the slot's
 // confirmed_flush_lsn): written after it, and certifying at least it (see
-// verifyBeacon). It peeks (never consumes) the slot
-// from its confirmed_flush_lsn to the current end of the WAL, so the slot
-// must not be in use. The connecting role needs the REPLICATION attribute,
-// as for streaming.
+// verifyBeacon). It peeks (never consumes) the slot from its
+// confirmed_flush_lsn to the current end of the WAL, so the slot must not be
+// in use. The connecting role needs the REPLICATION attribute, as for
+// streaming. It always gives an answer; only the context bounds it.
 //
 // Postgres skips a transaction whose commit record starts before the slot's
 // confirmed_flush_lsn, so a found beacon is one the slot would also stream,
 // and its LSN (the message record's end, as Postgres reports it) is after
 // confirmed_flush_lsn.
 func FindBeacon(ctx context.Context, pool *pgxpool.Pool, slot, publication, identity string, confirmed pglogrepl.LSN) (bool, pglogrepl.LSN, error) {
-	needle := []byte(BeaconPrefix + "\x00")
 	maxRows := findBeaconMaxRows
 	for limit := min(findBeaconFirstRound, maxRows); ; limit = nextFindBeaconLimit(limit, maxRows) {
-		var rows int64
-		var candidates [][]byte
-		var lsns []string
-		err := pool.QueryRow(ctx, `
-			SELECT count(*),
-			       coalesce(array_agg(data) FILTER (WHERE get_byte(data, 0) = 77 AND position($4::bytea IN data) > 0), '{}'),
-			       coalesce(array_agg(lsn::text) FILTER (WHERE get_byte(data, 0) = 77 AND position($4::bytea IN data) > 0), '{}')
-			FROM pg_logical_slot_peek_binary_changes($1, NULL, $2,
-			     'proto_version', '1', 'publication_names', $3, 'messages', 'true')`,
-			slot, limit, publication, needle).Scan(&rows, &candidates, &lsns)
-		if err != nil {
-			return false, 0, fmt.Errorf("failed to peek replication slot %q for its identity beacon: %w", slot, err)
-		}
-		for i, data := range candidates {
-			if !isBeaconFor(data, identity, slot, confirmed) {
-				continue
-			}
-			lsn, err := pglogrepl.ParseLSN(lsns[i])
-			if err != nil {
-				return false, 0, fmt.Errorf("failed to parse beacon LSN %q: %w", lsns[i], err)
-			}
-			return true, lsn, nil
+		found, lsn, rows, err := findBeaconRound(ctx, pool, slot, publication, identity, confirmed, &limit)
+		if err != nil || found {
+			return found, lsn, err
 		}
 		if rows < int64(limit) {
 			return false, 0, nil // read to the end of the WAL
 		}
 		if limit >= maxRows {
-			return false, 0, fmt.Errorf("replication slot %q: %w (read %d changes)", slot, ErrBeaconSearchExhausted, rows)
+			// The last limited round was full: read the rest without a
+			// limit. A limit would return a transaction larger than it
+			// whole each time and never get past it.
+			found, lsn, _, err := findBeaconRound(ctx, pool, slot, publication, identity, confirmed, nil)
+			return found, lsn, err
 		}
 	}
+}
+
+// findBeaconRound is one peek of FindBeacon, with upto_nchanges limit (nil:
+// to the end of the WAL). rows is how many changes it returned.
+func findBeaconRound(ctx context.Context, pool *pgxpool.Pool, slot, publication, identity string, confirmed pglogrepl.LSN, limit *int) (bool, pglogrepl.LSN, int64, error) {
+	needle := []byte(BeaconPrefix + "\x00")
+	var rows int64
+	var candidates [][]byte
+	var lsns []string
+	err := pool.QueryRow(ctx, `
+		SELECT count(*),
+		       coalesce(array_agg(data) FILTER (WHERE get_byte(data, 0) = 77 AND position($4::bytea IN data) > 0), '{}'),
+		       coalesce(array_agg(lsn::text) FILTER (WHERE get_byte(data, 0) = 77 AND position($4::bytea IN data) > 0), '{}')
+		FROM pg_logical_slot_peek_binary_changes($1, NULL, $2,
+		     'proto_version', '1', 'publication_names', $3, 'messages', 'true')`,
+		slot, limit, publication, needle).Scan(&rows, &candidates, &lsns)
+	if err != nil {
+		return false, 0, 0, fmt.Errorf("failed to peek replication slot %q for its identity beacon: %w", slot, err)
+	}
+	for i, data := range candidates {
+		if !isBeaconFor(data, identity, slot, confirmed) {
+			continue
+		}
+		lsn, err := pglogrepl.ParseLSN(lsns[i])
+		if err != nil {
+			return false, 0, 0, fmt.Errorf("failed to parse beacon LSN %q: %w", lsns[i], err)
+		}
+		return true, lsn, rows, nil
+	}
+	return false, 0, rows, nil
 }
 
 // isBeaconFor reports whether a pgoutput message is a beacon of slot
@@ -510,8 +528,11 @@ func (b *Beacons) emitCovering(ctx context.Context, covered pglogrepl.LSN) error
 		if _, err := tx.Exec(ctx, "SET LOCAL synchronous_commit TO local"); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, "SELECT pg_current_xact_id()"); err != nil {
-			return fmt.Errorf("failed to assign the beacon's transaction id: %w", err)
+		var xidErr error
+		// guard: logrepl-beacon-xid-first tests=^TestBeacons_SlotCreatedAfterTheGuardDoesNotDecodeTheBeacon$
+		assignXid(ctx, tx, &xidErr)
+		if xidErr != nil {
+			return fmt.Errorf("failed to assign the beacon's transaction id: %w", xidErr)
 		}
 		if err := b.checkHeld(ctx, tx); err != nil {
 			return err
@@ -539,6 +560,13 @@ func (b *Beacons) emitCovering(ctx context.Context, covered pglogrepl.LSN) error
 	return nil
 }
 
+// assignXid is Emit's step 1: the beacon's transaction takes an xid before
+// the guard, so a slot created after the guard cannot decode the beacon. A
+// call statement of its own so the guard mutation gate can remove it.
+func assignXid(ctx context.Context, tx pgx.Tx, err *error) {
+	_, *err = tx.Exec(ctx, "SELECT pg_current_xact_id()")
+}
+
 // checkHeld is Emit's guard (step 2).
 func (b *Beacons) checkHeld(ctx context.Context, tx pgx.Tx) error {
 	var active bool
@@ -557,11 +585,17 @@ func (b *Beacons) checkHeld(ctx context.Context, tx pgx.Tx) error {
 		return fmt.Errorf("failed to read replication slot %q: %w", b.slot, err)
 	}
 	if want := b.streamPID.Load(); want != 0 {
-		switch {
-		case pid == nil || int64(*pid) != int64(want):
-			return fmt.Errorf("%w: slot %q is not held by this run's walsender (PID %d)", ErrSlotNotHeld, b.slot, want)
-		case backendStart == nil || backendStart.UnixMicro() != b.streamStart.Load():
-			// N1 (#447): the PID was reused by another backend.
+		// The holder must be this run's walsender: its PID, and (N1, #447)
+		// the backend_start recorded at the stream start, since a PID can be
+		// reused by another backend. One guard: either check alone catches a
+		// different holder, since backend_start is read for the slot's
+		// active_pid.
+		samePID := pid != nil && int64(*pid) == int64(want)
+		// guard: logrepl-beacon-held-by-this-walsender tests=^TestBeacons_EmitOnlyIntoTheHeldSlot$|^TestSlotIdentity_BeaconAfterWalsenderLoss_DoesNotVouchForReplacement$|^TestSlotIdentity_PIDReuse_Refused$ pkgs=./source/logrepl
+		if !samePID || backendStart == nil || backendStart.UnixMicro() != b.streamStart.Load() {
+			if !samePID {
+				return fmt.Errorf("%w: slot %q is not held by this run's walsender (PID %d)", ErrSlotNotHeld, b.slot, want)
+			}
 			return fmt.Errorf("%w: slot %q is held by PID %d, which is no longer this run's walsender", ErrSlotNotHeld, b.slot, want)
 		}
 		return nil

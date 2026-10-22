@@ -220,3 +220,23 @@ func TestSameTransaction(t *testing.T) {
 		t.Error("a position without an xid: a commit at another LSN is not it")
 	}
 }
+
+// leftTimelineBy (#447 fresh-context review NIT): the switch point is the
+// first LSN of the new timeline. A position whose bound is the switch point
+// names a commit the old timeline had there and the new one does not, so it
+// is refused like one past it; only a bound before the switch point is on
+// both histories.
+func TestLeftTimelineBy(t *testing.T) {
+	for _, c := range []struct {
+		switchPoint, bound pglogrepl.LSN
+		left               bool
+	}{
+		{0x3000000, 0x2FFFFFF, false},
+		{0x3000000, 0x3000000, true},
+		{0x3000000, 0x3000001, true},
+	} {
+		if got := leftTimelineBy(c.switchPoint, c.bound); got != c.left {
+			t.Errorf("leftTimelineBy(%s, %s) = %v, want %v", c.switchPoint, c.bound, got, c.left)
+		}
+	}
+}

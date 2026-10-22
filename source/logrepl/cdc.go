@@ -348,6 +348,7 @@ func resolveSlotIdentity(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, s
 	case identityCovered:
 		// #447 re-review S2: covered only if the bound still names the
 		// position's transaction in this WAL.
+		// guard: logrepl-covered-transaction-checked tests=^TestSlotIdentity_CoveredResume_VerifiesTheTransaction$|^TestSlotIdentity_UpgradeFromV0173_CoveredButNoCommitThere_Refused$
 		if err := verifyCoveredTransaction(ctx, pool, c); err != nil {
 			return ident, err
 		}
@@ -511,6 +512,7 @@ func beaconError(c CDCConfig, serverVersion int, err error) error {
 // created again (or moved by another client) in between.
 func verifyHeldSlot(c CDCConfig, limit pglogrepl.LSN, beacons *internal.Beacons, stamp bool, serverVersion int, rotate func(string)) func(context.Context, internal.ReadReplicationSlotResult) error {
 	return func(ctx context.Context, slot internal.ReadReplicationSlotResult) error {
+		// guard: logrepl-verifyheld-limit tests=^TestSlotIdentity_RecreatedAfterIdentityCheck_Refused$|^TestSlotIdentity_FreshStartSlotReplacedMidSnapshot_Refused$
 		if slot.ConfirmedFlushLSN > limit {
 			if !c.AllowWALGap {
 				return newSlotReplacedError(c.SlotName, describeSavedPosition(c), slot.ConfirmedFlushLSN)

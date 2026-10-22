@@ -343,10 +343,14 @@ handling) and decides:
 2. Otherwise, if beacons are supported: peek the slot
    (`pg_logical_slot_peek_binary_changes(slot, NULL, n, ..., 'messages', 'true')`, never
    consuming) for a beacon that verifies and covers `confirmed_flush_lsn` (its `l` and its
-   `r` at or past it), in rounds of 1024, 8192, ... changes. Each round's
-   limit is clamped to 2^24 before the query (`nextFindBeaconLimit`), and the search fails
-   with `ErrBeaconSearchExhausted` once a round at the clamped limit is full, so it never
-   asks for more. A two-minute timeout bounds it. Found: **beacon**.
+   `r` at or past it), in rounds of 1024, 8192, ... changes, clamped to 2^24
+   (`nextFindBeaconLimit`). A change limit stops only at a transaction boundary, so a
+   transaction larger than the limit comes back whole every round; after the round at the
+   clamp the search reads to the end of the WAL without a limit (the first version gave up
+   there with an uncoded error on every retry, fresh-context review S1). Only
+   `logrepl.slotIdentity.checkTimeout` bounds it; a check that times out or fails is refused
+   with `postgres.source.slot_identity_check_failed`, which `allowWALGap` accepts as unproven.
+   Found: **beacon**.
 3. Not found, legacy position: **adopted** (Decision 6).
 4. Not found, the position has an identity: **replaced**. Refused with
    `postgres.source.slot_replaced`, or with `allowWALGap` accepted with one DATA LOSS
@@ -453,9 +457,10 @@ slot is at or below the bound (covered), and n1 to n3, committed at the LSNs the
 claims delivered, were skipped. So v4 positions also carry `tx_xid` and `tx_commit_time`
 from pgoutput's BEGIN, and a covered resume checks the transaction (`verifyCoveredTransaction`):
 
-the slot is peeked (never consumed, under `checkTimeout`) for the first transaction it
-decodes whose commit LSN is at or after the position's: it must commit exactly there, with
-that xid and that commit time. The slot decodes it again because its commit is at or after
+the slot is peeked (never consumed, under `checkTimeout`) for the transaction it decodes
+committing at the position's commit LSN (`TxCommittingAt`, bounded by `upto_lsn` = that LSN
++ 1 rather than by a change count, so a large transaction in front of it is no obstacle,
+fresh-context review S1): it must commit exactly there, with that xid and that commit time. The slot decodes it again because its commit is at or after
 `confirmed_flush_lsn`. Postgres decodes a prepared transaction at its `COMMIT PREPARED`, with
 its own xid and that commit's time, which is what the position recorded
 (`TestSlotIdentity_PreparedTransactionPosition_ResumesCovered`).
@@ -501,6 +506,7 @@ the WAL HISTORY CHANGE warning.
 | `postgres.source.slot_beacon_public` | warning | `REVOKE EXECUTE ON FUNCTION pg_logical_emit_message(...) FROM PUBLIC` and `GRANT` to the connector's role (hardening) |
 | `postgres.source.slot_beacon_unavailable` | warning, then error | beacons failing at runtime, with `retained_wal_bytes`; after `beaconFailureTimeout` the cap is abandoned and the next start may be refused |
 | `postgres.source.slot_identity_unprovable` | refusal | a position with an identity on a server that cannot check it (Postgres 13, a standby before 16): point the source at the primary, or start once with `allowWALGap` |
+| `postgres.source.slot_identity_check_failed` | refusal | the check could not read the slot (a peek failed, or ran out of `logrepl.slotIdentity.checkTimeout`): raise the timeout or fix the cause, or start once with `allowWALGap` (the slot is taken as unproven) |
 | `postgres.source.wal_history_changed` | refusal | check `url`; after pg_upgrade see the runbook; otherwise re-snapshot |
 | `postgres.source.wal_history_unverified` | warning | a legacy position: the history is checked from the next saved position on; re-snapshot if the database was restored or replaced since the last delivered record |
 
@@ -626,7 +632,7 @@ either way; the revoke keeps other roles from writing messages into the WAL at a
 | A role writes a beacon without the key (`PUBLIC` may call `pg_logical_emit_message`) | MAC fails; the replaced slot is refused | 3 |
 | A WAL reader copies a genuine beacon into a replaced slot | Its `l` is below the new slot's `confirmed_flush_lsn`; refused | 3 |
 | An attempt creates (or takes over) the slot with `allowWALGap`, stamps it, and fails before saving | The slot carries a new key; the retry from the old position is refused (or accepted again with the opt-in and the warning) | 3 |
-| The peek's growing rounds | Clamped to 2^24 before the query; exhaustion is decided at the clamped limit | 3 |
+| The peek's growing rounds | Clamped to 2^24; past the clamp the search reads to the WAL end without a limit, bounded only by `checkTimeout` (`slot_identity_check_failed`) | 3 |
 | A log or error carrying the identity key | None does: logs show an 8-digit fingerprint of its SHA-256, the raw-position debug log prints only its length | - |
 | Stop within about 20s of the last ack | The slot is below that transaction's commit; the next start decodes it again and the change key skips it | 1, 2 |
 | Very large backlog in front of the beacon | The peek reads in growing rounds; past 2^24 changes the start fails with an error (never seen: the beacon follows `confirmed_flush_lsn` closely) | 3 |
@@ -706,7 +712,10 @@ its own review; until then v0.14.x keeps #444's missing-slot check and the docum
   swapped in the subscription's own release-and-reacquire window; `verifyBeacon` (wrong
   key, wrong slot, `l` below the bound, tampered nonce or `l`, the v1 format, junk);
   forged and copied beacons refused by `FindBeacon`; the round limit clamp
-  (`nextFindBeaconLimit`) and exhaustion at a clamped limit below the first round.
+  (`nextFindBeaconLimit`); a 10000-row transaction in front of the beacon or of the
+  position's transaction with the clamp at 4096 (`TestFindBeacon_LargeTransactionInFrontOfTheBeacon`,
+  `TestTxCommittingAt_LargeTransactionInFront`, both failing before the fix); a check that
+  cannot read the slot is refused with a code (`TestSlotIdentity_CheckCannotReadTheSlot_CodedRefusal`).
 - Property: positions round-trip with the identity (`genPosition`); every CDC and marker
   position carries the run's identity.
 - #447 review repros, each failing before its fix and passing after:

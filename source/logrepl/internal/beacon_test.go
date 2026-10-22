@@ -424,25 +424,82 @@ func TestFindBeacon_RefusesForgedAndCopiedBeacons(t *testing.T) {
 	is.True(!found()) // written before the new slot's confirmed_flush_lsn
 }
 
-// A slot with more changes in front of any beacon than the search may read
-// fails with ErrBeaconSearchExhausted at the clamped limit, never with a
-// round that asks for more.
-func TestFindBeacon_ExhaustedAtClampedLimit(t *testing.T) {
+// #447 fresh-context review S1: a change limit stops only at a transaction
+// boundary, so a transaction larger than the last limited round came back
+// whole each time and the search gave up (ErrBeaconSearchExhausted, an
+// uncoded refusal on every retry). Past the clamped limit the search now
+// reads to the end of the WAL. Scaled down as the review reproduced it: a
+// 10000-row transaction in front of the beacon with findBeaconMaxRows 4096,
+// and a slot with no beacon read past the limit to a definite no.
+func TestFindBeacon_LargeTransactionInFrontOfTheBeacon(t *testing.T) {
 	is := is.New(t)
 	ctx := test.Context(t)
 	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
 	requireBeacons(ctx, t, pool)
 	slot, table := beaconSlot(ctx, t, pool)
-	for i := 0; i < 5; i++ {
-		_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (key) VALUES ('%d')`, table, i))
-		is.NoErr(err)
-	}
 	defer func(old int) { findBeaconMaxRows = old }(findBeaconMaxRows)
-	findBeaconMaxRows = 4 // below the first round of 1024
+	findBeaconMaxRows = 4096
 
-	_, _, err := FindBeacon(ctx, pool, slot, slot, NewSlotIdentity(), confirmedFlush(ctx, t, pool, slot))
-	is.True(errors.Is(err, ErrBeaconSearchExhausted))
-	is.True(strings.Contains(err.Error(), "read "))
+	confirmed := confirmedFlush(ctx, t, pool, slot)
+	_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (key, column1) SELECT convert_to('x' || g, 'UTF8'), 'x' FROM generate_series(1, 10000) g`, table))
+	is.NoErr(err)
+	found, _, err := FindBeacon(ctx, pool, slot, slot, "abc", confirmed)
+	is.NoErr(err)
+	is.True(!found) // read past the limit to the end: a definite no
+
+	b := NewBeacons(pool, slot, "abc")
+	b.SetPreStreamLimit(confirmed)
+	is.NoErr(b.Emit(ctx))
+	found, _, err = FindBeacon(ctx, pool, slot, slot, "abc", confirmed)
+	is.NoErr(err)
+	is.True(found) // behind the large transaction
+}
+
+// TxCommittingAt (#447 fresh-context review S1, the review's probe): a large
+// transaction committing between the slot's confirmed_flush_lsn and the
+// position's commit does not stop the check. The position's transaction
+// begins first and commits after the large one; the peek is bounded by LSN,
+// not by a number of changes.
+func TestTxCommittingAt_LargeTransactionInFront(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	slot, table := beaconSlot(ctx, t, pool)
+	defer func(old int) { findBeaconMaxRows = old }(findBeaconMaxRows)
+	findBeaconMaxRows = 4096
+
+	tp, err := pool.Begin(ctx)
+	is.NoErr(err)
+	_, err = tp.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (key, column1) VALUES ('p', 'p')`, table))
+	is.NoErr(err)
+	_, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (key, column1) SELECT convert_to('x' || g, 'UTF8'), 'x' FROM generate_series(1, 10000) g`, table))
+	is.NoErr(err)
+	is.NoErr(tp.Commit(ctx))
+	_, err = pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (key, column1) VALUES ('after', 'a')`, table))
+	is.NoErr(err)
+
+	var begins [][]byte
+	is.NoErr(pool.QueryRow(ctx, `SELECT array_agg(data ORDER BY n) FILTER (WHERE get_byte(data, 0) = 66)
+		FROM pg_logical_slot_peek_binary_changes($1::name, NULL, NULL, 'proto_version', '1', 'publication_names', $1::text)
+		WITH ORDINALITY AS t(lsn, xid, data, n)`, slot).Scan(&begins))
+	is.Equal(len(begins), 3)
+	parse := func(d []byte) *pglogrepl.BeginMessage {
+		m, err := pglogrepl.Parse(d)
+		is.NoErr(err)
+		return m.(*pglogrepl.BeginMessage)
+	}
+	want := parse(begins[1]) // the position's transaction, after the large one
+
+	got, ok, err := TxCommittingAt(ctx, pool, slot, slot, want.FinalLSN)
+	is.NoErr(err)
+	is.True(ok)
+	is.Equal(got.FinalLSN, want.FinalLSN)
+	is.Equal(got.Xid, want.Xid)
+	is.True(got.CommitTime.Equal(want.CommitTime))
+
+	_, ok, err = TxCommittingAt(ctx, pool, slot, slot, want.FinalLSN-1)
+	is.NoErr(err)
+	is.True(!ok) // nothing commits one byte before it
 }
 
 // #447 B1: Emit writes a beacon only into the slot this run holds. While
