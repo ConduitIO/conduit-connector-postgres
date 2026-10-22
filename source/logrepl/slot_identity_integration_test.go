@@ -1452,3 +1452,83 @@ func TestSlotIdentity_PreparedTransactionPosition_ResumesCovered(t *testing.T) {
 	is.NoErr(it.Teardown(ctx))
 	is.True(strings.Contains(logs.String(), identityCovered.String()))
 }
+
+// #447 security review of 453669f, end to end: while a large transaction is
+// being streamed and every record received so far is acked, the walsender's
+// keepalives (it asks for a reply every wal_sender_timeout/2, here 4
+// seconds) carry a WAL end at that transaction's commit, never past it
+// (internal.TestWalsender_KeepaliveInsideATransactionNeverPassesItsCommit).
+// So neither the idle advance nor a beacon's r passes it: the slot stays at
+// or below the commit until the transaction is acked, and a pipeline
+// stopped in the middle of it gets the rest after a restart.
+func TestSlotIdentity_LargeTransactionInFlight_SlotNeverPassesIt(t *testing.T) {
+	ctx, cancel := context.WithTimeout(test.Context(t), 3*time.Minute)
+	defer cancel()
+	is := is.New(t)
+	admin, table := slotIDSetup(ctx, t)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString+"&options=-c%20wal_sender_timeout%3D8000")
+	cfg := slotGapConfig(table, nil, false)
+	cfg.BatchSize = 500
+
+	it, err := NewCombinedIterator(ctx, pool, cfg)
+	is.NoErr(err)
+	const rows, stopAt = 100000, 60000
+	_, err = admin.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (key, column1) SELECT convert_to('t' || g, 'UTF8'), 'x' FROM generate_series(1, %d) g`, table, rows))
+	is.NoErr(err)
+
+	var commit pglogrepl.LSN
+	var last opencdc.Position
+	var maxConfirmed pglogrepl.LSN
+	reachedCommit := false
+	for n := 0; n < stopAt; {
+		recs, err := it.NextN(ctx, 500)
+		is.NoErr(err)
+		for _, r := range recs {
+			if n == stopAt {
+				break // the rest of this batch is never acked
+			}
+			pp := mustParse(t, r.Position)
+			c, err := pglogrepl.ParseLSN(pp.TxCommitLSN)
+			is.NoErr(err)
+			if commit == 0 {
+				commit = c
+			}
+			is.Equal(c, commit) // all from the one transaction
+			is.NoErr(it.Ack(ctx, r.Position))
+			last = r.Position
+			n++
+		}
+		confirmed := slotIDConfirmed(ctx, t, admin, table)
+		if confirmed > maxConfirmed {
+			maxConfirmed = confirmed
+		}
+		reachedCommit = reachedCommit || confirmed == commit
+		if confirmed > commit {
+			t.Fatalf("the slot moved to %s, past the commit %s of the transaction in flight (%d of %d rows acked)", confirmed, commit, n, rows)
+		}
+		if b := it.cdcIterator.sub.Beacons; b != nil && b.Cap() > commit {
+			t.Fatalf("a beacon certifies %s, past the commit %s of the transaction in flight", b.Cap(), commit)
+		}
+	}
+	t.Logf("transaction committed at %s; slot at most %s while it was in flight (at its commit: %v)", commit, maxConfirmed, reachedCommit)
+	is.NoErr(it.Teardown(ctx))
+	slotGapWaitInactive(ctx, t, admin, table)
+	is.True(slotIDConfirmed(ctx, t, admin, table) <= commit)
+
+	// The restart delivers the rest of the transaction, exactly.
+	it2, err := NewCombinedIterator(ctx, admin, slotGapConfig(table, last, false))
+	is.NoErr(err)
+	defer func() { _ = it2.Teardown(context.Background()) }()
+	got := 0
+	for got < rows-stopAt {
+		rctx, rcancel := context.WithTimeout(ctx, 20*time.Second)
+		recs, err := it2.NextN(rctx, 500)
+		rcancel()
+		is.NoErr(err)
+		for _, r := range recs {
+			is.NoErr(it2.Ack(ctx, r.Position))
+			got++
+		}
+	}
+	is.Equal(got, rows-stopAt)
+}
