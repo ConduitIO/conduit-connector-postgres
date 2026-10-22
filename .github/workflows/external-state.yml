@@ -1,0 +1,48 @@
+name: external-state
+
+# Runs the external-state chaos suite (test/externalstate, `make
+# test-external-state`): a replication slot dropped, recreated or invalidated,
+# a half-open connection, a revoked privilege, a failover and a volume
+# snapshot restore. Every case must deliver every row or fail with a code.
+#
+# Not a required check: the PR trigger is path-filtered, and a path-filtered
+# workflow never reports on unrelated PRs, so as a required context it would
+# block every one of them. Making it required needs the always-report/
+# fail-closed restructure that conduit's chaos.yml uses. Until then it is
+# blocking only in the sense that a red run is visible on the PR.
+#
+# Fail closed: no continue-on-error, no retries, no skip for a missing stack.
+# cases.txt carries the state of each case (required, pending, known-gap);
+# see the header of that file and test/externalstate/run.sh.
+on:
+  pull_request:
+    paths:
+      - 'source/**'
+      - 'test/**'
+      - 'internal/**'
+      - 'source.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.github/workflows/external-state.yml'
+  push:
+    branches: [ main ]
+  schedule:
+    # Nightly, 05:37 UTC.
+    - cron: '37 5 * * *'
+  workflow_dispatch:
+
+jobs:
+  external-state:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: 'go.mod'
+
+      - name: External-state suite
+        run: make test-external-state

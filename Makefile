@@ -53,6 +53,15 @@ test-chaos:
 		docker compose -f test/docker-compose.chaos.yml down --volumes; \
 		exit $$ret
 
+.PHONY: test-external-state
+test-external-state:
+	# External-state chaos suite (test/externalstate): the slot, the privileges,
+	# the network or the database volume change under a source, which must then
+	# deliver every row or fail with a code. cases.txt lists the cases; run.sh
+	# fails closed (a required case that runs no test fails) and removes both
+	# compose stacks with `down -v`. Needs docker, jq and port 5433 free.
+	test/externalstate/run.sh
+
 .PHONY: test-debezium
 test-debezium:
 	# End-to-end test of the Debezium offset import against real Debezium
