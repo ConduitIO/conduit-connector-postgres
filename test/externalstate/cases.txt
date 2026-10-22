@@ -1,0 +1,43 @@
+# External-state cases. run.sh reads this file; it is the source of truth for
+# which cases the suite claims and what state each is in.
+#
+# Fields, separated by '|' ('-' means empty):
+#   id | status | stack | kind | target | regex | min | env | exists_when
+#
+#   status      required   must run and pass; zero tests run is a failure.
+#               pending    the proving test does not exist yet. Reported as
+#                          PENDING, never as a pass. If `exists_when` becomes
+#                          true the run FAILS until this line is flipped to
+#                          required, so a case cannot stay pending after its
+#                          blocker has landed.
+#               known-gap  an open data-loss gap, kept as a failing test on
+#                          purpose. The test must FAIL; if it passes the run
+#                          FAILS until the line is flipped to required.
+#   stack       base = test/docker-compose.yml as project pgextbase (ports 56153-56154),
+#               ext  = test/externalstate/docker-compose.yml (ports 56150-56169).
+#   kind        go (target = package, regex = -run pattern) or
+#               script (target = script path, run from the repo root).
+#   min         minimum number of top-level tests that must pass (required).
+#   env         KEY=VALUE[,KEY=VALUE] for the test process.
+#   (regexes must not contain '|')
+#   exists_when file:PATH or func:DIR:REGEX, evaluated for pending cases.
+#
+# 1. slot dropped between runs: reused from source/logrepl, not copied.
+slot-dropped-between-runs|required|base|go|./source/logrepl|^TestCombinedIterator_SlotDropped_.*_FailsLoudly$|2|-|-
+slot-dropped-between-runs-source|required|base|go|.|^TestSource_Open_SlotMissingWithPosition$|1|-|-
+# 2. slot dropped mid-run.
+slot-dropped-mid-run|required|ext|go|./test/externalstate|^TestExternalState_SlotDroppedMidRun$|1|-|-
+# 3. slot recreated under the same name: #447.
+slot-recreated-same-name|pending|base|go|./source/logrepl|^TestSlotIdentity_RecreatedBetweenRuns_Refused$|1|-|func:source/logrepl:^func TestSlotIdentity_RecreatedBetweenRuns_Refused\(
+# 4. slot invalidated (max_slot_wal_keep_size). Runs alone, last on the base
+#    stack: it sets max_slot_wal_keep_size cluster-wide for a few seconds.
+slot-invalidated|required|base|go|./source/logrepl|^TestCombinedIterator_InvalidatedSlot_FailsLoudly$|1|CONDUIT_PG_SLOT_INVALIDATION=1|-
+# 5. half-open replication connection (toxiproxy).
+half-open-connection|required|ext|go|./test/externalstate|^TestExternalState_HalfOpenReplicationConnection$|1|-|-
+# 6. privilege revoked mid-run.
+privilege-revoked-replication|required|ext|go|./test/externalstate|^TestExternalState_ReplicationPrivilegeRevokedMidRun$|1|-|-
+privilege-revoked-emit-message|pending|base|go|./source/logrepl|^TestSlotIdentity_BeaconPermissionDenied$|1|-|func:source/logrepl:^func TestSlotIdentity_BeaconPermissionDenied\(
+# 7. failover: #447's test/failover/run.sh, own compose project.
+failover|pending|none|script|test/failover/run.sh|-|-|-|file:test/failover/run.sh
+# 8. snapshot restore from a volume snapshot.
+snapshot-restore|known-gap|ext|go|./test/externalstate|^TestExternalState_SnapshotRestore$|-|-|-
