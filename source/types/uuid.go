@@ -31,7 +31,7 @@ func (UUIDFormatter) Format(v any) (string, error) {
 
 	b, ok := v.([16]byte)
 	if !ok {
-		return "", fmt.Errorf("failed to parse uuid byte array %v", v)
+		return "", fmt.Errorf("failed to parse uuid byte array: unexpected %T", v)
 	}
 
 	uuid := pgtype.UUID{Bytes: b, Valid: true}

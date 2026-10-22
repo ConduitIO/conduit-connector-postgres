@@ -450,9 +450,7 @@ func (s *Subscription) listen(ctx context.Context) error {
 				return err
 			}
 		default:
-			sdk.Logger(ctx).Trace().
-				Bytes("message", copyDataMsg.Data).
-				Msg("ignoring unknown copy data message")
+			logUnknownCopyData(ctx, copyDataMsg.Data)
 		}
 	}
 }
@@ -1138,4 +1136,14 @@ func (s *Subscription) setConnDeadline(t time.Time) (cancelDeadline func()) {
 // valid after Ready() was closed.
 func (s *Subscription) StartErr() error {
 	return s.startErr
+}
+
+// logUnknownCopyData logs a copy data message the subscription does not
+// handle. Only its size and type byte are logged, never the payload, which
+// can carry row data.
+func logUnknownCopyData(ctx context.Context, data []byte) {
+	sdk.Logger(ctx).Trace().
+		Int("length", len(data)).
+		Uint8("type", data[0]).
+		Msg("ignoring unknown copy data message")
 }
