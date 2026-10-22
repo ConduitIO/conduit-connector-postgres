@@ -391,6 +391,7 @@ func (s *Subscription) Run(ctx context.Context) error {
 	s.stopMu.Unlock()
 
 	if err := s.startReplication(lctx); err != nil {
+		err = startFailure(lctx, err)
 		s.startErr, s.doneErr = err, err
 		close(s.ready) // ready to fail.
 		return err
@@ -407,6 +408,7 @@ func (s *Subscription) Run(ctx context.Context) error {
 		}
 		if err := s.StreamStarted(lctx, pid, perr); err != nil {
 			s.closeConnForRefusal()
+			err = startFailure(lctx, err)
 			s.startErr, s.doneErr = err, err
 			close(s.ready) // ready to fail.
 			return err
@@ -423,6 +425,7 @@ func (s *Subscription) Run(ctx context.Context) error {
 	// mode.
 	if err := s.checkImportSlot(lctx); err != nil {
 		s.closeConnForRefusal()
+		err = startFailure(lctx, err)
 		s.startErr, s.doneErr = err, err
 		close(s.ready) // ready to fail.
 		return err
@@ -432,6 +435,7 @@ func (s *Subscription) Run(ctx context.Context) error {
 	// not the one the position was taken from.
 	if err := s.checkHeldSlot(lctx); err != nil {
 		s.closeConnForRefusal()
+		err = startFailure(lctx, err)
 		s.startErr, s.doneErr = err, err
 		close(s.ready) // ready to fail.
 		return err
@@ -447,6 +451,19 @@ func (s *Subscription) Run(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// startFailure is the error a start step's failure is reported with. When
+// the run was stopped or its context ended while it was starting (a pipeline
+// stopped during the snapshot-to-CDC handoff), every step that queries the
+// server fails with the context's error, and the result says so: callers
+// treat it as the shutdown it is, not as a refusal or a broken start. The
+// step's own error stays in the chain, so a refusal keeps its code.
+func startFailure(ctx context.Context, err error) error {
+	if cerr := ctx.Err(); cerr != nil && !errors.Is(err, cerr) {
+		return fmt.Errorf("%w (stopped while starting: %w)", cerr, err)
+	}
+	return err
 }
 
 // listen receives changes from the replication slot until context is cancelled or an error is encountered.

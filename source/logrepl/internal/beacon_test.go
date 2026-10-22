@@ -611,3 +611,31 @@ func TestSubscription_StreamStartedErrorStopsTheStart(t *testing.T) {
 	is.True(gotPID != 0) // the walsender's PID is handed over
 	is.NoErr(sub.Teardown(ctx))
 }
+
+// #447 CI (SRC-01): a pipeline stopped during the snapshot-to-CDC handoff
+// cancels the start, and every start step that queries the server fails with
+// the context's error. The start reports it as the shutdown it is, keeping
+// the step's own error in the chain.
+func TestSubscription_StartCanceledReportsTheContextError(t *testing.T) {
+	is := is.New(t)
+	ctx := test.Context(t)
+	pool := test.ConnectPool(ctx, t, test.RepmgrConnString)
+	slot, table := beaconSlot(ctx, t, pool)
+	sub, err := OpenSubscription(ctx, pool, slot, slot, []string{table}, 0, func(context.Context, pglogrepl.Message, pglogrepl.LSN) (pglogrepl.LSN, error) {
+		return 0, nil
+	})
+	is.NoErr(err)
+	errStep := errors.New("start step failed")
+	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	sub.StreamStarted = func(context.Context, uint32, error) error {
+		cancel() // the pipeline stops while the stream is starting
+		return errStep
+	}
+	err = sub.Run(rctx)
+	is.True(errors.Is(err, context.Canceled))
+	is.True(errors.Is(err, errStep))
+	<-sub.Ready()
+	is.True(errors.Is(sub.StartErr(), context.Canceled))
+	is.NoErr(sub.Teardown(ctx))
+}

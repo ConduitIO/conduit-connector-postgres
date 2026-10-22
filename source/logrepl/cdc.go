@@ -463,8 +463,13 @@ func streamHolderHook(pool *pgxpool.Pool, slot string, serverVersion int, beacon
 				return nil
 			}
 		}
-		return newSlotBeaconError(slot, serverVersion,
+		e := newSlotBeaconError(slot, serverVersion,
 			fmt.Errorf("could not identify this run's walsender, so no beacon could be written safely: %w", err))
+		// Not a permission problem: a role always sees its own backends in
+		// pg_stat_activity, so this is the connection or the server.
+		e.Fix = "Check the connection to the server and its logs; the start reads the replication " +
+			"connection's backend PID and pg_stat_activity.backend_start. Restart the pipeline once the server is reachable"
+		return e
 	}
 }
 
