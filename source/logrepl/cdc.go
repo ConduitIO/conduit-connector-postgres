@@ -100,6 +100,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	// Invariant 3: before anything is created, so a refusal leaves no slot
 	// behind that a retry would take for a healthy one.
 	if c.Import == nil {
+		// guard: logrepl-checkslot-refusal tests=SlotDropped|InvalidatedSlot|SlotGap|AllowWALGap env=CONDUIT_PG_SLOT_INVALIDATION=1
 		if err := checkSlot(ctx, pool, c); err != nil {
 			return nil, err
 		}
@@ -243,6 +244,7 @@ func warnIfSlotCreatedForSavedPosition(ctx context.Context, c CDCConfig, sub *in
 		return
 	}
 	if point, created := internal.CreatedSlot(sub, err); created {
+		// guard: logrepl-gap-accepted-warning tests=AllowWALGap
 		warnGapAccepted(ctx, c, point)
 	}
 }
@@ -257,6 +259,7 @@ func applyImport(ctx context.Context, sub *internal.Subscription, imp *dbzoffset
 	// confirmed_flush_lsn. The preflight checked F <= Lc; the slot was read
 	// again by OpenSubscription, and is checked again once streaming holds
 	// it (Subscription.checkImportSlot).
+	// guard: logrepl-import-slot-ahead-refused
 	if sub.ConfirmedFlushLSN > plan.SkipCommitsBelow {
 		return &dbzoffset.Error{
 			Code: dbzoffset.CodeSlotAhead, Path: slotNamePath,

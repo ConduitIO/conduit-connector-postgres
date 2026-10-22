@@ -16,6 +16,19 @@ test:
 		docker compose -f test/docker-compose.yml down --volumes; \
 		exit $$ret
 
+.PHONY: guardmut
+guardmut:
+	# Removes each `// guard:` marked guard in turn and requires the package
+	# tests to fail (tools/guardmut, docs/guard-markers.md). Survivors fail
+	# unless listed with a justification in .github/guardmut-baseline.txt.
+	# The tests need the compose Postgres, as `make test` does. Mutants run
+	# one at a time because they share that database.
+	docker compose -f test/docker-compose.yml up --force-recreate --quiet-pull -d --wait pg-0
+	cd tools && go run ./guardmut -root .. -dirs source/logrepl -baseline ../.github/guardmut-baseline.txt \
+		-timeout 15m -budget 40m $(GUARDMUT_FLAGS); ret=$$?; \
+		docker compose -f ../test/docker-compose.yml down --volumes; \
+		exit $$ret
+
 .PHONY: test-tls
 test-tls:
 	# SCRAM channel-binding tests against TLS servers (Ed25519 certificate, TLS
