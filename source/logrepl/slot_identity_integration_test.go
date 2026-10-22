@@ -94,6 +94,7 @@ func slotIDLegacy(t *testing.T, p opencdc.Position) opencdc.Position {
 	}
 	pp.Version, pp.SlotIdentity = 3, ""
 	pp.SystemIdentifier, pp.Timeline = "", 0
+	pp.TxXid, pp.TxCommitTime = 0, 0
 	b, err := json.Marshal(pp)
 	if err != nil {
 		t.Fatal(err)

@@ -602,7 +602,10 @@ func TestSubscription_StreamStartedErrorStopsTheStart(t *testing.T) {
 		gotPID = pid
 		return errUnknown
 	}
-	is.True(errors.Is(sub.Run(ctx), errUnknown))
+	// Bounded: without the hook the stream would just run.
+	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	is.True(errors.Is(sub.Run(rctx), errUnknown))
 	<-sub.Ready()
 	is.True(errors.Is(sub.StartErr(), errUnknown))
 	is.True(gotPID != 0) // the walsender's PID is handed over
