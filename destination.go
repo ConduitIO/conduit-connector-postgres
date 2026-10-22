@@ -810,15 +810,61 @@ func (d *Destination) execBatch(ctx context.Context, b *pgx.Batch, p *writePlan)
 		// pgx failed the batch before running it, and every result reports
 		// the same error, so its index says nothing about which record caused
 		// it. failWrite names the record when it can.
-		return "", fmt.Errorf("failed to send the batch: %w", firstErr)
+		return "", fmt.Errorf("failed to send the batch: %w", scrubExecError(firstErr))
 	case firstIdx >= nWrites && isSchemaChanged(firstErr):
 		return p.tables[firstIdx-nWrites], nil
 	case firstIdx >= nWrites:
-		return "", fmt.Errorf("failed to verify the schema of table %q: %w", p.tables[firstIdx-nWrites], firstErr)
+		return "", fmt.Errorf("failed to verify the schema of table %q: %w", p.tables[firstIdx-nWrites], scrubExecError(firstErr))
 	default:
 		w := p.writes[firstIdx]
-		return "", fmt.Errorf("failed to execute query for record %d (table %q): %w", w.record, w.table, firstErr)
+		return "", fmt.Errorf("failed to execute query for record %d (table %q): %w", w.record, w.table, scrubExecError(firstErr))
 	}
+}
+
+// scrubbedExecError is an execution error without the text that quotes row
+// values. The original stays in the chain, so classification (SQLSTATE,
+// pgx.ErrPreprocessingBatch) keeps working.
+type scrubbedExecError struct {
+	msg string
+	err error
+}
+
+func (e *scrubbedExecError) Error() string { return e.msg }
+func (e *scrubbedExecError) Unwrap() error { return e.err }
+
+// scrubExecError removes the row values from the error of a statement. Errors
+// reach the DLQ, the API and CLI output.
+//
+//   - A server error of class 22 (data exception: 22P02 invalid input syntax,
+//     22007 and 22008 datetime format and field overflow, ...) or class 23
+//     (integrity constraint violation, whose detail reads "Key (id)=(5) already
+//     exists") quotes the value in its message or detail. The SQLSTATE, the
+//     schema, table, column and constraint names are kept, the text is not.
+//   - pgx's "unable to encode %#v into binary format" prints the value.
+//
+// Any other error is returned as it is.
+func scrubExecError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && (strings.HasPrefix(pgErr.Code, "22") || strings.HasPrefix(pgErr.Code, "23")) {
+		var where []string
+		for _, kv := range [][2]string{{"table", pgErr.TableName}, {"column", pgErr.ColumnName}, {"constraint", pgErr.ConstraintName}} {
+			if kv[1] != "" {
+				where = append(where, fmt.Sprintf("%s %q", kv[0], kv[1]))
+			}
+		}
+		msg := "SQLSTATE " + pgErr.Code
+		if len(where) > 0 {
+			msg += " (" + strings.Join(where, ", ") + ")"
+		}
+		return &scrubbedExecError{msg: msg + ": message and detail withheld, they can quote row values", err: err}
+	}
+	if strings.Contains(err.Error(), "unable to encode") {
+		return &scrubbedExecError{msg: "a statement argument could not be encoded for its column: details withheld, they quote the value", err: err}
+	}
+	return err
 }
 
 // logDriftWarnings reports, once per batch, proven markers a processor added
