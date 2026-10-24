@@ -42,6 +42,8 @@ module and adds nothing to the connector's `go.mod`.
 
 Marked with #447: the idle-advance beacon cap (`reportedPositions`), `verifyBeacon`'s `r >= confirmed`, the beacon's
 xid-first step (`assignXid`, a call of its own so the gate can remove it), the walsender check (PID and `backend_start`, one
-guard) in `Beacons.checkHeld`, `VerifyHeld`'s limit, and the covered-resume transaction check. Not marked yet: the
+guard) in `Beacons.checkHeld`, `VerifyHeld`'s limit, the covered-resume transaction check, and the two transient-failure
+refusals (`checkSlotIdentity`'s `FindBeacon` error and `verifyCoveredTransaction`'s `TxCommittingAt` error, which
+`logrepl.allowWALGap` must never accept). Not marked yet: the
 WAL history checks (`checkWALHistory` is one `switch`, which the gate does not mutate) and the slot identity outcome
 `switch` in `cdc.go`; their tests are listed in the design document.

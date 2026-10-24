@@ -55,8 +55,9 @@ const (
 	CodeSlotIdentityUnsupported Code = "postgres.source.slot_identity_unsupported"
 	// CodeSlotIdentityCheckFailed: the check could not read the slot to
 	// prove it (a peek failed or ran out of logrepl.slotIdentity.checkTimeout),
-	// so it can say neither yes nor no. The start is refused; allowWALGap
-	// accepts the slot as unproven.
+	// so it can say neither yes nor no. The start is refused, whatever
+	// logrepl.allowWALGap says: the flag accepts a slot the check proved is
+	// not the position's, never a slot the check could not read.
 	CodeSlotIdentityCheckFailed Code = "postgres.source.slot_identity_check_failed"
 )
 
@@ -70,9 +71,9 @@ func newSlotIdentityCheckFailedError(slot, what string, timeout time.Duration, e
 			"it, from its restart_lsn up to the WAL it needs, within logrepl.slotIdentity.checkTimeout (%s)", what, slot, err, timeout),
 		Fix: "Raise logrepl.slotIdentity.checkTimeout if the slot holds a large backlog or a long-running transaction holds " +
 			"its restart_lsn back; on Postgres 17+ check that every physical slot in synchronized_standby_slots exists and " +
-			"its standby is connected. To start without the proof, set `logrepl.allowWALGap: true` for one start (the slot " +
-			"is then taken as unproven, and changes may be missing if it was replaced or moved) and remove it after a record " +
-			"was delivered",
+			"its standby is connected. If the check keeps failing, check the connection to the server and retry. " +
+			"logrepl.allowWALGap does not accept a slot the check could not read: it accepts only a slot the check proved " +
+			"is not the position's",
 	}
 }
 
@@ -232,21 +233,17 @@ func checkSlotIdentity(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, ser
 	pctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	found, lsn, err := internal.FindBeacon(pctx, pool, c.SlotName, c.PublicationName, res.identity, res.confirmed)
+	if err != nil && ctx.Err() != nil {
+		return res, err // stopped, not a verdict
+	}
+	// A transient failure (a query error, a timeout, a connection drop) is
+	// not a verdict: the check did not run, so the slot could still be the
+	// position's. It must fail loudly, never pass for the verified
+	// identityReplaced case that logrepl.allowWALGap accepts, or the identity
+	// guarantee is silently dropped.
+	// guard: logrepl-transient-check-refused tests=^TestSlotIdentity_TransientCheckError_RefusedEvenWithAllowWALGap$
 	if err != nil {
-		if ctx.Err() != nil {
-			return res, err // stopped, not a verdict
-		}
-		if !c.AllowWALGap {
-			return res, newSlotIdentityCheckFailedError(c.SlotName, "the identity", timeout, err)
-		}
-		// Unproven: accepted below like a replaced slot, with the DATA
-		// LOSS warning and a new identity.
-		sdk.Logger(ctx).Warn().Err(err).
-			Str("code", string(CodeSlotIdentityCheckFailed)).
-			Str("slot", c.SlotName).
-			Msg("could not check the replication slot's identity; logrepl.allowWALGap accepts it unproven")
-		res.outcome = identityReplaced
-		return res, nil
+		return res, newSlotIdentityCheckFailedError(c.SlotName, "the identity", timeout, err)
 	}
 	if found {
 		res.outcome, res.beaconLSN = identityBeacon, lsn

@@ -236,6 +236,12 @@ func nextFindBeaconLimit(limit, maxRows int) int {
 	return limit * 8
 }
 
+// FindBeaconErr is a test seam, nil in production (only assigned in _test.go
+// files, see TestSeamsOnlyAssignedInTests). When set, FindBeacon returns its
+// error as if the peek query failed transiently (a timeout, a connection
+// drop).
+var FindBeaconErr func() error
+
 // FindBeacon reports whether the slot still decodes a beacon authenticated
 // with the identity key that vouches for confirmed (the slot's
 // confirmed_flush_lsn): written after it, and certifying at least it (see
@@ -249,6 +255,9 @@ func nextFindBeaconLimit(limit, maxRows int) int {
 // and its LSN (the message record's end, as Postgres reports it) is after
 // confirmed_flush_lsn.
 func FindBeacon(ctx context.Context, pool *pgxpool.Pool, slot, publication, identity string, confirmed pglogrepl.LSN) (bool, pglogrepl.LSN, error) {
+	if FindBeaconErr != nil {
+		return false, 0, FindBeaconErr()
+	}
 	maxRows := findBeaconMaxRows
 	for limit := min(findBeaconFirstRound, maxRows); ; limit = nextFindBeaconLimit(limit, maxRows) {
 		found, lsn, rows, err := findBeaconRound(ctx, pool, slot, publication, identity, confirmed, &limit)

@@ -109,6 +109,12 @@ type TxAt struct {
 	CommitTime time.Time
 }
 
+// TxCommittingAtErr is a test seam, nil in production (only assigned in
+// _test.go files, see TestSeamsOnlyAssignedInTests). When set, TxCommittingAt
+// returns its error as if the peek query failed transiently (a timeout, a
+// connection drop).
+var TxCommittingAtErr func() error
+
 // TxCommittingAt peeks (never consumes) the slot for the transaction that
 // commits at lsn (its BEGIN's final LSN). ok is false when the slot decodes
 // no transaction committing there. The slot must not be in use, and the role
@@ -121,6 +127,9 @@ type TxAt struct {
 // lsn came back whole each round and the search gave up on a position it
 // could check (#447 fresh-context review S1). Only the context bounds it.
 func TxCommittingAt(ctx context.Context, pool *pgxpool.Pool, slot, publication string, lsn pglogrepl.LSN) (TxAt, bool, error) {
+	if TxCommittingAtErr != nil {
+		return TxAt{}, false, TxCommittingAtErr()
+	}
 	var begins [][]byte
 	err := pool.QueryRow(ctx, `
 		SELECT coalesce(array_agg(data) FILTER (WHERE get_byte(data, 0) = 66), '{}')

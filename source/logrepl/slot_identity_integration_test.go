@@ -1012,6 +1012,67 @@ func TestSlotIdentity_StandbyNeverProvesAnIdentity(t *testing.T) {
 	}
 }
 
+// A transient failure of the identity check (a query error, a timeout, a
+// connection drop) is not a verdict: the check did not run, so the slot could
+// still be the position's. It must fail loudly with slot_identity_check_failed,
+// never pass for the verified slot_replaced case that logrepl.allowWALGap
+// accepts, or the identity guarantee is silently dropped. Before the fix the
+// opt-in resumed and the recreated slot silently skipped the noise row.
+func TestSlotIdentity_TransientCheckError_RefusedEvenWithAllowWALGap(t *testing.T) {
+	ctx := test.Context(t)
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	is := is.New(t)
+	pool, table := slotIDSetup(ctx, t)
+
+	pos := slotGapRun1(ctx, t, pool, table)
+	slotGapInsert(ctx, t, pool, table, "noise")
+	slotGapAdvance(ctx, t, pool, table) // past the bound: the beacon is the proof
+
+	injected := errors.New("injected transient query error")
+	internal.FindBeaconErr = func() error { return injected }
+	t.Cleanup(func() { internal.FindBeaconErr = nil })
+
+	conf := slotGapConfig(table, pos, false)
+	conf.AllowWALGap = true
+	it, err := NewCombinedIterator(ctx, pool, conf)
+	if err == nil {
+		_ = it.Teardown(ctx)
+		t.Fatal("SILENT SKIP: a transient identity-check failure was accepted under logrepl.allowWALGap")
+	}
+	is.Equal(CodeOf(err), CodeSlotIdentityCheckFailed)
+	var se *SlotError
+	is.True(errors.As(err, &se))
+}
+
+// Same rule for the covered-resume transaction check (verifyCoveredTransaction):
+// a transient failure is refused loudly, never accepted under
+// logrepl.allowWALGap. Before the fix the opt-in resumed on an unverified slot.
+func TestSlotIdentity_TransientCoveredCheckError_RefusedEvenWithAllowWALGap(t *testing.T) {
+	ctx := test.Context(t)
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	is := is.New(t)
+	pool, table := slotIDSetup(ctx, t)
+
+	pos := slotGapRun1(ctx, t, pool, table) // the slot stays covered
+
+	injected := errors.New("injected transient query error")
+	internal.TxCommittingAtErr = func() error { return injected }
+	t.Cleanup(func() { internal.TxCommittingAtErr = nil })
+
+	conf := slotGapConfig(table, pos, false)
+	conf.AllowWALGap = true
+	it, err := NewCombinedIterator(ctx, pool, conf)
+	if err == nil {
+		_ = it.Teardown(ctx)
+		t.Fatal("SILENT SKIP: a transient covered-transaction check failure was accepted under logrepl.allowWALGap")
+	}
+	is.Equal(CodeOf(err), CodeSlotIdentityCheckFailed)
+	var se *SlotError
+	is.True(errors.As(err, &se))
+}
+
 // #447 re-review S4: beacons that keep failing are abandoned (the slot
 // advances uncapped, the disk is safe) and a restart in that state is
 // refused. The connector keeps trying: once beacons can be written again the
@@ -1538,8 +1599,9 @@ func TestSlotIdentity_LargeTransactionInFlight_SlotNeverPassesIt(t *testing.T) {
 
 // #447 fresh-context review S1: a check that cannot read the slot (here it
 // runs out of logrepl.slotIdentity.checkTimeout) refuses the start with a
-// code and a fix, never an uncoded error, and allowWALGap accepts the slot
-// unproven.
+// code and a fix, never an uncoded error, and logrepl.allowWALGap does not
+// accept it either: the flag accepts a slot the check proved is not the
+// position's, never a slot the check could not read.
 func TestSlotIdentity_CheckCannotReadTheSlot_CodedRefusal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(test.Context(t), 2*time.Minute)
 	defer cancel()
@@ -1556,7 +1618,7 @@ func TestSlotIdentity_CheckCannotReadTheSlot_CodedRefusal(t *testing.T) {
 	is.True(strings.Contains(err.Error(), "checkTimeout"))
 
 	c.AllowWALGap = true
-	it, err := NewCombinedIterator(ctx, pool, c)
-	is.NoErr(err)
-	is.NoErr(it.Teardown(ctx))
+	_, err = NewCombinedIterator(ctx, pool, c)
+	is.Equal(CodeOf(err), CodeSlotIdentityCheckFailed)
+	is.True(strings.Contains(err.Error(), "checkTimeout"))
 }

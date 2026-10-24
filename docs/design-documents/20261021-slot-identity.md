@@ -349,7 +349,7 @@ handling) and decides:
    clamp the search reads to the end of the WAL without a limit (the first version gave up
    there with an uncoded error on every retry, fresh-context review S1). Only
    `logrepl.slotIdentity.checkTimeout` bounds it; a check that times out or fails is refused
-   with `postgres.source.slot_identity_check_failed`, which `allowWALGap` accepts as unproven.
+   with `postgres.source.slot_identity_check_failed`, which `allowWALGap` never accepts: a transient failure is not a verdict, and the flag accepts only a slot the check proved is not the position's.
    Found: **beacon**.
 3. Not found, legacy position: **adopted** (Decision 6).
 4. Not found, the position has an identity: **replaced**. Refused with
@@ -506,7 +506,7 @@ the WAL HISTORY CHANGE warning.
 | `postgres.source.slot_beacon_public` | warning | `REVOKE EXECUTE ON FUNCTION pg_logical_emit_message(...) FROM PUBLIC` and `GRANT` to the connector's role (hardening) |
 | `postgres.source.slot_beacon_unavailable` | warning, then error | beacons failing at runtime, with `retained_wal_bytes`; after `beaconFailureTimeout` the cap is abandoned and the next start may be refused |
 | `postgres.source.slot_identity_unprovable` | refusal | a position with an identity on a server that cannot check it (Postgres 13, a standby before 16): point the source at the primary, or start once with `allowWALGap` |
-| `postgres.source.slot_identity_check_failed` | refusal | the check could not read the slot (a peek failed, or ran out of `logrepl.slotIdentity.checkTimeout`): raise the timeout or fix the cause, or start once with `allowWALGap` (the slot is taken as unproven) |
+| `postgres.source.slot_identity_check_failed` | refusal | the check could not read the slot (a peek failed, or ran out of `logrepl.slotIdentity.checkTimeout`): raise the timeout or fix the cause, then retry; `allowWALGap` does not accept it (a transient failure is not a verdict) |
 | `postgres.source.wal_history_changed` | refusal | check `url`; after pg_upgrade see the runbook; otherwise re-snapshot |
 | `postgres.source.wal_history_unverified` | warning | a legacy position: the history is checked from the next saved position on; re-snapshot if the database was restored or replaced since the last delivered record |
 

@@ -7,9 +7,11 @@ logrepl-beacon-held-by-this-walsender
 logrepl-beacon-xid-first
 logrepl-checkslot-refusal
 logrepl-covered-transaction-checked
+logrepl-covered-transient-refused
 logrepl-delete-null-key-refused
 logrepl-gap-accepted-warning
 logrepl-idle-advance-beacon-cap
 logrepl-import-slot-ahead-refused
 logrepl-slot-invalidated-refused
+logrepl-transient-check-refused
 logrepl-verifyheld-limit

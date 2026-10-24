@@ -196,18 +196,16 @@ func verifyCoveredTransaction(ctx context.Context, pool *pgxpool.Pool, c CDCConf
 	defer cancel()
 
 	got, found, err := internal.TxCommittingAt(pctx, pool, c.SlotName, c.PublicationName, want.FinalLSN)
+	if err != nil && ctx.Err() != nil {
+		return err // stopped, not a verdict
+	}
+	// Same rule as checkSlotIdentity: a transient failure (a query error, a
+	// timeout, a connection drop) is not a verdict, so it fails loudly
+	// instead of passing for the verified wal_history_changed case that
+	// logrepl.allowWALGap accepts.
+	// guard: logrepl-covered-transient-refused tests=^TestSlotIdentity_TransientCoveredCheckError_RefusedEvenWithAllowWALGap$
 	if err != nil {
-		if ctx.Err() != nil {
-			return err // stopped, not a verdict
-		}
-		if !c.AllowWALGap {
-			return newSlotIdentityCheckFailedError(c.SlotName, "the saved position's transaction", timeout, err)
-		}
-		sdk.Logger(ctx).Warn().Err(err).
-			Str("code", string(CodeSlotIdentityCheckFailed)).
-			Str("slot", c.SlotName).
-			Msg("could not check the saved position's transaction; logrepl.allowWALGap accepts the slot unproven")
-		return nil
+		return newSlotIdentityCheckFailedError(c.SlotName, "the saved position's transaction", timeout, err)
 	}
 	if found && sameTransaction(want, got) {
 		return nil
