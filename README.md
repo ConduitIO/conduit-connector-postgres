@@ -28,8 +28,9 @@ If the process that runs the connector puts a dialer on the context (see
 `github.com/conduitio/conduit-commons/dialer`), the connector opens every
 network connection through it: the destination connection and its reconnects,
 and for the source the pool connections, the snapshot reads, the replication
-connection, and the slot and publication cleanup. Host names in the URL are then
-passed to the dialer unresolved, so it decides how to resolve them. Without a host dialer, nothing changes: the driver dials and
+connection, and the slot and publication cleanup. Host
+names in the URL are then passed to the dialer unresolved, so it decides how to
+resolve them. Without a host dialer, nothing changes: the driver dials and
 resolves the addresses itself. A connector setting cannot supply the dialer.
 
 ### Upgrading from v0.14.x: connection string parsing
