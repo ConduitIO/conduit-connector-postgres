@@ -184,12 +184,7 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to update fetch limit: %w", err)
 	}
 
-	sdk.Logger(ctx).Info().
-		Int("fetchSize", f.conf.FetchSize).
-		Str("tx.snapshot", f.conf.TXSnapshotID).
-		Int64("startAt", f.lastRead).
-		Int64("snapshotEnd", f.snapshotEnd).
-		Msgf("starting fetcher %s", f.cursorName)
+	f.logStart(ctx)
 
 	closeCursor, err := f.createCursor(ctx, tx)
 	if err != nil {
@@ -211,13 +206,7 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 
 		nfetched += n
 
-		sdk.Logger(ctx).Info().
-			Int("rows", nfetched).
-			Str("table", f.conf.Table).
-			Dur("elapsed", time.Since(start)).
-			Str("completed_perc", fmt.Sprintf("%.2f", (float64(nfetched)/float64(f.snapshotEnd))*100)).
-			Str("rate_per_min", fmt.Sprintf("%.0f", float64(nfetched)/time.Since(start).Minutes())).
-			Msg("fetching rows")
+		f.logProgress(ctx, nfetched, start)
 	}
 
 	sdk.Logger(ctx).Info().
@@ -227,6 +216,19 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 		Msgf("%q snapshot completed", f.conf.Table)
 
 	return nil
+}
+
+// logProgress logs how many rows were fetched. It does not log a percentage
+// or anything else computed from the end of the range: the end is the largest
+// key value, which is record data, and rows with a percentage gives it away
+// (rows * 100 / percentage).
+func (f *FetchWorker) logProgress(ctx context.Context, nfetched int, start time.Time) {
+	sdk.Logger(ctx).Info().
+		Int("rows", nfetched).
+		Str("table", f.conf.Table).
+		Dur("elapsed", time.Since(start)).
+		Str("rate_per_min", fmt.Sprintf("%.0f", float64(nfetched)/time.Since(start).Minutes())).
+		Msg("fetching rows")
 }
 
 func (f *FetchWorker) createCursor(ctx context.Context, tx pgx.Tx) (func(), error) {
@@ -268,6 +270,17 @@ func (f *FetchWorker) updateSnapshotEnd(ctx context.Context, tx pgx.Tx) error {
 	}
 
 	return nil
+}
+
+// logStart logs the start of the fetcher. The range bounds are values of the
+// key column, which is record data, so only salted hashes of them are logged.
+func (f *FetchWorker) logStart(ctx context.Context) {
+	sdk.Logger(ctx).Info().
+		Int("fetchSize", f.conf.FetchSize).
+		Str("tx.snapshot", f.conf.TXSnapshotID).
+		Str("startAtHash", internal.KeyHash(map[string]any{f.conf.Key: f.lastRead})).
+		Str("snapshotEndHash", internal.KeyHash(map[string]any{f.conf.Key: f.snapshotEnd})).
+		Msgf("starting fetcher %s", f.cursorName)
 }
 
 func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
