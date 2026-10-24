@@ -66,6 +66,7 @@ type Iterator struct {
 	conf Config
 
 	lastPosition position.Position
+	codec        *position.SnapshotPositionCodec
 
 	data chan []FetchData
 }
@@ -87,6 +88,7 @@ func NewIterator(ctx context.Context, db *pgxpool.Pool, c Config) (*Iterator, er
 		conf:         c,
 		data:         make(chan []FetchData),
 		lastPosition: p,
+		codec:        position.NewSnapshotPositionCodec(p),
 	}
 
 	emitResumeWarning(ctx, c.SnapshotResumed, p)
@@ -170,7 +172,7 @@ func (i *Iterator) buildRecord(d FetchData) opencdc.Record {
 	i.lastPosition.Type = position.TypeSnapshot
 	i.lastPosition.Snapshots[d.Table] = d.Position
 
-	pos := i.lastPosition.ToSDKPosition()
+	pos := i.codec.Encode(i.lastPosition)
 	metadata := make(opencdc.Metadata)
 	metadata[opencdc.MetadataCollection] = d.Table
 	if i.conf.SnapshotResumed {
