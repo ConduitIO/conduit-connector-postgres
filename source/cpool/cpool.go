@@ -39,6 +39,9 @@ func New(ctx context.Context, conninfo string) (*pgxpool.Pool, error) {
 	}
 
 	DefaultSCRAMCompat(&config.ConnConfig.Config)
+	// Every pool connection (data, replication, admin, cleanup) comes from this
+	// config, so one install covers pool growth and reconnects too.
+	ApplyHostDialer(ctx, &config.ConnConfig.Config)
 
 	config.BeforeAcquire = beforeAcquireHook //nolint:staticcheck // pgx deprecated this in favor of PrepareConn, which takes precedence and has different semantics; migrating is a data-path change outside this toolchain PR
 	config.BeforeConnect = beforeConnectHook
