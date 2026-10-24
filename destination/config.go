@@ -92,7 +92,7 @@ func (c *Config) TableFunction() (f TableFn, err error) {
 	return func(r opencdc.Record) (string, error) {
 		buf.Reset()
 		if err := t.Execute(&buf, r); err != nil {
-			return "", fmt.Errorf("failed to execute table template: %w", err)
+			return "", fmt.Errorf("failed to execute table template: %w", execError(err))
 		}
 		return buf.String(), nil
 	}, nil
