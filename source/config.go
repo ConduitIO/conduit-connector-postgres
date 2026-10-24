@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/source/dbzoffset"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
@@ -82,14 +83,37 @@ type Config struct {
 	LogreplAutoCleanup bool `json:"logrepl.autoCleanup" default:"true"`
 
 	// LogreplAllowWALGap lets the connector resume from a saved position when
-	// the replication slot no longer exists and has to be created again. A new
-	// slot starts at the current WAL, so every change between the saved
-	// position and the slot's creation is skipped and never delivered: this
-	// setting accepts that DATA LOSS. Leave it false (the default) and the
-	// connector refuses to start with the error `postgres.source.slot_wal_gap`
-	// instead. Use it only after deciding that the destination can be repaired
-	// some other way, and remove it once the pipeline has resumed.
+	// the replication slot no longer exists and has to be created again, or
+	// when the slot that exists is not the one the position was taken from (it
+	// was dropped and created again under the same name, or another client
+	// advanced it). Such a slot starts after the saved position, so every
+	// change in between is skipped and never delivered: this setting accepts
+	// that DATA LOSS. Leave it false (the default) and the connector refuses to
+	// start with the error `postgres.source.slot_wal_gap` or
+	// `postgres.source.slot_replaced` instead. Use it only after deciding that
+	// the destination can be repaired some other way, and remove it once the
+	// pipeline has resumed.
 	LogreplAllowWALGap bool `json:"logrepl.allowWALGap" default:"false"`
+
+	// LogreplSlotIdentityCheckTimeout bounds the replication slot identity
+	// check at start (#442), which reads the slot without consuming it to
+	// find the connector's identity beacon. It decodes from the slot's
+	// restart_lsn, so a long-running transaction that holds restart_lsn far
+	// back makes it slower; on Postgres 17+ it also waits for the standbys in
+	// synchronized_standby_slots. When it times out the start is refused with
+	// postgres.source.slot_identity_check_failed and retried.
+	LogreplSlotIdentityCheckTimeout time.Duration `json:"logrepl.slotIdentity.checkTimeout" default:"10m"`
+
+	// LogreplSlotIdentityBeaconFailureTimeout is how long the connector keeps
+	// an idle replication slot from advancing past its last identity beacon
+	// while new beacons cannot be written (#442). After it, the slot advances
+	// without a beacon so its WAL cannot fill the disk, and the connector
+	// logs `postgres.source.slot_beacon_unavailable` as an error. Until a
+	// beacon is written and delivered again, a restart is refused with
+	// `postgres.source.slot_replaced` (an outage, never a loss). The connector
+	// keeps trying, and recovers on its own once beacons can be written. The
+	// WAL held back meanwhile is at most what the server writes in this time.
+	LogreplSlotIdentityBeaconFailureTimeout time.Duration `json:"logrepl.slotIdentity.beaconFailureTimeout" default:"5m"`
 
 	// WithAvroSchema determines whether the connector should attach an avro schema on each
 	// record.

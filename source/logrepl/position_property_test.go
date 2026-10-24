@@ -17,7 +17,9 @@ package logrepl
 import (
 	"math"
 	"testing"
+	"time"
 
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/jackc/pglogrepl"
@@ -121,4 +123,120 @@ func TestCDCPosition_PropertyUnknownKeyIsLegacy(t *testing.T) {
 			t.Fatalf("unknown key %v was written as %v", k, got)
 		}
 	})
+}
+
+// TestCDCPosition_PropertyCarriesSlotIdentity (#442): every CDC position the
+// handler writes, the drift marker's included, carries the run's slot
+// identity unchanged and the current format version, whatever its change
+// key. A restart from any of them must recognise its slot.
+func TestCDCPosition_PropertyCarriesSlotIdentity(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		id := rapid.StringMatching(`l?[0-9a-f]{64}`).Draw(t, "identity")
+		h := &CDCHandler{basePosition: position.Position{SlotIdentity: id}}
+		for _, k := range streamKeys(t) {
+			lsn := pglogrepl.LSN(rapid.Uint64Range(1, math.MaxUint64).Draw(t, "change lsn"))
+			raws := [][]byte{h.buildPositionAt(lsn, k), h.buildMarkerPosition(lsn, k, "public.t")}
+			for _, raw := range raws {
+				p, err := position.ParseSDKPosition(raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if p.SlotIdentity != id || p.Version != position.CurrentPositionVersion {
+					t.Fatalf("position %s: identity %q version %d, want %q version %d", raw, p.SlotIdentity, p.Version, id, position.CurrentPositionVersion)
+				}
+			}
+		}
+	})
+}
+
+// TestCDCPosition_TxIdentityNamesTheDecidingTransaction (#447 re-review S2,
+// round-4 B2): a position names the xid and commit time of the transaction
+// its change key decides about. For a record that is its own transaction.
+// A drift marker's key sits one below its change's commit LSN (#338,
+// ChangeKey.Predecessor); it names the transaction that commits right
+// after, the marker's change's, so a resume from a marker checks that
+// transaction (savedTransaction). Any other key that is not the current
+// transaction's names none.
+func TestCDCPosition_TxIdentityNamesTheDecidingTransaction(t *testing.T) {
+	cur := internal.ChangeKey{CommitLSN: 0x5000, Seq: 1}
+	commit := time.UnixMicro(1_792_000_000_000_000)
+	h := &CDCHandler{
+		changeKey: func() internal.ChangeKey { return cur },
+		txInfo:    func() (uint32, time.Time) { return 777, commit },
+	}
+	pos := func(p opencdc.Position) position.Position {
+		t.Helper()
+		pp, err := position.ParseSDKPosition(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pp
+	}
+	if p := pos(h.buildPositionAt(0x4f00, cur)); p.TxXid != 777 || p.TxCommitTime != commit.UnixMicro() {
+		t.Fatalf("record position: xid %d commit time %d, want 777 %d", p.TxXid, p.TxCommitTime, commit.UnixMicro())
+	}
+	m := pos(h.buildMarkerPosition(0x4f00, cur.Predecessor(), "public.t"))
+	if m.TxXid != 777 || m.TxCommitTime != commit.UnixMicro() {
+		t.Fatalf("marker position one below carries xid %d commit time %d, want its change's 777 %d", m.TxXid, m.TxCommitTime, commit.UnixMicro())
+	}
+	got, ok := savedTransaction(CDCConfig{StartPosition: m, TxCommitLSN: cur.CommitLSN - 1, TxSeq: math.MaxUint64})
+	if !ok || got.FinalLSN != cur.CommitLSN || got.Xid != 777 || !got.CommitTime.Equal(commit) {
+		t.Fatalf("a marker position names %+v (ok %v), want the transaction committing at %s", got, ok, cur.CommitLSN)
+	}
+	// A key that is neither the current transaction's nor its predecessor
+	// names nothing.
+	other := internal.ChangeKey{CommitLSN: cur.CommitLSN - 2, Seq: math.MaxUint64}
+	if o := pos(h.buildMarkerPosition(0x4f00, other, "public.t")); o.TxXid != 0 || o.TxCommitTime != 0 {
+		t.Fatalf("an unrelated key carries xid %d commit time %d, want none", o.TxXid, o.TxCommitTime)
+	}
+}
+
+// sameTransaction (#447 round-4 B1): the commit LSN, the xid and the commit
+// time must all match. A restored server reuses xids and can commit at the
+// same LSN, so a different commit time alone refuses; a position without an
+// xid (written before it was recorded) needs only a commit at the LSN.
+func TestSameTransaction(t *testing.T) {
+	at := time.UnixMicro(1_792_000_000_000_000)
+	want := internal.TxAt{FinalLSN: 0x5000, Xid: 740, CommitTime: at}
+	for _, c := range []struct {
+		name string
+		got  internal.TxAt
+		same bool
+	}{
+		{"the same transaction", internal.TxAt{FinalLSN: 0x5000, Xid: 740, CommitTime: at}, true},
+		{"same xid and LSN, another commit time", internal.TxAt{FinalLSN: 0x5000, Xid: 740, CommitTime: at.Add(time.Microsecond)}, false},
+		{"same xid and time, a later commit (the LSN falls inside a record)", internal.TxAt{FinalLSN: 0x5010, Xid: 740, CommitTime: at}, false},
+		{"another xid", internal.TxAt{FinalLSN: 0x5000, Xid: 741, CommitTime: at}, false},
+	} {
+		if got := sameTransaction(want, c.got); got != c.same {
+			t.Errorf("%s: sameTransaction = %v, want %v", c.name, got, c.same)
+		}
+	}
+	legacy := internal.TxAt{FinalLSN: 0x5000}
+	if !sameTransaction(legacy, internal.TxAt{FinalLSN: 0x5000, Xid: 9, CommitTime: at}) {
+		t.Error("a position without an xid: any commit at its LSN is it")
+	}
+	if sameTransaction(legacy, internal.TxAt{FinalLSN: 0x5008, Xid: 9, CommitTime: at}) {
+		t.Error("a position without an xid: a commit at another LSN is not it")
+	}
+}
+
+// leftTimelineBy (#447 fresh-context review NIT): the switch point is the
+// first LSN of the new timeline. A position whose bound is the switch point
+// names a commit the old timeline had there and the new one does not, so it
+// is refused like one past it; only a bound before the switch point is on
+// both histories.
+func TestLeftTimelineBy(t *testing.T) {
+	for _, c := range []struct {
+		switchPoint, bound pglogrepl.LSN
+		left               bool
+	}{
+		{0x3000000, 0x2FFFFFF, false},
+		{0x3000000, 0x3000000, true},
+		{0x3000000, 0x3000001, true},
+	} {
+		if got := leftTimelineBy(c.switchPoint, c.bound); got != c.left {
+			t.Errorf("leftTimelineBy(%s, %s) = %v, want %v", c.switchPoint, c.bound, got, c.left)
+		}
+	}
 }

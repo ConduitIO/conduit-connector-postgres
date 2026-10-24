@@ -27,8 +27,8 @@ slot-dropped-between-runs|required|base|go|./source/logrepl|^TestCombinedIterato
 slot-dropped-between-runs-source|required|base|go|.|^TestSource_Open_SlotMissingWithPosition$|1|-|-
 # 2. slot dropped mid-run.
 slot-dropped-mid-run|required|ext|go|./test/externalstate|^TestExternalState_SlotDroppedMidRun$|1|-|-
-# 3. slot recreated under the same name: #447.
-slot-recreated-same-name|pending|base|go|./source/logrepl|^TestSlotIdentity_RecreatedBetweenRuns_Refused$|1|-|func:source/logrepl:^func TestSlotIdentity_RecreatedBetweenRuns_Refused\(
+# 3. slot recreated under the same name (#447).
+slot-recreated-same-name|required|base|go|./source/logrepl|^TestSlotIdentity_RecreatedBetweenRuns_Refused$|1|-|-
 # 4. slot invalidated (max_slot_wal_keep_size). Runs alone, last on the base
 #    stack: it sets max_slot_wal_keep_size cluster-wide for a few seconds.
 slot-invalidated|required|base|go|./source/logrepl|^TestCombinedIterator_InvalidatedSlot_FailsLoudly$|1|CONDUIT_PG_SLOT_INVALIDATION=1|-
@@ -36,8 +36,9 @@ slot-invalidated|required|base|go|./source/logrepl|^TestCombinedIterator_Invalid
 half-open-connection|required|ext|go|./test/externalstate|^TestExternalState_HalfOpenReplicationConnection$|1|-|-
 # 6. privilege revoked mid-run.
 privilege-revoked-replication|required|ext|go|./test/externalstate|^TestExternalState_ReplicationPrivilegeRevokedMidRun$|1|-|-
-privilege-revoked-emit-message|pending|base|go|./source/logrepl|^TestSlotIdentity_BeaconPermissionDenied$|1|-|func:source/logrepl:^func TestSlotIdentity_BeaconPermissionDenied\(
+privilege-revoked-emit-message|required|base|go|./source/logrepl|^TestSlotIdentity_BeaconPermissionDenied$|1|-|-
 # 7. failover: #447's test/failover/run.sh, own compose project.
-failover|pending|none|script|test/failover/run.sh|-|-|-|file:test/failover/run.sh
-# 8. snapshot restore from a volume snapshot.
-snapshot-restore|known-gap|ext|go|./test/externalstate|^TestExternalState_SnapshotRestore$|-|-|-
+failover|required|none|script|test/failover/run.sh|-|-|-|-
+# 8. snapshot restore from a volume snapshot: refused with wal_history_changed
+#    since #447 (the position names its transaction; test/restore has more).
+snapshot-restore|required|ext|go|./test/externalstate|^TestExternalState_SnapshotRestore$|1|-|-

@@ -38,9 +38,12 @@ matters is deleting it, and the verdict is binary per guard, so a survivor names
 The tool is stdlib only (`go/ast`, `go test -overlay`), lives in the separate `tools/go.mod`
 module and adds nothing to the connector's `go.mod`.
 
-## Not marked yet
+## Slot identity guards (#447)
 
-The guards that exist only on the open slot-identity change (#447: beacon, slot identity, WAL
-history) are not marked here, because the code is not on `main`. After #447 merges, mark them in a
-follow-up (`// guard:` above each refusal, `env=` where the test needs the invalidation stack), run
-`make guardmut`, and baseline or fix what survives.
+Marked with #447: the idle-advance beacon cap (`reportedPositions`), `verifyBeacon`'s `r >= confirmed`, the beacon's
+xid-first step (`assignXid`, a call of its own so the gate can remove it), the walsender check (PID and `backend_start`, one
+guard) in `Beacons.checkHeld`, `VerifyHeld`'s limit, the covered-resume transaction check, and the two transient-failure
+refusals (`checkSlotIdentity`'s `FindBeacon` error and `verifyCoveredTransaction`'s `TxCommittingAt` error, which
+`logrepl.allowWALGap` must never accept). Not marked yet: the
+WAL history checks (`checkWALHistory` is one `switch`, which the gate does not mutate) and the slot identity outcome
+`switch` in `cdc.go`; their tests are listed in the design document.

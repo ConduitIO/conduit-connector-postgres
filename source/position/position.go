@@ -47,6 +47,10 @@ const (
 //   - 3: the position of a schema-drift marker also carries SchemaDriftMarker
 //     (docs/design-documents/20261015-drift-marker-source-signal.md). No
 //     other position has it.
+//   - 4: every position also carries SlotIdentity, the identity of the
+//     replication slot the position was taken from (#442,
+//     docs/design-documents/20261021-slot-identity.md). A position without
+//     it (versions 0 to 3) is checked as a legacy position on resume.
 //
 // Backward/forward compatibility contract (see the DBZ-3 design doc,
 // docs/design-documents/20260724-dbz3-postgres-cdc-parity.md, "Upgrade / rollback"):
@@ -61,7 +65,7 @@ const (
 //     key. An absent SnapshotLowWatermarkLSN/SchemaHistory means
 //     "behave as v0.14 did"; a missing TxCommitLSN or TxSeq means the legacy
 //     resume point (logrepl/internal.ResumePoint).
-const CurrentPositionVersion = 3
+const CurrentPositionVersion = 4
 
 type Position struct {
 	// Version identifies the position format. See CurrentPositionVersion for the
@@ -124,6 +128,46 @@ type Position struct {
 	// anyway. It plays no part in resuming, and the source never carries it
 	// forward to a later position.
 	SchemaDriftMarker string `json:"schema_drift_marker,omitempty"`
+
+	// SlotIdentity is the secret key of the replication slot history this
+	// position belongs to (#442). The connector authenticates the logical
+	// decoding messages (beacons) it keeps in the WAL after the slot's
+	// confirmed_flush_lsn with it (HMAC-SHA256), so on resume a slot that
+	// still holds a beacon authenticated with this key is the slot the
+	// position was taken from, and a slot that was dropped and created again
+	// under the same name, which starts after every beacon, is not. The key
+	// itself never reaches the database or a log (logs show
+	// internal.IdentityFingerprint). It is 256 random bits, also for a run
+	// that resumes from a position written before format version 4. It is
+	// carried forward onto every snapshot
+	// and CDC position, and replaced by a new key whenever the connector
+	// accepts a slot that is not the position's (logrepl.allowWALGap). Empty
+	// on a position written before format version 4.
+	SlotIdentity string `json:"slot_identity,omitempty"`
+
+	// SystemIdentifier and Timeline name the WAL history the position was
+	// written on (#447): the cluster's system identifier and its timeline
+	// at the time, from IDENTIFY_SYSTEM. An LSN means something only within
+	// one history, so a resume on another cluster, an earlier timeline, a
+	// timeline that left this one before the position, or a server whose
+	// WAL is behind the position (a restored backup or VM image) is refused
+	// (logrepl.checkWALHistory). Carried forward onto every position, and
+	// updated to the server's current values by every start. Empty on a
+	// position written before format version 4.
+	SystemIdentifier string `json:"system_identifier,omitempty"`
+	Timeline         int32  `json:"timeline,omitempty"`
+
+	// TxXid and TxCommitTime are the xid and the commit timestamp (Unix
+	// microseconds) of the transaction that commits at TxCommitLSN, from
+	// pgoutput's BEGIN message (#447 re-review S2). With TxCommitLSN they
+	// name one transaction of one WAL history: a resume that the position's
+	// bound covers checks that the slot decodes exactly this transaction at
+	// TxCommitLSN, which a server restored to an earlier point on the same
+	// timeline, whose new WAL reuses the LSNs, does not
+	// (logrepl.verifyCoveredTransaction). Set with the change key; empty on
+	// snapshot positions and on positions written before this check.
+	TxXid        uint32 `json:"tx_xid,omitempty"`
+	TxCommitTime int64  `json:"tx_commit_time,omitempty"`
 }
 
 type SnapshotPositions map[string]SnapshotPosition
@@ -173,6 +217,28 @@ func (p Position) ToSDKPosition() opencdc.Position {
 // after it.
 func (p Position) ImpliesSlot() bool {
 	return p.Type != TypeInitial || p.LastLSN != "" || p.TxCommitLSN != ""
+}
+
+// CoveredThrough returns the highest LSN a replication slot's
+// confirmed_flush_lsn can be at while every change after this position is
+// still decoded from it, or 0 when the position gives no such bound.
+//
+// Postgres decodes every transaction whose commit record is at or after the
+// slot's confirmed_flush_lsn. The position's transaction commits at
+// TxCommitLSN, and every change not yet delivered belongs to that transaction
+// or to one that commits later, so a slot whose confirmed_flush_lsn is at or
+// below TxCommitLSN loses nothing, whichever slot it is. A position without a
+// change key falls back to LastLSN, the change's own LSN, which is below its
+// commit. A snapshot position gives no bound: its slot was created after the
+// snapshot started.
+func (p Position) CoveredThrough() (pglogrepl.LSN, error) {
+	if p.Type != TypeCDC {
+		return 0, nil
+	}
+	if p.TxCommitLSN != "" && p.TxSeq != 0 {
+		return p.TxCommit()
+	}
+	return p.LSN()
 }
 
 // LSN returns the last LSN (Log Sequence Number) in the position.

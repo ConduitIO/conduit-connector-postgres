@@ -1,0 +1,47 @@
+# Stack for the slot identity failover test (test/failover, #442). Run it only
+# through test/failover/run.sh, which gives it a unique compose project name
+# and removes it with `down -v`.
+#
+# A primary and a physical standby that synchronizes logical failover slots
+# (Postgres 17+: sync_replication_slots on the standby, failover=true slots on
+# the primary). By default the primary lists the standby's physical slot in
+# synchronized_standby_slots, the setting Postgres documents for a failover
+# that keeps logical consumers consistent; FAILOVER_SYNC_STANDBY_SLOTS= (empty)
+# leaves it unset. Both servers are published on ephemeral loopback ports.
+services:
+  primary:
+    image: ${PG_IMAGE:-postgres:17}
+    ports:
+      - "127.0.0.1::5432"
+    environment:
+      POSTGRES_PASSWORD: postgres
+      FAILOVER_SYNC_STANDBY_SLOTS: ${FAILOVER_SYNC_STANDBY_SLOTS-standby1}
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=20
+      - -c
+      - max_wal_senders=20
+    volumes:
+      - "./initdb/:/docker-entrypoint-initdb.d/:ro"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 1s
+      retries: 60
+  standby:
+    image: ${PG_IMAGE:-postgres:17}
+    user: postgres
+    entrypoint: ["/bin/bash", "/failover/standby.sh"]
+    ports:
+      - "127.0.0.1::5432"
+    volumes:
+      - "./:/failover/:ro"
+    depends_on:
+      primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "127.0.0.1"]
+      interval: 1s
+      retries: 120

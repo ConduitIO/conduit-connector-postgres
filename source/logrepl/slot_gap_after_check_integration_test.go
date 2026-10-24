@@ -145,10 +145,24 @@ func TestCDCIterator_AllowWALGap_WarnsWhenCreateSucceedsThenFails(t *testing.T) 
 	is.NoErr(pool.QueryRow(ctx, "SELECT count(*) FROM pg_replication_slots WHERE slot_name=$1", table).Scan(&n))
 	is.Equal(n, 1) // the slot exists: this is why the warning could not wait
 
-	it, err := NewCombinedIterator(lctx, pool, conf) // retry: slot is healthy, nothing more to warn about
+	// The retry finds a healthy slot that the failed attempt created. It is
+	// not the slot of the saved position (#442: it holds no beacon of the
+	// position's identity), so the opt-in accepts it again and says so again
+	// (TestSlotIdentity_HalfFinishedCreate_Refused: without the opt-in it is
+	// refused). Before the slot identity this retry was silent.
+	it, err := NewCombinedIterator(lctx, pool, conf)
 	is.NoErr(err)
 	is.NoErr(it.Teardown(ctx))
-	is.Equal(strings.Count(logs.String(), dataLossWarn), 1)
+	info, err := internal.ReadServerInfo(ctx, pool)
+	is.NoErr(err)
+	if !info.BeaconsSupported() {
+		// Postgres 13 (or a standby): no identity, so the retry cannot tell
+		// (the documented limit on such servers).
+		is.Equal(strings.Count(logs.String(), dataLossWarn), 1)
+		return
+	}
+	is.Equal(strings.Count(logs.String(), dataLossWarn), 2)
+	is.True(strings.Contains(logs.String(), string(CodeSlotReplaced)))
 }
 
 // An intact slot with the opt-in set is not a gap: no warning.

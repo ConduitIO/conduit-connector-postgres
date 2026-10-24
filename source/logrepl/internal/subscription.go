@@ -75,6 +75,24 @@ type Subscription struct {
 	// due. Only touched on the Run goroutine.
 	importWarnAt time.Time
 
+	// Beacons writes and tracks the slot identity beacons (#442), nil when
+	// the server cannot carry them (before Postgres 14, or a standby). When
+	// set, the stream asks pgoutput for logical decoding messages, and an
+	// idle slot is never advanced past what the last beacon received
+	// certifies (Beacons.Cap, see reportedPositions). Set before Run.
+	Beacons *Beacons
+	// VerifyHeld, when set, checks the slot once START_REPLICATION holds it,
+	// before anything is sent on the stream (#442): a slot dropped and
+	// created again after the identity check and before the stream took it
+	// is refused there. An error stops the subscription like
+	// checkImportSlot's. Set before Run.
+	VerifyHeld func(context.Context, ReadReplicationSlotResult) error
+	// StreamStarted, when set, runs right after START_REPLICATION succeeded
+	// with the backend PID of this run's walsender (or the error that kept
+	// it from being known), before VerifyHeld. An error stops the
+	// subscription like VerifyHeld's. Set before Run.
+	StreamStarted func(ctx context.Context, walsenderPID uint32, err error) error
+
 	pool *pgxpool.Pool
 
 	// connMu guards conn, runActive and tornDown. conn is a pooled
@@ -148,6 +166,11 @@ type Subscription struct {
 	// on that goroutine).
 	change  ChangeKey
 	emitted ChangeKey
+	// changeXid and changeCommitTime are the xid and commit timestamp of
+	// the transaction being handled, from its BeginMessage. Only on the Run
+	// goroutine, like change.
+	changeXid        uint32
+	changeCommitTime time.Time
 
 	// acked is the key of the last record the engine acked (see Ack). Acks
 	// arrive on another goroutine, hence the mutex.
@@ -368,9 +391,28 @@ func (s *Subscription) Run(ctx context.Context) error {
 	s.stopMu.Unlock()
 
 	if err := s.startReplication(lctx); err != nil {
+		err = startFailure(lctx, err)
 		s.startErr, s.doneErr = err, err
 		close(s.ready) // ready to fail.
 		return err
+	}
+	// From here on a beacon may only be written while this walsender holds
+	// the slot (#447 B1, Beacons.Emit). Not knowing which walsender that is
+	// fails the start (#447 N2): skipping it would leave the guard in its
+	// before-the-stream mode, which an active slot can never pass.
+	if s.StreamStarted != nil {
+		var pid uint32
+		pc, perr := s.pgConn()
+		if perr == nil {
+			pid = pc.PID()
+		}
+		if err := s.StreamStarted(lctx, pid, perr); err != nil {
+			s.closeConnForRefusal()
+			err = startFailure(lctx, err)
+			s.startErr, s.doneErr = err, err
+			close(s.ready) // ready to fail.
+			return err
+		}
 	}
 	// Invariant 3 (import mode): refuse a slot that moved past Lc before
 	// anything is sent on the stream. This runs before replicating is set,
@@ -383,6 +425,17 @@ func (s *Subscription) Run(ctx context.Context) error {
 	// mode.
 	if err := s.checkImportSlot(lctx); err != nil {
 		s.closeConnForRefusal()
+		err = startFailure(lctx, err)
+		s.startErr, s.doneErr = err, err
+		close(s.ready) // ready to fail.
+		return err
+	}
+	// Invariant 3 (#442): the same refusal, for a slot that was swapped
+	// after the identity check. No status update may reach a slot that is
+	// not the one the position was taken from.
+	if err := s.checkHeldSlot(lctx); err != nil {
+		s.closeConnForRefusal()
+		err = startFailure(lctx, err)
 		s.startErr, s.doneErr = err, err
 		close(s.ready) // ready to fail.
 		return err
@@ -400,6 +453,19 @@ func (s *Subscription) Run(ctx context.Context) error {
 	return nil
 }
 
+// startFailure is the error a start step's failure is reported with. When
+// the run was stopped or its context ended while it was starting (a pipeline
+// stopped during the snapshot-to-CDC handoff), every step that queries the
+// server fails with the context's error, and the result says so: callers
+// treat it as the shutdown it is, not as a refusal or a broken start. The
+// step's own error stays in the chain, so a refusal keeps its code.
+func startFailure(ctx context.Context, err error) error {
+	if cerr := ctx.Err(); cerr != nil && !errors.Is(err, cerr) {
+		return fmt.Errorf("%w (stopped while starting: %w)", cerr, err)
+	}
+	return err
+}
+
 // listen receives changes from the replication slot until context is cancelled or an error is encountered.
 func (s *Subscription) listen(ctx context.Context) error {
 	// signal that the subscription is ready and is receiving messages
@@ -412,6 +478,7 @@ func (s *Subscription) listen(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
+			s.requestBeacon(ctx)
 			nextStatusUpdateAt = time.Now().Add(s.StatusTimeout)
 		}
 
@@ -509,8 +576,17 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 	// lower LSNs, and the rows of one multi-row insert share one LSN.
 	// Relation, Type, Origin, Begin and Commit messages are never skipped.
 	switch m := logicalMsg.(type) {
+	case *pglogrepl.LogicalDecodingMessage:
+		// Messages are requested only for the slot identity beacons (#442).
+		// Neither ours nor anyone else's is a change: never handed to the
+		// handler, never counted in a change key.
+		if s.Beacons != nil {
+			s.Beacons.observe(ctx, m, s.reportedFlush)
+		}
+		return nil
 	case *pglogrepl.BeginMessage:
 		s.change = ChangeKey{CommitLSN: m.FinalLSN}
+		s.changeXid, s.changeCommitTime = m.Xid, m.CommitTime
 		if s.Import != nil {
 			s.Import.Begin(m.FinalLSN, m.Xid, m.CommitTime)
 		}
@@ -569,6 +645,13 @@ func (s *Subscription) handleXLogData(ctx context.Context, copyDataMsg *pgproto3
 	}
 
 	return nil
+}
+
+// CurrentTx returns the xid and commit timestamp of the transaction being
+// handled (#447 re-review S2). Like CurrentChange, only on the subscription
+// goroutine.
+func (s *Subscription) CurrentTx() (uint32, time.Time) {
+	return s.changeXid, s.changeCommitTime
 }
 
 // CurrentChange returns the key of the change being handled. The handler
@@ -723,6 +806,10 @@ func (s *Subscription) startReplication(ctx context.Context) error {
 		`"proto_version" '1'`,
 		fmt.Sprintf(`"publication_names" '%s'`, s.Publication),
 	}
+	if s.Beacons != nil {
+		// The slot identity beacons are logical decoding messages (#442).
+		pluginArgs = append(pluginArgs, `"messages" 'true'`)
+	}
 
 	if err := pglogrepl.StartReplication(
 		ctx,
@@ -770,7 +857,7 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 
 	// Manage replication slot lag: when every emitted record has been acked,
 	// report the server's WAL end instead of the last acked record. The gate lives in reportedPositions.
-	write, flush := reportedPositions(s.walWritten, walFlushed, serverWALEnd, s.reportedFlush, s.allAcked())
+	write, flush := reportedPositions(s.walWritten, walFlushed, serverWALEnd, s.reportedFlush, s.allAcked(), beaconCap(s.Beacons))
 	firstAckSeen := s.FirstAckSeen() // read once: both branches must see the same answer
 	if s.ImportCeiling != 0 && firstAckSeen {
 		// D6: import mode floors every report at F0, also after the first
@@ -842,20 +929,35 @@ func (s *Subscription) sendStandbyStatusUpdate(ctx context.Context) error {
 //     the last keepalive). The test compares change keys, not LSNs: rows of a
 //     multi-row insert share an LSN, so "walFlushed == walWritten" would claim
 //     everything is acked after the first of them is.
+//   - That idle advance goes no further than idleCap, what the last slot
+//     identity beacon received certifies (Beacons.Cap, #442; noCap without
+//     beacons). The
+//     acked baseline is never capped: it is at or below the saved position,
+//     which proves the slot by itself (position.CoveredThrough), and the
+//     drift escape hatch needs the slot to confirm the marker's LSN.
 //   - The flush position never goes below lastReported. A flush position that
 //     was safe when reported stays safe: transactions arrive in commit order,
 //     anything that arrives later commits after it, and the server re-sends
 //     any transaction whose commit is past confirmed_flush_lsn.
 //   - write is at least flush.
-func reportedPositions(walWritten, walFlushed, serverWALEnd, lastReported pglogrepl.LSN, allAcked bool) (write, flush pglogrepl.LSN) {
+func reportedPositions(walWritten, walFlushed, serverWALEnd, lastReported pglogrepl.LSN, allAcked bool, idleCap pglogrepl.LSN) (write, flush pglogrepl.LSN) {
 	flush = walFlushed
 
 	// Invariant 1: report past the acked records only when no emitted record
 	// is unacked. Reporting serverWALEnd while a record is in flight would let
 	// Postgres discard the WAL that record depends on, and a crash before the
 	// destination wrote it would lose it.
+	//
+	// Invariant 3 (#442): and never past what the last received identity
+	// beacon certifies, so a stopped slot still decodes a beacon that covers
+	// its confirmed_flush_lsn.
 	if allAcked {
-		flush = maxLSN(flush, serverWALEnd)
+		advance := serverWALEnd
+		// guard: logrepl-idle-advance-beacon-cap tests=^TestReportedPositions|^TestSlotIdentity_IdleAdvancedSlot_ResumesWithoutFalsePositive$ pkgs=./source/logrepl
+		if advance > idleCap {
+			advance = idleCap
+		}
+		flush = maxLSN(flush, advance)
 	}
 
 	// Invariant 2: the reported flush position never decreases.
@@ -907,6 +1009,33 @@ func (s *Subscription) checkImportSlot(ctx context.Context) error {
 	return nil
 }
 
+// checkHeldSlot runs VerifyHeld on the slot as it is now that the stream
+// holds it: an active slot cannot be dropped, so what it says here is what
+// the stream decodes from.
+func (s *Subscription) checkHeldSlot(ctx context.Context) error {
+	if s.VerifyHeld == nil {
+		return nil
+	}
+	slot, err := ReadReplicationSlot(ctx, s.pool, s.SlotName)
+	if err != nil {
+		return err
+	}
+	return s.VerifyHeld(ctx, slot)
+}
+
+// requestBeacon asks for a new slot identity beacon when an idle slot could
+// advance past the last one (see Beacons.maybeRequest). Only on the Run
+// goroutine, from the receive loop: not from the final status update, whose
+// context ends with Run.
+func (s *Subscription) requestBeacon(ctx context.Context) {
+	if s.Beacons == nil || !s.allAcked() {
+		return
+	}
+	s.Beacons.maybeRequest(ctx,
+		pglogrepl.LSN(atomic.LoadUint64((*uint64)(&s.serverWALEnd))),
+		pglogrepl.LSN(atomic.LoadUint64((*uint64)(&s.walFlushed))))
+}
+
 // closeConnForRefusal closes the replication connection after
 // START_REPLICATION succeeded but the stream is refused. Nothing more is
 // sent on it (no status update, no CopyDone), and a closed connection is
@@ -942,6 +1071,13 @@ func capImportFlush(write, flush, ceiling, floor pglogrepl.LSN) (pglogrepl.LSN, 
 	flush = maxLSN(flush, floor)
 	write = maxLSN(write, flush)
 	return write, flush
+}
+
+func minLSN(a, b pglogrepl.LSN) pglogrepl.LSN {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func maxLSN(first pglogrepl.LSN, rest ...pglogrepl.LSN) pglogrepl.LSN {

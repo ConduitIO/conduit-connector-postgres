@@ -17,6 +17,7 @@ package logrepl
 import (
 	"context"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"sync"
@@ -182,6 +183,10 @@ type CDCHandler struct {
 	// in tests that drive the handler without a subscription; positions then
 	// carry no key and resume with the legacy rule.
 	changeKey func() internal.ChangeKey
+	// txInfo returns the xid and commit timestamp of the transaction being
+	// handled (internal.Subscription.CurrentTx), under the same rules as
+	// changeKey. Nil without a subscription.
+	txInfo func() (uint32, time.Time)
 
 	// afterMarkerQueued is a test seam, nil in production. emitDriftMarker
 	// calls it immediately after the marker has been handed to the batch
@@ -697,8 +702,16 @@ func (h *CDCHandler) buildPositionAt(lsn pglogrepl.LSN, key internal.ChangeKey) 
 func (h *CDCHandler) positionAt(lsn pglogrepl.LSN, key internal.ChangeKey) position.Position {
 	var commit string
 	var seq uint64
+	var xid uint32
+	var commitTime int64
 	if key.Known() {
 		commit, seq = formatLSN(key.CommitLSN), key.Seq
+		if h.txInfo != nil && namesCurrentTx(key, h.currentChangeKey()) {
+			// #447 re-review S2: the transaction the key names, so a resume
+			// can check that its commit LSN still names it.
+			x, ct := h.txInfo()
+			xid, commitTime = x, ct.UnixMicro()
+		}
 	}
 	return position.Position{
 		Type:                    position.TypeCDC,
@@ -707,7 +720,28 @@ func (h *CDCHandler) positionAt(lsn pglogrepl.LSN, key internal.ChangeKey) posit
 		TxSeq:                   seq,
 		SnapshotLowWatermarkLSN: h.basePosition.SnapshotLowWatermarkLSN,
 		SchemaHistory:           h.basePosition.SchemaHistory,
+		// Invariant 3 (#442): every position names the slot identity, so a
+		// restart from any of them can recognise its slot.
+		SlotIdentity:     h.basePosition.SlotIdentity,
+		SystemIdentifier: h.basePosition.SystemIdentifier,
+		Timeline:         h.basePosition.Timeline,
+		TxXid:            xid,
+		TxCommitTime:     commitTime,
 	}
+}
+
+// namesCurrentTx reports whether key names the transaction of the change
+// being handled (cur): it is a key of that transaction, or a drift marker's
+// key (C-1, MaxUint64) just before its first change (#338,
+// internal.ChangeKey.Predecessor). A marker's key names no transaction of
+// its own, so without this its position would carry no xid and a resume
+// from it would skip the transaction check (#447 round-4 B2); see
+// savedTransaction for the reading side.
+func namesCurrentTx(key, cur internal.ChangeKey) bool {
+	if key.CommitLSN == cur.CommitLSN {
+		return true
+	}
+	return key.Seq == math.MaxUint64 && key.CommitLSN+1 == cur.CommitLSN
 }
 
 // currentChangeKey returns the key of the change being handled (its

@@ -6,12 +6,14 @@ build:
 
 .PHONY: test
 test:
-	# run required docker containers, execute integration tests, stop containers after tests
+	# run required docker containers, execute integration tests, stop containers after tests.
+	# -timeout 20m: source/logrepl takes about 8 minutes with -race on CI, too close to
+	# go test's default of 10.
 	docker compose -f test/docker-compose.yml up --force-recreate --quiet-pull -d --wait
-	env -u CONDUIT_PG_SLOT_INVALIDATION go test -count=1 $(GOTEST_FLAGS) -race ./...; ret=$$?; \
+	env -u CONDUIT_PG_SLOT_INVALIDATION go test -count=1 -timeout 20m $(GOTEST_FLAGS) -race ./...; ret=$$?; \
 		if [ $$ret -eq 0 ]; then \
 			echo "slot invalidation test: alone, after the suite (it sets max_slot_wal_keep_size cluster-wide)"; \
-			CONDUIT_PG_SLOT_INVALIDATION=1 go test -count=1 $(GOTEST_FLAGS) -race -p 1 -run '^TestCombinedIterator_InvalidatedSlot_FailsLoudly$$' ./source/logrepl/; ret=$$?; \
+			CONDUIT_PG_SLOT_INVALIDATION=1 go test -count=1 -timeout 20m $(GOTEST_FLAGS) -race -p 1 -run '^TestCombinedIterator_InvalidatedSlot_FailsLoudly$$' ./source/logrepl/; ret=$$?; \
 		fi; \
 		docker compose -f test/docker-compose.yml down --volumes; \
 		exit $$ret
@@ -78,6 +80,23 @@ test-chaos:
 	go test -tags conduitchaos -count=1 $(GOTEST_FLAGS) -race ./test/chaos/...; ret=$$?; \
 		docker compose -f test/docker-compose.chaos.yml down --volumes; \
 		exit $$ret
+
+.PHONY: test-failover
+test-failover:
+	# Slot identity across a failover (#442): a Postgres 17+ primary with a
+	# failover slot and a standby that synchronizes it, then promotes
+	# (test/failover). run.sh starts its own compose project on ephemeral ports
+	# and removes it with `down -v`. PG_IMAGE picks the version (default
+	# postgres:17). Not part of `make test`.
+	test/failover/run.sh
+
+.PHONY: test-restore
+test-restore:
+	# A resume on a server restored on the same timeline (#447): snapshots and
+	# restores a Postgres data volume between phases (test/restore). Own compose
+	# project on an ephemeral port, removed with `down -v`. PG_IMAGE picks the
+	# version (default postgres:17). Not part of `make test`.
+	test/restore/run.sh
 
 .PHONY: test-external-state
 test-external-state:

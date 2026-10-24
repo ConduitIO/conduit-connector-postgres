@@ -186,7 +186,7 @@ func TestCapImportFlush_PropertyNeverRaises(t *testing.T) {
 		walFlushed := pglogrepl.LSN(rapid.Uint64Range(0, 1<<41).Draw(t, "flushed"))
 		serverEnd := pglogrepl.LSN(rapid.Uint64Range(0, 1<<41).Draw(t, "end"))
 		last := pglogrepl.LSN(rapid.Uint64Range(0, uint64(ceiling)).Draw(t, "last"))
-		_, flush := reportedPositions(walWritten, walFlushed, serverEnd, last, rapid.Bool().Draw(t, "allAcked"))
+		_, flush := reportedPositions(walWritten, walFlushed, serverEnd, last, rapid.Bool().Draw(t, "allAcked"), noCap)
 		_, capped := capImportFlush(0, flush, ceiling, floor)
 		if capped > ceiling {
 			t.Fatalf("capped flush %s above Lc %s", capped, ceiling)

@@ -2,8 +2,16 @@
 # here has no marker (deleted or renamed) and when a marker is missing here. The
 # workflow also fails a PR that removes a line unless its body has
 # `guardmut-removed: <reason>`. Sorted; one name per line.
+logrepl-beacon-covers-confirmed
+logrepl-beacon-held-by-this-walsender
+logrepl-beacon-xid-first
 logrepl-checkslot-refusal
+logrepl-covered-transaction-checked
+logrepl-covered-transient-refused
 logrepl-delete-null-key-refused
 logrepl-gap-accepted-warning
+logrepl-idle-advance-beacon-cap
 logrepl-import-slot-ahead-refused
 logrepl-slot-invalidated-refused
+logrepl-transient-check-refused
+logrepl-verifyheld-limit

@@ -74,6 +74,7 @@ type b1ChildSpec struct {
 	run          int
 	total        int
 	haltExpected bool
+	settleSlot   bool   // PGCHAOS_SETTLE_SLOT: wait for the slot to pass the last acked commit before Teardown
 	park         string // "name:nth[,name:nth...]" for PGCHAOS_PARK, "" to not park
 	ledgerPath   string
 	table        string
@@ -128,6 +129,9 @@ func b1SpawnChild(t *testing.T, s b1ChildSpec) *childProcess {
 	}
 	if s.park != "" {
 		env = append(env, "PGCHAOS_PARK="+s.park)
+	}
+	if s.settleSlot {
+		env = append(env, envSettleSlot+"="+envValueTrue)
 	}
 	return spawnChildWithEnv(t, env)
 }
@@ -812,13 +816,18 @@ func TestB1_AC7_RestartHaltTruthfulMessage(t *testing.T) {
 	_, regPool, table, slot, pub, ledgerPath := b1Setup(t)
 
 	// Run 1: clean run to a checkpoint with the OLD shape. The baseline DML is
-	// the first CDC record and the old shape's real first-seen LSN.
+	// the first CDC record and the old shape's real first-seen LSN. It stops
+	// only once the slot is past the baseline's commit (settleSlot): the
+	// connector advances an idle slot a beacon at a time (#442), and a slot
+	// left below the commit would send run 2 the old shape's relation message
+	// again, which is the in-run drift path, not FM7.
 	cp := b1SpawnChild(t, b1ChildSpec{
-		run: 1, total: 5, haltExpected: false,
+		run: 1, total: 5, haltExpected: false, settleSlot: true,
 		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
 	})
 	b1Baseline(t, cp, regPool, table)
 	cp.waitForMarker(t, "DONE", 60*time.Second)
+	cp.waitForMarker(t, "SETTLED", 120*time.Second)
 	cp.waitExit(t, 30*time.Second)
 	b1AssertNoHalt(t, cp)
 
@@ -1147,4 +1156,73 @@ func TestB1_AC9_StackedDDLInRun(t *testing.T) {
 	b1AssertNoGaps(t, entries)
 	b1AssertNoUnexpectedDups(t, entries, &marker2)
 	is.Equal(len(b1DriftEntries(t, entries)), 2) // no third marker for the second shape
+}
+
+// TestB1_AC7_RestartHaltUnsettled is AC7 without the settle step (#447 N4):
+// run 1 stops right after its last ack, so its slot stays below the
+// baseline's commit (the idle advance moves a beacon at a time, #442) and run
+// 2 decodes the baseline transaction again, old relation message included.
+// The drift is then the in-run form, not FM7's across-restart form. What
+// must hold either way: the halt fires on the post-ALTER change, names the
+// table and the marker's real LSN (never 0/0), the re-decoded baseline is
+// not delivered twice, and the approving restart delivers the rest.
+func TestB1_AC7_RestartHaltUnsettled(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+
+	_, regPool, table, slot, pub, ledgerPath := b1Setup(t)
+
+	cp := b1SpawnChild(t, b1ChildSpec{
+		run: 1, total: 5, haltExpected: false,
+		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
+	})
+	b1Baseline(t, cp, regPool, table)
+	cp.waitForMarker(t, "DONE", 60*time.Second)
+	cp.waitExit(t, 30*time.Second)
+	b1AssertNoHalt(t, cp)
+
+	_, err := regPool.Exec(ctx, fmt.Sprintf(`ALTER TABLE %q ADD COLUMN %s timestamp`, table, b1DriftColumn))
+	is.NoErr(err)
+
+	cp2 := b1SpawnChild(t, b1ChildSpec{
+		run: 2, total: 7, haltExpected: true,
+		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
+	})
+	cp2.waitForMarker(t, "RESUME ", 30*time.Second)
+	cp2.waitForMarker(t, "OPENED", 30*time.Second)
+	_, err = regPool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('post-alter')`, table))
+	is.NoErr(err)
+	cp2.waitForMarker(t, "DRIFT_PERSISTED", 60*time.Second)
+	cp2.waitForMarker(t, "HALTED", 30*time.Second)
+	cp2.waitExit(t, 30*time.Second)
+
+	entries := b1ReadLedger(t, ledgerPath)
+	drift := b1DriftEntries(t, entries)
+	is.Equal(len(drift), 1)
+	markerLSN, err := b1MarkerLSN(t, drift[0])
+	is.NoErr(err)
+	stderr := cp2.stderr.String()
+	is.True(strings.Contains(stderr, logrepl.ErrorCodeSchemaDriftHalt))
+	is.True(strings.Contains(stderr, "public."+table))
+	is.True(strings.Contains(stderr, "observed at LSN "+markerLSN.String()))
+	is.True(!strings.Contains(stderr, "observed at LSN 0/0"))
+	is.True(strings.Contains(stderr, b1HaltTrap))
+
+	cp3 := b1SpawnChild(t, b1ChildSpec{
+		run: 3, total: 2, haltExpected: false,
+		ledgerPath: ledgerPath, table: table, slot: slot, pub: pub,
+	})
+	cp3.waitForMarker(t, "RESUME ", 30*time.Second)
+	cp3.waitForMarker(t, "OPENED", 30*time.Second)
+	_, err = regPool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (column1) VALUES ('post-approval')`, table))
+	is.NoErr(err)
+	cp3.waitForCount(t, "ACKED ", 2, 60*time.Second)
+	cp3.waitForMarker(t, "DONE", 60*time.Second)
+	cp3.waitExit(t, 30*time.Second)
+	b1AssertNoHalt(t, cp3)
+
+	// No delivery twice across the three runs, the re-decoded baseline
+	// included.
+	dups := FindDuplicates(b1ReadLedger(t, ledgerPath))
+	is.Equal(len(dups), 0)
 }

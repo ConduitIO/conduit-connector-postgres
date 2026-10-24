@@ -26,7 +26,7 @@ import (
 // production and are assigned only in _test.go files. Production code that
 // assigned one would change slot handling for every pipeline in the process.
 func TestSeamsOnlyAssignedInTests(t *testing.T) {
-	assign := regexp.MustCompile(`\b(afterSlotCheck|AfterSlotCreateHook)\s*=[^=]`)
+	assign := regexp.MustCompile(`\b(afterSlotCheck|afterIdentityCheck|afterSlotArmed|AfterSlotCreateHook|AfterBeaconGuard|AfterBeaconCommit|FindBeaconErr|TxCommittingAtErr)\s*=[^=]`)
 	for _, dir := range []string{".", "internal"} {
 		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
 		if err != nil {

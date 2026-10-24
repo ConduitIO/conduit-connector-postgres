@@ -30,14 +30,16 @@ type ReadReplicationSlotResult struct {
 	Name              string
 	ConfirmedFlushLSN pglogrepl.LSN
 	RestartLSN        pglogrepl.LSN
+	// Active is whether a connection is streaming from the slot right now.
+	Active bool
 }
 
 // ReadReplicationSlot returns state of an existing replication slot.
 func ReadReplicationSlot(ctx context.Context, conn *pgxpool.Pool, name string) (ReadReplicationSlotResult, error) {
 	var r ReadReplicationSlotResult
 
-	qr := conn.QueryRow(ctx, "SELECT slot_name, confirmed_flush_lsn, restart_lsn FROM pg_replication_slots WHERE slot_name=$1", name)
-	if err := qr.Scan(&r.Name, &r.ConfirmedFlushLSN, &r.RestartLSN); err != nil {
+	qr := conn.QueryRow(ctx, "SELECT slot_name, confirmed_flush_lsn, restart_lsn, active FROM pg_replication_slots WHERE slot_name=$1", name)
+	if err := qr.Scan(&r.Name, &r.ConfirmedFlushLSN, &r.RestartLSN, &r.Active); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ReadReplicationSlotResult{}, fmt.Errorf("%s: %w", name, ErrMissingSlot)
 		}

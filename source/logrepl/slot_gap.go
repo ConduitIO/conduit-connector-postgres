@@ -140,9 +140,8 @@ func hasSavedPosition(c CDCConfig) bool {
 // It deliberately looks only at whether the slot exists and is usable. A
 // healthy slot's confirmed_flush_lsn is routinely past the saved record LSN:
 // the connector itself reports the server's WAL end once everything is acked.
-// A slot dropped and recreated under the same name by someone else between
-// runs cannot be told from such a slot; that needs a slot identity in the
-// position, which it does not carry today.
+// Whether an existing slot is the one the position was taken from is
+// checkSlotIdentity's question (#442).
 func checkSlot(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) error {
 	health, err := internal.ReadSlotHealth(ctx, pool, c.SlotName)
 	switch {

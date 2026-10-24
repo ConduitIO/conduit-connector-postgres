@@ -94,6 +94,15 @@ const (
 	// first run, so the import applies).
 	envImport = "PGCHAOS_IMPORT"
 
+	// envSettleSlot, when "1", makes the child wait after DONE, before
+	// Teardown, until the slot's confirmed_flush_lsn is past the commit of
+	// the last record it acked. The connector advances an idle slot one
+	// identity beacon at a time (#442), so a run that stops right after its
+	// last ack leaves the slot below that transaction's commit and the next
+	// run decodes it again. Scenarios whose next run must start past it set
+	// this.
+	envSettleSlot = "PGCHAOS_SETTLE_SLOT"
+
 	// envParentPID is the OS PID of the process that spawned this
 	// invocation via spawnChildWithEnv (harness.go), stamped onto every
 	// child's environment as os.Getpid() of the parent at spawn time.

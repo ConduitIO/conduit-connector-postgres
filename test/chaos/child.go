@@ -23,11 +23,13 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/conduitio/conduit-commons/config"
 	"github.com/conduitio/conduit-commons/opencdc"
 	postgres "github.com/conduitio/conduit-connector-postgres"
 	"github.com/conduitio/conduit-connector-postgres/internal/chaospoint"
+	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/snapshot"
@@ -160,6 +162,7 @@ func runRealChild() {
 	printMarkerf("OPENED")
 
 	var acked uint64
+	var lastAcked opencdc.Position
 	for acked < total {
 		recs, err := src.ReadN(ctx, 1)
 		if err != nil {
@@ -175,6 +178,7 @@ func runRealChild() {
 
 		for _, rec := range recs {
 			appendAndAck(ctx, src, ledger, run, table, rec)
+			lastAcked = rec.Position
 
 			acked++
 			printMarkerf("ACKED %d", acked)
@@ -187,6 +191,8 @@ func runRealChild() {
 
 	printMarkerf("DONE")
 
+	settleSlot(ctx, url, slot, lastAcked)
+
 	if err := src.Teardown(ctx); err != nil {
 		childFatalf("teardown: %v", err)
 	}
@@ -195,6 +201,41 @@ func runRealChild() {
 	}
 
 	os.Exit(0)
+}
+
+// settleSlot waits, when envSettleSlot asks for it, until the slot's
+// confirmed_flush_lsn is past the commit of the last acked record. It fails
+// the child after 90s.
+func settleSlot(ctx context.Context, url, slot string, lastAcked opencdc.Position) {
+	if os.Getenv(envSettleSlot) != envValueTrue {
+		return
+	}
+	p, err := position.ParseSDKPosition(lastAcked)
+	if err != nil {
+		childFatalf("settle: parse last acked position: %v", err)
+	}
+	commit, err := p.TxCommit()
+	if err != nil || commit == 0 {
+		childFatalf("settle: last acked position has no commit LSN (%v)", err) // not the position: it holds the slot identity key
+	}
+	pool, err := cpool.New(ctx, url)
+	if err != nil {
+		childFatalf("settle: connect: %v", err)
+	}
+	defer pool.Close()
+	for deadline := time.Now().Add(90 * time.Second); ; {
+		var past bool
+		err := pool.QueryRow(ctx,
+			"SELECT confirmed_flush_lsn > $2::pg_lsn FROM pg_replication_slots WHERE slot_name = $1", slot, commit.String()).Scan(&past)
+		if err == nil && past {
+			printMarkerf("SETTLED")
+			return
+		}
+		if time.Now().After(deadline) {
+			childFatalf("settle: slot %s not past %s after 90s (err %v)", slot, commit, err)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 // handleDriftHalt reports whether err is the D5 schema-drift halt and, when
@@ -342,7 +383,8 @@ func buildLedgerEntry(run int, table string, rec opencdc.Record) (LedgerEntry, e
 			entry.DeliveryKey = "drift:" + entry.DeliveryKey
 		}
 	default:
-		return LedgerEntry{}, fmt.Errorf("unexpected position type %q (raw position %q)", pos.Type, rec.Position)
+		// Not the raw position: it holds the slot identity key (#442).
+		return LedgerEntry{}, fmt.Errorf("unexpected position type %q (%d-byte position)", pos.Type, len(rec.Position))
 	}
 
 	return entry, nil
