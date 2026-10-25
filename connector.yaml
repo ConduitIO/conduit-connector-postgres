@@ -742,7 +742,7 @@ specification:
 
     Every accepted conversion to a non-numeric type is a silent coercion if the
     schema maps a numeric field to the wrong column, so check the mapping.
-  version: v0.17.5
+  version: v0.18.0
   author: Meroxa, Inc.
   source:
     parameters:
