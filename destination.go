@@ -170,6 +170,8 @@ func (d *Destination) Open(ctx context.Context) error {
 	// main keeps pgx 5.7's SCRAM behaviour; channel_binding=require stays
 	// opt-in. See cpool.DefaultSCRAMCompat.
 	cpool.DefaultSCRAMCompat(&connConfig.Config)
+	// Captured here, so ensureConn's reconnects use the host dialer as well.
+	cpool.ApplyHostDialer(ctx, &connConfig.Config)
 	d.guardSchema = setDestinationQueryExecMode(connConfig, d.config.URL)
 	d.connConfig = connConfig
 	if d.guardSchema {
