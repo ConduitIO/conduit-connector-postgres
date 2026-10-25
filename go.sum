@@ -14,8 +14,8 @@ github.com/Masterminds/squirrel v1.5.4 h1:uUcX/aBc8O7Fg9kaISIUsHXdKuqehiXAMQTYX8
 github.com/Masterminds/squirrel v1.5.4/go.mod h1:NNaOrjSoIDfDA40n7sr2tPNZRfjzjA400rg+riTZj10=
 github.com/bufbuild/protocompile v0.14.2-0.20260127163740-a85d2ef77713 h1:owghT7DcDTOr0HlXqpLSTvg8tKWIp8l2b4LOGlVbu0g=
 github.com/bufbuild/protocompile v0.14.2-0.20260127163740-a85d2ef77713/go.mod h1:cxhE8h+14t0Yxq2H9MV/UggzQ1L0gh0t2tJobITWsBE=
-github.com/conduitio/conduit-commons v0.12.2-0.20261022184221-cf8b4b45491e h1:msijcWGHbyJ8/HuNCzmCgEzD6itBawn8DnlWF5J2HLA=
-github.com/conduitio/conduit-commons v0.12.2-0.20261022184221-cf8b4b45491e/go.mod h1:I5BjvJ7rZzNbELaqR2rbls4Tu2o88cOcSMewLKM8pQw=
+github.com/conduitio/conduit-commons v0.13.0 h1:t6m4wnXSxX8DOonc+BfBBTB364YiQXr5g04S13Jh3Hc=
+github.com/conduitio/conduit-commons v0.13.0/go.mod h1:I5BjvJ7rZzNbELaqR2rbls4Tu2o88cOcSMewLKM8pQw=
 github.com/conduitio/conduit-connector-protocol v0.11.0 h1:YNHw6LCQ7noFLdfEp5IZoAMwwFPI17FueMjDhxUjLt8=
 github.com/conduitio/conduit-connector-protocol v0.11.0/go.mod h1:Fiy2/VeW5vp9TC3Ynno8zXwtiCZsIcMcZ/OtI+Fiz+c=
 github.com/conduitio/conduit-connector-sdk v0.17.0 h1:AtN+As+/YNP5rVQ/nDP7KTZBCGxdjjpumHcB+HYkLwQ=
