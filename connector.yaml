@@ -886,9 +886,11 @@ specification:
           - type: inclusion
             value: initial,never
       - name: sdk.batch.delay
-        description: Maximum delay before an incomplete batch is read from the source.
+        description: |-
+          Maximum delay before an incomplete batch is read from the source. 0
+          returns what is already queued without waiting.
         type: duration
-        default: "0"
+        default: 0s
         validations: []
       - name: sdk.batch.size
         description: Maximum size of batch before it gets read from the source.

@@ -55,6 +55,20 @@ func NewSource() sdk.Source {
 			tableKeys: make(map[string]string),
 			config: source.Config{
 				DefaultSourceMiddleware: sdk.DefaultSourceMiddleware{
+					// Pin the SDK's source batching off (sdk.batch.size 0, delay 0),
+					// which is what this connector shipped with. Since SDK v0.18.0
+					// the default is 100/adaptive, and that would lower the CDC
+					// batch (effectiveCDCBatchSize(100) is 100, not the internal
+					// 1000) and the snapshot FETCH size (see
+					// docs/design-documents/20261027-default-source-batching.md in
+					// ConduitIO/conduit). Non-nil pointers to 0 are what make
+					// specgen emit default "0" into connector.yaml (the SDK's
+					// overwriteDefaults treats a non-nil pointer as set).
+					// TestSourceSpec_BatchingPinned guards this.
+					SourceWithBatch: sdk.SourceWithBatch{
+						BatchSize:  lang.Ptr(0),
+						BatchDelay: lang.Ptr(time.Duration(0)),
+					},
 					// disable schema extraction by default, postgres will build its own schema
 					SourceWithSchemaExtraction: sdk.SourceWithSchemaExtraction{
 						PayloadEnabled: lang.Ptr(false),

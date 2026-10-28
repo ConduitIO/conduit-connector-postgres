@@ -868,10 +868,11 @@ pipelines:
           # Type: string
           # Required: no
           snapshotMode: "initial"
-          # Maximum delay before an incomplete batch is read from the source.
+          # Maximum delay before an incomplete batch is read from the source. 0
+          # returns what is already queued without waiting.
           # Type: duration
           # Required: no
-          sdk.batch.delay: "0"
+          sdk.batch.delay: "0s"
           # Maximum size of batch before it gets read from the source.
           # Type: int
           # Required: no
