@@ -140,6 +140,7 @@ func runRealChild() {
 		"logrepl.withAvroSchema": "false",
 		"sdk.batch.size":         strconv.Itoa(batchSize),
 	}
+
 	if imp := os.Getenv(envImport); imp != "" {
 		cfg["snapshotMode"] = "never"
 		cfg["logrepl.import.debeziumOffset"] = imp
@@ -150,6 +151,10 @@ func runRealChild() {
 		// exercises exactly the read-ahead goroutine finding F-1 flagged
 		// as unverified outside sdk.Serve.
 		cfg["sdk.batch.delay"] = "20ms"
+		// The snapshot page size is snapshot.fetchSize, not sdk.batch.size.
+		// Forward the small chaos batch so a snapshot still spans several
+		// pages and a kill lands between them.
+		cfg["snapshot.fetchSize"] = strconv.Itoa(batchSize)
 	}
 
 	if err := sdk.Util.ParseConfig(ctx, cfg, src.Config(), postgres.Connector.NewSpecification().SourceParams); err != nil {

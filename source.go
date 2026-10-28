@@ -55,6 +55,20 @@ func NewSource() sdk.Source {
 			tableKeys: make(map[string]string),
 			config: source.Config{
 				DefaultSourceMiddleware: sdk.DefaultSourceMiddleware{
+					// Pin the SDK's source batching off (sdk.batch.size 0, delay 0),
+					// which is what this connector shipped with. Since SDK v0.18.0
+					// the default is 100/adaptive, and that would lower the CDC
+					// batch (effectiveCDCBatchSize(100) is 100, not the internal
+					// 1000) and the snapshot FETCH size (see
+					// docs/design-documents/20261027-default-source-batching.md in
+					// ConduitIO/conduit). Non-nil pointers to 0 are what make
+					// specgen emit default "0" into connector.yaml (the SDK's
+					// overwriteDefaults treats a non-nil pointer as set).
+					// TestSourceSpec_BatchingPinned guards this.
+					SourceWithBatch: sdk.SourceWithBatch{
+						BatchSize:  lang.Ptr(0),
+						BatchDelay: lang.Ptr(time.Duration(0)),
+					},
 					// disable schema extraction by default, postgres will build its own schema
 					SourceWithSchemaExtraction: sdk.SourceWithSchemaExtraction{
 						PayloadEnabled: lang.Ptr(false),
@@ -110,21 +124,7 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 		// (since that's the only thing we support at the moment)
 		fallthrough
 	case source.CDCModeLogrepl:
-		i, err := logrepl.NewCombinedIterator(ctx, s.pool, logrepl.Config{
-			Position:             pos,
-			SlotName:             s.config.LogreplSlotName,
-			PublicationName:      s.config.LogreplPublicationName,
-			Tables:               s.config.Tables,
-			TableKeys:            s.tableKeys,
-			WithSnapshot:         s.config.SnapshotMode == source.SnapshotModeInitial,
-			WithAvroSchema:       s.config.WithAvroSchema,
-			BatchSize:            *s.config.BatchSize,
-			SchemaDriftPolicy:    s.config.LogreplSchemaDriftPolicy,
-			AllowWALGap:          s.config.LogreplAllowWALGap,
-			IdentityCheckTimeout: s.config.LogreplSlotIdentityCheckTimeout,
-			BeaconFailureTimeout: s.config.LogreplSlotIdentityBeaconFailureTimeout,
-			Import:               imp,
-		})
+		i, err := logrepl.NewCombinedIterator(ctx, s.pool, s.logreplConfig(pos, imp))
 		if err != nil {
 			return fmt.Errorf("failed to create logical replication iterator: %w", err)
 		}
@@ -134,6 +134,28 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 		return fmt.Errorf("unsupported CDC mode %q", s.config.CDCMode)
 	}
 	return nil
+}
+
+// logreplConfig maps the source configuration onto the logical replication
+// iterator's. A method of its own so a test can check the mapping without a
+// database.
+func (s *Source) logreplConfig(pos opencdc.Position, imp *dbzoffset.Import) logrepl.Config {
+	return logrepl.Config{
+		Position:             pos,
+		SlotName:             s.config.LogreplSlotName,
+		PublicationName:      s.config.LogreplPublicationName,
+		Tables:               s.config.Tables,
+		TableKeys:            s.tableKeys,
+		WithSnapshot:         s.config.SnapshotMode == source.SnapshotModeInitial,
+		WithAvroSchema:       s.config.WithAvroSchema,
+		BatchSize:            *s.config.BatchSize,
+		SnapshotFetchSize:    s.config.SnapshotFetchSize,
+		SchemaDriftPolicy:    s.config.LogreplSchemaDriftPolicy,
+		AllowWALGap:          s.config.LogreplAllowWALGap,
+		IdentityCheckTimeout: s.config.LogreplSlotIdentityCheckTimeout,
+		BeaconFailureTimeout: s.config.LogreplSlotIdentityBeaconFailureTimeout,
+		Import:               imp,
+	}
 }
 
 // debeziumImport returns the Debezium offset import to apply, or nil (#341

@@ -74,14 +74,17 @@ type CombinedIterator struct {
 }
 
 type Config struct {
-	Position          opencdc.Position
-	SlotName          string
-	PublicationName   string
-	Tables            []string
-	TableKeys         map[string]string
-	WithSnapshot      bool
-	WithAvroSchema    bool
-	BatchSize         int
+	Position        opencdc.Position
+	SlotName        string
+	PublicationName string
+	Tables          []string
+	TableKeys       map[string]string
+	WithSnapshot    bool
+	WithAvroSchema  bool
+	BatchSize       int
+	// SnapshotFetchSize is the snapshot cursor page size (snapshot.fetchSize).
+	// Zero means the snapshot package default (50000).
+	SnapshotFetchSize int
 	SchemaDriftPolicy SchemaDriftPolicy
 	// AllowWALGap accepts the data loss of resuming from a saved position on a
 	// replication slot that no longer exists (see checkSlotCoversPosition).
@@ -350,22 +353,7 @@ func (c *CombinedIterator) initSnapshotIterator(ctx context.Context, pos positio
 		return fmt.Errorf("CDC iterator needs to be initialized before snapshot")
 	}
 
-	snapshotIterator, err := snapshot.NewIterator(ctx, c.pool, snapshot.Config{
-		// Pass the enriched position (carrying the captured/persisted low
-		// watermark) rather than c.conf.Position, so every snapshot record
-		// carries SnapshotLowWatermarkLSN forward (DBZ-3 Area 1).
-		Position:       pos.ToSDKPosition(),
-		Tables:         c.conf.Tables,
-		TableKeys:      c.conf.TableKeys,
-		TXSnapshotID:   c.cdcIterator.TXSnapshotID(),
-		FetchSize:      c.conf.BatchSize,
-		WithAvroSchema: c.conf.WithAvroSchema,
-		// A snapshot-typed start position means a prior run already persisted
-		// snapshot progress: this is a resume, so tag emitted records
-		// accordingly (DBZ-3 Area 1). A first run starts from an initial/empty
-		// position and is therefore not tagged.
-		SnapshotResumed: pos.Type == position.TypeSnapshot,
-	})
+	snapshotIterator, err := snapshot.NewIterator(ctx, c.pool, c.snapshotConfig(pos, c.cdcIterator.TXSnapshotID()))
 	if err != nil {
 		return fmt.Errorf("failed to create snapshot iterator: %w", err)
 	}
@@ -375,6 +363,32 @@ func (c *CombinedIterator) initSnapshotIterator(ctx context.Context, pos positio
 	c.snapshotIterator = snapshotIterator
 
 	return nil
+}
+
+// snapshotConfig builds the snapshot iterator's configuration. It is a method
+// of its own so a test can check the wiring without a database.
+func (c *CombinedIterator) snapshotConfig(pos position.Position, txSnapshotID string) snapshot.Config {
+	return snapshot.Config{
+		// Pass the enriched position (carrying the captured/persisted low
+		// watermark) rather than c.conf.Position, so every snapshot record
+		// carries SnapshotLowWatermarkLSN forward (DBZ-3 Area 1).
+		Position:     pos.ToSDKPosition(),
+		Tables:       c.conf.Tables,
+		TableKeys:    c.conf.TableKeys,
+		TXSnapshotID: txSnapshotID,
+		// snapshot.fetchSize (default 50000), not sdk.batch.size: the SDK batch
+		// size is the read granularity of the engine, the fetch size is the
+		// cursor page size of the snapshot query. They used to be conflated, which
+		// left snapshot.fetchSize unread and made a non-zero sdk.batch.size shrink
+		// every snapshot FETCH.
+		FetchSize:      c.conf.SnapshotFetchSize,
+		WithAvroSchema: c.conf.WithAvroSchema,
+		// A snapshot-typed start position means a prior run already persisted
+		// snapshot progress: this is a resume, so tag emitted records
+		// accordingly (DBZ-3 Area 1). A first run starts from an initial/empty
+		// position and is therefore not tagged.
+		SnapshotResumed: pos.Type == position.TypeSnapshot,
+	}
 }
 
 // useCDCIterator will activate and start the CDC iterator. The snapshot iterator

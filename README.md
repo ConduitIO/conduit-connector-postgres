@@ -859,7 +859,11 @@ pipelines:
           # Required: no
           logrepl.withAvroSchema: "true"
           # Snapshot fetcher size determines the number of rows to retrieve at a
-          # time.
+          # time (the snapshot cursor page size). It must be greater than 0:
+          # Postgres answers a FETCH with a negative count with zero rows, which
+          # would end the snapshot of a table without emitting any record. This
+          # is now the only setting for the page size: `sdk.batch.size` no
+          # longer sets it.
           # Type: int
           # Required: no
           snapshot.fetchSize: "50000"
@@ -868,10 +872,11 @@ pipelines:
           # Type: string
           # Required: no
           snapshotMode: "initial"
-          # Maximum delay before an incomplete batch is read from the source.
+          # Maximum delay before an incomplete batch is read from the source. 0
+          # returns what is already queued without waiting.
           # Type: duration
           # Required: no
-          sdk.batch.delay: "0"
+          sdk.batch.delay: "0s"
           # Maximum size of batch before it gets read from the source.
           # Type: int
           # Required: no

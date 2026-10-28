@@ -110,6 +110,22 @@ func Test_FetchConfigValidate(t *testing.T) {
 		is.True(errors.Is(positionErr, errInvalidCDCType))
 	})
 
+	// Regression test (invariant 3): FETCH with a negative count returns zero
+	// rows without an error, which Run reads as the end of the cursor, so the
+	// table would be marked snapshotted with nothing emitted.
+	t.Run("negative fetch size", func(t *testing.T) {
+		is := is.New(t)
+		err := (&FetchConfig{Table: "mytable", Key: "id", FetchSize: -1}).Validate()
+
+		is.True(errors.Is(err, errInvalidFetchSize))
+	})
+
+	t.Run("zero fetch size means the default", func(t *testing.T) {
+		is := is.New(t)
+		is.NoErr((&FetchConfig{Table: "mytable", Key: "id", FetchSize: 0}).Validate())
+		is.Equal(NewFetchWorker(nil, nil, FetchConfig{Table: "mytable", Key: "id"}).conf.FetchSize, defaultFetchSize)
+	})
+
 	t.Run("success", func(t *testing.T) {
 		is := is.New(t)
 		err := (&FetchConfig{

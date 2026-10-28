@@ -517,6 +517,10 @@ func TestCombinedIterator_ResumeMidSnapshot_ResumedTag(t *testing.T) {
 		SlotName:        table,
 		WithSnapshot:    true,
 		BatchSize:       2,
+		// 2-row snapshot pages: the page size is snapshot.fetchSize, not
+		// sdk.batch.size, so a small BatchSize alone no longer pages the
+		// snapshot and the "crash" would land after it finished.
+		SnapshotFetchSize: 2,
 	})
 	is.NoErr(err)
 
