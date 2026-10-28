@@ -58,6 +58,10 @@ var (
 	errTableRequired  = errors.New("table name is required")
 	errKeyRequired    = errors.New("table key required")
 	errInvalidCDCType = errors.New("invalid position type CDC")
+	// errInvalidFetchSize guards invariant 3: a negative FETCH count returns
+	// zero rows without an error, which Run treats as the end of the cursor,
+	// so the table would be marked snapshotted with no records emitted.
+	errInvalidFetchSize = errors.New("fetch size must not be negative")
 )
 
 func (c FetchConfig) Validate() error {
@@ -69,6 +73,10 @@ func (c FetchConfig) Validate() error {
 
 	if c.Key == "" {
 		errs = append(errs, errKeyRequired)
+	}
+
+	if c.FetchSize < 0 {
+		errs = append(errs, errInvalidFetchSize)
 	}
 
 	switch c.Position.Type {

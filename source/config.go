@@ -64,8 +64,12 @@ type Config struct {
 	// SnapshotMode is whether the plugin will take a snapshot of the entire table before starting cdc mode.
 	SnapshotMode SnapshotMode `json:"snapshotMode" validate:"inclusion=initial|never" default:"initial"`
 
-	// Snapshot fetcher size determines the number of rows to retrieve at a time.
-	SnapshotFetchSize int `json:"snapshot.fetchSize" default:"50000"`
+	// Snapshot fetcher size determines the number of rows to retrieve at a time
+	// (the snapshot cursor page size). It must be greater than 0: Postgres
+	// answers a FETCH with a negative count with zero rows, which would end the
+	// snapshot of a table without emitting any record. This is now
+	// the only setting for the page size: `sdk.batch.size` no longer sets it.
+	SnapshotFetchSize int `json:"snapshot.fetchSize" validate:"gt=0" default:"50000"`
 
 	// CDCMode determines how the connector should listen to changes.
 	CDCMode CDCMode `json:"cdcMode" validate:"inclusion=auto|logrepl" default:"auto"`

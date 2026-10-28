@@ -874,10 +874,17 @@ specification:
         default: "true"
         validations: []
       - name: snapshot.fetchSize
-        description: Snapshot fetcher size determines the number of rows to retrieve at a time.
+        description: |-
+          Snapshot fetcher size determines the number of rows to retrieve at a time
+          (the snapshot cursor page size). It must be greater than 0: Postgres
+          answers a FETCH with a negative count with zero rows, which would end the
+          snapshot of a table without emitting any record. This is now
+          the only setting for the page size: `sdk.batch.size` no longer sets it.
         type: int
         default: "50000"
-        validations: []
+        validations:
+          - type: greater-than
+            value: "0"
       - name: snapshotMode
         description: SnapshotMode is whether the plugin will take a snapshot of the entire table before starting cdc mode.
         type: string

@@ -140,6 +140,12 @@ func runRealChild() {
 		"logrepl.withAvroSchema": "false",
 		"sdk.batch.size":         strconv.Itoa(batchSize),
 	}
+	if batchSize > 0 {
+		// The snapshot page size is snapshot.fetchSize, not sdk.batch.size.
+		// Forward the small chaos batch so a snapshot still spans several
+		// pages and a kill lands between them.
+		cfg["snapshot.fetchSize"] = strconv.Itoa(batchSize)
+	}
 	if imp := os.Getenv(envImport); imp != "" {
 		cfg["snapshotMode"] = "never"
 		cfg["logrepl.import.debeziumOffset"] = imp
