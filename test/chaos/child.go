@@ -365,6 +365,12 @@ func buildLedgerEntry(run int, table string, rec opencdc.Record) (LedgerEntry, e
 		}
 		entry.Op = "snapshot" //nolint:goconst // the literal is a wire value shared with test assertions; a constant here would not make the call sites clearer
 		entry.DeliveryKey = fmt.Sprintf("snapshot:%d", sp.LastRead)
+		if sp.LowPassLastRead != nil {
+			// The low pass of a legacy entry keeps LastRead and moves
+			// LowPassLastRead (source/snapshot.FetchWorker), so its rows
+			// are told apart by that field.
+			entry.DeliveryKey = fmt.Sprintf("snapshot-low:%d", *sp.LowPassLastRead)
+		}
 	case position.TypeCDC:
 		entry.Op = ledgerOpCDC
 		entry.DeliveryKey = fmt.Sprintf("cdc:%s", pos.LastLSN)

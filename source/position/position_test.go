@@ -16,6 +16,7 @@ package position
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -41,7 +42,7 @@ func Test_ToSDKPosition(t *testing.T) {
 	// position (leading "version" key).
 	is.Equal(
 		string(sdkPos),
-		`{"version":4,"type":1,"snapshots":{"orders":{"last_read":1,"snapshot_end":2}},"last_lsn":"4/137515E8"}`,
+		`{"version":5,"type":1,"snapshots":{"orders":{"last_read":1,"snapshot_end":2}},"last_lsn":"4/137515E8"}`,
 	)
 }
 
@@ -312,7 +313,7 @@ func Test_SlotIdentity_Format(t *testing.T) {
 		{Type: TypeSnapshot, Snapshots: SnapshotPositions{"t": {LastRead: 1, SnapshotEnd: 2}}, SlotIdentity: "l0123456789abcdef0123456789abcd"},
 	} {
 		raw := p.ToSDKPosition()
-		is.True(strings.Contains(string(raw), `"version":4`))
+		is.True(strings.Contains(string(raw), fmt.Sprintf(`"version":%d`, CurrentPositionVersion)))
 		is.True(strings.Contains(string(raw), `"slot_identity":"`+p.SlotIdentity+`"`))
 		got, err := ParseSDKPosition(raw)
 		is.NoErr(err)
