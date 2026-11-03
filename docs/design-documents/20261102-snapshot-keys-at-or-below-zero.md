@@ -2,7 +2,7 @@
 
 ## Summary
 
-Affected versions: v0.14.0 to v0.14.6 and v0.15.0 to v0.19.0. Fixed in v0.20.0. In those
+Affected versions: v0.14.0 to v0.14.6 and v0.15.0 to v0.19.0. Fixed in v0.18.1 (v0.18 line) and v0.20.0. In those
 versions the initial snapshot skipped every row whose key was 0 or negative. The fetch worker's cursor was
 `WHERE key > lastRead AND key <= end`, and a new snapshot's `lastRead` was the zero
 value of an `int64`. The slot holds only the changes made after the snapshot, so those
