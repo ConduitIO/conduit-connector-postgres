@@ -100,7 +100,33 @@ type FetchWorker struct {
 
 	snapshotEnd int64
 	lastRead    int64
-	cursorName  string
+	// resumed is true when the position holds this table's progress, so
+	// lastRead and snapshotEnd are real key values. Without it the zero
+	// values of those fields cannot be told apart from a read key 0: a new
+	// snapshot has no lower bound and computes its end (see passes).
+	resumed bool
+	// lowPass is true when the position's entry was written by a v0.14.0 to
+	// v0.19.0 build (no SnapshotPosition.FromMin): its scan started at
+	// "key > 0", so the rows keyed 0 or below are still owed. They are read
+	// by a low pass before the main pass resumes (see passes).
+	lowPass bool
+	// lowPassLastRead is the last key the low pass read in an earlier run,
+	// nil when it read none.
+	lowPassLastRead *int64
+	// pass is the scan being fetched; fetch builds row positions from it.
+	pass       scanPass
+	cursorName string
+}
+
+// scanPass is one ordered scan over a part of the table's key range.
+type scanPass struct {
+	// low marks the low pass, the catch-up scan of the keys at or below zero
+	// that a legacy entry still owes.
+	low bool
+	// after is the exclusive lower bound, nil for none.
+	after *int64
+	// through is the inclusive upper bound.
+	through int64
 }
 
 func NewFetchWorker(db *pgxpool.Pool, out chan<- []FetchData, c FetchConfig) *FetchWorker {
@@ -120,8 +146,16 @@ func NewFetchWorker(db *pgxpool.Pool, out chan<- []FetchData, c FetchConfig) *Fe
 	}
 
 	if t, ok := c.Position.Snapshots[c.Table]; ok {
+		// A table's entry exists only once one of its rows was read (the
+		// iterator writes it from FetchData.Position), so LastRead is the key
+		// of a row, which may be 0 or negative.
 		f.snapshotEnd = t.SnapshotEnd
 		f.lastRead = t.LastRead
+		f.resumed = true
+		// Invariant 3: an entry without FromMin was written by a build whose
+		// scan skipped every key at or below zero; those rows are read now.
+		f.lowPass = !t.FromMin
+		f.lowPassLastRead = t.LowPassLastRead
 	}
 
 	return f
@@ -186,36 +220,84 @@ func (f *FetchWorker) Run(ctx context.Context) error {
 
 	f.logStart(ctx)
 
-	closeCursor, err := f.createCursor(ctx, tx)
-	if err != nil {
-		return fmt.Errorf("failed to create cursor: %w", err)
-	}
-	defer closeCursor()
-
 	var nfetched int
-
-	for {
-		n, err := f.fetch(ctx, tx)
+	for _, pass := range f.passes() {
+		n, err := f.runPass(ctx, tx, pass, nfetched, start)
 		if err != nil {
-			return fmt.Errorf("failed to fetch results: %w", err)
+			return err
 		}
-
-		if n == 0 { // end of cursor
-			break
-		}
-
 		nfetched += n
-
-		f.logProgress(ctx, nfetched, start)
 	}
 
 	sdk.Logger(ctx).Info().
+		Int("rows", nfetched).
 		Dur("elapsed", time.Since(start)).
 		Str("rate_per_min", fmt.Sprintf("%.0f", float64(nfetched)/time.Since(start).Minutes())).
 		Str("table", f.conf.Table).
 		Msgf("%q snapshot completed", f.conf.Table)
 
 	return nil
+}
+
+// passes returns the scans this worker runs, in order. Each reads its keys
+// in ascending order, so the position of a delivered row says how far its
+// pass got.
+//
+//   - A new snapshot has one pass with no lower bound, through the end.
+//   - A resumed snapshot whose entry has FromMin has one pass after
+//     LastRead, through the stored end.
+//   - A resumed legacy entry (no FromMin) first runs the low pass over the
+//     keys at or below zero, after LowPassLastRead when an earlier run read
+//     some, then the main pass after LastRead. The low pass leaves LastRead
+//     unchanged in its positions, so a crash in it resumes it.
+func (f *FetchWorker) passes() []scanPass {
+	// Invariant 3: a new snapshot has no lower bound. It used to start at
+	// "key > 0", the zero value of lastRead, which silently skipped the rows
+	// keyed 0 or below; nothing delivers them later, since the slot streams
+	// only changes made after the snapshot.
+	if !f.resumed {
+		return []scanPass{{through: f.snapshotEnd}}
+	}
+	lastRead := f.lastRead
+	main := scanPass{after: &lastRead, through: f.snapshotEnd}
+	if !f.lowPass {
+		return []scanPass{main}
+	}
+	// A legacy entry always has LastRead >= 1, so its snapshot end is at
+	// least 1 and the low pass ends at 0; min keeps the pass inside the
+	// snapshot's range for any entry.
+	return []scanPass{{low: true, after: f.lowPassLastRead, through: min(0, f.snapshotEnd)}, main}
+}
+
+// runPass declares the cursor of one pass and fetches it to the end. It
+// returns the number of rows read.
+func (f *FetchWorker) runPass(ctx context.Context, tx pgx.Tx, pass scanPass, before int, start time.Time) (int, error) {
+	f.pass = pass
+	closeCursor, err := f.createCursor(ctx, tx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create cursor: %w", err)
+	}
+	defer closeCursor()
+
+	var nfetched int
+	for {
+		n, err := f.fetch(ctx, tx)
+		if err != nil {
+			return nfetched, fmt.Errorf("failed to fetch results: %w", err)
+		}
+		if n == 0 { // end of cursor
+			break
+		}
+		nfetched += n
+		f.logProgress(ctx, before+nfetched, start)
+	}
+	if pass.low {
+		sdk.Logger(ctx).Info().
+			Int("rows", nfetched).
+			Str("table", f.conf.Table).
+			Msg("low pass completed: read the rows keyed 0 or below that the snapshot of an earlier version skipped")
+	}
+	return nfetched, nil
 }
 
 // logProgress logs how many rows were fetched. It does not log a percentage
@@ -231,14 +313,18 @@ func (f *FetchWorker) logProgress(ctx context.Context, nfetched int, start time.
 		Msg("fetching rows")
 }
 
+// createCursor declares the cursor of the current pass (f.pass).
 func (f *FetchWorker) createCursor(ctx context.Context, tx pgx.Tx) (func(), error) {
-	// This query will scan the table for rows based on the conditions.
+	lower := ""
+	if f.pass.after != nil {
+		lower = fmt.Sprintf("%s > %d AND ", internal.WrapSQLIdent(f.conf.Key), *f.pass.after)
+	}
 	selectQuery := fmt.Sprintf(
-		"SELECT * FROM %s WHERE %s > %d AND %s <= %d ORDER BY %q",
+		"SELECT * FROM %s WHERE %s%s <= %d ORDER BY %s",
 		internal.WrapSQLIdent(f.conf.Table),
-		internal.WrapSQLIdent(f.conf.Key), f.lastRead, // range start
-		internal.WrapSQLIdent(f.conf.Key), f.snapshotEnd, // range end,
-		f.conf.Key, // order by
+		lower,                                             // range start
+		internal.WrapSQLIdent(f.conf.Key), f.pass.through, // range end
+		internal.WrapSQLIdent(f.conf.Key), // order by
 	)
 
 	cursorQuery := fmt.Sprintf("DECLARE %s CURSOR FOR(%s)", f.cursorName, selectQuery)
@@ -258,7 +344,10 @@ func (f *FetchWorker) createCursor(ctx context.Context, tx pgx.Tx) (func(), erro
 }
 
 func (f *FetchWorker) updateSnapshotEnd(ctx context.Context, tx pgx.Tx) error {
-	if f.snapshotEnd > 0 {
+	// A resumed snapshot keeps the end it started with, even one at or below
+	// zero; recomputing it would widen the range to rows inserted since. A
+	// new one has no end yet: snapshotEnd is set only from a position entry.
+	if f.resumed {
 		return nil
 	}
 
@@ -274,12 +363,17 @@ func (f *FetchWorker) updateSnapshotEnd(ctx context.Context, tx pgx.Tx) error {
 
 // logStart logs the start of the fetcher. The range bounds are values of the
 // key column, which is record data, so only salted hashes of them are logged.
+// A new snapshot has no lower bound, so it logs no start hash.
 func (f *FetchWorker) logStart(ctx context.Context) {
-	sdk.Logger(ctx).Info().
+	ev := sdk.Logger(ctx).Info().
 		Int("fetchSize", f.conf.FetchSize).
 		Str("tx.snapshot", f.conf.TXSnapshotID).
-		Str("startAtHash", internal.KeyHash(map[string]any{f.conf.Key: f.lastRead})).
-		Str("snapshotEndHash", internal.KeyHash(map[string]any{f.conf.Key: f.snapshotEnd})).
+		Bool("resumed", f.resumed).
+		Bool("low_pass", f.lowPass)
+	if f.resumed {
+		ev = ev.Str("startAtHash", internal.KeyHash(map[string]any{f.conf.Key: f.lastRead}))
+	}
+	ev.Str("snapshotEndHash", internal.KeyHash(map[string]any{f.conf.Key: f.snapshotEnd})).
 		Msgf("starting fetcher %s", f.cursorName)
 }
 
@@ -394,9 +488,24 @@ func (f *FetchWorker) buildSnapshotPosition(fields []pgconn.FieldDescription, va
 			if err != nil {
 				return position.SnapshotPosition{}, fmt.Errorf("failed to parse key: %w", err)
 			}
+			if f.pass.low {
+				// Invariant 2: the low pass moves only LowPassLastRead.
+				// LastRead keeps the legacy value, which the main pass
+				// resumes after, and FromMin stays unset until the main
+				// pass delivers a row, so a crash resumes the low pass.
+				return position.SnapshotPosition{
+					LastRead:        f.lastRead,
+					SnapshotEnd:     f.snapshotEnd,
+					LowPassLastRead: &lastRead,
+				}, nil
+			}
+			// Every row at or below this key was read: by this pass, which
+			// started at the lowest key or after a row of an entry that
+			// already had FromMin, or by the low pass and the earlier build.
 			return position.SnapshotPosition{
 				LastRead:    lastRead,
 				SnapshotEnd: f.snapshotEnd,
+				FromMin:     true,
 			}, nil
 		}
 	}
