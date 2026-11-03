@@ -39,6 +39,7 @@ func TestFetchWorker_StartLogDoesNotContainKeyBounds(t *testing.T) {
 		cursorName:  "cursor1",
 		lastRead:    8675309,
 		snapshotEnd: 9988776,
+		resumed:     true,
 	}
 	f.logStart(ctx)
 
@@ -47,6 +48,24 @@ func TestFetchWorker_StartLogDoesNotContainKeyBounds(t *testing.T) {
 	is.True(strings.Contains(out, internal.KeyHash(map[string]any{"id": int64(8675309)})))
 	is.True(!strings.Contains(out, "8675309"))
 	is.True(!strings.Contains(out, "9988776"))
+}
+
+// A new snapshot has no lower bound, so its start line has no start hash: a
+// hash of the zero value would name a bound the scan does not have.
+func TestFetchWorker_StartLogOfNewSnapshotHasNoStartHash(t *testing.T) {
+	is := is.New(t)
+	var buf bytes.Buffer
+	ctx := zerolog.New(&buf).WithContext(context.Background())
+
+	f := &FetchWorker{conf: FetchConfig{Key: "id", FetchSize: 10}, cursorName: "cursor1", snapshotEnd: 9988776}
+	f.logStart(ctx)
+
+	var line map[string]any
+	is.NoErr(json.Unmarshal(buf.Bytes(), &line))
+	_, ok := line["startAtHash"]
+	is.True(!ok)
+	is.Equal(line["resumed"], false)
+	is.Equal(line["low_pass"], false)
 }
 
 // The progress line must not let a reader work out the end of the range, the
