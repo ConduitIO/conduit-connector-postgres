@@ -16,11 +16,15 @@ package logrepl
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/conduitio/conduit-connector-postgres/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -74,11 +78,7 @@ func (c *CombinedIterator) checkLowKeyGap(ctx context.Context, pos *position.Pos
 	}
 	tables, err := tablesWithLowKeys(ctx, c.pool, c.conf.Tables, c.conf.TableKeys)
 	if err != nil {
-		sdk.Logger(ctx).Warn().
-			Err(err).
-			Str("code", string(CodeSnapshotLowKeysSkipped)).
-			Msg("could not check for rows keyed 0 or below that a snapshot taken by v0.14.0 to v0.19.0 skipped; " +
-				"the check runs again on the next start")
+		logLowKeyCheckFailure(ctx, err)
 		return
 	}
 	for _, t := range tables {
@@ -98,20 +98,101 @@ func (c *CombinedIterator) checkLowKeyGap(ctx context.Context, pos *position.Pos
 	pos.LowKeyGapChecked = true
 }
 
+// lowKeyProbeTimeout bounds each table's probe, as lock_timeout and
+// statement_timeout. The probe is an index lookup, so it only runs long when
+// it waits for a lock (an ALTER TABLE queued behind a long transaction makes
+// every later reader queue too). Open must not wait on that: the check is
+// advisory and runs again on the next start. A variable so tests can shorten it.
+var lowKeyProbeTimeout = 5 * time.Second
+
+// lowKeyProbeError is a probe that failed, with the reason classified.
+type lowKeyProbeError struct {
+	table    string
+	timedOut bool // lock_timeout or statement_timeout fired
+	denied   bool // the role cannot SELECT from the table
+	err      error
+}
+
+func (e *lowKeyProbeError) Error() string {
+	return fmt.Sprintf("check table %s for keys at or below zero: %v", e.table, e.err)
+}
+
+func (e *lowKeyProbeError) Unwrap() error { return e.err }
+
+// logLowKeyCheckFailure warns, under CodeSnapshotLowKeysSkipped, that the
+// check did not run to completion. The position stays unmarked, so the next
+// start checks again.
+func logLowKeyCheckFailure(ctx context.Context, err error) {
+	ev := sdk.Logger(ctx).Warn().Str("code", string(CodeSnapshotLowKeysSkipped))
+	var pe *lowKeyProbeError
+	switch {
+	case errors.As(err, &pe) && pe.timedOut:
+		ev.Str("failed_table", pe.table).Dur("timeout", lowKeyProbeTimeout).
+			Msgf("the check for rows keyed 0 or below that a snapshot taken by v0.14.0 to v0.19.0 skipped did not finish: "+
+				"table %s was locked or busy for more than %s. The pipeline starts anyway; the check runs again on the next start",
+				internal.WrapSQLIdent(pe.table), lowKeyProbeTimeout)
+	case errors.As(err, &pe) && pe.denied:
+		ev.Str("failed_table", pe.table).
+			Msgf("the check for rows keyed 0 or below that a snapshot taken by v0.14.0 to v0.19.0 skipped cannot run: "+
+				"the connector's role has no SELECT privilege on table %s. Grant it to run the check; "+
+				"until then this warning repeats on every start",
+				internal.WrapSQLIdent(pe.table))
+	default:
+		ev.Err(err).
+			Msg("could not check for rows keyed 0 or below that a snapshot taken by v0.14.0 to v0.19.0 skipped; " +
+				"the check runs again on the next start")
+	}
+}
+
 // tablesWithLowKeys returns the tables, in the given order, that have at
 // least one row keyed 0 or below. Each probe is an index lookup on the
-// primary key.
+// primary key, run in its own transaction under lowKeyProbeTimeout. The first
+// failure ends the check, so a locked table costs one timeout, not one per table.
 func tablesWithLowKeys(ctx context.Context, pool *pgxpool.Pool, tables []string, keys map[string]string) ([]string, error) {
 	var out []string
 	for _, t := range tables {
-		var exists bool
-		q := fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM %s WHERE %s <= 0)", internal.WrapSQLIdent(t), internal.WrapSQLIdent(keys[t]))
-		if err := pool.QueryRow(ctx, q).Scan(&exists); err != nil {
-			return nil, fmt.Errorf("check table %s for keys at or below zero: %w", t, err)
+		exists, err := probeLowKey(ctx, pool, t, keys[t])
+		if err != nil {
+			return nil, err
 		}
 		if exists {
 			out = append(out, t)
 		}
 	}
 	return out, nil
+}
+
+func probeLowKey(ctx context.Context, pool *pgxpool.Pool, table, key string) (exists bool, err error) {
+	fail := func(err error) (bool, error) {
+		pe := &lowKeyProbeError{table: table, err: err}
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) {
+			switch pgErr.Code {
+			case "55P03", "57014": // lock_not_available, query_canceled (statement_timeout)
+				pe.timedOut = true
+			case "42501": // insufficient_privilege
+				pe.denied = true
+			}
+		}
+		return false, pe
+	}
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return fail(err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	// SET LOCAL ends with the transaction, so the timeouts never leak into
+	// the pooled connection (or through a transaction-mode pooler).
+	ms := lowKeyProbeTimeout.Milliseconds()
+	for _, setting := range []string{"lock_timeout", "statement_timeout"} {
+		if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL %s = %d", setting, ms)); err != nil {
+			return fail(err)
+		}
+	}
+	q := fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM %s WHERE %s <= 0)", internal.WrapSQLIdent(table), internal.WrapSQLIdent(key))
+	if err := tx.QueryRow(ctx, q).Scan(&exists); err != nil {
+		return fail(err)
+	}
+	return exists, nil
 }

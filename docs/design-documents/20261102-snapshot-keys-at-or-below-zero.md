@@ -2,8 +2,8 @@
 
 ## Summary
 
-From v0.14.0 to v0.19.0 (and v0.14.0 to v0.14.6 on `release/v0.14.x`), the initial
-snapshot skipped every row whose key was 0 or negative. The fetch worker's cursor was
+Affected versions: v0.14.0 to v0.14.6 and v0.15.0 to v0.19.0. Fixed in v0.20.0. In those
+versions the initial snapshot skipped every row whose key was 0 or negative. The fetch worker's cursor was
 `WHERE key > lastRead AND key <= end`, and a new snapshot's `lastRead` was the zero
 value of an `int64`. The slot holds only the changes made after the snapshot, so those
 rows were never delivered unless they changed later. It was silent: no error and no log
@@ -116,8 +116,15 @@ with such rows gets a warning with code `postgres.source.snapshot_low_keys_skipp
 table, the key column, and the remediation: re-snapshot, or
 `UPDATE t SET key = key WHERE key <= 0`. The position is then marked.
 
-If a query fails, the connector logs the same code with the error and leaves the position
-unmarked, so the next start checks again.
+Each probe runs in its own read-only transaction with `SET LOCAL lock_timeout` and
+`SET LOCAL statement_timeout` of 5 seconds. Without that, a probe queues behind a pending
+ACCESS EXCLUSIVE lock (an `ALTER TABLE` waiting on a long transaction blocks every later
+reader), and `Open` would hang on an advisory check. On a timeout the connector logs the
+same code, names the table and says the check did not finish. A role without SELECT on the
+table gets one warning that says so, not the raw error. Any other failure logs the same code
+with the error. In all three cases the check stops, the position stays unmarked, the start
+goes on, and the next start checks again. A role that can never read the table gets the
+warning on every start; granting SELECT ends it.
 
 It is a warning, not a refusal. A pipeline that never snapshotted, or whose rows changed
 later, lost nothing. The connector cannot tell those cases apart, and refusing would stop
@@ -156,7 +163,9 @@ pipelines that are fine.
 | Crash after the low pass, before a main-pass ack | low pass is empty, main pass runs | no gap |
 | Resume a v0.19.0 position, table without entry | new snapshot | every row read |
 | Resume a v0.19.0 CDC position | one-time check, warning per affected table | rows still missing until remediated; now visible |
-| Check query fails (permissions, table dropped) | warning with the error, retried next start | none |
+| Check query fails (table dropped) | warning with the error, retried next start | none |
+| Check blocked behind an ACCESS EXCLUSIVE lock | gives up after 5 s, "did not finish" warning, retried next start; `Open` continues | none |
+| Role cannot SELECT from the table | one "no SELECT privilege" warning per start | none |
 | Legacy entry with `last_read <= 0` (hand-edited, not written by any build) | low pass re-reads keys up to 0 | duplicates only |
 | Disk full or crash mid-checkpoint | the engine keeps the last durable position | same as any record |
 
@@ -205,10 +214,19 @@ All of these fail on v0.19.0 behavior:
 - `source/logrepl/low_key_gap_test.go`:
   - the decision table;
   - a property test that every CDC position carries the mark;
-  - the check against Postgres;
+  - the check against Postgres, including a table held under ACCESS EXCLUSIVE (the check
+    gives up and Open continues) and a role without SELECT;
   - an end-to-end run that resumes a v0.19.0-shaped CDC position and warns once.
 - `test/chaos/lowkeys_test.go`: SIGKILL after acking two negative keys, with the key-0 row
   in flight. Every row must be delivered exactly once.
+  The low pass under SIGKILL has no chaos case. The chaos child resumes from the last
+  acked ledger position and nothing else, and the low pass writes the same kind of position
+  (`low_pass_last_read` in the entry) through the same ack path as the main pass, so a kill
+  at any instant resumes from the last acked entry. The in-process tests crash after every
+  single acked record of a legacy position (`Teardown`, which drops unacked state exactly as
+  a kill does) and check exactly-once and per-table monotonicity. A real SIGKILL case would
+  need a fabricated v0.19.0 position, slot identity included, and a ledger that tolerates
+  the redelivery. That harness work is not cheap, and it would exercise no different code.
 - `source/position`: the round-trip property covers the new fields.
 
 ## Backport to release/v0.14.x

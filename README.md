@@ -74,7 +74,7 @@ only if they changed later. No error was logged. A table is affected if it had
 rows keyed 0 or below when its snapshot ran; tables keyed from 1 (the bigserial
 default) are not.
 
-This version reads them:
+Fixed in v0.20.0. v0.20.0 and later read them:
 
 - A new snapshot reads every key.
 - A snapshot that was in progress on an affected version resumes and first reads
@@ -86,6 +86,9 @@ This version reads them:
   rows keyed 0 or below. The warning is shown until the first record of that run
   is acknowledged. It can be a false positive: a pipeline that never ran a
   snapshot, or whose rows changed since, lost nothing.
+  The check waits at most 5 seconds per table. If a table is locked, or the
+  connector's role cannot SELECT from it, it logs a warning with the same code and
+  the pipeline starts anyway; the check runs again on the next start.
 
 To recover the rows of a table the warning names, do one of the following:
 
