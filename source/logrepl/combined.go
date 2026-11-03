@@ -111,6 +111,12 @@ func NewCombinedIterator(ctx context.Context, pool *pgxpool.Pool, conf Config) (
 		runCtx: ctx,
 	}
 
+	// Invariant 3: report the rows keyed 0 or below that a snapshot taken by
+	// v0.14.0 to v0.14.6 skipped and nothing can now deliver. Before
+	// initCDCIterator, so the mark it sets reaches the handler and rides on
+	// every CDC position.
+	c.checkLowKeyGap(ctx, &pos)
+
 	// Initialize the CDC iterator.
 	if err := c.initCDCIterator(ctx, pos); err != nil {
 		return nil, err
@@ -264,7 +270,9 @@ func (c *CombinedIterator) initSnapshotIterator(ctx context.Context, pos positio
 	}
 
 	snapshotIterator, err := snapshot.NewIterator(ctx, c.pool, snapshot.Config{
-		Position:       c.conf.Position,
+		// pos, not c.conf.Position: it carries LowKeyGapChecked, which every
+		// snapshot position must carry forward.
+		Position:       pos.ToSDKPosition(),
 		Tables:         c.conf.Tables,
 		TableKeys:      c.conf.TableKeys,
 		TXSnapshotID:   c.cdcIterator.TXSnapshotID(),

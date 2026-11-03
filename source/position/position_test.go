@@ -37,11 +37,11 @@ func Test_ToSDKPosition(t *testing.T) {
 	sdkPos := p.ToSDKPosition()
 	is.Equal(
 		string(sdkPos),
-		`{"version":2,"type":1,"snapshots":{"orders":{"last_read":1,"snapshot_end":2}},"last_lsn":"4/137515E8"}`,
+		`{"version":5,"type":1,"snapshots":{"orders":{"last_read":1,"snapshot_end":2}},"last_lsn":"4/137515E8"}`,
 	)
 
 	cdc := Position{Type: TypeCDC, LastLSN: "0/3EA20050", TxCommitLSN: "0/3EA203D8", TxSeq: 3}
-	is.Equal(string(cdc.ToSDKPosition()), `{"version":2,"type":2,"last_lsn":"0/3EA20050","tx_commit_lsn":"0/3EA203D8","tx_seq":3}`)
+	is.Equal(string(cdc.ToSDKPosition()), `{"version":5,"type":2,"last_lsn":"0/3EA20050","tx_commit_lsn":"0/3EA203D8","tx_seq":3}`)
 }
 
 // Test_ParseV0142GoldenPositions decodes positions serialized by the
@@ -63,7 +63,7 @@ func Test_ParseV0142GoldenPositions(t *testing.T) {
 	lsn, err := p.LSN()
 	is.NoErr(err)
 	is.Equal(lsn.String(), "0/3EA20140")
-	is.Equal(string(p.ToSDKPosition()), `{"version":2,"type":2,"last_lsn":"0/3EA20140"}`)
+	is.Equal(string(p.ToSDKPosition()), `{"version":5,"type":2,"last_lsn":"0/3EA20140"}`)
 
 	raw, err = os.ReadFile("testdata/v0.14.2-snapshot.json")
 	is.NoErr(err)

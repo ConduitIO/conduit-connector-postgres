@@ -124,6 +124,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		// todo make configurable
 		time.Second,
 	)
+	handler.lowKeyGapChecked = c.StartPosition.LowKeyGapChecked
 
 	newSub := internal.CreateSubscription
 	if hasSavedPosition(c) && !c.AllowWALGap {

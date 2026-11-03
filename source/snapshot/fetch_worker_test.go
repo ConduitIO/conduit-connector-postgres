@@ -299,6 +299,7 @@ func Test_FetcherRun_Initial(t *testing.T) {
 			is.Equal(got.Position, position.SnapshotPosition{
 				LastRead:    int64(i + 1),
 				SnapshotEnd: 4,
+				FromMin:     true,
 			})
 			is.Equal(got.Table, table)
 		})
@@ -371,9 +372,13 @@ func Test_FetcherRun_Resume(t *testing.T) {
 		),
 	)
 
+	// The resumed entry has no FromMin (a v0.19.0-style entry), so the low
+	// pass ran first and found no key at or below zero; the main-pass row
+	// marks the entry as read from the minimum.
 	is.Equal(dd[0].Position, position.SnapshotPosition{
 		LastRead:    3,
 		SnapshotEnd: 3,
+		FromMin:     true,
 	})
 	is.Equal(dd[0].Table, table)
 }
@@ -522,8 +527,8 @@ func Test_FetchWorker_updateSnapshotEnd(t *testing.T) {
 			expected: 3,
 		},
 		{
-			desc:     "skip update when set",
-			w:        &FetchWorker{snapshotEnd: 10},
+			desc:     "skip update when resumed",
+			w:        &FetchWorker{snapshotEnd: 10, resumed: true},
 			expected: 10,
 		},
 		{
@@ -556,38 +561,131 @@ func Test_FetchWorker_createCursor(t *testing.T) {
 	var (
 		pool  = test.ConnectPool(context.Background(), t, test.RegularConnString)
 		table = test.SetupTestTable(context.Background(), t, pool)
-		is    = is.New(t)
 		ctx   = test.Context(t)
 	)
 
-	f := FetchWorker{
-		lastRead:    10,
-		snapshotEnd: 15,
-		cursorName:  "cursor123",
-		conf: FetchConfig{
-			Table: table,
-			Key:   "id",
-		},
+	lastRead := int64(10)
+	for _, tc := range []struct {
+		name  string
+		pass  scanPass
+		where string
+	}{
+		// A new snapshot has no lower bound: keys 0 and below are rows too.
+		{name: "new", pass: scanPass{through: 15}, where: `"id" <= 15`},
+		{name: "resumed", pass: scanPass{after: &lastRead, through: 15}, where: `"id" > 10 AND "id" <= 15`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			f := FetchWorker{
+				pass:       tc.pass,
+				cursorName: "cursor123",
+				conf: FetchConfig{
+					Table: table,
+					Key:   "id",
+				},
+			}
+
+			tx, err := pool.Begin(ctx)
+			is.NoErr(err)
+			// Roll back on every exit, a failed assertion included: an open
+			// transaction holds a lock on the table and the table cleanup
+			// (DROP TABLE) would wait on it forever.
+			defer func() { _ = tx.Rollback(context.Background()) }()
+
+			cleanup, err := f.createCursor(ctx, tx)
+			is.NoErr(err)
+			defer cleanup()
+
+			var cursorDef string
+			is.NoErr(tx.QueryRow(context.Background(), "SELECT statement FROM pg_cursors WHERE name=$1", f.cursorName).
+				Scan(&cursorDef),
+			)
+			is.Equal(
+				cursorDef,
+				fmt.Sprintf(`DECLARE cursor123 CURSOR FOR(SELECT * FROM %q WHERE %s ORDER BY "id")`, table, tc.where),
+			)
+		})
+	}
+}
+
+// Test_FetcherRun_KeysAtOrBelowZero is the regression test for the snapshot
+// dropping every row whose key is 0 or negative: an initial snapshot started
+// its range at "key > 0", the zero value of lastRead, so a table keyed from 0
+// (the default for many generators and a legal bigserial value set
+// explicitly) lost its first row, and negative keys were never read. Nothing
+// later delivers those rows: the replication slot only streams changes made
+// after the snapshot, so this was silent data loss (invariant 3).
+func Test_FetcherRun_KeysAtOrBelowZero(t *testing.T) {
+	var (
+		is    = is.New(t)
+		ctx   = test.Context(t)
+		pool  = test.ConnectPool(context.Background(), t, test.RegularConnString)
+		table = test.SetupEmptyTestTable(context.Background(), t, pool)
+	)
+
+	_, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO %q (id, column1) VALUES (-7, 'a'), (0, 'b'), (1, 'c'), (2, 'd')`, table))
+	is.NoErr(err)
+
+	run := func(p position.Position) []int64 {
+		out := make(chan []FetchData)
+		tt := &tomb.Tomb{}
+		// FetchSize 1: one FETCH per row, so the fetch loop and its
+		// lower-bound handling are exercised at every row, not only once.
+		f := NewFetchWorker(pool, out, FetchConfig{Table: table, Key: "id", FetchSize: 1, Position: p})
+		tt.Go(func() error {
+			ctx := tt.Context(ctx)
+			defer close(out)
+			if err := f.Validate(ctx); err != nil {
+				return err
+			}
+			return f.Run(ctx)
+		})
+		var ids []int64
+		for data := range out {
+			for _, d := range data {
+				ids = append(ids, d.Position.LastRead)
+			}
+		}
+		is.NoErr(tt.Wait())
+		return ids
 	}
 
-	tx, err := pool.Begin(ctx)
-	is.NoErr(err)
-
-	cleanup, err := f.createCursor(ctx, tx)
-	is.NoErr(err)
-
-	t.Cleanup(func() {
-		cleanup()
+	t.Run("initial", func(t *testing.T) {
+		is := is.New(t)
+		is.Equal(run(position.Position{Type: position.TypeInitial}), []int64{-7, 0, 1, 2})
 	})
 
-	var cursorDef string
-	is.NoErr(tx.QueryRow(context.Background(), "SELECT statement FROM pg_cursors WHERE name=$1", f.cursorName).
-		Scan(&cursorDef),
-	)
-	is.Equal(
-		cursorDef,
-		fmt.Sprintf(`DECLARE cursor123 CURSOR FOR(SELECT * FROM %q WHERE "id" > 10 AND "id" <= 15 ORDER BY "id")`, table),
-	)
+	// A resumed snapshot whose last acked row is key 0 or negative must
+	// continue after that row: not re-read it, and not skip past it.
+	for _, tc := range []struct {
+		lastRead int64
+		want     []int64
+	}{
+		{lastRead: -7, want: []int64{0, 1, 2}},
+		{lastRead: 0, want: []int64{1, 2}},
+	} {
+		t.Run(fmt.Sprintf("resume_after_%d", tc.lastRead), func(t *testing.T) {
+			is := is.New(t)
+			got := run(position.Position{
+				Type: position.TypeSnapshot,
+				Snapshots: position.SnapshotPositions{
+					table: {LastRead: tc.lastRead, SnapshotEnd: 2, FromMin: true},
+				},
+			})
+			is.Equal(got, tc.want)
+		})
+	}
 
-	is.NoErr(tx.Rollback(ctx))
+	// A resumed snapshot whose range end is at or below zero keeps that end:
+	// it must not be recomputed (and widened) as if the snapshot were new.
+	t.Run("resume_keeps_nonpositive_end", func(t *testing.T) {
+		is := is.New(t)
+		got := run(position.Position{
+			Type: position.TypeSnapshot,
+			Snapshots: position.SnapshotPositions{
+				table: {LastRead: -7, SnapshotEnd: 0, FromMin: true},
+			},
+		})
+		is.Equal(got, []int64{0})
+	})
 }
