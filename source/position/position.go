@@ -49,6 +49,17 @@ const (
 //     destination requires before it skips a marker (#418). Never written by
 //     v0.14.x. Read like 2 here: the field is ignored and the change key is
 //     used as usual.
+//   - 4: reserved by main (v0.17.5): every position also carries
+//     slot_identity, system_identifier and timeline (#442, #447). Never
+//     written by v0.14.x. Read like 2 here: the fields are ignored.
+//   - 5: snapshot entries say whether their scan covered the keys at or
+//     below zero (from_min, low_pass_last_read), and every position carries
+//     low_key_gap_checked (main's
+//     docs/design-documents/20261102-snapshot-keys-at-or-below-zero.md).
+//     Written by this build and by main. Versions 0 to 4 were written by
+//     builds whose snapshot skipped every row keyed 0 or below (v0.14.0 to
+//     v0.14.6, v0.15.0 to v0.19.0). A version 5 position from this branch
+//     has no slot_identity; main reads it like any position without one.
 //
 // The format is additive only. Every field is omitempty, an older connector
 // ignores keys it does not know, and a position with a higher version than
@@ -56,7 +67,7 @@ const (
 // presence of a field, not the version number: a CDC position without both
 // TxCommitLSN and TxSeq (versions 0 and 1) gets the legacy resume point (see
 // logrepl/internal.ResumePoint).
-const CurrentPositionVersion = 2
+const CurrentPositionVersion = 5
 
 type Position struct {
 	// Version identifies the position format; see CurrentPositionVersion.
@@ -85,13 +96,45 @@ type Position struct {
 	// positions and on positions written before format version 2; a position
 	// with TxCommitLSN but no TxSeq is read as legacy.
 	TxSeq uint64 `json:"tx_seq,omitempty"`
+
+	// LowKeyGapChecked is true when this position's history cannot hide the
+	// snapshot gap of v0.14.0 to v0.19.0, whose snapshot skipped every row
+	// keyed 0 or below (docs/design-documents/20261102-snapshot-keys-at-or-below-zero.md).
+	// It is set when a run starts fresh, when it resumes a snapshot (each
+	// table's entry then repairs its own gap, see SnapshotPosition.FromMin),
+	// and after the one-time startup check of a legacy CDC position has
+	// reported the tables that still hold such rows. It is carried forward
+	// onto every snapshot and CDC position. Absent on a position written
+	// before format version 5: a resume from such a CDC position runs the
+	// check (logrepl.checkLowKeyGap).
+	LowKeyGapChecked bool `json:"low_key_gap_checked,omitempty"`
 }
 
 type SnapshotPositions map[string]SnapshotPosition
 
+// SnapshotPosition is one table's snapshot progress. The iterator writes a
+// table's entry only from a row it read (snapshot.Iterator.buildRecord), so
+// an entry always names a real key.
 type SnapshotPosition struct {
+	// LastRead is the key of the last row read by the main pass, which reads
+	// the keys in ascending order up to SnapshotEnd.
 	LastRead    int64 `json:"last_read"`
 	SnapshotEnd int64 `json:"snapshot_end"`
+
+	// FromMin is true when every row keyed at or below LastRead was read:
+	// the scan started at the table's lowest key. Every entry written from
+	// format version 5 on has it. An entry without it was written by a
+	// v0.14.0 to v0.19.0 build, whose scan started at "key > 0", so its rows
+	// keyed 0 or below were never read; resuming it first runs the low pass
+	// over those keys (snapshot.FetchWorker).
+	FromMin bool `json:"from_min,omitempty"`
+
+	// LowPassLastRead is the key of the last row read by the low pass, the
+	// catch-up scan of the keys at or below zero that a legacy entry (no
+	// FromMin) still owes. It is set only on positions of low-pass rows, and
+	// LastRead keeps the legacy value meanwhile, so each of the two fields
+	// only moves forward (invariant 2). Nil when no low-pass row was read.
+	LowPassLastRead *int64 `json:"low_pass_last_read,omitempty"`
 }
 
 func ParseSDKPosition(sdkPos opencdc.Position) (Position, error) {

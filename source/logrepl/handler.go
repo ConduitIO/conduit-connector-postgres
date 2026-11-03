@@ -64,6 +64,11 @@ type CDCHandler struct {
 	// in tests that drive the handler without a subscription; positions then
 	// carry no key and resume with the legacy rule.
 	changeKey func() internal.ChangeKey
+
+	// lowKeyGapChecked is the start position's LowKeyGapChecked, carried
+	// onto every position (see CombinedIterator.checkLowKeyGap). Set once
+	// before the subscription starts.
+	lowKeyGapChecked bool
 }
 
 func NewCDCHandler(
@@ -453,6 +458,9 @@ func (h *CDCHandler) buildPosition(lsn pglogrepl.LSN) opencdc.Position {
 	p := position.Position{
 		Type:    position.TypeCDC,
 		LastLSN: lsn.String(),
+		// Invariant 3: the one-time check of the snapshot gap of v0.14.0
+		// to v0.14.6 ran, or did not apply (checkLowKeyGap).
+		LowKeyGapChecked: h.lowKeyGapChecked,
 	}
 	if h.changeKey != nil {
 		if k := h.changeKey(); k.Known() {
