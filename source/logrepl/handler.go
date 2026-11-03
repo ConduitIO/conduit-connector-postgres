@@ -727,6 +727,9 @@ func (h *CDCHandler) positionAt(lsn pglogrepl.LSN, key internal.ChangeKey) posit
 		Timeline:         h.basePosition.Timeline,
 		TxXid:            xid,
 		TxCommitTime:     commitTime,
+		// Invariant 3: the one-time check of the snapshot gap of v0.14.0
+		// to v0.19.0 ran, or did not apply (checkLowKeyGap).
+		LowKeyGapChecked: h.basePosition.LowKeyGapChecked,
 	}
 }
 

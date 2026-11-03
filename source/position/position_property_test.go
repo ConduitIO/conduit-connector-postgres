@@ -65,6 +65,7 @@ func genPosition(t *rapid.T) Position {
 		TxCommitLSN:             genLSN(t, "tx commit lsn"),
 		TxSeq:                   rapid.Uint64().Draw(t, "tx seq"),
 		SlotIdentity:            genSlotIdentity(t),
+		LowKeyGapChecked:        rapid.Bool().Draw(t, "low key gap checked"),
 	}
 	if p.TxCommitLSN != "" && rapid.Bool().Draw(t, "tx identity set") {
 		p.TxXid = rapid.Uint32Range(3, 1<<31).Draw(t, "tx xid")
@@ -78,10 +79,16 @@ func genPosition(t *rapid.T) Position {
 		if p.Snapshots == nil {
 			p.Snapshots = SnapshotPositions{}
 		}
-		p.Snapshots[table] = SnapshotPosition{
+		sp := SnapshotPosition{
 			LastRead:    rapid.Int64().Draw(t, "last read"),
 			SnapshotEnd: rapid.Int64().Draw(t, "snapshot end"),
+			FromMin:     rapid.Bool().Draw(t, "from min"),
 		}
+		if !sp.FromMin && rapid.Bool().Draw(t, "low pass started") {
+			k := rapid.Int64Max(0).Draw(t, "low pass last read")
+			sp.LowPassLastRead = &k
+		}
+		p.Snapshots[table] = sp
 	}
 	for _, table := range rapid.SliceOfNDistinct(rapid.String(), 0, 3, rapid.ID[string]).Draw(t, "history tables") {
 		if p.SchemaHistory == nil {

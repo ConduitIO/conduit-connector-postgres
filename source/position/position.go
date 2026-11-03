@@ -51,6 +51,12 @@ const (
 //     replication slot the position was taken from (#442,
 //     docs/design-documents/20261021-slot-identity.md). A position without
 //     it (versions 0 to 3) is checked as a legacy position on resume.
+//   - 5: snapshot entries say whether their scan covered the keys at or below
+//     zero (SnapshotPosition.FromMin, SnapshotPosition.LowPassLastRead), and
+//     every position carries LowKeyGapChecked
+//     (docs/design-documents/20261102-snapshot-keys-at-or-below-zero.md).
+//     Versions 0 to 4 were written by builds whose snapshot skipped every row
+//     keyed 0 or below (v0.14.0 to v0.14.6, v0.15.0 to v0.19.0).
 //
 // Backward/forward compatibility contract (see the DBZ-3 design doc,
 // docs/design-documents/20260724-dbz3-postgres-cdc-parity.md, "Upgrade / rollback"):
@@ -65,7 +71,7 @@ const (
 //     key. An absent SnapshotLowWatermarkLSN/SchemaHistory means
 //     "behave as v0.14 did"; a missing TxCommitLSN or TxSeq means the legacy
 //     resume point (logrepl/internal.ResumePoint).
-const CurrentPositionVersion = 4
+const CurrentPositionVersion = 5
 
 type Position struct {
 	// Version identifies the position format. See CurrentPositionVersion for the
@@ -168,13 +174,45 @@ type Position struct {
 	// snapshot positions and on positions written before this check.
 	TxXid        uint32 `json:"tx_xid,omitempty"`
 	TxCommitTime int64  `json:"tx_commit_time,omitempty"`
+
+	// LowKeyGapChecked is true when this position's history cannot hide the
+	// snapshot gap of v0.14.0 to v0.19.0, whose snapshot skipped every row
+	// keyed 0 or below (docs/design-documents/20261102-snapshot-keys-at-or-below-zero.md).
+	// It is set when a run starts fresh, when it resumes a snapshot (each
+	// table's entry then repairs its own gap, see SnapshotPosition.FromMin),
+	// and after the one-time startup check of a legacy CDC position has
+	// reported the tables that still hold such rows. It is carried forward
+	// onto every snapshot and CDC position. Absent on a position written
+	// before format version 5: a resume from such a CDC position runs the
+	// check (logrepl.checkLowKeyGap).
+	LowKeyGapChecked bool `json:"low_key_gap_checked,omitempty"`
 }
 
 type SnapshotPositions map[string]SnapshotPosition
 
+// SnapshotPosition is one table's snapshot progress. The iterator writes a
+// table's entry only from a row it read (snapshot.Iterator.buildRecord), so
+// an entry always names a real key.
 type SnapshotPosition struct {
+	// LastRead is the key of the last row read by the main pass, which reads
+	// the keys in ascending order up to SnapshotEnd.
 	LastRead    int64 `json:"last_read"`
 	SnapshotEnd int64 `json:"snapshot_end"`
+
+	// FromMin is true when every row keyed at or below LastRead was read:
+	// the scan started at the table's lowest key. Every entry written from
+	// format version 5 on has it. An entry without it was written by a
+	// v0.14.0 to v0.19.0 build, whose scan started at "key > 0", so its rows
+	// keyed 0 or below were never read; resuming it first runs the low pass
+	// over those keys (snapshot.FetchWorker).
+	FromMin bool `json:"from_min,omitempty"`
+
+	// LowPassLastRead is the key of the last row read by the low pass, the
+	// catch-up scan of the keys at or below zero that a legacy entry (no
+	// FromMin) still owes. It is set only on positions of low-pass rows, and
+	// LastRead keeps the legacy value meanwhile, so each of the two fields
+	// only moves forward (invariant 2). Nil when no low-pass row was read.
+	LowPassLastRead *int64 `json:"low_pass_last_read,omitempty"`
 }
 
 func ParseSDKPosition(sdkPos opencdc.Position) (Position, error) {

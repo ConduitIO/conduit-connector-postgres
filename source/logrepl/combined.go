@@ -176,6 +176,12 @@ func NewCombinedIterator(ctx context.Context, pool *pgxpool.Pool, conf Config) (
 		runCtx: ctx,
 	}
 
+	// Invariant 3: report the rows keyed 0 or below that a snapshot taken by
+	// v0.14.0 to v0.19.0 skipped and nothing can now deliver. Before
+	// initCDCIterator, so the mark it sets is in the handler's base position
+	// and rides on every CDC position.
+	c.checkLowKeyGap(ctx, &pos)
+
 	// Initialize the CDC iterator. This creates (or, on a resume, reuses) the
 	// replication slot, so the slot's consistent point is only known afterwards.
 	if err := c.initCDCIterator(ctx, pos); err != nil {
