@@ -74,7 +74,8 @@ only if they changed later. No error was logged. A table is affected if it had
 rows keyed 0 or below when its snapshot ran; tables keyed from 1 (the bigserial
 default) are not.
 
-Fixed in v0.18.1 and v0.20.0. v0.18.1, v0.20.0 and later read them:
+Fixed in v0.18.1 and v0.20.0. From v0.18.1, upgrade straight to v0.20.0 or later:
+v0.19.0 still has the bug. v0.18.1, v0.20.0 and later read them:
 
 - A new snapshot reads every key.
 - A snapshot that was in progress on an affected version resumes and first reads
