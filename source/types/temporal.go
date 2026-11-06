@@ -208,6 +208,23 @@ func formatTemporalAvro(kind temporalKind, t time.Time) (any, error) {
 	}
 }
 
+// NullableAvroValue returns v, formatted for EncodingAvro, in the shape the
+// Avro encoder needs for a nullable column of type oid, whose field is
+// ["null", T] (#326). A timestamp is the int64 microseconds of its wall clock
+// (see formatTemporalAvro). The encoder picks a union branch by the Go type,
+// and an int64 only names the plain "long" branch, not
+// "long.local-timestamp-micros", so the encode fails. A *int64 goes through
+// the union's non-null branch and is written as the same long. Every other
+// value is returned as is: its type already names its branch.
+func NullableAvroValue(oid uint32, v any) any {
+	if oid == pgtype.TimestampOID {
+		if us, ok := v.(int64); ok {
+			return &us
+		}
+	}
+	return v
+}
+
 // wallClockMicros returns the microseconds between 1970-01-01T00:00:00 and the
 // wall clock of t, which must be labeled UTC.
 func wallClockMicros(t time.Time) (int64, error) {

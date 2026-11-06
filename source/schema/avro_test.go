@@ -48,15 +48,18 @@ func Test_AvroExtract(t *testing.T) {
 	values, err := rows.Values()
 	is.NoErr(err)
 
-	fields := rows.FieldDescriptions()
+	fields := slices.Clone(rows.FieldDescriptions())
 
-	sch, err := Avro.Extract(table, fields)
+	rows.Close() // the connection cannot run the catalog query while rows are open
+	notNull, err := LoadNotNull(ctx, c, fields[0].TableOID)
+	is.NoErr(err)
+	sch, err := Avro.Extract(table, fields, notNull)
 	is.NoErr(err)
 
 	t.Run("schema is parsable", func(t *testing.T) {
 		is := is.New(t)
 		is.NoErr(err)
-		is.Equal(sch, avroTestSchema(t, table))
+		is.Equal(mustText(t, sch), mustText(t, avroTestSchema(t, table))) // text: the structs hold lazily filled caches
 
 		_, err = avro.Parse(sch.String())
 		is.NoErr(err)
@@ -211,6 +214,11 @@ func avroTestSchema(t *testing.T, table string) avro.Schema {
 		))),
 	}
 
+	// Every column of the test table is nullable (#326).
+	for i, f := range fields {
+		fields[i] = assert(avro.NewField(f.Name(), assert(avro.NewUnionSchema([]avro.Schema{avro.NewNullSchema(), f.Type()})), avro.WithDefault(nil)))
+	}
+
 	slices.SortFunc(fields, func(a, b *avro.Field) int {
 		return cmp.Compare(a.Name(), b.Name())
 	})
@@ -263,7 +271,7 @@ func TestAvroExtract_UnconstrainedNumericIsString(t *testing.T) {
 			is := is.New(t)
 			sch, err := Avro.Extract("t_payload", []pgconn.FieldDescription{
 				{Name: "n", DataTypeOID: pgtype.NumericOID, TypeModifier: tc.typMod},
-			})
+			}, NotNull{"n": true})
 			is.NoErr(err)
 			is.Equal(sch.String(), tc.want)
 		})

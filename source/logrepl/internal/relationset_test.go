@@ -244,7 +244,16 @@ func TestRelationSetTemporalTypes(t *testing.T) {
 			}
 
 			// Encode as the SDK does with the schema the connector registers.
-			sch, err := schema.Avro.ExtractLogrepl(table+"_payload", rel)
+			notNull, err := schema.LoadNotNull(ctx, pool, rel.RelationID)
+			is.NoErr(err)
+			// As the handler does: nullable columns get the shape of their
+			// ["null", T] field (CDCHandler.avroShape, #326).
+			for _, c := range rel.Columns {
+				if v, ok := got[c.Name]; ok && !notNull[c.Name] {
+					got[c.Name] = types.NullableAvroValue(c.DataType, v)
+				}
+			}
+			sch, err := schema.Avro.ExtractLogrepl(table+"_payload", rel, notNull)
 			is.NoErr(err)
 			serde, err := cavro.Parse([]byte(sch.String()))
 			is.NoErr(err)

@@ -272,11 +272,27 @@ func numericValue(typMod int32) *big.Rat {
 
 func extractCompat(t *testing.T, c compatCase) string {
 	t.Helper()
-	sch, err := schema.Avro.Extract(c.SchemaName, compatFields(t, c.Cols), c.KeyCols...)
+	// The fixtures are the hamba-era output, which had no nullable fields:
+	// with every column NOT NULL the text must still be byte-identical. The
+	// nullable shape (#326) is pinned in avro_test.go.
+	notNull := schema.NotNull{}
+	for _, col := range c.Cols {
+		notNull[col.Name] = true
+	}
+	sch, err := schema.Avro.Extract(c.SchemaName, compatFields(t, c.Cols), notNull, c.KeyCols...)
 	if err != nil {
 		t.Fatalf("%s: extract: %v", c.Name, err)
 	}
-	return sch.String()
+	// What the connector registers (schema.Text), which must stay the
+	// hamba-era text for NOT NULL columns.
+	text, err := schema.Text(sch)
+	if err != nil {
+		t.Fatalf("%s: text: %v", c.Name, err)
+	}
+	if text := string(text); text != sch.String() {
+		t.Fatalf("%s: registered text differs from the canonical form for a schema without defaults:\n%s\n%s", c.Name, text, sch.String())
+	}
+	return string(text)
 }
 
 func TestAvroExtract_HambaCompat(t *testing.T) {

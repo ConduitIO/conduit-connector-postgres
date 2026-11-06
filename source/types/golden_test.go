@@ -109,10 +109,12 @@ func TestGoldenAvro(t *testing.T) {
 	is := is.New(t)
 
 	var fields []pgconn.FieldDescription
+	notNull := schema.NotNull{} // the golden bytes pin plain (NOT NULL) fields
 	for _, c := range goldenRow {
 		fields = append(fields, pgconn.FieldDescription{Name: c.name, DataTypeOID: c.oid, TypeModifier: -1})
+		notNull[c.name] = true
 	}
-	sch, err := schema.Avro.Extract("golden_payload", fields)
+	sch, err := schema.Avro.Extract("golden_payload", fields, notNull)
 	is.NoErr(err)
 	serde, err := cavro.Parse([]byte(sch.String()))
 	is.NoErr(err)
@@ -142,10 +144,12 @@ func TestGoldenTimestampOnly(t *testing.T) {
 	cols := goldenRow[:6:6] // ts, ts_gap_la, ts_gap_nz, tstz, tstz_offset, date
 
 	var fields []pgconn.FieldDescription
+	notNull := schema.NotNull{} // the golden bytes pin plain (NOT NULL) fields
 	for _, c := range cols {
 		fields = append(fields, pgconn.FieldDescription{Name: c.name, DataTypeOID: c.oid, TypeModifier: -1})
+		notNull[c.name] = true
 	}
-	sch, err := schema.Avro.Extract("ts_payload", fields)
+	sch, err := schema.Avro.Extract("ts_payload", fields, notNull)
 	is.NoErr(err)
 	serde, err := cavro.Parse([]byte(sch.String()))
 	is.NoErr(err)

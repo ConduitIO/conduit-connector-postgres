@@ -27,6 +27,7 @@ import (
 	cavro "github.com/conduitio/conduit-commons/schema/avro"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/schema"
+	"github.com/conduitio/conduit-connector-postgres/source/types"
 	"github.com/conduitio/conduit-connector-postgres/test"
 	"github.com/google/go-cmp/cmp"
 	"github.com/jackc/pgx/v5"
@@ -390,17 +391,26 @@ func Test_FetcherRun_TemporalTypes(t *testing.T) {
 		is.NoErr(err)
 		fields := rows.FieldDescriptions()
 
+		notNull, err := schema.LoadNotNull(ctx, pool, fields[0].TableOID)
+		is.NoErr(err)
 		_, payload, err := (&FetchWorker{
-			conf: FetchConfig{Table: table, Key: "id", WithAvroSchema: true},
+			conf:    FetchConfig{Table: table, Key: "id", WithAvroSchema: true},
+			notNull: notNull,
 		}).buildRecordData(fields, values)
 		is.NoErr(err)
 
 		want := test.TemporalExpected(ctx, t, pool, table, true, groups...)
 		want["id"] = int64(1)
+		// Nullable columns get the shape of their ["null", T] field (#326).
+		for _, fd := range fields {
+			if !notNull[fd.Name] {
+				want[fd.Name] = types.NullableAvroValue(fd.DataTypeOID, want[fd.Name])
+			}
+		}
 		is.Equal("", cmp.Diff(opencdc.StructuredData(want), payload, strictTime))
 
 		// Encode as the SDK does with the schema the connector registers.
-		sch, err := schema.Avro.Extract(table+"_payload", fields)
+		sch, err := schema.Avro.Extract(table+"_payload", fields, notNull)
 		is.NoErr(err)
 		serde, err := cavro.Parse([]byte(sch.String()))
 		is.NoErr(err)

@@ -1,0 +1,368 @@
+// Copyright © 2026 Meroxa, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package postgres
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
+	"github.com/conduitio/conduit-connector-postgres/test"
+	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/conduitio/conduit-connector-sdk/schema"
+	"github.com/matryer/is"
+)
+
+// Regression tests for #326: with logrepl.withAvroSchema (the default), a NULL
+// in a nullable column of any type failed to encode ("avro: *avro.null is
+// unsupported for Avro <T>") and stopped the source. They drive a real source
+// with the default SDK middleware, so records are Avro-encoded exactly as in a
+// pipeline, and decode them with the schema attached to the record.
+
+// nullableTypes is every Postgres type the Avro extractor maps, with a value
+// for its NOT NULL twin.
+var nullableTypes = []struct{ name, sqlType, value string }{
+	{"bool", "boolean", "true"},
+	{"bytea", "bytea", `'\x07'`},
+	{"float4", "float4", "1.5"},
+	{"float8", "float8", "1.5"},
+	{"int2", "int2", "7"},
+	{"int4", "int4", "7"},
+	{"int8", "int8", "7"},
+	{"text", "text", "'x'"},
+	{"varchar", "varchar(14)", "'x'"},
+	{"json", "json", `'{"a":1}'`},
+	{"jsonb", "jsonb", `'{"a":1}'`},
+	{"tsvector", "tsvector", "'a b'"},
+	{"timestamptz", "timestamptz", "'2022-03-14 15:16:17+00'"},
+	{"timestamp", "timestamp", "'2022-03-14 15:16:17'"},
+	{"date", "date", "'2022-03-14'"},
+	{"uuid", "uuid", "'bd94ee0b-564f-4088-bf4e-8d5e626caf66'"},
+	{"decimal", "numeric(10,2)", "1.50"},
+	{"numeric", "numeric", "1.5"},
+}
+
+var nullableTableSeq atomic.Int64
+
+// createNullableTable creates a table with, for every mapped type, a nullable
+// column n_<type> and a NOT NULL column nn_<type>.
+func createNullableTable(ctx context.Context, t *testing.T, conn test.Querier) string {
+	t.Helper()
+	is := is.New(t)
+	table := fmt.Sprintf("nullable_%d_%d", time.Now().UnixMicro()%1000000, nullableTableSeq.Add(1))
+	cols := []string{"id bigint PRIMARY KEY"}
+	for _, ty := range nullableTypes {
+		cols = append(cols, fmt.Sprintf("n_%s %s", ty.name, ty.sqlType), fmt.Sprintf("nn_%s %s NOT NULL", ty.name, ty.sqlType))
+	}
+	_, err := conn.Exec(ctx, fmt.Sprintf("CREATE TABLE %s (%s)", table, strings.Join(cols, ", ")))
+	is.NoErr(err)
+	dropReplication(ctx, t, table)
+	t.Cleanup(func() {
+		_, err := conn.Exec(context.Background(), "DROP TABLE "+table)
+		is.NoErr(err)
+	})
+	return table
+}
+
+// insertNulls inserts a row with NULL in every nullable column and a value in
+// every NOT NULL column.
+func insertNulls(ctx context.Context, t *testing.T, conn test.Querier, table string, id int) {
+	t.Helper()
+	cols, vals := []string{"id"}, []string{fmt.Sprint(id)}
+	for _, ty := range nullableTypes {
+		cols = append(cols, "n_"+ty.name, "nn_"+ty.name)
+		vals = append(vals, "NULL", ty.value)
+	}
+	_, err := conn.Exec(ctx, fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ", "), strings.Join(vals, ", ")))
+	is.New(t).NoErr(err)
+}
+
+// insertValues inserts a row with a value in every column.
+func insertValues(ctx context.Context, t *testing.T, conn test.Querier, table string, id int) {
+	t.Helper()
+	cols, vals := []string{"id"}, []string{fmt.Sprint(id)}
+	for _, ty := range nullableTypes {
+		cols = append(cols, "n_"+ty.name, "nn_"+ty.name)
+		vals = append(vals, ty.value, ty.value)
+	}
+	_, err := conn.Exec(ctx, fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ", "), strings.Join(vals, ", ")))
+	is.New(t).NoErr(err)
+}
+
+// readRecords reads exactly n records. ReadN can return more records than it
+// was asked for, so every record of every batch is kept.
+func readRecords(ctx context.Context, t *testing.T, s sdk.Source, n int) []opencdc.Record {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	var out []opencdc.Record
+	for len(out) < n {
+		recs, err := s.ReadN(ctx, n-len(out))
+		switch {
+		case errors.Is(err, sdk.ErrBackoffRetry):
+			time.Sleep(50 * time.Millisecond)
+			continue
+		case err != nil:
+			t.Fatalf("read: %v", err)
+		}
+		out = append(out, recs...)
+	}
+	if len(out) != n {
+		t.Fatalf("read %d records, want %d", len(out), n)
+	}
+	return out
+}
+
+// assertValueRow checks a decoded row produced by insertValues: a value in a
+// nullable column stays a value, logical types included.
+func assertValueRow(t *testing.T, decoded map[string]any) {
+	t.Helper()
+	for _, ty := range nullableTypes {
+		for _, col := range []string{"n_" + ty.name, "nn_" + ty.name} {
+			if decoded[col] == nil {
+				t.Errorf("%s: value decoded as NULL", col)
+			}
+		}
+		// The nullable column and its NOT NULL twin hold the same value.
+		if a, b := fmt.Sprint(decoded["n_"+ty.name]), fmt.Sprint(decoded["nn_"+ty.name]); a != b {
+			t.Errorf("%s: nullable column decoded as %s, NOT NULL twin as %s", ty.name, a, b)
+		}
+	}
+}
+
+func openNullableSource(ctx context.Context, t *testing.T, table, snapshotMode string) sdk.Source {
+	t.Helper()
+	is := is.New(t)
+	s := NewSource()
+	is.NoErr(sdk.Util.ParseConfig(ctx, map[string]string{
+		"url":                     test.RepmgrConnString,
+		"tables":                  table,
+		"snapshotMode":            snapshotMode,
+		"cdcMode":                 "logrepl",
+		"logrepl.slotName":        table,
+		"logrepl.publicationName": table,
+		"logrepl.withAvroSchema":  "true",
+	}, s.Config(), Connector.NewSpecification().SourceParams))
+	is.NoErr(s.Open(ctx, nil))
+	t.Cleanup(func() { _ = s.Teardown(context.Background()) })
+	return s
+}
+
+// decodeWith decodes Avro-encoded data with the schema the record names.
+func decodeWith(ctx context.Context, t *testing.T, rec opencdc.Record, data opencdc.Data, key bool) (map[string]any, schema.Schema) {
+	t.Helper()
+	is := is.New(t)
+	raw, ok := data.(opencdc.RawData)
+	is.True(ok) // Avro-encoded by the SDK middleware
+	subject, err := rec.Metadata.GetPayloadSchemaSubject()
+	version, verr := rec.Metadata.GetPayloadSchemaVersion()
+	if key {
+		subject, err = rec.Metadata.GetKeySchemaSubject()
+		version, verr = rec.Metadata.GetKeySchemaVersion()
+	}
+	is.NoErr(err)
+	is.NoErr(verr)
+	sch, err := schema.Get(ctx, subject, version)
+	is.NoErr(err)
+	var decoded map[string]any
+	is.NoErr(sch.Unmarshal(raw.Bytes(), &decoded))
+	return decoded, sch
+}
+
+// schemaFields returns the fields of a registered Avro record schema as
+// name -> raw JSON of the field.
+func schemaFields(t *testing.T, sch schema.Schema) map[string]map[string]json.RawMessage {
+	t.Helper()
+	var rs struct {
+		Fields []map[string]json.RawMessage `json:"fields"`
+	}
+	is.New(t).NoErr(json.Unmarshal(sch.Bytes, &rs))
+	out := make(map[string]map[string]json.RawMessage, len(rs.Fields))
+	for _, f := range rs.Fields {
+		var name string
+		is.New(t).NoErr(json.Unmarshal(f["name"], &name))
+		out[name] = f
+	}
+	return out
+}
+
+// assertNullRow checks a decoded row produced by insertNulls, and the schema
+// it was encoded with.
+func assertNullRow(t *testing.T, decoded map[string]any, sch schema.Schema) {
+	t.Helper()
+	fields := schemaFields(t, sch)
+	for _, ty := range nullableTypes {
+		n, nn := "n_"+ty.name, "nn_"+ty.name
+		v, present := decoded[n]
+		if !present || v != nil {
+			t.Errorf("%s: got %#v (present %v), want NULL", n, v, present)
+		}
+		if decoded[nn] == nil {
+			t.Errorf("%s: NOT NULL column decoded as NULL", nn)
+		}
+		// Debezium's shape for an optional column: null first, default null.
+		if !strings.HasPrefix(string(fields[n]["type"]), `["null",`) || string(fields[n]["default"]) != "null" {
+			t.Errorf("%s: field %s, want [\"null\", T] with default null", n, fields[n])
+		}
+		if strings.HasPrefix(string(fields[nn]["type"]), "[") {
+			t.Errorf("%s: NOT NULL field %s is a union", nn, fields[nn])
+		}
+		if _, hasDefault := fields[nn]["default"]; hasDefault {
+			t.Errorf("%s: NOT NULL field %s has a default", nn, fields[nn])
+		}
+	}
+}
+
+func assertKeyNotNull(ctx context.Context, t *testing.T, rec opencdc.Record) {
+	t.Helper()
+	is := is.New(t)
+	key, sch := decodeWith(ctx, t, rec, rec.Key, true)
+	is.True(key["id"] != nil)
+	is.Equal(string(schemaFields(t, sch)["id"]["type"]), `"long"`) // primary key: NOT NULL, plain
+}
+
+func TestSource_Avro_NullInEveryType_Snapshot(t *testing.T) {
+	ctx := test.Context(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	table := createNullableTable(ctx, t, conn)
+	insertNulls(ctx, t, conn, table, 1)
+	insertValues(ctx, t, conn, table, 2)
+
+	s := openNullableSource(ctx, t, table, "initial")
+	// before #326: "avro: *avro.null is unsupported for Avro ..."
+	recs := readRecords(ctx, t, s, 2)
+	is.New(t).Equal(recs[0].Operation, opencdc.OperationSnapshot)
+
+	decoded, sch := decodeWith(ctx, t, recs[0], recs[0].Payload.After, false)
+	assertNullRow(t, decoded, sch)
+	assertKeyNotNull(ctx, t, recs[0])
+
+	decoded, _ = decodeWith(ctx, t, recs[1], recs[1].Payload.After, false)
+	assertValueRow(t, decoded)
+}
+
+func TestSource_Avro_NullInEveryType_CDC(t *testing.T) {
+	ctx := test.Context(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	table := createNullableTable(ctx, t, conn)
+	_, err := conn.Exec(ctx, fmt.Sprintf("ALTER TABLE %s REPLICA IDENTITY FULL", table))
+	is.New(t).NoErr(err)
+
+	s := openNullableSource(ctx, t, table, "never")
+
+	t.Run("insert", func(t *testing.T) {
+		is := is.New(t)
+		insertNulls(ctx, t, conn, table, 1)
+		rec, err := readOne(ctx, t, s)
+		is.NoErr(err) // before #326: "avro: *avro.null is unsupported for Avro ..."
+		is.Equal(rec.Operation, opencdc.OperationCreate)
+		decoded, sch := decodeWith(ctx, t, rec, rec.Payload.After, false)
+		assertNullRow(t, decoded, sch)
+		assertKeyNotNull(ctx, t, rec)
+	})
+
+	t.Run("insert values", func(t *testing.T) {
+		is := is.New(t)
+		insertValues(ctx, t, conn, table, 3)
+		rec, err := readOne(ctx, t, s)
+		is.NoErr(err)
+		decoded, _ := decodeWith(ctx, t, rec, rec.Payload.After, false)
+		assertValueRow(t, decoded)
+		_, err = conn.Exec(ctx, fmt.Sprintf("DELETE FROM %s WHERE id = 3", table))
+		is.NoErr(err)
+		rec, err = readOne(ctx, t, s)
+		is.NoErr(err)
+		is.Equal(rec.Operation, opencdc.OperationDelete)
+		decoded, _ = decodeWith(ctx, t, rec, rec.Payload.Before, false)
+		assertValueRow(t, decoded) // Before under REPLICA IDENTITY FULL
+	})
+
+	t.Run("delete under REPLICA IDENTITY FULL: Before carries the NULLs", func(t *testing.T) {
+		is := is.New(t)
+		_, err := conn.Exec(ctx, fmt.Sprintf("DELETE FROM %s WHERE id = 1", table))
+		is.NoErr(err)
+		rec, err := readOne(ctx, t, s)
+		is.NoErr(err)
+		is.Equal(rec.Operation, opencdc.OperationDelete)
+		decoded, sch := decodeWith(ctx, t, rec, rec.Payload.Before, false)
+		assertNullRow(t, decoded, sch)
+	})
+
+	t.Run("DROP NOT NULL while streaming: the column becomes nullable", func(t *testing.T) {
+		is := is.New(t)
+		// pgoutput sends a new Relation message after the ALTER; the handler
+		// must read nullability again instead of keeping NOT NULL.
+		_, err := conn.Exec(ctx, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN nn_int4 DROP NOT NULL", table))
+		is.NoErr(err)
+		insertNulls(ctx, t, conn, table, 2)
+		rec, err := readOne(ctx, t, s)
+		is.NoErr(err)
+		is.Equal(rec.Operation, opencdc.OperationCreate)
+
+		_, err = conn.Exec(ctx, fmt.Sprintf("UPDATE %s SET nn_int4 = NULL WHERE id = 2", table))
+		is.NoErr(err)
+		rec, err = readOne(ctx, t, s)
+		is.NoErr(err)
+		is.Equal(rec.Operation, opencdc.OperationUpdate)
+		decoded, sch := decodeWith(ctx, t, rec, rec.Payload.After, false)
+		v, present := decoded["nn_int4"]
+		is.True(present)
+		is.Equal(v, nil)
+		f := schemaFields(t, sch)["nn_int4"]
+		is.Equal(string(f["type"]), `["null","int"]`)
+		is.Equal(string(f["default"]), "null")
+	})
+}
+
+// TestSource_Avro_UnchangedToastRefused: under DEFAULT identity an UPDATE that
+// leaves a TOASTed nullable column unchanged carries no value for it. The
+// payload schema gives that column a default of null, so encoding the record
+// would write NULL over the real value downstream. The source must stop with
+// a coded error instead (invariant 6; #317, #388).
+func TestSource_Avro_UnchangedToastRefused(t *testing.T) {
+	ctx := test.Context(t)
+	is := is.New(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	table := fmt.Sprintf("nullable_toast_%d_%d", time.Now().UnixMicro()%1000000, nullableTableSeq.Add(1))
+	_, err := conn.Exec(ctx, fmt.Sprintf("CREATE TABLE %s (id bigint PRIMARY KEY, small int, big text)", table))
+	is.NoErr(err)
+	// Store big out of line so an UPDATE that does not touch it sends it as
+	// unchanged-TOAST.
+	_, err = conn.Exec(ctx, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN big SET STORAGE EXTERNAL", table))
+	is.NoErr(err)
+	dropReplication(ctx, t, table)
+	t.Cleanup(func() { _, _ = conn.Exec(context.Background(), "DROP TABLE "+table) })
+
+	s := openNullableSource(ctx, t, table, "never")
+	_, err = conn.Exec(ctx, fmt.Sprintf("INSERT INTO %s VALUES (1, 1, repeat('x', 100000))", table))
+	is.NoErr(err)
+	rec, err := readOne(ctx, t, s)
+	is.NoErr(err)
+	is.Equal(rec.Operation, opencdc.OperationCreate)
+
+	_, err = conn.Exec(ctx, fmt.Sprintf("UPDATE %s SET small = 2 WHERE id = 1", table))
+	is.NoErr(err)
+	_, err = readOne(ctx, t, s)
+	is.True(err != nil) // without the refusal, big decodes as NULL
+	is.True(strings.Contains(err.Error(), logrepl.ErrorCodeAvroUnchangedToast))
+	is.True(strings.Contains(err.Error(), `"big"`))
+}

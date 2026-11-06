@@ -493,6 +493,61 @@ What this means for your destination:
   row image carries every column, and this connector backfills unchanged TOASTed
   values from it so the payload is always complete.
 
+With `logrepl.withAvroSchema: true` (the default) and the default `REPLICA IDENTITY`,
+such an update stops the source with the error code `postgres.avro.unchanged_toast`,
+which names the table, the columns and the LSN. The Avro payload schema gives a
+nullable column a default of `null`, so encoding the record without the column would
+deliver `NULL` in its place. Before v0.21.0 the same update stopped the source with
+`avro: missing required field`. To continue, restart with
+`logrepl.withAvroSchema: false`, which delivers the update without the unchanged
+columns, and set `REPLICA IDENTITY FULL` on the table if you want to keep Avro
+schemas. A per-record schema without the unchanged columns is proposed in
+[#388](https://github.com/ConduitIO/conduit-connector-postgres/issues/388).
+
+### Avro Schema
+
+With `logrepl.withAvroSchema: true` (the default) the source registers an Avro schema
+for each table's payload and key and attaches it to every record. The nullability of
+each field comes from the catalog (`pg_attribute.attnotnull`; from Postgres 18 a
+`NOT NULL NOT VALID` constraint does not count, because existing rows may still be
+`NULL`):
+
+- A column declared `NOT NULL`, including every primary-key column, is a plain field
+  of its type, for example `{"name":"id","type":"long"}`.
+- Any other column is a union with `null` first and a default of `null`, the shape
+  Debezium's Avro converter uses for an optional column:
+  `{"name":"price","type":["null",{"type":"bytes","logicalType":"decimal","precision":10,"scale":2}],"default":null}`.
+  A `NULL` value is delivered as `null` for every type, logical types included.
+
+Change data capture reads the nullability when Postgres sends a table's
+relation message: at the start of streaming and after every `ALTER TABLE`, including
+`SET NOT NULL` and `DROP NOT NULL`. It reads the catalog as it is at that moment. If
+the connector is behind and a column was made `NOT NULL` after a change that stored
+`NULL` in it, that change cannot be encoded and the source stops with
+`avro: ... unsupported`; it is never delivered with a made-up value. Run
+`ALTER TABLE <table> ALTER COLUMN <column> DROP NOT NULL`, restart, and set it again
+once the connector has caught up. A column that is no longer in the catalog (dropped
+or renamed since the change was written) is nullable.
+
+**Upgrading from v0.20.x or earlier.** Earlier versions registered every column as a
+plain field, so any `NULL` in a nullable column stopped the source
+([#326](https://github.com/ConduitIO/conduit-connector-postgres/issues/326)). After the
+upgrade, the first record of each table that has a nullable column registers a new
+schema version for its payload subject (`<table>_payload`). Tables whose columns are
+all `NOT NULL`, and every key subject keyed on a primary key, register the same schema
+text as before, so no new version. Changing a field from `T` to `["null", T]` is
+`BACKWARD` compatible (a consumer on the new schema reads records written with the
+old one) and not `FORWARD` compatible (a consumer still on the old schema cannot read
+a `null`). If you copy these schemas to a registry that enforces `FORWARD` or `FULL`
+compatibility on these subjects, the new version is rejected: relax the subject's
+compatibility for the upgrade or upgrade the consumers first. Consumers that read the
+field as `T` must now handle `null`. Rolling back to an earlier version registers the
+old shape again, and that version stops on the first `NULL` it reads, as before.
+
+A `NULL` in a `uuid` column used to be delivered by the snapshot as an empty string
+(change data capture delivered `null`). It is now `null` in both, with or without an
+Avro schema.
+
 ### Value Representation
 
 Values do not depend on the time zone of the machine running the connector or on the
@@ -788,7 +843,6 @@ pipelines:
     connectors:
       - id: example
         plugin: "postgres"
-        type: source
         settings:
           # Tables is a List of table names to read from, separated by a comma,
           # e.g.:"table1,table2". Use "*" if you'd like to listen to all tables.
@@ -964,7 +1018,6 @@ pipelines:
     connectors:
       - id: example
         plugin: "postgres"
-        type: destination
         settings:
           # URL is the connection string for the Postgres database. With TLS,
           # SCRAM authentication does not use channel binding by default

@@ -99,6 +99,12 @@ func FormatFor(enc Encoding, oid uint32, v any) (any, error) {
 
 func formatFor(enc Encoding, oid uint32, v any) (any, error) {
 	if oid == pgtype.UUIDOID {
+		if v == nil {
+			// Invariant 6: a NULL uuid is NULL, not the empty string
+			// UUIDFormatter returns for it (#326). The snapshot emitted ""
+			// for it while CDC emitted nil.
+			return nil, nil //nolint:nilnil // NULL is an untyped nil record value
+		}
 		return UUID.Format(v)
 	}
 

@@ -105,6 +105,11 @@ type FetchWorker struct {
 
 	keySchema     *cschema.Schema
 	payloadSchema *cschema.Schema
+	// notNull is the catalog nullability of the table's columns and tableOID
+	// the table it was read for, loaded once per worker in the snapshot
+	// transaction when Avro schemas are on (#326).
+	notNull  schema.NotNull
+	tableOID uint32
 
 	snapshotEnd int64
 	lastRead    int64
@@ -388,6 +393,10 @@ func (f *FetchWorker) logStart(ctx context.Context) {
 func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 	start := time.Now().UTC()
 
+	if err := f.loadNotNull(ctx, tx); err != nil {
+		return 0, fmt.Errorf("failed to read column nullability: %w", err)
+	}
+
 	rows, err := tx.Query(ctx, fmt.Sprintf("FETCH %d FROM %s", f.conf.FetchSize, f.cursorName))
 	if err != nil {
 		return 0, fmt.Errorf("failed to fetch rows: %w", err)
@@ -548,7 +557,7 @@ func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values [
 
 			// Invariant 6: the key owns its value; FormatColumn can hand back
 			// the scanned value itself, which the payload gets too (#425).
-			key[f.conf.Key] = types.CloneValue(k)
+			key[f.conf.Key] = f.avroShape(fd, types.CloneValue(k))
 		}
 
 		v, err := types.FormatColumn(types.EncodingFor(f.conf.WithAvroSchema), fd.DataTypeOID, fd.TypeModifier, values[i])
@@ -558,10 +567,20 @@ func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values [
 			}
 			return key, payload, fmt.Errorf("failed to format payload field %q: %w", fd.Name, err)
 		}
-		payload[fd.Name] = v
+		payload[fd.Name] = f.avroShape(fd, v)
 	}
 
 	return key, payload, nil
+}
+
+// avroShape gives the value of a nullable column the shape its ["null", T]
+// field needs (types.NullableAvroValue). Without Avro schemas, and for NOT
+// NULL columns, it is v.
+func (f *FetchWorker) avroShape(fd pgconn.FieldDescription, v any) any {
+	if !f.conf.WithAvroSchema || f.notNull[fd.Name] {
+		return v
+	}
+	return types.NullableAvroValue(fd.DataTypeOID, v)
 }
 
 func (f *FetchWorker) withSnapshot(ctx context.Context, tx pgx.Tx) error {
@@ -644,12 +663,23 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 	if !f.conf.WithAvroSchema {
 		return nil
 	}
+	if f.payloadSchema != nil && f.keySchema != nil {
+		return nil
+	}
+	if err := f.checkFieldsFromTable(fields); err != nil {
+		return err
+	}
+	notNull := f.notNull
 
 	if f.payloadSchema == nil {
 		sdk.Logger(ctx).Debug().
 			Msgf("extracting payload schema for %v fields in %v", len(fields), f.conf.Table)
 
-		avroPayloadSch, err := schema.Avro.Extract(f.conf.Table+"_payload", fields)
+		avroPayloadSch, err := schema.Avro.Extract(f.conf.Table+"_payload", fields, notNull)
+		if err != nil {
+			return fmt.Errorf("failed to extract payload schema for table %v: %w", f.conf.Table, err)
+		}
+		text, err := schema.Text(avroPayloadSch)
 		if err != nil {
 			return fmt.Errorf("failed to extract payload schema for table %v: %w", f.conf.Table, err)
 		}
@@ -657,7 +687,7 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 			ctx,
 			cschema.TypeAvro,
 			avroPayloadSch.Name(),
-			[]byte(avroPayloadSch.String()),
+			text,
 		)
 		if err != nil {
 			return fmt.Errorf("failed creating payload schema for table %v: %w", f.conf.Table, err)
@@ -669,7 +699,11 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 		sdk.Logger(ctx).Debug().
 			Msgf("extracting schema for key %v in %v", f.conf.Key, f.conf.Table)
 
-		avroKeySch, err := schema.Avro.Extract(f.conf.Table+"_key", fields, f.conf.Key)
+		avroKeySch, err := schema.Avro.Extract(f.conf.Table+"_key", fields, notNull, f.conf.Key)
+		if err != nil {
+			return fmt.Errorf("failed to extract key schema for table %v: %w", f.conf.Table, err)
+		}
+		text, err := schema.Text(avroKeySch)
 		if err != nil {
 			return fmt.Errorf("failed to extract key schema for table %v: %w", f.conf.Table, err)
 		}
@@ -677,7 +711,7 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 			ctx,
 			cschema.TypeAvro,
 			avroKeySch.Name(),
-			[]byte(avroKeySch.String()),
+			text,
 		)
 		if err != nil {
 			return fmt.Errorf("failed creating key schema for table %v: %w", f.conf.Table, err)
@@ -685,5 +719,38 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 		f.keySchema = &ks
 	}
 
+	return nil
+}
+
+// loadNotNull reads the nullability of the table's columns from the catalog,
+// in the snapshot's transaction, so it describes the table the rows are read
+// from (#326). It runs before the first FETCH: the transaction's connection
+// cannot run a query while a FETCH result is being read.
+func (f *FetchWorker) loadNotNull(ctx context.Context, tx pgx.Tx) error {
+	if !f.conf.WithAvroSchema || f.notNull != nil {
+		return nil
+	}
+	var oid uint32
+	if err := tx.QueryRow(ctx, "SELECT $1::regclass::oid", internal.WrapSQLIdent(f.conf.Table)).Scan(&oid); err != nil {
+		return fmt.Errorf("table %v: failed to resolve the table: %w", f.conf.Table, err)
+	}
+	notNull, err := schema.LoadNotNull(ctx, tx, oid)
+	if err != nil {
+		return fmt.Errorf("table %v: %w", f.conf.Table, err)
+	}
+	f.tableOID, f.notNull = oid, notNull
+	return nil
+}
+
+// checkFieldsFromTable fails unless every field comes from the table whose
+// nullability loadNotNull read. The cursor is SELECT * on that table, so this
+// holds by construction; it is checked so a schema can never pair the rows of
+// one relation with the nullability of another.
+func (f *FetchWorker) checkFieldsFromTable(fields []pgconn.FieldDescription) error {
+	for _, fd := range fields {
+		if fd.TableOID != f.tableOID {
+			return fmt.Errorf("table %v: field %q comes from relation OID %d, not the table (OID %d)", f.conf.Table, fd.Name, fd.TableOID, f.tableOID)
+		}
+	}
 	return nil
 }

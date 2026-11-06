@@ -64,6 +64,16 @@ type CDCHandler struct {
 	keySchemas     map[string]cschema.Schema
 	payloadSchemas map[string]cschema.Schema
 
+	// loadNotNull reads a relation's column nullability from the catalog
+	// (schema.LoadNotNull on the connector's pool); a Relation message does
+	// not carry it (#326). avroTexts caches the schema text built with it per
+	// relation ID until the next Relation message for that relation, which
+	// pgoutput sends after any ALTER TABLE, SET/DROP NOT NULL included. Both
+	// are only used on the subscription goroutine (Handle), so they need no
+	// locking.
+	loadNotNull func(ctx context.Context, relationID uint32) (schema.NotNull, error)
+	avroTexts   map[uint32]relationAvro
+
 	// basePosition holds the position the connector was started with. Its
 	// carry-forward fields (currently SnapshotLowWatermarkLSN; DBZ-3 Area 2 will
 	// add SchemaHistory) are threaded, unchanged, into every CDC-mode position by
@@ -216,6 +226,7 @@ func NewCDCHandler(
 		withAvroSchema:    withAvroSchema,
 		keySchemas:        make(map[string]cschema.Schema),
 		payloadSchemas:    make(map[string]cschema.Schema),
+		avroTexts:         make(map[uint32]relationAvro),
 		batchSize:         batchSize,
 		flushInterval:     flushInterval,
 		basePosition:      startPosition,
@@ -356,6 +367,7 @@ func (h *CDCHandler) handleInsert(
 	if err := h.updateAvroSchema(ctx, rel); err != nil {
 		return fmt.Errorf("failed to update avro schema: %w", err)
 	}
+	h.avroShape(rel, newValues)
 
 	rec := sdk.Util.Source.NewRecordCreate(
 		h.buildPosition(lsn),
@@ -432,6 +444,14 @@ func (h *CDCHandler) handleUpdate(
 		}
 	}
 
+	// Invariant 6: an unchanged TOASTed column must not be encoded as NULL.
+	// guard: logrepl-avro-unchanged-toast-refused tests=^TestHandler_Avro_UnchangedToastRefused$
+	if err := h.requireAllColumns(newValues, rel, lsn); err != nil {
+		return err
+	}
+	h.avroShape(rel, newValues)
+	h.avroShape(rel, oldValues)
+
 	rec := sdk.Util.Source.NewRecordUpdate(
 		h.buildPosition(lsn),
 		h.buildRecordMetadata(rel),
@@ -477,6 +497,7 @@ func (h *CDCHandler) handleDelete(
 	if err := h.updateAvroSchema(ctx, rel); err != nil {
 		return fmt.Errorf("failed to update avro schema: %w", err)
 	}
+	h.avroShape(rel, oldValues)
 
 	key := h.buildRecordKey(oldValues, rel.RelationName)
 	// Invariant 3: a delete with a null key cannot be applied downstream (the
@@ -852,6 +873,9 @@ func columnIdentities(r *pglogrepl.RelationMessage) []position.ColumnIdentity {
 // and the D4 skip, not the cache, is what stops records.
 func (h *CDCHandler) handleRelation(r *pglogrepl.RelationMessage) {
 	h.relationSet.Update(r)
+	// The shape or the catalog may have changed (SET/DROP NOT NULL sends a
+	// new Relation message): build the Avro schemas again for the next change.
+	delete(h.avroTexts, r.RelationID)
 	h.undecidedRelations[r.RelationID] = struct{}{}
 
 	shapes := h.seenShapes[r.RelationID]
@@ -1333,16 +1357,17 @@ func (h *CDCHandler) updateAvroSchema(ctx context.Context, rel *pglogrepl.Relati
 	if !h.withAvroSchema {
 		return nil
 	}
-	// Payload schema
-	avroPayloadSch, err := schema.Avro.ExtractLogrepl(rel.RelationName+"_payload", rel)
+	texts, err := h.relationAvroText(ctx, rel)
 	if err != nil {
-		return fmt.Errorf("failed to extract payload schema: %w", err)
+		return err
 	}
+
+	// Payload schema
 	ps, err := sdkschema.Create(
 		ctx,
 		cschema.TypeAvro,
-		avroPayloadSch.Name(),
-		[]byte(avroPayloadSch.String()),
+		rel.RelationName+"_payload",
+		texts.payload,
 	)
 	if err != nil {
 		return fmt.Errorf("failed creating payload schema for relation %v: %w", rel.RelationName, err)
@@ -1350,15 +1375,11 @@ func (h *CDCHandler) updateAvroSchema(ctx context.Context, rel *pglogrepl.Relati
 	h.payloadSchemas[rel.RelationName] = ps
 
 	// Key schema
-	avroKeySch, err := schema.Avro.ExtractLogrepl(rel.RelationName+"_key", rel, h.tableKeys[rel.RelationName])
-	if err != nil {
-		return fmt.Errorf("failed to extract key schema: %w", err)
-	}
 	ks, err := sdkschema.Create(
 		ctx,
 		cschema.TypeAvro,
-		avroKeySch.Name(),
-		[]byte(avroKeySch.String()),
+		rel.RelationName+"_key",
+		texts.key,
 	)
 	if err != nil {
 		return fmt.Errorf("failed creating key schema for relation %v: %w", rel.RelationName, err)
@@ -1366,6 +1387,127 @@ func (h *CDCHandler) updateAvroSchema(ctx context.Context, rel *pglogrepl.Relati
 	h.keySchemas[rel.RelationName] = ks
 
 	return nil
+}
+
+// relationAvro is the Avro schema text of a relation's payload and key, and
+// the column nullability it was built with.
+type relationAvro struct {
+	payload, key []byte
+	notNull      schema.NotNull
+}
+
+// relationAvroText returns the schema text of rel's payload and key, built once
+// per Relation message: the shape, the key column and the column nullability
+// do not change between two of them, so the extraction is not repeated for
+// every change.
+func (h *CDCHandler) relationAvroText(ctx context.Context, rel *pglogrepl.RelationMessage) (relationAvro, error) {
+	if ra, ok := h.avroTexts[rel.RelationID]; ok {
+		return ra, nil
+	}
+	notNull, err := h.relationNotNull(ctx, rel)
+	if err != nil {
+		return relationAvro{}, err
+	}
+
+	payload, err := schema.Avro.ExtractLogrepl(rel.RelationName+"_payload", rel, notNull)
+	if err != nil {
+		return relationAvro{}, fmt.Errorf("failed to extract payload schema: %w", err)
+	}
+	payloadText, err := schema.Text(payload)
+	if err != nil {
+		return relationAvro{}, fmt.Errorf("failed to extract payload schema: %w", err)
+	}
+	key, err := schema.Avro.ExtractLogrepl(rel.RelationName+"_key", rel, notNull, h.tableKeys[rel.RelationName])
+	if err != nil {
+		return relationAvro{}, fmt.Errorf("failed to extract key schema: %w", err)
+	}
+	keyText, err := schema.Text(key)
+	if err != nil {
+		return relationAvro{}, fmt.Errorf("failed to extract key schema: %w", err)
+	}
+
+	ra := relationAvro{payload: payloadText, key: keyText, notNull: notNull}
+	h.avroTexts[rel.RelationID] = ra
+	return ra, nil
+}
+
+// relationNotNull returns the catalog nullability of every column of rel
+// (#326).
+//
+// pgoutput decodes a change with the catalog as it was when the change was
+// written; the lookup reads the catalog as it is now. A column of rel that is
+// not in the current catalog was dropped or renamed since (or the table was
+// dropped): nothing can make it NOT NULL any more, so it is nullable, the
+// schema that accepts every value the WAL can hold. A column that is NOT NULL
+// now but held NULL when an older change was written makes that change fail
+// to encode and stops the source; it is never encoded as anything but NULL.
+// See "Avro Schema" in the README.
+func (h *CDCHandler) relationNotNull(ctx context.Context, rel *pglogrepl.RelationMessage) (schema.NotNull, error) {
+	if h.loadNotNull == nil {
+		return nil, fmt.Errorf("relation %q: no catalog to read column nullability from", rel.RelationName)
+	}
+	catalog, err := h.loadNotNull(ctx, rel.RelationID)
+	if err != nil {
+		return nil, fmt.Errorf("relation %q: %w", rel.RelationName, err)
+	}
+	nn := make(schema.NotNull, len(rel.Columns))
+	for _, c := range rel.Columns {
+		nn[c.Name] = catalog[c.Name] // absent: not in the catalog any more, nullable
+	}
+	return nn, nil
+}
+
+// ErrorCodeAvroUnchangedToast prefixes the error returned when, with Avro
+// schemas on, an UPDATE leaves a TOASTed column unchanged and Postgres sends
+// no value for it (see requireAllColumns).
+const ErrorCodeAvroUnchangedToast = "postgres.avro.unchanged_toast"
+
+// requireAllColumns returns an error coded ErrorCodeAvroUnchangedToast when an
+// UPDATE's new row lacks a column of the relation and Avro schemas are on.
+// RelationSet.Values leaves out a TOASTed column the UPDATE did not change,
+// because Postgres sends no value for it (invariant 6, #317). The payload
+// schema gives every nullable column a default of null (#326), and the Avro
+// encoder writes a field's default for a field that is missing, so the column
+// would reach the destination as NULL and overwrite the real value. A NOT NULL
+// column has no default and fails to encode, so it is refused here as well,
+// with the same actionable error. Without Avro the column stays omitted.
+// The narrowed per-record schema that would let these records through is
+// #388.
+func (h *CDCHandler) requireAllColumns(values map[string]any, rel *pglogrepl.RelationMessage, lsn pglogrepl.LSN) error {
+	if !h.withAvroSchema || len(values) == len(rel.Columns) {
+		return nil
+	}
+	var missing []string
+	for _, c := range rel.Columns {
+		if _, ok := values[c.Name]; !ok {
+			missing = append(missing, c.Name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s: update on table %q (WAL LSN %s) left the TOASTed column(s) %q unchanged, and Postgres did not send their values; "+
+			"with logrepl.withAvroSchema the record cannot be encoded without writing NULL over them. "+
+			"Fix: set logrepl.withAvroSchema to false and restart, which emits the update without the unchanged columns; "+
+			"to keep Avro schemas for later updates, also run ALTER TABLE %s REPLICA IDENTITY FULL, which makes Postgres send the old values",
+		ErrorCodeAvroUnchangedToast, rel.RelationName, lsn, missing, pginternal.WrapSQLIdent(rel.RelationName))
+}
+
+// avroShape gives the values of rel's nullable columns the shape their
+// ["null", T] fields need (types.NullableAvroValue), in place. It runs after
+// updateAvroSchema, which built the nullability it reads. Without Avro
+// schemas it does nothing.
+func (h *CDCHandler) avroShape(rel *pglogrepl.RelationMessage, values map[string]any) {
+	if !h.withAvroSchema || values == nil {
+		return
+	}
+	notNull := h.avroTexts[rel.RelationID].notNull
+	for _, c := range rel.Columns {
+		if v, ok := values[c.Name]; ok && !notNull[c.Name] {
+			values[c.Name] = types.NullableAvroValue(c.DataType, v)
+		}
+	}
 }
 
 func (h *CDCHandler) attachSchemas(rec opencdc.Record, relationName string) {
