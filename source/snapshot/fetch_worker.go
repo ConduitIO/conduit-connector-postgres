@@ -653,11 +653,15 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 		if err != nil {
 			return fmt.Errorf("failed to extract payload schema for table %v: %w", f.conf.Table, err)
 		}
+		payloadText, err := schema.Marshal(avroPayloadSch)
+		if err != nil {
+			return err
+		}
 		ps, err := sdkschema.Create(
 			ctx,
 			cschema.TypeAvro,
 			avroPayloadSch.Name(),
-			[]byte(avroPayloadSch.String()),
+			payloadText,
 		)
 		if err != nil {
 			return fmt.Errorf("failed creating payload schema for table %v: %w", f.conf.Table, err)
@@ -673,11 +677,15 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 		if err != nil {
 			return fmt.Errorf("failed to extract key schema for table %v: %w", f.conf.Table, err)
 		}
+		keyText, err := schema.Marshal(avroKeySch)
+		if err != nil {
+			return err
+		}
 		ks, err := sdkschema.Create(
 			ctx,
 			cschema.TypeAvro,
 			avroKeySch.Name(),
-			[]byte(avroKeySch.String()),
+			keyText,
 		)
 		if err != nil {
 			return fmt.Errorf("failed creating key schema for table %v: %w", f.conf.Table, err)

@@ -1338,11 +1338,15 @@ func (h *CDCHandler) updateAvroSchema(ctx context.Context, rel *pglogrepl.Relati
 	if err != nil {
 		return fmt.Errorf("failed to extract payload schema: %w", err)
 	}
+	payloadText, err := schema.Marshal(avroPayloadSch)
+	if err != nil {
+		return err
+	}
 	ps, err := sdkschema.Create(
 		ctx,
 		cschema.TypeAvro,
 		avroPayloadSch.Name(),
-		[]byte(avroPayloadSch.String()),
+		payloadText,
 	)
 	if err != nil {
 		return fmt.Errorf("failed creating payload schema for relation %v: %w", rel.RelationName, err)
@@ -1354,11 +1358,15 @@ func (h *CDCHandler) updateAvroSchema(ctx context.Context, rel *pglogrepl.Relati
 	if err != nil {
 		return fmt.Errorf("failed to extract key schema: %w", err)
 	}
+	keyText, err := schema.Marshal(avroKeySch)
+	if err != nil {
+		return err
+	}
 	ks, err := sdkschema.Create(
 		ctx,
 		cschema.TypeAvro,
 		avroKeySch.Name(),
-		[]byte(avroKeySch.String()),
+		keyText,
 	)
 	if err != nil {
 		return fmt.Errorf("failed creating key schema for relation %v: %w", rel.RelationName, err)

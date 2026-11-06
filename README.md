@@ -505,7 +505,7 @@ snapshot and CDC.
 | `timestamptz` | The instant, in UTC (`Z`). | `timestamp-micros`. |
 | `date` | Midnight UTC of the date. | `date`. |
 | `tsvector` | Postgres text form, `'a':1 'cat':3A,4B`. | `string`, same text. |
-| `json`, `jsonb` | A string holding the text Postgres prints for the value (`json` as written, `jsonb` in its canonical form). | `string`, same text (since v0.21.0, `bytes` before). |
+| `json`, `jsonb` | A string holding the text Postgres prints for the value (`json` as written, `jsonb` in its canonical form). | `string` named `io.debezium.data.Json`, same text (since v0.21.0, `bytes` before). |
 | `infinity`, `-infinity` | The strings `infinity` and `-infinity`. | The source halts with error code `postgres.source.temporal_not_representable`. |
 | Years before 1 BC or after 9999 AD | Postgres text, for example `0044-03-15 12:00:00 BC`. | As above, up to what 64-bit microseconds hold; beyond that the same error. |
 | Arrays, ranges, multiranges of these | Element and bound values as above. | Not supported by the Avro schema. |
@@ -528,9 +528,19 @@ nothing is parsed, reformatted or rounded, so object keys keep their order,
 `12345678901234567890` keeps every digit and `1.50` keeps its zero. `jsonb` text is
 the canonical form Postgres stores (keys in jsonb's storage order, duplicate keys
 removed, whitespace normalized), `json` text is the document as it was written. The JSON literal `null` is the string `"null"`; a SQL
-`NULL` is `NULL`. Elements of `json[]` and `jsonb[]` are strings too (arrays have no
-Avro schema, so they need `logrepl.withAvroSchema: false`). This is what Debezium emits
-(`io.debezium.data.Json`, a string).
+`NULL` is `NULL`. Elements of `json[]` and `jsonb[]` are strings too. This is what
+Debezium emits.
+
+In the Avro schema a `json` or `jsonb` field has the type
+`{"type":"string","connect.name":"io.debezium.data.Json","connect.version":1}`: a
+plain Avro string with the Kafka Connect name Debezium gives these columns, written
+the way Confluent's Avro converter writes it for Debezium. Consumers and sinks that
+look for `io.debezium.data.Json` see a json column. The `connect.*` properties are not
+part of the Avro type: readers, schema resolution and compatibility checks ignore
+them. Two differences from Debezium remain. Debezium's fields are optional (a union
+with `null`); this connector's are not (#326). And `json[]` and `jsonb[]` have no Avro
+schema here, like every array type, so they need `logrepl.withAvroSchema: false`;
+Debezium emits them as an Avro array of optional `io.debezium.data.Json` strings.
 
 A value whose text is not valid UTF-8 (possible only in a `SQL_ASCII` database, which
 stores bytes unchecked) stops the source with the error code
@@ -545,10 +555,11 @@ affected; the type of the field is.
 
 - **Schema registry.** The first record of each table after the upgrade registers a
   new schema version for its subjects (payload, and key if the key is a `jsonb`
-  column) with the field typed `string`. The Avro specification allows promoting
-  `bytes` to `string` and `string` to `bytes` in schema resolution, so the new
-  version is `BACKWARD`, `FORWARD` and `FULL` compatible with the old one; the Avro
-  library this connector uses agrees (`source/schema/avro_json_compat_test.go`).
+  column) with the field typed `string` and named `io.debezium.data.Json`. The Avro
+  specification allows promoting `bytes` to `string` and `string` to `bytes` in schema
+  resolution, and the `connect.*` properties are ignored by it, so the new version is
+  `BACKWARD`, `FORWARD` and `FULL` compatible with the old one; the Avro library this
+  connector uses agrees (`source/schema/avro_json_compat_test.go`).
   Conduit sets compatibility `NONE` on subjects it creates and its built-in registry
   does not check compatibility, so nothing is rejected there either way.
 - **Consumers.** A consumer that resolves records against its own reader schema keeps
