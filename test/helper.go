@@ -77,8 +77,8 @@ const TestTableAvroSchemaV1 = `{
         {"name":"column3","type":["null","boolean"],"default":null},
         {"name":"column4","type":["null",{"type":"bytes","logicalType":"decimal","precision":16,"scale":3}],"default":null},
         {"name":"column5","type":["null",{"type":"bytes","logicalType":"decimal","precision":5}],"default":null},
-        {"name":"column6","type":["null","bytes"],"default":null},
-        {"name":"column7","type":["null","bytes"],"default":null},
+        {"name":"column6","type":["null","string"],"default":null},
+        {"name":"column7","type":["null","string"],"default":null},
         {"name":"id","type":"long"},
         {"name":"key","type":["null","bytes"],"default":null}
     ]
@@ -97,8 +97,8 @@ const TestTableAvroSchemaV2 = `{
         {"name":"column3","type":["null","boolean"],"default":null},
         {"name":"column4","type":["null",{"type":"bytes","logicalType":"decimal","precision":16,"scale":3}],"default":null},
         {"name":"column5","type":["null",{"type":"bytes","logicalType":"decimal","precision":5}],"default":null},
-        {"name":"column6","type":["null","bytes"],"default":null},
-        {"name":"column7","type":["null","bytes"],"default":null},
+        {"name":"column6","type":["null","string"],"default":null},
+        {"name":"column7","type":["null","string"],"default":null},
         {"name":"id","type":"long"},
         {"name":"key","type":["null","bytes"],"default":null}
     ]
@@ -115,8 +115,8 @@ const TestTableAvroSchemaV3 = `{
         {"name":"column101","type":["null",{"type":"long","logicalType":"local-timestamp-micros"}],"default":null},
         {"name":"column2","type":["null","int"],"default":null},
         {"name":"column3","type":["null","boolean"],"default":null},
-        {"name":"column6","type":["null","bytes"],"default":null},
-        {"name":"column7","type":["null","bytes"],"default":null},
+        {"name":"column6","type":["null","string"],"default":null},
+        {"name":"column7","type":["null","string"],"default":null},
         {"name":"id","type":"long"},
         {"name":"key","type":["null","bytes"],"default":null}
     ]

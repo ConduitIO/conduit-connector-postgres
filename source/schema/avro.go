@@ -37,8 +37,10 @@ var Avro = &avroExtractor{
 		"int2":    avro.NewPrimitiveSchema(avro.Int, nil),
 		"text":    avro.NewPrimitiveSchema(avro.String, nil),
 		"varchar": avro.NewPrimitiveSchema(avro.String, nil),
-		"jsonb":   avro.NewPrimitiveSchema(avro.Bytes, nil),
-		"json":    avro.NewPrimitiveSchema(avro.Bytes, nil),
+		// json and jsonb are the exact JSON text, as Debezium emits them
+		// (io.debezium.data.Json, a string). Before v0.21.0 they were bytes.
+		"jsonb": avro.NewPrimitiveSchema(avro.String, nil),
+		"json":  avro.NewPrimitiveSchema(avro.String, nil),
 		// tsvector is emitted as its canonical text form, see source/types.
 		"tsvector": avro.NewPrimitiveSchema(avro.String, nil),
 		"timestamptz": avro.NewPrimitiveSchema(
@@ -140,8 +142,9 @@ func (a *avroExtractor) Extract(schemaName string, fields []pgconn.FieldDescript
 // decimal schema. Without an Avro schema the value a consumer sees is the Go
 // value, and an unconstrained numeric is a big.Rat there, not the string it is
 // under Avro: a change between it and text/varchar changes the value's type, so
-// it is not preserved. Fail closed on anything the extractor cannot resolve: an
-// unmapped type might differ in ways we cannot see.
+// it is not preserved. A change between json/jsonb and any other type is never
+// preserved (see typeChangePreserves). Fail closed on anything the extractor
+// cannot resolve: an unmapped type might differ in ways we cannot see.
 func (a *avroExtractor) TypeChangePreservesValues(withAvroSchema bool, oldType uint32, oldTypeMod int32, newType uint32, newTypeMod int32) bool {
 	oldT, oldOK := a.pgMap.TypeForOID(oldType)
 	newT, newOK := a.pgMap.TypeForOID(newType)
@@ -152,6 +155,13 @@ func (a *avroExtractor) TypeChangePreservesValues(withAvroSchema bool, oldType u
 }
 
 func (a *avroExtractor) typeChangePreserves(withAvroSchema bool, oldT *pgtype.Type, oldTypeMod int32, newT *pgtype.Type, newTypeMod int32) bool {
+	// json and jsonb are strings, like text, varchar and an unconstrained
+	// numeric, but a consumer parses them as JSON: a change between JSON and
+	// any other type changes what the string means even though the Avro
+	// schema does not change, so it is not preserved. json <-> jsonb is.
+	if isJSON(oldT.OID) != isJSON(newT.OID) {
+		return false
+	}
 	oldS, err := a.extractTypeFor(withAvroSchema, oldT, oldTypeMod)
 	if err != nil {
 		return false
@@ -162,6 +172,10 @@ func (a *avroExtractor) typeChangePreserves(withAvroSchema bool, oldT *pgtype.Ty
 	}
 
 	return oldS.String() == newS.String()
+}
+
+func isJSON(oid uint32) bool {
+	return oid == pgtype.JSONOID || oid == pgtype.JSONBOID
 }
 
 // extractTypeFor is extractType for the drift judgement. Without an Avro schema

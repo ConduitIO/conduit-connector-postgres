@@ -16,12 +16,11 @@ package cpool
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
+	"github.com/conduitio/conduit-connector-postgres/source/types"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -82,19 +81,10 @@ func DefaultSCRAMCompat(cfg *pgconn.Config) {
 }
 
 func afterConnectHook(_ context.Context, conn *pgx.Conn) error {
-	// Override the JSON and JSONB codec to return bytes rather than the
-	// unmarshalled representation of map.
-	conn.TypeMap().RegisterType(&pgtype.Type{
-		Name:  "json",
-		OID:   pgtype.JSONOID,
-		Codec: &pgtype.JSONCodec{Marshal: json.Marshal, Unmarshal: jsonNoopUnmarshal},
-	})
-	conn.TypeMap().RegisterType(&pgtype.Type{
-		Name:  "jsonb",
-		OID:   pgtype.JSONBOID,
-		Codec: &pgtype.JSONBCodec{Marshal: json.Marshal, Unmarshal: jsonNoopUnmarshal},
-	})
-
+	// json and jsonb (and their arrays) decode to the exact text Postgres
+	// sent, not to unmarshalled maps, which would reorder keys and round
+	// numbers (invariant 6).
+	types.RegisterJSONText(conn.TypeMap())
 	return nil
 }
 

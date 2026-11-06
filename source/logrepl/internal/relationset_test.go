@@ -599,8 +599,8 @@ func isValuesAllTypes(is *is.I, got map[string]any) {
 			Months:       0,
 			Valid:        true,
 		},
-		"col_json":  []byte(`{"foo": "bar"}`),
-		"col_jsonb": []byte(`{"foo": "baz"}`),
+		"col_json":  `{"foo": "bar"}`,
+		"col_jsonb": `{"foo": "baz"}`,
 		"col_line": pgtype.Line{
 			A:     19,
 			B:     20,
@@ -700,8 +700,8 @@ func isValuesAllTypesStandalone(is *is.I, got map[string]any) {
 			Months:       0,
 			Valid:        true,
 		},
-		"col_json":  []byte(`{"foo": "bar"}`),
-		"col_jsonb": []byte(`{"foo": "baz"}`),
+		"col_json":  `{"foo": "bar"}`,
+		"col_jsonb": `{"foo": "baz"}`,
 		"col_line": pgtype.Line{
 			A:     19,
 			B:     20,

@@ -58,6 +58,14 @@ import (
 // generator on the pre-swap tree and found them byte-identical. The new schema is
 // a plain string, which hamba and iskorotkov encode identically (0x02 0x30 for
 // "0").
+//
+// A second deliberate exception: json and jsonb became Avro strings (Debezium
+// parity, io.debezium.data.Json). The c_json and c_jsonb fields of "every
+// mapped type" and the four typeChanges between bytea and json/jsonb (now not
+// preserved: bytes and a string are different values) were edited in place.
+// The row hex is unchanged: Avro encodes bytes and string identically (a
+// zigzag length followed by the raw bytes), so the hamba-era bytes still
+// decode, now to a string.
 
 const (
 	pgBool        = "bool"
@@ -225,8 +233,10 @@ func rowFor(cols []compatCol) map[string]any {
 		switch c.PGType {
 		case pgBool:
 			row[c.Name] = true
-		case pgBytea, pgJSON, pgJSONb:
+		case pgBytea:
 			row[c.Name] = []byte(`{"a":[1,2,3]}`)
+		case pgJSON, pgJSONb:
+			row[c.Name] = `{"a":[1,2,3]}`
 		case pgFloat4:
 			row[c.Name] = float32(15.5)
 		case pgFloat8:

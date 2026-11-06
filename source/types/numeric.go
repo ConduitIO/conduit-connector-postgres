@@ -80,10 +80,20 @@ func (e *NumericNotRepresentableError) Error() string {
 }
 
 // WithRow returns a copy of err with Row set when err is or wraps a
-// *NumericNotRepresentableError, and err itself otherwise.
+// *NumericNotRepresentableError or a *JSONNotUTF8Error, and err itself
+// otherwise.
 func WithRow(err error, row string) error {
+	if row == "" {
+		return err
+	}
+	var jne *JSONNotUTF8Error
+	if errors.As(err, &jne) {
+		c := *jne
+		c.Row = row
+		return &c
+	}
 	var nre *NumericNotRepresentableError
-	if row == "" || !errors.As(err, &nre) {
+	if !errors.As(err, &nre) {
 		return err
 	}
 	c := *nre
@@ -105,10 +115,14 @@ func LocateNumeric(err error, table, column string) (error, bool) { //nolint:rev
 	return &located, true
 }
 
-// LocateError applies LocateTemporal and LocateNumeric: it is what a call site
-// that formats a column uses to name the table and column in a coded error.
+// LocateError applies LocateTemporal, LocateJSON and LocateNumeric: it is what
+// a call site that formats a column uses to name the table and column in a
+// coded error.
 func LocateError(err error, table, column string) (error, bool) { //nolint:revive // the error is the result, ok says whether it was located
 	if located, ok := LocateTemporal(err, table, column); ok {
+		return located, true
+	}
+	if located, ok := LocateJSON(err, table, column); ok {
 		return located, true
 	}
 	return LocateNumeric(err, table, column)
@@ -118,6 +132,9 @@ func LocateError(err error, table, column string) (error, bool) { //nolint:reviv
 // temporal error advice differs (the row can be fixed).
 func LocateErrorSnapshot(err error, table, column string) (error, bool) { //nolint:revive // the error is the result, ok says whether it was located
 	if located, ok := LocateTemporalSnapshot(err, table, column); ok {
+		return located, true
+	}
+	if located, ok := LocateJSON(err, table, column); ok {
 		return located, true
 	}
 	return LocateNumeric(err, table, column)

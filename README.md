@@ -575,6 +575,7 @@ snapshot and CDC.
 | `timestamptz` | The instant, in UTC (`Z`). | `timestamp-micros`. |
 | `date` | Midnight UTC of the date. | `date`. |
 | `tsvector` | Postgres text form, `'a':1 'cat':3A,4B`. | `string`, same text. |
+| `json`, `jsonb` | A string holding the text Postgres prints for the value (`json` as written, `jsonb` in its canonical form). | `string`, same text (since v0.21.0, `bytes` before). |
 | `infinity`, `-infinity` | The strings `infinity` and `-infinity`. | The source halts with error code `postgres.source.temporal_not_representable`. |
 | Years before 1 BC or after 9999 AD | Postgres text, for example `0044-03-15 12:00:00 BC`. | As above, up to what 64-bit microseconds hold; beyond that the same error. |
 | Arrays, ranges, multiranges of these | Element and bound values as above. | Not supported by the Avro schema. |
@@ -589,6 +590,58 @@ are emitted as the Postgres text of the array.
 If the source halts with `postgres.source.temporal_not_representable`, set
 `logrepl.withAvroSchema` to `false`. Removing the row does not help a change that is
 already in the WAL, because it is read again after every restart.
+
+### json and jsonb Columns
+
+A `json` or `jsonb` value is a string holding exactly the text Postgres prints for it:
+nothing is parsed, reformatted or rounded, so object keys keep their order,
+`12345678901234567890` keeps every digit and `1.50` keeps its zero. `jsonb` text is
+the canonical form Postgres stores (keys in jsonb's storage order, duplicate keys
+removed, whitespace normalized), `json` text is the document as it was written. The JSON literal `null` is the string `"null"`; a SQL
+`NULL` is `NULL`. Elements of `json[]` and `jsonb[]` are strings too (arrays have no
+Avro schema, so they need `logrepl.withAvroSchema: false`). This is what Debezium emits
+(`io.debezium.data.Json`, a string).
+
+A value whose text is not valid UTF-8 (possible only in a `SQL_ASCII` database, which
+stores bytes unchecked) stops the source with the error code
+`postgres.source.json_not_utf8`, naming the table and column; characters are never
+replaced.
+
+#### Upgrading to v0.21.0: json and jsonb change from bytes to string
+
+v0.20.0 and earlier emitted `json` and `jsonb` as Avro `bytes` and as Go `[]byte`
+values. v0.21.0 emits Avro `string` and Go `string`. Positions and the data are not
+affected; the type of the field is.
+
+- **Schema registry.** The first record of each table after the upgrade registers a
+  new schema version for its subjects (payload, and key if the key is a `jsonb`
+  column) with the field typed `string`. The Avro specification allows promoting
+  `bytes` to `string` and `string` to `bytes` in schema resolution, so the new
+  version is `BACKWARD`, `FORWARD` and `FULL` compatible with the old one; the Avro
+  library this connector uses agrees (`source/schema/avro_json_compat_test.go`).
+  Conduit sets compatibility `NONE` on subjects it creates and its built-in registry
+  does not check compatibility, so nothing is rejected there either way.
+- **Consumers.** A consumer that resolves records against its own reader schema keeps
+  working: with the old schema it still reads `bytes`, with the new one a `string`, from
+  records written before or after the upgrade (the wire encoding is identical: a length
+  followed by the UTF-8 text). A consumer that decodes with the writer's schema and
+  expects bytes (for example code that casts the field to `ByteBuffer` or `[]byte`)
+  must accept a string. Without an Avro schema, JSON serializers used to print the
+  `[]byte` as base64; they now print the document as a JSON string.
+- **Processors** in built-in pipelines that type-assert the field to `[]byte` must
+  accept `string`.
+- **`json[]` and `jsonb[]`** elements were parsed into Go maps and numbers, which
+  reordered keys, rounded large numbers and stopped the source on numbers beyond the
+  range of a float64. They are now the exact text of each element.
+- **Schema drift.** With the `evolve` policy, a column type change between `bytea` and
+  `json`/`jsonb` is no longer admitted automatically (the value changes from bytes to a
+  string), and a change between `json`/`jsonb` and any other type still halts.
+  `json` to `jsonb` and back is admitted.
+- **Destination.** This connector's destination writes a `json` or `jsonb` column from
+  a string or from bytes, so records produced before and after the upgrade both land as
+  the same document.
+- **Rolling back** to v0.20.0 registers the `bytes` version again on the next record
+  and is otherwise safe.
 
 ### Numeric Columns
 

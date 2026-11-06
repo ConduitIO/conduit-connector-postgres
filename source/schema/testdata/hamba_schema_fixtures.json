@@ -86,7 +86,7 @@
         }
       ],
       "keyCols": null,
-      "schema": "{\"name\":\"t_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"c_bool\",\"type\":\"boolean\"},{\"name\":\"c_bytea\",\"type\":\"bytes\"},{\"name\":\"c_date\",\"type\":{\"type\":\"int\",\"logicalType\":\"date\"}},{\"name\":\"c_float4\",\"type\":\"float\"},{\"name\":\"c_float8\",\"type\":\"double\"},{\"name\":\"c_int2\",\"type\":\"int\"},{\"name\":\"c_int4\",\"type\":\"int\"},{\"name\":\"c_int8\",\"type\":\"long\"},{\"name\":\"c_json\",\"type\":\"bytes\"},{\"name\":\"c_jsonb\",\"type\":\"bytes\"},{\"name\":\"c_numeric\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":8,\"scale\":2}},{\"name\":\"c_text\",\"type\":\"string\"},{\"name\":\"c_timestamp\",\"type\":{\"type\":\"long\",\"logicalType\":\"local-timestamp-micros\"}},{\"name\":\"c_timestamptz\",\"type\":{\"type\":\"long\",\"logicalType\":\"timestamp-micros\"}},{\"name\":\"c_uuid\",\"type\":{\"type\":\"string\",\"logicalType\":\"uuid\"}},{\"name\":\"c_varchar\",\"type\":\"string\"}]}",
+      "schema": "{\"name\":\"t_payload\",\"type\":\"record\",\"fields\":[{\"name\":\"c_bool\",\"type\":\"boolean\"},{\"name\":\"c_bytea\",\"type\":\"bytes\"},{\"name\":\"c_date\",\"type\":{\"type\":\"int\",\"logicalType\":\"date\"}},{\"name\":\"c_float4\",\"type\":\"float\"},{\"name\":\"c_float8\",\"type\":\"double\"},{\"name\":\"c_int2\",\"type\":\"int\"},{\"name\":\"c_int4\",\"type\":\"int\"},{\"name\":\"c_int8\",\"type\":\"long\"},{\"name\":\"c_json\",\"type\":\"string\"},{\"name\":\"c_jsonb\",\"type\":\"string\"},{\"name\":\"c_numeric\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":8,\"scale\":2}},{\"name\":\"c_text\",\"type\":\"string\"},{\"name\":\"c_timestamp\",\"type\":{\"type\":\"long\",\"logicalType\":\"local-timestamp-micros\"}},{\"name\":\"c_timestamptz\",\"type\":{\"type\":\"long\",\"logicalType\":\"timestamp-micros\"}},{\"name\":\"c_uuid\",\"type\":{\"type\":\"string\",\"logicalType\":\"uuid\"}},{\"name\":\"c_varchar\",\"type\":\"string\"}]}",
       "rowHex": {
         "UTC": "011a7b2261223a5b312c322c335d7df2a90200007841295c8fc2f5283040feffffff0ffeffffff0ffeffffffffffffffff011a7b2261223a5b312c322c335d7d1a7b2261223a5b312c322c335d7d02011c666f6f206261722062617a20c3a980d28597e58bed0580d28597e58bed054862643934656530622d353634662d343038382d626634652d3864356536323663616636361c666f6f206261722062617a20c3a9",
         "UTC+05:30": "011a7b2261223a5b312c322c335d7df2a90200007841295c8fc2f5283040feffffff0ffeffffff0ffeffffffffffffffff011a7b2261223a5b312c322c335d7d1a7b2261223a5b312c322c335d7d02011c666f6f206261722062617a20c3a980eae5d9f88ced0580d28597e58bed054862643934656530622d353634662d343038382d626634652d3864356536323663616636361c666f6f206261722062617a20c3a9",
@@ -628,14 +628,14 @@
       "oldMod": -1,
       "newType": "json",
       "newMod": -1,
-      "want": true
+      "want": false
     },
     {
       "oldType": "bytea",
       "oldMod": -1,
       "newType": "jsonb",
       "newMod": -1,
-      "want": true
+      "want": false
     },
     {
       "oldType": "bytea",
@@ -1825,7 +1825,7 @@
       "oldMod": -1,
       "newType": "bytea",
       "newMod": -1,
-      "want": true
+      "want": false
     },
     {
       "oldType": "json",
@@ -1965,7 +1965,7 @@
       "oldMod": -1,
       "newType": "bytea",
       "newMod": -1,
-      "want": true
+      "want": false
     },
     {
       "oldType": "jsonb",

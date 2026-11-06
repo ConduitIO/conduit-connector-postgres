@@ -293,8 +293,8 @@ func Test_FetcherRun_Initial(t *testing.T) {
 	is.Equal(len(gotFetchData), 4)
 
 	var (
-		value6 = []byte(`{"foo": "bar"}`)
-		value7 = []byte(`{"foo": "baz"}`)
+		value6 = `{"foo": "bar"}`
+		value7 = `{"foo": "baz"}`
 	)
 
 	expectedMatch := []opencdc.StructuredData{
@@ -481,8 +481,8 @@ func Test_FetcherRun_Resume(t *testing.T) {
 				"column3":          false,
 				"column4":          nil,
 				"column5":          big.NewRat(9, 1),
-				"column6":          []byte(`{"foo": "bar"}`),
-				"column7":          []byte(`{"foo": "baz"}`),
+				"column6":          `{"foo": "bar"}`,
+				"column7":          `{"foo": "baz"}`,
 				"UppercaseColumn1": int32(3),
 			},
 			cmp.Comparer(func(x, y *big.Rat) bool {

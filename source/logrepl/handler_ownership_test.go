@@ -67,7 +67,10 @@ func TestHandleUpdate_RecordPartsOwnTheirValues(t *testing.T) {
 		{"int4[]", pgtype.Int4ArrayOID, "{1,2,3}"},
 		{"text[]", pgtype.TextArrayOID, `{a,b}`},
 		{"bytea", pgtype.ByteaOID, `\x010203`},
-		{"jsonb", pgtype.JSONBOID, `{"a":{"b":1}}`},
+		// A jsonb is an immutable Go string (it was a []byte before json
+		// became an Avro string), so it is owned by construction; a jsonb[]
+		// is a slice and still has to be copied.
+		{"jsonb[]", pgtype.JSONBArrayOID, `{"{\"a\":{\"b\":1}}"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			name := "own_" + tc.name[:4]
