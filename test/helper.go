@@ -93,8 +93,8 @@ const TestTableAvroSchemaV1 = `{
                 "precision": 5
             }
         },
-        {"name":"column6","type":"bytes"},
-        {"name":"column7","type":"bytes"},
+        {"name":"column6","type":"string"},
+        {"name":"column7","type":"string"},
         {"name":"id","type":"long"},
         {"name":"key","type":"bytes"}
     ]
@@ -130,8 +130,8 @@ const TestTableAvroSchemaV2 = `{
                 "precision": 5
             }
         },
-        {"name":"column6","type":"bytes"},
-        {"name":"column7","type":"bytes"},
+        {"name":"column6","type":"string"},
+        {"name":"column7","type":"string"},
         {"name":"id","type":"long"},
         {"name":"key","type":"bytes"}
     ]
@@ -148,8 +148,8 @@ const TestTableAvroSchemaV3 = `{
         {"name":"column101","type":{"type":"long","logicalType":"local-timestamp-micros"}},
         {"name":"column2","type":"int"},
         {"name":"column3","type":"boolean"},
-        {"name":"column6","type":"bytes"},
-        {"name":"column7","type":"bytes"},
+        {"name":"column6","type":"string"},
+        {"name":"column7","type":"string"},
         {"name":"id","type":"long"},
         {"name":"key","type":"bytes"}
     ]
