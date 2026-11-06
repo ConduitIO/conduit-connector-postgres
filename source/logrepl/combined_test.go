@@ -377,8 +377,8 @@ func testRecords() []opencdc.StructuredData {
 			"column3":          false,
 			"column4":          big.NewRat(122, 10),
 			"column5":          big.NewRat(4, 1),
-			"column6":          []byte(`{"foo": "bar"}`),
-			"column7":          []byte(`{"foo": "baz"}`),
+			"column6":          `{"foo": "bar"}`,
+			"column7":          `{"foo": "baz"}`,
 			"UppercaseColumn1": int32(1),
 		},
 		{
@@ -389,8 +389,8 @@ func testRecords() []opencdc.StructuredData {
 			"column3":          true,
 			"column4":          big.NewRat(1342, 100), // 13.42
 			"column5":          big.NewRat(8, 1),
-			"column6":          []byte(`{"foo": "bar"}`),
-			"column7":          []byte(`{"foo": "baz"}`),
+			"column6":          `{"foo": "bar"}`,
+			"column7":          `{"foo": "baz"}`,
 			"UppercaseColumn1": int32(2),
 		},
 		{
@@ -401,8 +401,8 @@ func testRecords() []opencdc.StructuredData {
 			"column3":          false,
 			"column4":          nil,
 			"column5":          big.NewRat(9, 1),
-			"column6":          []byte(`{"foo": "bar"}`),
-			"column7":          []byte(`{"foo": "baz"}`),
+			"column6":          `{"foo": "bar"}`,
+			"column7":          `{"foo": "baz"}`,
 			"UppercaseColumn1": int32(3),
 		},
 		{
@@ -425,8 +425,8 @@ func testRecords() []opencdc.StructuredData {
 			"column3":          false,
 			"column4":          big.NewRat(8722, 10), // 872.2
 			"column5":          big.NewRat(101, 1),
-			"column6":          []byte(`{"foo12": "bar12"}`),
-			"column7":          []byte(`{"foo13": "bar13"}`),
+			"column6":          `{"foo12": "bar12"}`,
+			"column7":          `{"foo13": "bar13"}`,
 			"UppercaseColumn1": nil,
 		},
 		{
@@ -437,8 +437,8 @@ func testRecords() []opencdc.StructuredData {
 			"column3":          true,
 			"column4":          big.NewRat(1219, 10), // 121.9
 			"column5":          big.NewRat(51, 1),
-			"column6":          []byte(`{"foo7": "bar7"}`),
-			"column7":          []byte(`{"foo8": "bar8"}`),
+			"column6":          `{"foo7": "bar7"}`,
+			"column7":          `{"foo8": "bar8"}`,
 			"UppercaseColumn1": nil,
 		},
 	}

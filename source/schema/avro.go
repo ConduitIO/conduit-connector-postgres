@@ -16,6 +16,7 @@ package schema
 
 import (
 	"cmp"
+	"encoding/json"
 	"fmt"
 	"slices"
 
@@ -37,8 +38,11 @@ var Avro = &avroExtractor{
 		"int2":    avro.NewPrimitiveSchema(avro.Int, nil),
 		"text":    avro.NewPrimitiveSchema(avro.String, nil),
 		"varchar": avro.NewPrimitiveSchema(avro.String, nil),
-		"jsonb":   avro.NewPrimitiveSchema(avro.Bytes, nil),
-		"json":    avro.NewPrimitiveSchema(avro.Bytes, nil),
+		// json and jsonb are the exact JSON text, as Debezium emits them: an
+		// Avro string carrying the Kafka Connect semantic type name. Before
+		// v0.21.0 they were bytes. See jsonSchema.
+		"jsonb": jsonSchema(),
+		"json":  jsonSchema(),
 		// tsvector is emitted as its canonical text form, see source/types.
 		"tsvector": avro.NewPrimitiveSchema(avro.String, nil),
 		"timestamptz": avro.NewPrimitiveSchema(
@@ -58,6 +62,40 @@ var Avro = &avroExtractor{
 			avro.NewPrimitiveLogicalSchema(avro.UUID),
 		),
 	},
+}
+
+// DebeziumJSONName is the Kafka Connect schema name Debezium gives json and
+// jsonb columns (io.debezium.data.Json, version 1). Confluent's Avro converter
+// writes a named Connect schema as the Avro properties connect.name and
+// connect.version on the field's type, so Debezium's json field type is
+// {"type":"string","connect.name":"io.debezium.data.Json","connect.version":1};
+// the source emits the same. Consumers that look for the name (Debezium
+// SerDes, sinks that map it to a JSON column) see a json column.
+const DebeziumJSONName = "io.debezium.data.Json"
+
+// jsonSchema is the Avro schema of a json or jsonb value. It is a plain
+// string: the connect.* properties are not part of the Avro type, schema
+// resolution and compatibility checks ignore them, and the Parsing Canonical
+// Form (and so the fingerprint) is the one of "string". They only reach a
+// registry through Marshal, never through Schema.String.
+func jsonSchema() *avro.PrimitiveSchema {
+	return avro.NewPrimitiveSchema(avro.String, nil, avro.WithProps(map[string]any{
+		"connect.name":    DebeziumJSONName,
+		"connect.version": 1,
+	}))
+}
+
+// Marshal returns the text of sch that the source registers. It is the full
+// JSON form, with properties, not sch.String(): String is the Parsing
+// Canonical Form, which drops every property, including the connect.name of
+// json and jsonb fields. For a schema without properties the two are the same
+// text (TestMarshal_EqualsStringWithoutProps).
+func Marshal(sch avro.Schema) ([]byte, error) {
+	b, err := json.Marshal(sch)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal avro schema %q: %w", sch.String(), err)
+	}
+	return b, nil
 }
 
 type avroExtractor struct {
@@ -135,8 +173,9 @@ func (a *avroExtractor) Extract(schemaName string, fields []pgconn.FieldDescript
 // decimal schema. Without an Avro schema the value a consumer sees is the Go
 // value, and an unconstrained numeric is a big.Rat there, not the string it is
 // under Avro: a change between it and text/varchar changes the value's type, so
-// it is not preserved. Fail closed on anything the extractor cannot resolve: an
-// unmapped type might differ in ways we cannot see.
+// it is not preserved. A change between json/jsonb and any other type is never
+// preserved (see typeChangePreserves). Fail closed on anything the extractor
+// cannot resolve: an unmapped type might differ in ways we cannot see.
 func (a *avroExtractor) TypeChangePreservesValues(withAvroSchema bool, oldType uint32, oldTypeMod int32, newType uint32, newTypeMod int32) bool {
 	oldT, oldOK := a.pgMap.TypeForOID(oldType)
 	newT, newOK := a.pgMap.TypeForOID(newType)
@@ -147,6 +186,13 @@ func (a *avroExtractor) TypeChangePreservesValues(withAvroSchema bool, oldType u
 }
 
 func (a *avroExtractor) typeChangePreserves(withAvroSchema bool, oldT *pgtype.Type, oldTypeMod int32, newT *pgtype.Type, newTypeMod int32) bool {
+	// json and jsonb are strings, like text, varchar and an unconstrained
+	// numeric, but a consumer parses them as JSON: a change between JSON and
+	// any other type changes what the string means even though the Avro
+	// schema does not change, so it is not preserved. json <-> jsonb is.
+	if isJSON(oldT.OID) != isJSON(newT.OID) {
+		return false
+	}
 	oldS, err := a.extractTypeFor(withAvroSchema, oldT, oldTypeMod)
 	if err != nil {
 		return false
@@ -157,6 +203,10 @@ func (a *avroExtractor) typeChangePreserves(withAvroSchema bool, oldT *pgtype.Ty
 	}
 
 	return oldS.String() == newS.String()
+}
+
+func isJSON(oid uint32) bool {
+	return oid == pgtype.JSONOID || oid == pgtype.JSONBOID
 }
 
 // extractTypeFor is extractType for the drift judgement. Without an Avro schema

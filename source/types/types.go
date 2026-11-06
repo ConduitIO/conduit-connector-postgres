@@ -67,6 +67,10 @@ func Format(oid uint32, v any) (any, error) {
 //   - timestamptz is always in UTC.
 //   - date is midnight UTC of the calendar date.
 //   - tsvector is its canonical text form.
+//   - json and jsonb are strings holding the exact text Postgres sent (jsonb
+//     in its canonical form), elements of json[] and jsonb[] too; text that is
+//     not valid UTF-8 is a *JSONNotUTF8Error, never a string with replaced
+//     bytes.
 //   - infinity and -infinity are the strings "infinity" and "-infinity"
 //     (EncodingNative) or an error (EncodingAvro, which cannot represent them).
 //   - the bounds of tsrange, tstzrange, daterange and their multiranges and
@@ -118,6 +122,10 @@ func formatFor(enc Encoding, oid uint32, v any) (any, error) {
 		return formatNumericArray(enc, v)
 	}
 	switch oid {
+	case pgtype.JSONOID, pgtype.JSONBOID:
+		return formatJSON(v)
+	case pgtype.JSONArrayOID, pgtype.JSONBArrayOID:
+		return formatJSONArray(v)
 	case pgtype.TSVectorOID:
 		return formatTSVector(v)
 	case pgtype.TSVectorArrayOID:

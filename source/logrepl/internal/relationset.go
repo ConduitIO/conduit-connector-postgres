@@ -42,9 +42,13 @@ func NewRelationSet() *RelationSet {
 // the given encoding. Use types.EncodingAvro when the connector attaches Avro
 // schemas to the records built from these values.
 func NewRelationSetWithEncoding(enc types.Encoding) *RelationSet {
+	connInfo := pgtype.NewMap()
+	// json and jsonb (and their arrays) decode to the text Postgres sent, the
+	// same as on the snapshot's connections (cpool).
+	types.RegisterJSONText(connInfo)
 	return &RelationSet{
 		relations: map[uint32]*pglogrepl.RelationMessage{},
-		connInfo:  pgtype.NewMap(),
+		connInfo:  connInfo,
 		encoding:  enc,
 	}
 }
