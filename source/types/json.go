@@ -29,6 +29,11 @@ import (
 // and never replaces bytes it cannot represent, so it halts instead.
 const ErrorCodeJSONNotUTF8 = "postgres.source.json_not_utf8"
 
+// JSONNotUTF8Runbook is the operator runbook for ErrorCodeJSONNotUTF8: how to
+// find the row, fix it and get the source going again. The error message and
+// the open-time warning both link it.
+const JSONNotUTF8Runbook = "https://github.com/ConduitIO/conduit-connector-postgres#runbook-postgressourcejson_not_utf8"
+
 // JSONNotUTF8Error reports a json or jsonb value whose text is not valid
 // UTF-8. Postgres validates the encoding of json text in every server
 // encoding except SQL_ASCII, which stores bytes unchecked; that is the one
@@ -55,9 +60,11 @@ func (e *JSONNotUTF8Error) Error() string {
 	}
 	return fmt.Sprintf("%s: json value%s is not valid UTF-8 (first invalid byte at offset %d), "+
 		"so the source halts instead of replacing characters. json and jsonb are emitted as strings. "+
-		"Fix: the database encoding is most likely SQL_ASCII, which stores bytes unchecked; "+
-		"correct the value in the table (for a snapshot row) or move the table to a UTF8 database",
-		ErrorCodeJSONNotUTF8, where, e.Offset)
+		"A restart resumes at the same position and halts here again until the value is handled. "+
+		"Fix: the database server_encoding is most likely SQL_ASCII, which stores bytes unchecked; "+
+		"find the row with the query in the runbook, correct or convert the value (that is enough for a snapshot row; "+
+		"a change already in the WAL is read again unchanged), and move the database to UTF8. Runbook: %s",
+		ErrorCodeJSONNotUTF8, where, e.Offset, JSONNotUTF8Runbook)
 }
 
 // LocateJSON returns a copy of err with its table and column set, and true,

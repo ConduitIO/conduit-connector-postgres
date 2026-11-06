@@ -542,10 +542,75 @@ with `null`); this connector's are not (#326). And `json[]` and `jsonb[]` have n
 schema here, like every array type, so they need `logrepl.withAvroSchema: false`;
 Debezium emits them as an Avro array of optional `io.debezium.data.Json` strings.
 
-A value whose text is not valid UTF-8 (possible only in a `SQL_ASCII` database, which
-stores bytes unchecked) stops the source with the error code
-`postgres.source.json_not_utf8`, naming the table and column; characters are never
-replaced.
+A value whose text is not valid UTF-8 stops the source with the error code
+`postgres.source.json_not_utf8`; characters are never replaced and the record is never
+skipped. This can only happen when the database's `server_encoding` is `SQL_ASCII`,
+which stores bytes unchecked: every other server encoding checks json text on input.
+At startup the source logs a warning (`code` `postgres.source.json_server_encoding`)
+when `server_encoding` is not `UTF8` and a captured table has a `json`, `jsonb`,
+`json[]` or `jsonb[]` column. See the runbook below.
+
+#### Runbook: postgres.source.json_not_utf8
+
+**Symptom.** The pipeline stops with an error like
+
+```
+postgres.source.json_not_utf8: json value in column "doc" of table "orders"
+(row columns id, key hash 3f2a...) is not valid UTF-8 (first invalid byte at offset 16)
+```
+
+and stops again with the same error after every restart. The source resumes at the
+position of the last record it delivered, so it reads the same row again. Nothing after
+that row is delivered, and nothing is lost: the row was never acknowledged. The error
+names the table, the column, the key columns and the byte offset of the first invalid
+byte, never the value. The key hash correlates log lines of one process; it differs
+after a restart and cannot be used to look the row up.
+
+**Diagnosis.**
+
+1. Check the encoding: `SHOW server_encoding;` in the source database. It is
+   `SQL_ASCII` (or the startup warning named it).
+2. Find the rows whose text is not valid UTF-8, by table and column from the error:
+
+   ```sql
+   CREATE FUNCTION pg_temp.is_utf8(b bytea) RETURNS boolean LANGUAGE plpgsql AS $$
+   BEGIN
+     PERFORM convert_from(b, 'UTF8');
+     RETURN true;
+   EXCEPTION WHEN character_not_in_repertoire OR untranslatable_character THEN
+     RETURN false;
+   END $$;
+
+   SELECT id FROM orders WHERE NOT pg_temp.is_utf8(convert_to(doc::text, 'SQL_ASCII'));
+   ```
+
+   Replace `orders`, `doc` and `id` with the table, the column and the key columns of
+   the error. For a `json[]` or `jsonb[]` column the same query finds the rows.
+3. Find out whether the source stopped in the snapshot or in CDC: a snapshot error
+   contains `fetcher for table`, a CDC error contains `logical replication error`.
+
+**Remediation.**
+
+- **Snapshot.** Correct the value, then restart. If you know the encoding the writer
+  used, convert it, for example from LATIN1:
+
+  ```sql
+  UPDATE orders
+  SET doc = convert_from(convert(convert_to(doc::text, 'SQL_ASCII'), 'LATIN1', 'UTF8'), 'SQL_ASCII')::json
+  WHERE id = ...;
+  ```
+
+  Otherwise write the corrected document. The snapshot reads the row again and goes on.
+- **CDC.** The change is in the WAL with the bytes it was written with, and it is read
+  again on every restart; correcting the row afterwards adds a new change but does not
+  remove that one. This release has no option to deliver or skip it. Do not drop or
+  advance the replication slot to get past it: that skips every change before the new
+  position, for every table of the slot. Correct the rows (so later changes are valid),
+  keep the pipeline stopped, and open an issue with the error message.
+- **Prevent it.** Move the database to `UTF8` (dump it and restore it into a database
+  created with `ENCODING 'UTF8'`, converting the data from the encoding the writers
+  used), then start a new pipeline with a snapshot. Until then, make sure every writer
+  stores valid UTF-8 in `json` and `jsonb` columns.
 
 #### Upgrading to v0.21.0: json and jsonb change from bytes to string
 

@@ -113,6 +113,10 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 		}
 	}
 
+	// Invariant 6 keeps json text that is not valid UTF-8 a halt, never a
+	// replaced character; warn now if the database allows such text.
+	s.warnJSONServerEncoding(ctx, s.pool, s.config.Tables)
+
 	imp, err := s.debeziumImport(ctx, pos)
 	if err != nil {
 		return err
