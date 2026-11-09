@@ -18,16 +18,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/conduitio/conduit-commons/cchan"
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
+	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/schema"
+	"github.com/conduitio/conduit-connector-postgres/source/types"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	sdkschema "github.com/conduitio/conduit-connector-sdk/schema"
 	"github.com/jackc/pglogrepl"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/matryer/is"
 )
 
@@ -233,4 +238,60 @@ func TestHandler_Avro_NullabilityFromCatalog(t *testing.T) {
 		_, err := receiveEncoded(ctx, t, ch)
 		is.True(err != nil)
 	})
+}
+
+// TestHandler_Avro_UpdateBeforeShaped: under REPLICA IDENTITY FULL the old row
+// of an UPDATE is the record's Before, encoded with the same payload schema as
+// After. A nullable timestamp must be shaped for its ["null", long] union in
+// Before as well (types.NullableAvroValue), or the encode fails and the
+// source stops on a perfectly ordinary update.
+func TestHandler_Avro_UpdateBeforeShaped(t *testing.T) {
+	ctx := context.Background()
+	is := is.New(t)
+	name := fmt.Sprintf("before_test_%d", beforeTestRelationSeq.Add(1))
+	rs := internal.NewRelationSetWithEncoding(types.EncodingFor(true))
+	rs.Add(&pglogrepl.RelationMessage{
+		RelationID:   1,
+		RelationName: name,
+		ColumnNum:    2,
+		Columns: []*pglogrepl.RelationMessageColumn{
+			{Name: "id", DataType: pgtype.Int8OID, Flags: 1},
+			{Name: "ts", DataType: pgtype.TimestampOID},
+		},
+	})
+	ch := make(chan []opencdc.Record, 1)
+	h := NewCDCHandler(ctx, rs, map[string]string{name: "id"}, ch, true, 1, time.Hour, position.Position{}, SchemaDriftPolicyHalt)
+	h.loadNotNull = func(context.Context, uint32) (schema.NotNull, error) {
+		return schema.NotNull{"id": true, "ts": false}, nil
+	}
+
+	is.NoErr(h.handleUpdate(ctx, &pglogrepl.UpdateMessage{
+		RelationID:   1,
+		OldTupleType: pglogrepl.UpdateMessageTupleTypeOld,
+		OldTuple:     tuple(txt("1"), txt("2022-03-14 15:16:17")),
+		NewTuple:     tuple(txt("1"), txt("2023-01-02 03:04:05")),
+	}, 1))
+	rec, err := receiveEncoded(ctx, t, ch)
+	is.NoErr(err) // without shaping Before: the encoder finds no union branch for int64
+
+	subject, err := rec.Metadata.GetPayloadSchemaSubject()
+	is.NoErr(err)
+	version, err := rec.Metadata.GetPayloadSchemaVersion()
+	is.NoErr(err)
+	sch, err := sdkschema.Get(ctx, subject, version)
+	is.NoErr(err)
+	for _, tc := range []struct {
+		data opencdc.Data
+		want string
+	}{
+		{rec.Payload.Before, "2022-03-14 15:16:17"},
+		{rec.Payload.After, "2023-01-02 03:04:05"},
+	} {
+		var got map[string]any
+		is.NoErr(sch.Unmarshal(tc.data.Bytes(), &got))
+		ts, ok := got["ts"].(time.Time)
+		is.True(ok) // the value, not NULL
+		// local-timestamp-micros decodes as a wall clock in the local zone.
+		is.Equal(ts.Format(time.DateTime), tc.want)
+	}
 }
