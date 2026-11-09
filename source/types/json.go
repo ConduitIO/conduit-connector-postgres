@@ -79,7 +79,8 @@ func LocateJSON(err error, table, column string) (error, bool) { //nolint:revive
 // and rounds numbers beyond 2^53: a changed value (invariant 6). The array
 // types are registered again because a pgx array type holds the element type
 // it was created with, so overriding json alone leaves json[] on the default
-// codec.
+// codec; their text format is parsed by jsonArrayCodec, which keeps bytes
+// that are not valid UTF-8.
 func RegisterJSONText(m *pgtype.Map) {
 	jsonType := &pgtype.Type{
 		Name:  "json",
@@ -93,8 +94,10 @@ func RegisterJSONText(m *pgtype.Map) {
 	}
 	m.RegisterType(jsonType)
 	m.RegisterType(jsonbType)
-	m.RegisterType(&pgtype.Type{Name: "_json", OID: pgtype.JSONArrayOID, Codec: &pgtype.ArrayCodec{ElementType: jsonType}})
-	m.RegisterType(&pgtype.Type{Name: "_jsonb", OID: pgtype.JSONBArrayOID, Codec: &pgtype.ArrayCodec{ElementType: jsonbType}})
+	// The array codecs decode the text format byte for byte (jsonArrayCodec):
+	// pgx's own text array parser replaces bytes that are not valid UTF-8.
+	m.RegisterType(&pgtype.Type{Name: "_json", OID: pgtype.JSONArrayOID, Codec: jsonArrayCodec{&pgtype.ArrayCodec{ElementType: jsonType}}})
+	m.RegisterType(&pgtype.Type{Name: "_jsonb", OID: pgtype.JSONBArrayOID, Codec: jsonArrayCodec{&pgtype.ArrayCodec{ElementType: jsonbType}}})
 }
 
 // jsonNoopUnmarshal copies src into dst, which must be a *any. It is the
