@@ -21,6 +21,7 @@ import (
 	"math/big"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -299,11 +300,18 @@ func extractCompat(t *testing.T, c compatCase) string {
 	if err != nil {
 		t.Fatalf("%s: text: %v", c.Name, err)
 	}
-	if text := string(text); text != sch.String() {
+	// The one other difference from the canonical form is the connect.name
+	// and connect.version of json and jsonb fields (io.debezium.data.Json),
+	// which are not part of the Avro type; the fixtures hold the type itself.
+	plain := strings.ReplaceAll(string(text), debeziumJSONType, `"string"`)
+	if plain != sch.String() {
 		t.Fatalf("%s: registered text differs from the canonical form for a schema without defaults:\n%s\n%s", c.Name, text, sch.String())
 	}
-	return string(text)
+	return plain
 }
+
+// debeziumJSONType is the registered type of a json or jsonb field.
+const debeziumJSONType = `{"type":"string","connect.name":"io.debezium.data.Json","connect.version":1}`
 
 func TestAvroExtract_HambaCompat(t *testing.T) {
 	const path = "testdata/hamba_schema_fixtures.json"

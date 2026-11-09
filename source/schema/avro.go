@@ -37,10 +37,11 @@ var Avro = &avroExtractor{
 		"int2":    avro.NewPrimitiveSchema(avro.Int, nil),
 		"text":    avro.NewPrimitiveSchema(avro.String, nil),
 		"varchar": avro.NewPrimitiveSchema(avro.String, nil),
-		// json and jsonb are the exact JSON text, as Debezium emits them
-		// (io.debezium.data.Json, a string). Before v0.21.0 they were bytes.
-		"jsonb": avro.NewPrimitiveSchema(avro.String, nil),
-		"json":  avro.NewPrimitiveSchema(avro.String, nil),
+		// json and jsonb are the exact JSON text, as Debezium emits them: an
+		// Avro string carrying the Kafka Connect semantic type name. Before
+		// v0.21.0 they were bytes. See jsonSchema.
+		"jsonb": jsonSchema(),
+		"json":  jsonSchema(),
 		// tsvector is emitted as its canonical text form, see source/types.
 		"tsvector": avro.NewPrimitiveSchema(avro.String, nil),
 		"timestamptz": avro.NewPrimitiveSchema(
@@ -60,6 +61,27 @@ var Avro = &avroExtractor{
 			avro.NewPrimitiveLogicalSchema(avro.UUID),
 		),
 	},
+}
+
+// DebeziumJSONName is the Kafka Connect schema name Debezium gives json and
+// jsonb columns (io.debezium.data.Json, version 1). Confluent's Avro converter
+// writes a named Connect schema as the Avro properties connect.name and
+// connect.version on the field's type, so Debezium's json field type is
+// {"type":"string","connect.name":"io.debezium.data.Json","connect.version":1};
+// the source emits the same. Consumers that look for the name (Debezium
+// SerDes, sinks that map it to a JSON column) see a json column.
+const DebeziumJSONName = "io.debezium.data.Json"
+
+// jsonSchema is the Avro schema of a json or jsonb value. It is a plain
+// string: the connect.* properties are not part of the Avro type, schema
+// resolution and compatibility checks ignore them, and the Parsing Canonical
+// Form (and so the fingerprint) is the one of "string". They only reach a
+// registry through Text, never through Schema.String.
+func jsonSchema() *avro.PrimitiveSchema {
+	return avro.NewPrimitiveSchema(avro.String, nil, avro.WithProps(map[string]any{
+		"connect.name":    DebeziumJSONName,
+		"connect.version": 1,
+	}))
 }
 
 type avroExtractor struct {

@@ -50,6 +50,11 @@ var jsonDocs = []string{
 	`{"big": "` + strings.Repeat("ab", 64<<10) + `"}`,
 }
 
+// debeziumJSONType is the Avro type of a json or jsonb field in the schema
+// the source registers: what Debezium's json fields carry under Confluent's
+// Avro converter.
+const debeziumJSONType = `{"type":"string","connect.name":"io.debezium.data.Json","connect.version":1}`
+
 func TestSource_JSONIsExactString(t *testing.T) {
 	ctx := test.Context(t)
 	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
@@ -263,7 +268,7 @@ func TestSource_JSONBKeyIsString(t *testing.T) {
 			is.NoErr(err)
 			sch, err := schema.Get(ctx, subject, version)
 			is.NoErr(err)
-			is.True(strings.Contains(string(sch.Bytes), `{"name":"k","type":"string"}`))
+			is.True(strings.Contains(string(sch.Bytes), `{"name":"k","type":`+debeziumJSONType+`}`))
 			var key map[string]any
 			is.NoErr(sch.Unmarshal(raw.Bytes(), &key))
 			is.Equal(key["k"], want)
@@ -326,7 +331,8 @@ func jsonWant(ctx context.Context, t *testing.T, conn *pgx.Conn, table string) m
 
 // jsonPayload returns the after payload, decoded with the record's Avro
 // schema when avro is set. With Avro it also checks that every json and jsonb
-// field of the schema is an Avro string.
+// field of the registered schema is an Avro string with Debezium's
+// connect.name and connect.version.
 func jsonPayload(ctx context.Context, t *testing.T, rec opencdc.Record, avro bool) map[string]any {
 	t.Helper()
 	is := is.New(t)
@@ -354,7 +360,10 @@ func jsonPayload(ctx context.Context, t *testing.T, rec opencdc.Record, avro boo
 	for _, f := range parsed.Fields {
 		switch f.Name {
 		case "j", "jb", "k":
-			is.Equal(string(f.Type), `"string"`) // json and jsonb are Avro strings
+			// json and jsonb are Avro strings named as Debezium names them;
+			// a nullable column is the union with null (#326).
+			got := string(f.Type)
+			is.True(got == debeziumJSONType || got == `["null",`+debeziumJSONType+`]`)
 		}
 	}
 

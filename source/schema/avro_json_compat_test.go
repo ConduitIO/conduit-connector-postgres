@@ -15,6 +15,7 @@
 package schema
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/iskorotkov/avro/v2"
@@ -76,4 +77,69 @@ func TestJSONStringSchema_CompatibleWithBytesSchema(t *testing.T) {
 	is.NoErr(avro.Unmarshal(resolved, newData, &gotOld))
 	is.Equal(gotOld["j"], []byte(doc))
 	is.Equal(gotOld["jb"], []byte(doc))
+}
+
+// The registered json/jsonb schema carries Debezium's connect.name and
+// connect.version properties. They are not part of the Avro type, so the
+// verdict above holds for the text a registry stores and hands back: the
+// schema is BACKWARD, FORWARD and FULL compatible with the bytes schema of
+// v0.20 and earlier, and with the plain "string" schema the json change
+// registered before the properties were added. Its fingerprint (computed on
+// the canonical form) is the one of the plain string schema, and data
+// written with any of the three decodes with any other unchanged.
+func TestJSONDebeziumNamedSchema_Compatible(t *testing.T) {
+	is := is.New(t)
+
+	extracted, err := Avro.Extract("t_payload", []pgconn.FieldDescription{
+		{Name: "id", DataTypeOID: pgtype.Int8OID, TypeModifier: -1},
+		{Name: "j", DataTypeOID: pgtype.JSONOID, TypeModifier: -1},
+		{Name: "jb", DataTypeOID: pgtype.JSONBOID, TypeModifier: -1},
+	}, NotNull{"id": true, "j": true, "jb": true})
+	is.NoErr(err)
+	text, err := Text(extracted)
+	is.NoErr(err)
+	is.True(strings.Contains(string(text), `"connect.name":"io.debezium.data.Json"`))
+	named, err := avro.Parse(string(text)) // as a registry hands it back
+	is.NoErr(err)
+
+	bytesSch, err := avro.Parse(jsonSchemaBytes)
+	is.NoErr(err)
+	plainSch, err := avro.Parse(`{"name":"t_payload","type":"record","fields":[{"name":"id","type":"long"},{"name":"j","type":"string"},{"name":"jb","type":"string"}]}`)
+	is.NoErr(err)
+	is.Equal(named.Fingerprint(), plainSch.Fingerprint())
+
+	doc := `{"z": 1, "a": [12345678901234567890], "u": "日本 😀"}`
+	values := map[string]avro.Schema{"bytes (v0.20)": bytesSch, "plain string": plainSch}
+	for name, other := range values {
+		t.Run(name, func(t *testing.T) {
+			is := is.New(t)
+			sc := avro.NewSchemaCompatibility()
+			is.NoErr(sc.Compatible(named, other)) // BACKWARD: new reader, old writer
+			is.NoErr(sc.Compatible(other, named)) // FORWARD: old reader, new writer
+
+			var otherValue any = doc
+			if name == "bytes (v0.20)" {
+				otherValue = []byte(doc)
+			}
+			otherData, err := avro.Marshal(other, map[string]any{"id": int64(1), "j": otherValue, "jb": otherValue})
+			is.NoErr(err)
+			newData, err := avro.Marshal(named, map[string]any{"id": int64(1), "j": doc, "jb": doc})
+			is.NoErr(err)
+			is.Equal(newData, otherData) // same wire bytes
+
+			resolved, err := sc.Resolve(named, other)
+			is.NoErr(err)
+			var gotNew map[string]any
+			is.NoErr(avro.Unmarshal(resolved, otherData, &gotNew))
+			is.Equal(gotNew["j"], doc)
+			is.Equal(gotNew["jb"], doc)
+
+			resolved, err = sc.Resolve(other, named)
+			is.NoErr(err)
+			var gotOld map[string]any
+			is.NoErr(avro.Unmarshal(resolved, newData, &gotOld))
+			is.Equal(gotOld["j"], otherValue)
+			is.Equal(gotOld["jb"], otherValue)
+		})
+	}
 }
