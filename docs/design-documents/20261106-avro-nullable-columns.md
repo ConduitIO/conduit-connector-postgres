@@ -78,8 +78,7 @@ whose existing rows may hold `NULL`. Such a column is treated as nullable.
   (`schema.NotNullQueryTimeout`, well under the default `wal_sender_timeout`): the
   change or snapshot fetch returns the error; nothing is emitted or acked; the
   restart retries. A failed read is not cached.
-- **Catalog newer than the row**, CDC behind a `SET NOT NULL` (or a snapshot whose
-  catalog read sees a `SET NOT NULL` committed after its data snapshot): before the
+- **Catalog newer than the row**, CDC behind a `SET NOT NULL`: before the
   record is built, a `NULL` in a column whose field is plain widens that field to
   `["null", T]`, registers the new version and delivers `null`. A warning coded
   `postgres.avro.null_in_not_null_column` names the table and column once per
@@ -98,8 +97,12 @@ whose existing rows may hold `NULL`. Such a column is treated as nullable.
   (`postgres.avro.toast_identity`) for each captured table with a TOAST-able column
   (`attstorage` other than plain) and a replica identity other than `FULL`, so the
   operator can set `FULL` before the first such update. Warning only.
-- **Snapshot**: the lookup runs in the snapshot's `REPEATABLE READ` transaction, so
-  it describes the rows being read. Each field's table OID is checked against it.
+- **Snapshot**: the lookup is a plain `SELECT` in the snapshot's `REPEATABLE READ`
+  transaction, after the cursor is declared, so it describes the rows being read: a
+  concurrent `SET NOT NULL` is not visible to it and waits for the transaction's
+  `ACCESS SHARE` lock (checked on Postgres 17.5 and 18.6). Each field's table OID is
+  checked against it. The snapshot keeps the same widening as a defensive guard for a
+  catalog and rows that disagree, which Postgres does not produce for one transaction.
 
 ## Upgrade and rollback
 

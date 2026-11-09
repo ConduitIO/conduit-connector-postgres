@@ -534,8 +534,10 @@ specification:
     stays nullable until the connector restarts. If the schema registry rejects the new
     version (a subject with `FORWARD` or `FULL` compatibility), the source stops with the
     same code; allow `BACKWARD` on the subject, or restart with
-    `logrepl.withAvroSchema: false`. The snapshot does the same if a `SET NOT NULL`
-    commits while it runs. A column that is no longer in the catalog (dropped
+    `logrepl.withAvroSchema: false`. A `SET NOT NULL` that commits while a snapshot
+    runs does not affect the snapshot: it reads the catalog in its `REPEATABLE READ`
+    transaction, as of the same point in time as its rows, so the two agree. A column
+    that is no longer in the catalog (dropped
     or renamed since the change was written) is nullable.
 
     **Upgrading from v0.20.x or earlier.** Earlier versions registered every column as a

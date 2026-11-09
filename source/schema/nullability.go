@@ -36,9 +36,10 @@ type NotNull map[string]bool
 // with Avro schemas on, a row holds NULL in a column the catalog declares NOT
 // NULL and the source widens the column's field to ["null", T], and of the
 // error returned when the schema registry rejects the widened schema. The
-// catalog can be newer than the row: CDC decoding a change written before a
-// SET NOT NULL, or a snapshot whose catalog read sees a SET NOT NULL committed
-// after its data snapshot was taken.
+// catalog can be newer than the row when CDC decodes a change written before
+// a SET NOT NULL. The snapshot reads the catalog in its REPEATABLE READ
+// transaction, consistent with its rows, so there it is only a defensive
+// guard.
 const ErrorCodeAvroNullInNotNullColumn = "postgres.avro.null_in_not_null_column"
 
 // Querier is the subset of pgx LoadNotNull uses. pgx.Tx, *pgx.Conn and

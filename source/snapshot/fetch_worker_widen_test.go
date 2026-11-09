@@ -67,8 +67,8 @@ func (f *FetchWorker) row(ctx context.Context, fields []pgconn.FieldDescription,
 }
 
 // TestFetchWorker_WidensNullInNotNullColumn: a snapshot row with NULL in a
-// column the catalog read says is NOT NULL (a SET NOT NULL committed after
-// the data snapshot was taken) widens that column's field, registers a new
+// column the catalog read says is NOT NULL (injected: the defensive guard of
+// widenForNull, not a state Postgres produces) widens that column's field, registers a new
 // version and delivers null; it is never a zero value and never stops the
 // snapshot.
 func TestFetchWorker_WidensNullInNotNullColumn(t *testing.T) {
@@ -137,10 +137,11 @@ func TestFetchWorker_WidenRejected(t *testing.T) {
 	is.Equal(f.payloadSchema.Version, first.PayloadSchema.Version) // schemas restored
 }
 
-// TestFetchWorker_Run_WidensNullInNotNullColumn drives the race through Run:
-// the worker's catalog read says c is NOT NULL (a SET NOT NULL committed
-// after the data snapshot was taken, which the catalog read sees while the
-// rows do not), and a row holds NULL in c.
+// TestFetchWorker_Run_WidensNullInNotNullColumn drives the defensive guard
+// through Run: the worker's catalog read is injected to say c is NOT NULL
+// while a row holds NULL in c. Postgres does not produce this for one
+// transaction (see widenForNull); the test pins what the guard does if the
+// catalog and the rows ever disagree.
 func TestFetchWorker_Run_WidensNullInNotNullColumn(t *testing.T) {
 	var (
 		ctx  = test.Context(t)

@@ -738,9 +738,16 @@ func (f *FetchWorker) create(ctx context.Context, typ cschema.Type, subject stri
 }
 
 // widenForNull handles a row that holds NULL in a column the catalog
-// declares NOT NULL. The catalog read sees committed catalog changes, not the
-// snapshot's view of them, so a SET NOT NULL committed after the data
-// snapshot was taken (on rows that held NULL in it) is visible to it. The
+// declares NOT NULL. It is a defensive guard, not a handled race: Postgres
+// does not produce such a row here. loadNotNull is a plain SELECT on
+// pg_attribute in the snapshot's REPEATABLE READ transaction, so it reads the
+// catalog as of the same snapshot as the rows (checked on Postgres 17.5 and
+// 18.6: after a concurrent UPDATE and SET NOT NULL commit, the transaction
+// still reads attnotnull false and still sees the NULL row), and it runs after
+// the cursor is declared, so the transaction holds ACCESS SHARE on the table
+// and a SET NOT NULL waits for the snapshot to end. The guard costs one map
+// lookup per NULL value and keeps the row from being encoded under a schema
+// that forbids its NULL if the catalog and the rows ever disagree. The
 // column's field becomes ["null", T] for the rest of the worker, the widened
 // schemas are registered for this row and the next ones, and a warning coded
 // schema.ErrorCodeAvroNullInNotNullColumn is logged once per column; it names
@@ -772,7 +779,7 @@ func (f *FetchWorker) widenForNull(ctx context.Context, fields []pgconn.FieldDes
 		f.notNull, f.payloadSchema, f.keySchema = prevNotNull, prevPayload, prevKey
 		return fmt.Errorf(
 			"%s: a row of table %q holds NULL in the column(s) %q, which the catalog declares NOT NULL "+
-				"(the column was made NOT NULL after the snapshot started), and the payload schema with the column(s) made "+
+				"(the catalog and the snapshot's rows disagree), and the payload schema with the column(s) made "+
 				"nullable could not be registered: %w. "+
 				"Fix: allow the change on the subject %q (T -> [\"null\", T] is BACKWARD compatible; FORWARD and FULL reject it), "+
 				"for example set its compatibility to BACKWARD or NONE, and restart; or set logrepl.withAvroSchema to false and restart",
@@ -785,7 +792,7 @@ func (f *FetchWorker) widenForNull(ctx context.Context, fields []pgconn.FieldDes
 			Str("code", schema.ErrorCodeAvroNullInNotNullColumn).
 			Str("table", f.conf.Table).
 			Str("column", c).
-			Msg("a snapshot row holds NULL in a column the catalog declares NOT NULL (the column was made NOT NULL after the snapshot started); " +
+			Msg("a snapshot row holds NULL in a column the catalog declares NOT NULL (the catalog and the snapshot's rows disagree); " +
 				"its Avro field is now nullable and a new payload schema version is registered")
 	}
 	return nil
