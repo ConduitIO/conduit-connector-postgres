@@ -843,6 +843,7 @@ pipelines:
     connectors:
       - id: example
         plugin: "postgres"
+        type: source
         settings:
           # Tables is a List of table names to read from, separated by a comma,
           # e.g.:"table1,table2". Use "*" if you'd like to listen to all tables.
@@ -1018,6 +1019,7 @@ pipelines:
     connectors:
       - id: example
         plugin: "postgres"
+        type: destination
         settings:
           # URL is the connection string for the Postgres database. With TLS,
           # SCRAM authentication does not use channel binding by default
