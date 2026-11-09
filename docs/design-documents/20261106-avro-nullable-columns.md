@@ -74,16 +74,26 @@ whose existing rows may hold `NULL`. Such a column is treated as nullable.
 
 ## Failure modes
 
-- **Catalog read fails** (connection, permission): the change or snapshot fetch
-  returns the error; nothing is emitted or acked; the restart retries. A failed
-  read is not cached.
-- **Catalog newer than the WAL**, CDC behind a `SET NOT NULL`: a change that stored
-  `NULL` before the constraint fails to encode and the source stops. Fail closed,
-  no data loss. Remedy in the README (`DROP NOT NULL`, catch up, set it again).
+- **Catalog read fails** (connection, permission) or exceeds its 10s bound
+  (`schema.NotNullQueryTimeout`, well under the default `wal_sender_timeout`): the
+  change or snapshot fetch returns the error; nothing is emitted or acked; the
+  restart retries. A failed read is not cached.
+- **Catalog newer than the row**, CDC behind a `SET NOT NULL` (or a snapshot whose
+  catalog read sees a `SET NOT NULL` committed after its data snapshot): before the
+  record is built, a `NULL` in a column whose field is plain widens that field to
+  `["null", T]`, registers the new version and delivers `null`. A warning coded
+  `postgres.avro.null_in_not_null_column` names the table and column once per
+  process (CDC) or worker (snapshot). The widening holds for the rest of the process,
+  so the subject does not flip between two versions. If the registry rejects the
+  widened schema (an external subject with `FORWARD` or `FULL`), the change fails
+  with the same code and a fix (allow `BACKWARD`, or turn Avro off); nothing is
+  emitted or acked. A key-only old tuple's `NULL`s are not row values and are not
+  checked. Rejected alternative: fail closed with the code; it stopped a pipeline
+  for a value the schema can represent truthfully.
 - **Catalog newer than the WAL**, column dropped or renamed since: not in the
   catalog, treated as nullable, which accepts every value. A rename that reuses
   another column's old name picks up that column's nullability; the worst case is
-  the stop above.
+  the widening above.
 - **Unchanged TOAST under Avro**: coded stop, as before (see Decision).
 - **Snapshot**: the lookup runs in the snapshot's `REPEATABLE READ` transaction, so
   it describes the rows being read. Each field's table OID is checked against it.

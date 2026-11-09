@@ -414,3 +414,53 @@ func TestSource_Avro_UnchangedToastFullIdentity(t *testing.T) {
 	is.True(before["ts"] != nil)
 	is.NoErr(s.Ack(ctx, rec.Position))
 }
+
+// TestSource_Avro_NullBeforeSetNotNull: the source lags behind a SET NOT
+// NULL, so a change that stored NULL in the column is decoded after the
+// catalog says NOT NULL. The column's field is widened to ["null", T], a new
+// payload schema version is registered, and the NULL is delivered as null;
+// the source does not stop and the operator does nothing.
+func TestSource_Avro_NullBeforeSetNotNull(t *testing.T) {
+	ctx := test.Context(t)
+	is := is.New(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	table := fmt.Sprintf("nullable_lag_%d_%d", time.Now().UnixMicro()%1000000, nullableTableSeq.Add(1))
+	_, err := conn.Exec(ctx, fmt.Sprintf("CREATE TABLE %s (id bigint PRIMARY KEY, c int)", table))
+	is.NoErr(err)
+	dropReplication(ctx, t, table)
+	t.Cleanup(func() { _, _ = conn.Exec(context.Background(), "DROP TABLE "+table) })
+
+	// Create the slot, then stop: the changes below wait in the WAL.
+	s := openNullableSource(ctx, t, table, "never")
+	is.NoErr(s.Teardown(ctx))
+	_, err = conn.Exec(ctx, fmt.Sprintf("INSERT INTO %s VALUES (1, NULL)", table))
+	is.NoErr(err)
+	_, err = conn.Exec(ctx, fmt.Sprintf("UPDATE %s SET c = 5 WHERE id = 1", table))
+	is.NoErr(err)
+	_, err = conn.Exec(ctx, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN c SET NOT NULL", table))
+	is.NoErr(err)
+
+	s = openNullableSource(ctx, t, table, "never")
+	recs := readRecords(ctx, t, s, 2) // before: postgres.avro.null_in_not_null_column stopped the source
+	insert, update := recs[0], recs[1]
+	is.Equal(insert.Operation, opencdc.OperationCreate)
+	got, sch := decodeWith(ctx, t, insert, insert.Payload.After, false)
+	v, present := got["c"]
+	is.True(present)
+	is.Equal(v, nil) // NULL, not 0
+	is.Equal(string(schemaFields(t, sch)["c"]["type"]), `["null","int"]`)
+
+	// The version before it is the schema built from the catalog, with c NOT
+	// NULL: the widening registered a new version.
+	is.True(sch.Version > 1)
+	narrow, err := schema.Get(ctx, sch.Subject, sch.Version-1)
+	is.NoErr(err)
+	is.Equal(string(schemaFields(t, narrow)["c"]["type"]), `"int"`)
+	is.NoErr(s.Ack(ctx, insert.Position))
+
+	is.Equal(update.Operation, opencdc.OperationUpdate)
+	got, usch := decodeWith(ctx, t, update, update.Payload.After, false)
+	is.Equal(got["c"], 5)
+	is.Equal(usch.Version, sch.Version) // stays widened, no flip back
+	is.NoErr(s.Ack(ctx, update.Position))
+}

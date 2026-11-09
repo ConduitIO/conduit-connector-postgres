@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -107,9 +108,13 @@ type FetchWorker struct {
 	payloadSchema *cschema.Schema
 	// notNull is the catalog nullability of the table's columns and tableOID
 	// the table it was read for, loaded once per worker in the snapshot
-	// transaction when Avro schemas are on (#326).
+	// transaction when Avro schemas are on (#326). widenForNull marks a
+	// column nullable in it when a row holds NULL in it.
 	notNull  schema.NotNull
 	tableOID uint32
+	// createSchema registers a schema; nil means sdkschema.Create. A field so
+	// a test can make the registry reject one.
+	createSchema func(ctx context.Context, typ cschema.Type, subject string, bytes []byte) (cschema.Schema, error)
 
 	snapshotEnd int64
 	lastRead    int64
@@ -418,6 +423,9 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 			return 0, fmt.Errorf("failed to get values: %w", err)
 		}
 
+		if err := f.widenForNull(ctx, fields, values); err != nil {
+			return 0, err
+		}
 		err = f.extractSchemas(ctx, fields)
 		if err != nil {
 			return 0, fmt.Errorf("failed to extract schemas: %w", err)
@@ -683,7 +691,7 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 		if err != nil {
 			return fmt.Errorf("failed to extract payload schema for table %v: %w", f.conf.Table, err)
 		}
-		ps, err := sdkschema.Create(
+		ps, err := f.create(
 			ctx,
 			cschema.TypeAvro,
 			avroPayloadSch.Name(),
@@ -707,7 +715,7 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 		if err != nil {
 			return fmt.Errorf("failed to extract key schema for table %v: %w", f.conf.Table, err)
 		}
-		ks, err := sdkschema.Create(
+		ks, err := f.create(
 			ctx,
 			cschema.TypeAvro,
 			avroKeySch.Name(),
@@ -719,6 +727,67 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 		f.keySchema = &ks
 	}
 
+	return nil
+}
+
+func (f *FetchWorker) create(ctx context.Context, typ cschema.Type, subject string, b []byte) (cschema.Schema, error) {
+	if f.createSchema != nil {
+		return f.createSchema(ctx, typ, subject, b)
+	}
+	return sdkschema.Create(ctx, typ, subject, b)
+}
+
+// widenForNull handles a row that holds NULL in a column the catalog
+// declares NOT NULL. The catalog read sees committed catalog changes, not the
+// snapshot's view of them, so a SET NOT NULL committed after the data
+// snapshot was taken (on rows that held NULL in it) is visible to it. The
+// column's field becomes ["null", T] for the rest of the worker, the widened
+// schemas are registered for this row and the next ones, and a warning coded
+// schema.ErrorCodeAvroNullInNotNullColumn is logged once per column; it names
+// the table and the column, never a value or a key. If the registry rejects
+// the widened schema, the fetch fails with an error with that code and the
+// row is not sent. Without Avro schemas it does nothing.
+func (f *FetchWorker) widenForNull(ctx context.Context, fields []pgconn.FieldDescription, values []any) error {
+	if !f.conf.WithAvroSchema {
+		return nil
+	}
+	var cols []string
+	for i, fd := range fields {
+		if values[i] == nil && f.notNull[fd.Name] {
+			cols = append(cols, fd.Name)
+		}
+	}
+	if len(cols) == 0 {
+		return nil
+	}
+	// Invariant 6: the NULL is delivered as null under a schema that admits
+	// it, never coerced to a zero value and never dropped.
+	notNull := maps.Clone(f.notNull)
+	for _, c := range cols {
+		notNull[c] = false
+	}
+	prevNotNull, prevPayload, prevKey := f.notNull, f.payloadSchema, f.keySchema
+	f.notNull, f.payloadSchema, f.keySchema = notNull, nil, nil
+	if err := f.extractSchemas(ctx, fields); err != nil {
+		f.notNull, f.payloadSchema, f.keySchema = prevNotNull, prevPayload, prevKey
+		return fmt.Errorf(
+			"%s: a row of table %q holds NULL in the column(s) %q, which the catalog declares NOT NULL "+
+				"(the column was made NOT NULL after the snapshot started), and the payload schema with the column(s) made "+
+				"nullable could not be registered: %w. "+
+				"Fix: allow the change on the subject %q (T -> [\"null\", T] is BACKWARD compatible; FORWARD and FULL reject it), "+
+				"for example set its compatibility to BACKWARD or NONE, and restart; or set logrepl.withAvroSchema to false and restart",
+			schema.ErrorCodeAvroNullInNotNullColumn, f.conf.Table, cols, err, f.conf.Table+"_payload")
+	}
+	// Once per column: f.notNull now says it is nullable, so its NULLs are
+	// not detected again.
+	for _, c := range cols {
+		sdk.Logger(ctx).Warn().
+			Str("code", schema.ErrorCodeAvroNullInNotNullColumn).
+			Str("table", f.conf.Table).
+			Str("column", c).
+			Msg("a snapshot row holds NULL in a column the catalog declares NOT NULL (the column was made NOT NULL after the snapshot started); " +
+				"its Avro field is now nullable and a new payload schema version is registered")
+	}
 	return nil
 }
 
