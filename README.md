@@ -523,10 +523,11 @@ Change data capture reads the nullability when Postgres sends a table's
 relation message: at the start of streaming and after every `ALTER TABLE`, including
 `SET NOT NULL` and `DROP NOT NULL`. It reads the catalog as it is at that moment. If
 the connector is behind and a column was made `NOT NULL` after a change that stored
-`NULL` in it, that change cannot be encoded and the source stops with
-`avro: ... unsupported`; it is never delivered with a made-up value. Run
-`ALTER TABLE <table> ALTER COLUMN <column> DROP NOT NULL`, restart, and set it again
-once the connector has caught up. A column that is no longer in the catalog (dropped
+`NULL` in it, that change cannot be encoded and the source stops with the error code
+`postgres.avro.null_in_not_null_column`, which names the table, the columns and the
+LSN; it is never delivered with a made-up value. To continue, restart with
+`logrepl.withAvroSchema: false` until the source is past that LSN, then switch it back
+on. A column that is no longer in the catalog (dropped
 or renamed since the change was written) is nullable.
 
 **Upgrading from v0.20.x or earlier.** Earlier versions registered every column as a

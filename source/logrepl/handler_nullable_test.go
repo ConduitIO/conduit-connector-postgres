@@ -232,11 +232,32 @@ func TestHandler_Avro_NullabilityFromCatalog(t *testing.T) {
 		h.loadNotNull = func(context.Context, uint32) (schema.NotNull, error) {
 			return schema.NotNull{"id": true, "i": true, "t": true}, nil
 		}
-		is.NoErr(h.handleInsert(ctx, &pglogrepl.InsertMessage{
+		err := h.handleInsert(ctx, &pglogrepl.InsertMessage{
 			RelationID: 1, Tuple: tuple(txt("1"), null(), txt("a")),
+		}, pglogrepl.LSN(0x16B3A10))
+		is.True(err != nil)
+		is.True(strings.HasPrefix(err.Error(), ErrorCodeAvroNullInNotNullColumn+": "))
+		is.True(strings.Contains(err.Error(), `["i"]`))
+		is.True(strings.Contains(err.Error(), "0/16B3A10"))
+		is.True(!strings.Contains(err.Error(), `"a"`)) // never a value
+		is.Equal(len(ch), 0)                         // nothing emitted
+	})
+
+	t.Run("key-only old tuple: its NULLs are not values", func(t *testing.T) {
+		// Under DEFAULT identity a DELETE carries a key-only old tuple ('K')
+		// with NULL in every other column, NOT NULL ones included. Those
+		// NULLs are never emitted and must not stop the source.
+		ctx := context.Background()
+		is := is.New(t)
+		h, ch, _ := newBeforeTestHandler(ctx, t, true)
+		h.loadNotNull = func(context.Context, uint32) (schema.NotNull, error) {
+			return schema.NotNull{"id": true, "i": true, "t": true}, nil
+		}
+		is.NoErr(h.handleDelete(ctx, &pglogrepl.DeleteMessage{
+			RelationID: 1, OldTupleType: pglogrepl.DeleteMessageTupleTypeKey, OldTuple: tuple(txt("1"), null(), null()),
 		}, 1))
 		_, err := receiveEncoded(ctx, t, ch)
-		is.True(err != nil)
+		is.NoErr(err)
 	})
 }
 

@@ -367,6 +367,9 @@ func (h *CDCHandler) handleInsert(
 	if err := h.updateAvroSchema(ctx, rel); err != nil {
 		return fmt.Errorf("failed to update avro schema: %w", err)
 	}
+	if err := h.requireCatalogNotNull(rel, lsn, newValues); err != nil {
+		return err
+	}
 	h.avroShape(rel, newValues)
 
 	rec := sdk.Util.Source.NewRecordCreate(
@@ -449,6 +452,9 @@ func (h *CDCHandler) handleUpdate(
 	if err := h.requireAllColumns(newValues, rel, lsn); err != nil {
 		return err
 	}
+	if err := h.requireCatalogNotNull(rel, lsn, newValues, fullOldRow(msg.OldTupleType, oldValues)); err != nil {
+		return err
+	}
 	h.avroShape(rel, newValues)
 	h.avroShape(rel, oldValues)
 
@@ -496,6 +502,9 @@ func (h *CDCHandler) handleDelete(
 
 	if err := h.updateAvroSchema(ctx, rel); err != nil {
 		return fmt.Errorf("failed to update avro schema: %w", err)
+	}
+	if err := h.requireCatalogNotNull(rel, lsn, fullOldRow(msg.OldTupleType, oldValues)); err != nil {
+		return err
 	}
 	h.avroShape(rel, oldValues)
 
@@ -1439,8 +1448,9 @@ func (h *CDCHandler) relationAvroText(ctx context.Context, rel *pglogrepl.Relati
 // not in the current catalog was dropped or renamed since (or the table was
 // dropped): nothing can make it NOT NULL any more, so it is nullable, the
 // schema that accepts every value the WAL can hold. A column that is NOT NULL
-// now but held NULL when an older change was written makes that change fail
-// to encode and stops the source; it is never encoded as anything but NULL.
+// now but held NULL when an older change was written stops the source with
+// ErrorCodeAvroNullInNotNullColumn (requireCatalogNotNull); it is never
+// encoded as anything but NULL.
 // See "Avro Schema" in the README.
 func (h *CDCHandler) relationNotNull(ctx context.Context, rel *pglogrepl.RelationMessage) (schema.NotNull, error) {
 	if h.loadNotNull == nil {
@@ -1492,6 +1502,64 @@ func (h *CDCHandler) requireAllColumns(values map[string]any, rel *pglogrepl.Rel
 			"Fix: set logrepl.withAvroSchema to false and restart, which emits the update without the unchanged columns; "+
 			"to keep Avro schemas for later updates, also run ALTER TABLE %s REPLICA IDENTITY FULL, which makes Postgres send the old values",
 		ErrorCodeAvroUnchangedToast, rel.RelationName, lsn, missing, pginternal.WrapSQLIdent(rel.RelationName))
+}
+
+// ErrorCodeAvroNullInNotNullColumn prefixes the error returned when, with
+// Avro schemas on, a change holds NULL in a column the catalog now declares
+// NOT NULL (see requireCatalogNotNull).
+const ErrorCodeAvroNullInNotNullColumn = "postgres.avro.null_in_not_null_column"
+
+// fullOldRow returns oldValues when the old tuple is a full old row ('O',
+// REPLICA IDENTITY FULL), nil otherwise. A key-only old tuple ('K') carries
+// NULL for every non-identity column; those NULLs are not values of the row
+// and are never emitted (buildRecordBefore), so they must not be checked.
+func fullOldRow(tupleType uint8, oldValues map[string]any) map[string]any {
+	// UpdateMessageTupleTypeOld and DeleteMessageTupleTypeOld are both 'O'.
+	if tupleType != pglogrepl.UpdateMessageTupleTypeOld {
+		return nil
+	}
+	return oldValues
+}
+
+// requireCatalogNotNull returns an error coded ErrorCodeAvroNullInNotNullColumn
+// when a row holds NULL in a column whose Avro field is a plain (NOT NULL)
+// type. That happens when the catalog is newer than the change: the column
+// was made NOT NULL after the change was written (the connector lags behind
+// a SET NOT NULL). The error names the table, the columns and the LSN, never
+// a value or a key. Without Avro schemas it does nothing.
+func (h *CDCHandler) requireCatalogNotNull(rel *pglogrepl.RelationMessage, lsn pglogrepl.LSN, rows ...map[string]any) error {
+	if !h.withAvroSchema {
+		return nil
+	}
+	cols := h.nullInNotNull(rel, rows...)
+	if len(cols) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s: change on table %q (WAL LSN %s) holds NULL in the column(s) %q, which the catalog now declares NOT NULL "+
+			"(the column was made NOT NULL after the change was written); the record cannot be encoded with the Avro schema built from the catalog. "+
+			"Fix: set logrepl.withAvroSchema to false and restart until the source is past this LSN, then set it back to true",
+		ErrorCodeAvroNullInNotNullColumn, rel.RelationName, lsn, cols)
+}
+
+// nullInNotNull returns, in column order, the columns of rel that hold NULL in
+// any of rows while their cached nullability says NOT NULL. It reads the
+// nullability updateAvroSchema built.
+func (h *CDCHandler) nullInNotNull(rel *pglogrepl.RelationMessage, rows ...map[string]any) []string {
+	notNull := h.avroTexts[rel.RelationID].notNull
+	var cols []string
+	for _, c := range rel.Columns {
+		if !notNull[c.Name] {
+			continue
+		}
+		for _, row := range rows {
+			if v, ok := row[c.Name]; ok && v == nil {
+				cols = append(cols, c.Name)
+				break
+			}
+		}
+	}
+	return cols
 }
 
 // avroShape gives the values of rel's nullable columns the shape their
