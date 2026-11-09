@@ -22,7 +22,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	"github.com/conduitio/conduit-connector-postgres/test"
+	"github.com/jackc/pgx/v5"
 	"github.com/matryer/is"
 	"github.com/rs/zerolog"
 )
@@ -92,6 +94,28 @@ func TestWarnToastIdentity(t *testing.T) {
 		})
 	}
 
+	t.Run("catalog read stuck: bounded by the catalog timeout", func(t *testing.T) {
+		is := is.New(t)
+		old := schema.NotNullQueryTimeout
+		schema.NotNullQueryTimeout = 20 * time.Millisecond
+		t.Cleanup(func() { schema.NotNullQueryTimeout = old })
+
+		var logs bytes.Buffer
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			WarnToastIdentity(zerolog.New(&logs).WithContext(context.Background()), blockingRowQuerier{}, "stuck_ti")
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("WarnToastIdentity did not return: the catalog read is not bounded")
+		}
+		is.True(strings.Contains(logs.String(), `"level":"warn"`))
+		is.True(strings.Contains(logs.String(), `"timed_out":true`))
+		is.True(!strings.Contains(logs.String(), WarnCodeAvroToastIdentity))
+	})
+
 	t.Run("catalog read fails: no refusal, no panic", func(t *testing.T) {
 		is := is.New(t)
 		var logs bytes.Buffer
@@ -99,4 +123,19 @@ func TestWarnToastIdentity(t *testing.T) {
 		is.True(strings.Contains(logs.String(), `"level":"warn"`))
 		is.True(!strings.Contains(logs.String(), WarnCodeAvroToastIdentity))
 	})
+}
+
+// blockingRowQuerier is a catalog that answers only when the query's context
+// ends: a starved pool or a locked catalog.
+type blockingRowQuerier struct{}
+
+func (blockingRowQuerier) QueryRow(ctx context.Context, _ string, _ ...any) pgx.Row {
+	return blockingRow{ctx: ctx}
+}
+
+type blockingRow struct{ ctx context.Context }
+
+func (r blockingRow) Scan(...any) error {
+	<-r.ctx.Done()
+	return r.ctx.Err()
 }

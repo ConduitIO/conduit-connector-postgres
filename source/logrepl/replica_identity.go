@@ -19,6 +19,7 @@ import (
 	"fmt"
 
 	"github.com/conduitio/conduit-connector-postgres/internal"
+	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
 )
@@ -94,7 +95,9 @@ const WarnCodeAvroToastIdentity = "postgres.avro.toast_identity"
 // stops the source with ErrorCodeAvroUnchangedToast (see requireAllColumns);
 // the warning lets the operator set REPLICA IDENTITY FULL before the first
 // such update instead of after a stopped pipeline. It is a warning only: it
-// never refuses Open, and a failed catalog read is logged, not returned. It
+// never refuses Open, and a failed catalog read is logged, not returned. The
+// read is bounded by schema.NotNullQueryTimeout, like the nullability read,
+// so a starved pool cannot hold Open for the caller's whole deadline. It
 // names the table and columns, never values.
 func WarnToastIdentity(ctx context.Context, q RowQuerier, table string) {
 	const query = `SELECT c.relreplident::text,
@@ -106,10 +109,13 @@ func WarnToastIdentity(ctx context.Context, q RowQuerier, table string) {
 
 	var identity string
 	var toastable []string
-	if err := q.QueryRow(ctx, query, internal.WrapSQLIdent(table)).Scan(&identity, &toastable); err != nil {
+	qctx, cancel := context.WithTimeout(ctx, schema.NotNullQueryTimeout)
+	defer cancel()
+	if err := q.QueryRow(qctx, query, internal.WrapSQLIdent(table)).Scan(&identity, &toastable); err != nil {
 		sdk.Logger(ctx).Warn().
 			Str("table", table).
 			Str("error_type", fmt.Sprintf("%T", err)).
+			Bool("timed_out", qctx.Err() != nil && ctx.Err() == nil).
 			Msg("could not check whether the table's replica identity covers its TOASTable columns")
 		return
 	}
