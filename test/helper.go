@@ -54,6 +54,16 @@ var RepmgrConnString = "postgres://repmgr:repmgrmeroxa@127.0.0.1:" + envPort("CO
 // RegularConnString is a non-replication user connection string for the test postgres.
 var RegularConnString = "postgres://meroxauser:meroxapass@127.0.0.1:" + envPort("CONDUIT_PG_TEST_PORT", "5433") + "/meroxadb?sslmode=disable"
 
+// SQLASCIIRepmgrConnString and SQLASCIIRegularConnString are
+// RepmgrConnString and RegularConnString for meroxadb_sqlascii, a database
+// of the same server whose server_encoding is SQL_ASCII
+// (test/initdb/01-sqlascii-db.sql). It stores json text unchecked, so it
+// can hold json that is not valid UTF-8.
+var (
+	SQLASCIIRepmgrConnString  = strings.Replace(RepmgrConnString, "/meroxadb?", "/meroxadb_sqlascii?", 1)
+	SQLASCIIRegularConnString = strings.Replace(RegularConnString, "/meroxadb?", "/meroxadb_sqlascii?", 1)
+)
+
 // BouncerConnString connects the regular user through the test PgBouncer
 // (test/docker-compose.yml, test/pgbouncer/pgbouncer.ini): transaction pooling,
 // two server connections, and prepared-statement tracking
