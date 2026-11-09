@@ -38,6 +38,15 @@ func (blockingQuerier) Query(ctx context.Context, _ string, _ ...any) (pgx.Rows,
 	return nil, errors.New("conn closed")
 }
 
+// TestNotNullQueryTimeout_Default pins the bound the design depends on: the
+// CDC catalog read must fail well before wal_sender_timeout (60s by default)
+// ends the walsender while the replication connection is not read.
+func TestNotNullQueryTimeout_Default(t *testing.T) {
+	is := is.New(t)
+	is.Equal(NotNullQueryTimeout, 10*time.Second)
+	is.True(NotNullQueryTimeout < 60*time.Second)
+}
+
 // TestLoadNotNull_Bounded: the catalog read runs on the replication goroutine
 // in CDC, so it must not hang there; an expired deadline or a cancelled
 // context yields an error that says what was read and wraps the cause.
