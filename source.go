@@ -111,6 +111,12 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 		if err := logrepl.CheckReplicaIdentity(ctx, s.pool, tableName, s.tableKeys[tableName]); err != nil {
 			return err
 		}
+		if s.config.WithAvroSchema {
+			// Invariant 6: an unchanged TOASTed value is never encoded as
+			// NULL; under Avro such an update stops the source. Warn before
+			// the first one (warning only, never a refusal).
+			logrepl.WarnToastIdentity(ctx, s.pool, tableName)
+		}
 	}
 
 	imp, err := s.debeziumImport(ctx, pos)

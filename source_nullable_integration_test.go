@@ -30,6 +30,7 @@ import (
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/conduitio/conduit-connector-sdk/schema"
 	"github.com/matryer/is"
+	"github.com/rs/zerolog"
 )
 
 // Regression tests for #326: with logrepl.withAvroSchema (the default), a NULL
@@ -463,4 +464,40 @@ func TestSource_Avro_NullBeforeSetNotNull(t *testing.T) {
 	is.Equal(got["c"], 5)
 	is.Equal(usch.Version, sch.Version) // stays widened, no flip back
 	is.NoErr(s.Ack(ctx, update.Position))
+}
+
+// TestSource_Open_WarnsToastIdentity: with Avro schemas on, Open warns about a
+// table whose replica identity cannot carry unchanged TOASTed values; it
+// still opens. Without Avro there is nothing to warn about.
+func TestSource_Open_WarnsToastIdentity(t *testing.T) {
+	for _, withAvro := range []bool{true, false} {
+		t.Run(fmt.Sprintf("avro=%v", withAvro), func(t *testing.T) {
+			is := is.New(t)
+			// The subscription goroutine logs too: a buffer safe for that.
+			logs := &lockedBuffer{}
+			ctx := zerolog.New(logs).WithContext(test.Context(t))
+			conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+			table := fmt.Sprintf("nullable_toastwarn_%d_%d", time.Now().UnixMicro()%1000000, nullableTableSeq.Add(1))
+			_, err := conn.Exec(ctx, fmt.Sprintf("CREATE TABLE %s (id bigint PRIMARY KEY, big text)", table))
+			is.NoErr(err)
+			dropReplication(ctx, t, table)
+			t.Cleanup(func() { _, _ = conn.Exec(context.Background(), "DROP TABLE "+table) })
+
+			s := NewSource()
+			is.NoErr(sdk.Util.ParseConfig(ctx, map[string]string{
+				"url":                     test.RepmgrConnString,
+				"tables":                  table,
+				"snapshotMode":            "never",
+				"cdcMode":                 "logrepl",
+				"logrepl.slotName":        table,
+				"logrepl.publicationName": table,
+				"logrepl.withAvroSchema":  fmt.Sprint(withAvro),
+			}, s.Config(), Connector.NewSpecification().SourceParams))
+			is.NoErr(s.Open(ctx, nil)) // a warning, never a refusal
+			t.Cleanup(func() { _ = s.Teardown(context.Background()) })
+
+			warned := strings.Contains(logs.String(), `"code":"`+logrepl.WarnCodeAvroToastIdentity+`"`)
+			is.Equal(warned, withAvro)
+		})
+	}
 }

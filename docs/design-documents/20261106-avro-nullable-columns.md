@@ -94,7 +94,10 @@ whose existing rows may hold `NULL`. Such a column is treated as nullable.
   catalog, treated as nullable, which accepts every value. A rename that reuses
   another column's old name picks up that column's nullability; the worst case is
   the widening above.
-- **Unchanged TOAST under Avro**: coded stop, as before (see Decision).
+- **Unchanged TOAST under Avro**: coded stop, as before (see Decision). `Open` warns
+  (`postgres.avro.toast_identity`) for each captured table with a TOAST-able column
+  (`attstorage` other than plain) and a replica identity other than `FULL`, so the
+  operator can set `FULL` before the first such update. Warning only.
 - **Snapshot**: the lookup runs in the snapshot's `REPEATABLE READ` transaction, so
   it describes the rows being read. Each field's table OID is checked against it.
 
