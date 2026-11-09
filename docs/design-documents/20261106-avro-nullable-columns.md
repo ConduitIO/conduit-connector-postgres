@@ -10,8 +10,9 @@ emits `["null", T]` with a default of `null` for a column that is not `NOT NULL`
 the shape Debezium's Avro converter gives an optional column. `NOT NULL` columns,
 primary keys included, keep the plain `T`.
 
-Tier 1: it changes registered schemas on the data path. Target: v0.21.0.
-Roadmap: v0.22 Debezium Postgres output parity.
+Tier 1: it changes registered schemas on the data path. Target: connector
+v0.21.0, the next release after v0.20.0, which ships in Conduit v0.22.
+Roadmap: Conduit v0.22, Debezium Postgres output parity.
 
 ## Context
 
