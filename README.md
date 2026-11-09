@@ -505,10 +505,13 @@ schemas. A per-record schema without the unchanged columns is proposed in
 [#388](https://github.com/ConduitIO/conduit-connector-postgres/issues/388).
 
 So that this does not come as a surprise, `Open` logs a warning with the code
-`postgres.avro.toast_identity` for every captured table that has a column that can be
-TOASTed and a replica identity other than `FULL`, when `logrepl.withAvroSchema` is on.
-The warning names the table, its replica identity and the columns, and gives the
-`ALTER TABLE ... REPLICA IDENTITY FULL` statement. It never stops `Open`.
+`postgres.avro.toast_identity`, once per captured table, for every table that has a
+column that can be TOASTed and a replica identity other than `FULL`, when
+`logrepl.withAvroSchema` is on. Such a column is only at risk once a value is stored
+out of line, which Postgres does only for rows above about 2 kB: a table whose rows
+stay smaller never stops this way. The warning names the table, its replica identity
+and the columns, and gives the `ALTER TABLE ... REPLICA IDENTITY FULL` statement. It
+never stops `Open`.
 
 ### Avro Schema
 

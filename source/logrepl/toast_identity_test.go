@@ -90,6 +90,8 @@ func TestWarnToastIdentity(t *testing.T) {
 			is.True(strings.Contains(out, `"replica_identity":"`+c.identity+`"`))
 			is.True(strings.Contains(out, `"toastable_columns":`+c.columns))
 			is.True(strings.Contains(out, ErrorCodeAvroUnchangedToast))
+			is.True(strings.Contains(out, "stored out of line (TOASTed)"))
+			is.True(strings.Contains(out, "only when its row exceeds about 2 kB, so short values are not affected"))
 			is.True(strings.Contains(out, `ALTER TABLE \"`+table+`\" REPLICA IDENTITY FULL`))
 		})
 	}

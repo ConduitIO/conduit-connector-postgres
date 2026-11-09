@@ -90,11 +90,14 @@ const WarnCodeAvroToastIdentity = "postgres.avro.toast_identity"
 
 // WarnToastIdentity logs a warning coded WarnCodeAvroToastIdentity when table
 // has columns that can be TOASTed (pg_attribute.attstorage other than
-// 'p'lain) and a REPLICA IDENTITY other than FULL. With Avro schemas on, an
-// UPDATE that leaves such a column unchanged arrives without its value and
+// 'p'lain) and a REPLICA IDENTITY other than FULL. Open calls it once per
+// captured table. With Avro schemas on, an UPDATE that leaves such a
+// column's value unchanged while the value is stored out of line (Postgres
+// does so only for rows above about 2 kB) arrives without the value and
 // stops the source with ErrorCodeAvroUnchangedToast (see requireAllColumns);
-// the warning lets the operator set REPLICA IDENTITY FULL before the first
-// such update instead of after a stopped pipeline. It is a warning only: it
+// a column that can be TOASTed but only holds short values never does, and
+// the warning says so. It lets the operator set REPLICA IDENTITY FULL before
+// the first such update instead of after a stopped pipeline. It is a warning only: it
 // never refuses Open, and a failed catalog read is logged, not returned. The
 // read is bounded by schema.NotNullQueryTimeout, like the nullability read,
 // so a starved pool cannot hold Open for the caller's whole deadline. It
@@ -127,8 +130,10 @@ func WarnToastIdentity(ctx context.Context, q RowQuerier, table string) {
 		Str("table", table).
 		Str("replica_identity", replicaIdentityName(identity)).
 		Strs("toastable_columns", toastable).
-		Msgf("with logrepl.withAvroSchema, an UPDATE that does not change a TOASTed value of these columns will stop the pipeline with %s, "+
-			"because Postgres does not send the unchanged value. Fix: ALTER TABLE %s REPLICA IDENTITY FULL",
+		Msgf("with logrepl.withAvroSchema, an UPDATE that leaves a value of these columns unchanged stops the pipeline with %s "+
+			"if that value is stored out of line (TOASTed), because Postgres does not send it. "+
+			"Postgres stores a value out of line only when its row exceeds about 2 kB, so short values are not affected. "+
+			"To rule it out: ALTER TABLE %s REPLICA IDENTITY FULL",
 			ErrorCodeAvroUnchangedToast, internal.WrapSQLIdent(table))
 }
 

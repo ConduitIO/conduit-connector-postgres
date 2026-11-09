@@ -496,8 +496,12 @@ func TestSource_Open_WarnsToastIdentity(t *testing.T) {
 			is.NoErr(s.Open(ctx, nil)) // a warning, never a refusal
 			t.Cleanup(func() { _ = s.Teardown(context.Background()) })
 
-			warned := strings.Contains(logs.String(), `"code":"`+logrepl.WarnCodeAvroToastIdentity+`"`)
-			is.Equal(warned, withAvro)
+			warnings := strings.Count(logs.String(), `"code":"`+logrepl.WarnCodeAvroToastIdentity+`"`)
+			if withAvro {
+				is.Equal(warnings, 1) // once per table per Open
+			} else {
+				is.Equal(warnings, 0)
+			}
 		})
 	}
 }
