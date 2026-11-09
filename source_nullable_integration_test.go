@@ -366,3 +366,51 @@ func TestSource_Avro_UnchangedToastRefused(t *testing.T) {
 	is.True(strings.Contains(err.Error(), logrepl.ErrorCodeAvroUnchangedToast))
 	is.True(strings.Contains(err.Error(), `"big"`))
 }
+
+// TestSource_Avro_UnchangedToastFullIdentity is the remedy the
+// postgres.avro.unchanged_toast error and the README recommend: with REPLICA
+// IDENTITY FULL, Postgres sends the old row, the handler fills the unchanged
+// TOASTed column from it before the refusal check, and the update is emitted
+// with the real value in After and Before, Avro-encoded. A refusal moved above
+// that backfill would stop exactly the pipelines the fix tells operators to
+// build.
+func TestSource_Avro_UnchangedToastFullIdentity(t *testing.T) {
+	ctx := test.Context(t)
+	is := is.New(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	table := fmt.Sprintf("nullable_toastfull_%d_%d", time.Now().UnixMicro()%1000000, nullableTableSeq.Add(1))
+	_, err := conn.Exec(ctx, fmt.Sprintf("CREATE TABLE %s (id bigint PRIMARY KEY, small int, big text, ts timestamp)", table))
+	is.NoErr(err)
+	// Out of line and uncompressed, so an UPDATE that does not touch big
+	// sends it as unchanged-TOAST.
+	_, err = conn.Exec(ctx, fmt.Sprintf("ALTER TABLE %s ALTER COLUMN big SET STORAGE EXTERNAL", table))
+	is.NoErr(err)
+	_, err = conn.Exec(ctx, fmt.Sprintf("ALTER TABLE %s REPLICA IDENTITY FULL", table))
+	is.NoErr(err)
+	dropReplication(ctx, t, table)
+	t.Cleanup(func() { _, _ = conn.Exec(context.Background(), "DROP TABLE "+table) })
+
+	s := openNullableSource(ctx, t, table, "never")
+	_, err = conn.Exec(ctx, fmt.Sprintf("INSERT INTO %s VALUES (1, 1, repeat('x', 100000), '2022-03-14 15:16:17')", table))
+	is.NoErr(err)
+	rec, err := readOne(ctx, t, s)
+	is.NoErr(err)
+	is.Equal(rec.Operation, opencdc.OperationCreate)
+	is.NoErr(s.Ack(ctx, rec.Position))
+
+	_, err = conn.Exec(ctx, fmt.Sprintf("UPDATE %s SET small = 2 WHERE id = 1", table))
+	is.NoErr(err)
+	rec, err = readOne(ctx, t, s)
+	is.NoErr(err) // the remedy works: no postgres.avro.unchanged_toast
+	is.Equal(rec.Operation, opencdc.OperationUpdate)
+
+	want := strings.Repeat("x", 100000)
+	after, _ := decodeWith(ctx, t, rec, rec.Payload.After, false)
+	is.Equal(after["small"], 2)
+	is.Equal(after["big"], want) // the real value, not NULL
+	before, _ := decodeWith(ctx, t, rec, rec.Payload.Before, false)
+	is.Equal(before["small"], 1)
+	is.Equal(before["big"], want)
+	is.True(before["ts"] != nil)
+	is.NoErr(s.Ack(ctx, rec.Position))
+}
