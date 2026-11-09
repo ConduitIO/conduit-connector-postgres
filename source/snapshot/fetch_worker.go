@@ -698,7 +698,8 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 			text,
 		)
 		if err != nil {
-			return fmt.Errorf("failed creating payload schema for table %v: %w", f.conf.Table, err)
+			return fmt.Errorf("failed creating payload schema for table %v: %w",
+				f.conf.Table, &schema.SubjectError{Subject: avroPayloadSch.Name(), Err: err})
 		}
 		f.payloadSchema = &ps
 	}
@@ -722,7 +723,8 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 			text,
 		)
 		if err != nil {
-			return fmt.Errorf("failed creating key schema for table %v: %w", f.conf.Table, err)
+			return fmt.Errorf("failed creating key schema for table %v: %w",
+				f.conf.Table, &schema.SubjectError{Subject: avroKeySch.Name(), Err: err})
 		}
 		f.keySchema = &ks
 	}
@@ -777,13 +779,16 @@ func (f *FetchWorker) widenForNull(ctx context.Context, fields []pgconn.FieldDes
 	f.notNull, f.payloadSchema, f.keySchema = notNull, nil, nil
 	if err := f.extractSchemas(ctx, fields); err != nil {
 		f.notNull, f.payloadSchema, f.keySchema = prevNotNull, prevPayload, prevKey
+		// The key is widened too when the NULL column is the configured
+		// key, so the rejected subject can be either one.
+		subject := schema.RejectedSubject(err, f.conf.Table+"_payload")
 		return fmt.Errorf(
 			"%s: a row of table %q holds NULL in the column(s) %q, which the catalog declares NOT NULL "+
-				"(the catalog and the snapshot's rows disagree), and the payload schema with the column(s) made "+
+				"(the catalog and the snapshot's rows disagree), and the schema of the subject %q with the column(s) made "+
 				"nullable could not be registered: %w. "+
 				"Fix: allow the change on the subject %q (T -> [\"null\", T] is BACKWARD compatible; FORWARD and FULL reject it), "+
 				"for example set its compatibility to BACKWARD or NONE, and restart; or set logrepl.withAvroSchema to false and restart",
-			schema.ErrorCodeAvroNullInNotNullColumn, f.conf.Table, cols, err, f.conf.Table+"_payload")
+			schema.ErrorCodeAvroNullInNotNullColumn, f.conf.Table, cols, subject, err, subject)
 	}
 	// Once per column: f.notNull now says it is nullable, so its NULLs are
 	// not detected again.

@@ -130,11 +130,42 @@ func TestFetchWorker_WidenRejected(t *testing.T) {
 	is.True(strings.HasPrefix(err.Error(), schema.ErrorCodeAvroNullInNotNullColumn+": "))
 	is.True(strings.Contains(err.Error(), `"`+f.conf.Table+`"`))
 	is.True(strings.Contains(err.Error(), `["i"]`))
-	is.True(strings.Contains(err.Error(), f.conf.Table+"_payload"))
+	is.True(strings.Contains(err.Error(), "subject "+`"`+f.conf.Table+`_payload"`))
+	is.True(!strings.Contains(err.Error(), f.conf.Table+"_key")) // the key was not the one rejected
 	is.True(strings.Contains(err.Error(), "BACKWARD"))
 	is.True(!strings.Contains(err.Error(), "secret"))
 	is.True(f.notNull["i"])                                        // not widened
 	is.Equal(f.payloadSchema.Version, first.PayloadSchema.Version) // schemas restored
+}
+
+// TestFetchWorker_WidenRejected_Key: when the NULL column is the configured
+// key and the registry rejects only the widened key schema, the error names
+// the key subject, not the payload subject.
+func TestFetchWorker_WidenRejected_Key(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+	f, fields := widenWorker()
+	f.conf.Key = "i"
+	rejected := errors.New("Schema being registered is incompatible with an earlier schema for subject")
+	f.createSchema = func(ctx context.Context, typ cschema.Type, subject string, b []byte) (cschema.Schema, error) {
+		if subject == f.conf.Table+"_key" && strings.Contains(string(b), `"null"`) {
+			return cschema.Schema{}, rejected
+		}
+		return sdkschema.Create(ctx, typ, subject, b)
+	}
+	first, err := f.row(ctx, fields, []any{int64(1), int32(10), "secret"})
+	is.NoErr(err)
+
+	_, err = f.row(ctx, fields, []any{int64(2), nil, "secret"})
+	is.True(errors.Is(err, rejected))
+	is.True(strings.HasPrefix(err.Error(), schema.ErrorCodeAvroNullInNotNullColumn+": "))
+	is.True(strings.Contains(err.Error(), "subject "+`"`+f.conf.Table+`_key"`))
+	is.True(strings.Contains(err.Error(), "allow the change on the subject "+`"`+f.conf.Table+`_key"`))
+	is.True(!strings.Contains(err.Error(), f.conf.Table+"_payload"))
+	is.True(!strings.Contains(err.Error(), "secret"))
+	is.True(f.notNull["i"])
+	is.Equal(f.payloadSchema.Version, first.PayloadSchema.Version)
+	is.Equal(f.keySchema.Version, first.KeySchema.Version)
 }
 
 // TestFetchWorker_Run_WidensNullInNotNullColumn drives the defensive guard

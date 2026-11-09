@@ -1396,7 +1396,8 @@ func (h *CDCHandler) registerAvro(ctx context.Context, rel *pglogrepl.RelationMe
 		texts.payload,
 	)
 	if err != nil {
-		return fmt.Errorf("failed creating payload schema for relation %v: %w", rel.RelationName, err)
+		return fmt.Errorf("failed creating payload schema for relation %v: %w",
+			rel.RelationName, &schema.SubjectError{Subject: rel.RelationName + "_payload", Err: err})
 	}
 	h.payloadSchemas[rel.RelationName] = ps
 
@@ -1408,7 +1409,8 @@ func (h *CDCHandler) registerAvro(ctx context.Context, rel *pglogrepl.RelationMe
 		texts.key,
 	)
 	if err != nil {
-		return fmt.Errorf("failed creating key schema for relation %v: %w", rel.RelationName, err)
+		return fmt.Errorf("failed creating key schema for relation %v: %w",
+			rel.RelationName, &schema.SubjectError{Subject: rel.RelationName + "_key", Err: err})
 	}
 	h.keySchemas[rel.RelationName] = ks
 
@@ -1579,16 +1581,28 @@ func (h *CDCHandler) widenForNull(ctx context.Context, rel *pglogrepl.RelationMe
 	if err != nil {
 		return fmt.Errorf("failed to widen avro schema: %w", err)
 	}
+	prevPayload, hadPayload := h.payloadSchemas[rel.RelationName]
 	if err := h.registerAvro(ctx, rel, ra); err != nil {
 		// Nothing is widened: the cache keeps the narrow texts and the next
-		// attempt detects the NULL and widens again.
+		// attempt detects the NULL and widens again. If the payload was
+		// registered and the key rejected, the attached payload schema goes
+		// back to the narrow one too.
+		if hadPayload {
+			h.payloadSchemas[rel.RelationName] = prevPayload
+		} else {
+			delete(h.payloadSchemas, rel.RelationName)
+		}
+		// The key is widened too when the NULL column is the record key
+		// (a configured key that is not the primary key), so the rejected
+		// subject can be either one.
+		subject := schema.RejectedSubject(err, rel.RelationName+"_payload")
 		return fmt.Errorf(
 			"%s: change on table %q (WAL LSN %s) holds NULL in the column(s) %q, which the catalog declares NOT NULL "+
-				"(the column was made NOT NULL after the change was written), and the schema registry rejected the payload schema "+
-				"with the column(s) made nullable: %w. "+
+				"(the column was made NOT NULL after the change was written), and the schema registry rejected the schema "+
+				"of the subject %q with the column(s) made nullable: %w. "+
 				"Fix: allow the change on the subject %q (T -> [\"null\", T] is BACKWARD compatible; FORWARD and FULL reject it), "+
 				"for example set its compatibility to BACKWARD or NONE, and restart; or set logrepl.withAvroSchema to false and restart",
-			ErrorCodeAvroNullInNotNullColumn, rel.RelationName, lsn, cols, err, rel.RelationName+"_payload")
+			ErrorCodeAvroNullInNotNullColumn, rel.RelationName, lsn, cols, subject, err, subject)
 	}
 	h.avroTexts[rel.RelationID] = ra
 	if h.widened[rel.RelationID] == nil {

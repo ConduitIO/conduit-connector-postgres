@@ -42,6 +42,29 @@ type NotNull map[string]bool
 // guard.
 const ErrorCodeAvroNullInNotNullColumn = "postgres.avro.null_in_not_null_column"
 
+// SubjectError is the error of registering a schema under Subject. The
+// payload and the key schema of a table are registered one after the other,
+// so a caller that reports a rejected registration takes the subject from
+// the error instead of assuming which one failed. Error returns Err's text
+// unchanged.
+type SubjectError struct {
+	Subject string
+	Err     error
+}
+
+func (e *SubjectError) Error() string { return e.Err.Error() }
+func (e *SubjectError) Unwrap() error { return e.Err }
+
+// RejectedSubject returns the subject of the first SubjectError in err's
+// chain, or fallback when there is none.
+func RejectedSubject(err error, fallback string) string {
+	var se *SubjectError
+	if errors.As(err, &se) {
+		return se.Subject
+	}
+	return fallback
+}
+
 // Querier is the subset of pgx LoadNotNull uses. pgx.Tx, *pgx.Conn and
 // *pgxpool.Pool satisfy it.
 type Querier interface {

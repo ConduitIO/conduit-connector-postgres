@@ -314,12 +314,53 @@ func TestHandler_Avro_NullabilityFromCatalog(t *testing.T) {
 		is.True(strings.Contains(err.Error(), `"`+name+`"`))
 		is.True(strings.Contains(err.Error(), `["i"]`))
 		is.True(strings.Contains(err.Error(), "0/16B3A10"))
-		is.True(strings.Contains(err.Error(), name+"_payload"))
+		is.True(strings.Contains(err.Error(), "subject "+`"`+name+`_payload"`))
+		is.True(!strings.Contains(err.Error(), name+"_key")) // the key was not the one rejected
 		is.True(strings.Contains(err.Error(), "BACKWARD"))
 		is.True(!strings.Contains(err.Error(), "secret")) // never a value
 		is.Equal(len(ch), 0)                              // nothing emitted
 		is.True(h.avroTexts[1].notNull["i"])              // the narrow texts stay cached
 		is.Equal(len(h.widened), 0)                       // nothing widened: a Relation message rebuilds the narrow schema
+	})
+
+	t.Run("registry rejects the widened key schema: the error names the key subject", func(t *testing.T) {
+		// A configured key that is not the primary key can be the column
+		// that holds the NULL; then the key schema is widened too, and the
+		// registry may reject only that one.
+		ctx := context.Background()
+		is := is.New(t)
+		h, ch, name := newBeforeTestHandler(ctx, t, true)
+		h.tableKeys[name] = "i"
+		h.loadNotNull = func(context.Context, uint32) (schema.NotNull, error) {
+			return schema.NotNull{"id": true, "i": true, "t": true}, nil
+		}
+		rejected := errors.New("Schema being registered is incompatible with an earlier schema for subject")
+		h.createSchema = func(ctx context.Context, typ cschema.Type, subject string, b []byte) (cschema.Schema, error) {
+			if subject == name+"_key" && strings.Contains(string(b), `"null"`) {
+				return cschema.Schema{}, rejected
+			}
+			return sdkschema.Create(ctx, typ, subject, b)
+		}
+		// A first change registers the narrow schemas.
+		is.NoErr(h.handleInsert(ctx, &pglogrepl.InsertMessage{
+			RelationID: 1, Tuple: tuple(txt("1"), txt("10"), txt("a")),
+		}, 1))
+		_, err := receiveEncoded(ctx, t, ch)
+		is.NoErr(err)
+		narrowPayload := h.payloadSchemas[name]
+
+		err = h.handleInsert(ctx, &pglogrepl.InsertMessage{
+			RelationID: 1, Tuple: tuple(txt("2"), null(), txt("secret")),
+		}, pglogrepl.LSN(0x16B3A10))
+		is.True(errors.Is(err, rejected))
+		is.True(strings.HasPrefix(err.Error(), ErrorCodeAvroNullInNotNullColumn+": "))
+		is.True(strings.Contains(err.Error(), "subject "+`"`+name+`_key"`))
+		is.True(strings.Contains(err.Error(), "allow the change on the subject "+`"`+name+`_key"`))
+		is.True(!strings.Contains(err.Error(), name+"_payload"))
+		is.True(!strings.Contains(err.Error(), "secret"))
+		is.Equal(len(ch), 0)
+		is.Equal(h.payloadSchemas[name], narrowPayload) // the widened payload is not left attached
+		is.Equal(len(h.widened), 0)
 	})
 
 	t.Run("NULL only in a full old row widens too", func(t *testing.T) {
