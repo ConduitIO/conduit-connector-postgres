@@ -22,6 +22,7 @@ import (
 	"github.com/conduitio/conduit-commons/opencdc"
 	cschema "github.com/conduitio/conduit-commons/schema"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
+	"github.com/conduitio/conduit-connector-postgres/source/types"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"gopkg.in/tomb.v2"
@@ -45,6 +46,9 @@ type Config struct {
 	TXSnapshotID   string
 	FetchSize      int
 	WithAvroSchema bool
+	// JSON is what to do with json text that is not valid UTF-8 (nil: the
+	// default, base64). The source shares it with the CDC handler.
+	JSON *types.JSONPolicy
 
 	// SnapshotResumed indicates this snapshot is resuming from a prior run's
 	// persisted progress (the start position was already snapshot-typed). When
@@ -178,6 +182,11 @@ func (i *Iterator) buildRecord(d FetchData) opencdc.Record {
 		// the degraded, replay-reconciled consistency is observable downstream.
 		metadata[MetadataSnapshotResumed] = "true"
 	}
+	// Invariant 6: the columns emitted as base64 are named, so a consumer can
+	// decode them and never mistakes them for JSON text.
+	if v, ok := types.JSONRawBytesMetadata(d.RawJSON); ok {
+		metadata[types.MetadataJSONRawBytes] = v
+	}
 
 	rec := sdk.Util.Source.NewRecordSnapshot(pos, metadata, d.Key, d.Payload)
 	if i.conf.WithAvroSchema {
@@ -201,6 +210,7 @@ func (i *Iterator) initFetchers(ctx context.Context) error {
 			Position:       i.lastPosition,
 			FetchSize:      i.conf.FetchSize,
 			WithAvroSchema: i.conf.WithAvroSchema,
+			JSON:           i.conf.JSON,
 		})
 
 		if err := w.Validate(ctx); err != nil {

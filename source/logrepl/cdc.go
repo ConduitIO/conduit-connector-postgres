@@ -58,6 +58,9 @@ type CDCConfig struct {
 	// SchemaDriftPolicy is what the connector does on schema drift (halt by
 	// default). Validated via ParseSchemaDriftPolicy in Config.Validate.
 	SchemaDriftPolicy SchemaDriftPolicy
+	// JSON is what to do with json text that is not valid UTF-8 (nil: the
+	// default, base64). The source shares it with the snapshot.
+	JSON *types.JSONPolicy
 	// Import is the Debezium offset import (#341), nil outside import mode.
 	// It is set only when the pipeline has no position; the caller has run
 	// dbzoffset.Preflight.
@@ -207,6 +210,7 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	handler.loadNotNull = func(ctx context.Context, relationID uint32) (schema.NotNull, error) {
 		return schema.LoadNotNull(ctx, pool, relationID)
 	}
+	handler.SetJSONPolicy(c.JSON)
 
 	newSub := subscriptionOpener(c)
 	sub, err := newSub(

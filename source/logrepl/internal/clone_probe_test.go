@@ -75,7 +75,7 @@ func TestCloneValue_EveryDecodedType(t *testing.T) {
 			rs := NewRelationSetWithEncoding(enc)
 			rs.Add(&pglogrepl.RelationMessage{RelationID: 1, RelationName: "t", ColumnNum: 1,
 				Columns: []*pglogrepl.RelationMessageColumn{{Name: "c", DataType: oid, TypeModifier: -1}}})
-			vals, err := rs.Values(1, &pglogrepl.TupleData{ColumnNum: 1, Columns: []*pglogrepl.TupleDataColumn{{DataType: 't', Data: []byte(sample)}}})
+			vals, _, err := rs.Values(1, &pglogrepl.TupleData{ColumnNum: 1, Columns: []*pglogrepl.TupleDataColumn{{DataType: 't', Data: []byte(sample)}}})
 			if err != nil {
 				// Some types cannot be represented under one encoding
 				// (for example Avro); that path errors before any record.

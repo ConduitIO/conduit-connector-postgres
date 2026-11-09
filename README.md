@@ -941,6 +941,20 @@ pipelines:
           # Type: string
           # Required: no
           cdcMode: "auto"
+          # JSONInvalidUTF8 is what the source does with a json or jsonb value
+          # (or an element of a json[] or jsonb[]) whose text is not valid
+          # UTF-8, which only a database with server_encoding SQL_ASCII can
+          # hold: - "base64" (default): the field holds the standard base64 (RFC
+          # 4648, padded) of the value's bytes, and the record's metadata
+          # postgres.json.raw_bytes (postgres.json.raw_bytes.before for Before)
+          # lists the column as a JSON array of column names, for example
+          # ["doc"]. For an array column every non-NULL element is base64.
+          # Nothing is replaced, dropped or skipped. - "halt": the source stops
+          # with the error postgres.source.json_not_utf8. Valid text is emitted
+          # unchanged either way.
+          # Type: string
+          # Required: no
+          json.invalidUTF8: "base64"
           # LogreplAllowWALGap lets the connector resume from a saved position
           # when the replication slot no longer exists and has to be created
           # again, or when the slot that exists is not the one the position was

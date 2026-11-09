@@ -29,6 +29,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/cpool"
 	"github.com/conduitio/conduit-connector-postgres/source/dbzoffset"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
+	"github.com/conduitio/conduit-connector-postgres/source/types"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5"
@@ -43,6 +44,10 @@ type Source struct {
 	config    source.Config
 	pool      *pgxpool.Pool
 	tableKeys map[string]string
+	// json applies json.invalidUTF8 to the snapshot and CDC alike and
+	// remembers the (table, column) pairs already warned about, for the life
+	// of the source. Built by jsonPolicy.
+	json *types.JSONPolicy
 }
 
 func (s *Source) Config() sdk.SourceConfig {
@@ -119,6 +124,11 @@ func (s *Source) Open(ctx context.Context, pos opencdc.Position) error {
 		}
 	}
 
+	// Invariant 6: json text that is not valid UTF-8 is never replaced; it is
+	// emitted as base64 or halts (json.invalidUTF8). Warn now if the
+	// database allows such text.
+	s.warnJSONServerEncoding(ctx, s.pool, s.config.Tables)
+
 	imp, err := s.debeziumImport(ctx, pos)
 	if err != nil {
 		return err
@@ -161,7 +171,17 @@ func (s *Source) logreplConfig(pos opencdc.Position, imp *dbzoffset.Import) logr
 		IdentityCheckTimeout: s.config.LogreplSlotIdentityCheckTimeout,
 		BeaconFailureTimeout: s.config.LogreplSlotIdentityBeaconFailureTimeout,
 		Import:               imp,
+		JSON:                 s.jsonPolicy(),
 	}
+}
+
+// jsonPolicy returns the source's types.JSONPolicy for json.invalidUTF8,
+// building it on first use.
+func (s *Source) jsonPolicy() *types.JSONPolicy {
+	if s.json == nil {
+		s.json = types.NewJSONPolicy(s.config.JSONInvalidUTF8)
+	}
+	return s.json
 }
 
 // debeziumImport returns the Debezium offset import to apply, or nil (#341

@@ -26,6 +26,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/dbzoffset"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
 	"github.com/conduitio/conduit-connector-postgres/source/snapshot"
+	"github.com/conduitio/conduit-connector-postgres/source/types"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -97,6 +98,10 @@ type Config struct {
 	// with no position, after dbzoffset.Preflight passed. WithSnapshot is
 	// false with it.
 	Import *dbzoffset.Import
+	// JSON is what the snapshot and CDC do with json text that is not valid
+	// UTF-8 (json.invalidUTF8); one policy for both, so a (table, column) is
+	// warned about once. nil is the default, base64.
+	JSON *types.JSONPolicy
 }
 
 // defaultCDCBatchSize is the CDC streaming batch size the connector falls back
@@ -339,6 +344,7 @@ func (c *CombinedIterator) initCDCIterator(ctx context.Context, pos position.Pos
 		AllowWALGap:          c.conf.AllowWALGap,
 		IdentityCheckTimeout: c.conf.IdentityCheckTimeout,
 		BeaconFailureTimeout: c.conf.BeaconFailureTimeout,
+		JSON:                 c.conf.JSON,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create CDC iterator: %w", err)
@@ -389,6 +395,7 @@ func (c *CombinedIterator) snapshotConfig(pos position.Position, txSnapshotID st
 		// every snapshot FETCH.
 		FetchSize:      c.conf.SnapshotFetchSize,
 		WithAvroSchema: c.conf.WithAvroSchema,
+		JSON:           c.conf.JSON,
 		// A snapshot-typed start position means a prior run already persisted
 		// snapshot progress: this is a resume, so tag emitted records
 		// accordingly (DBZ-3 Area 1). A first run starts from an initial/empty

@@ -24,17 +24,25 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// ErrorCodeJSONNotUTF8 prefixes the error returned when the text of a json or
-// jsonb value is not valid UTF-8. The source emits json and jsonb as strings
-// and never replaces bytes it cannot represent, so it halts instead.
+// ErrorCodeJSONNotUTF8 is the code of a json or jsonb value whose text is not
+// valid UTF-8. With json.invalidUTF8 set to halt it prefixes the error that
+// stops the source (JSONNotUTF8Error). With base64, the default, it is the
+// "code" of the warning JSONPolicy.WarnRawBytes logs for the column.
 const ErrorCodeJSONNotUTF8 = "postgres.source.json_not_utf8"
 
+// JSONNotUTF8Runbook is the operator runbook for ErrorCodeJSONNotUTF8: what
+// the warning or the error means, how to find the rows, how consumers decode
+// the base64 values and how to fix the data. The error, the warning and the
+// open-time warning link it.
+const JSONNotUTF8Runbook = "https://github.com/ConduitIO/conduit-connector-postgres#runbook-postgressourcejson_not_utf8"
+
 // JSONNotUTF8Error reports a json or jsonb value whose text is not valid
-// UTF-8. Postgres validates the encoding of json text in every server
-// encoding except SQL_ASCII, which stores bytes unchecked; that is the one
-// way to get here. Offset is the byte offset of the first invalid byte. The
-// value itself is never part of the message. Table and Column are set by the
-// caller that knows them (LocateError), Row by WithRow.
+// UTF-8 when json.invalidUTF8 is halt. Postgres validates the encoding of
+// json text in every server encoding except SQL_ASCII, which stores bytes
+// unchecked; that is the one way to get here. Offset is the byte offset of
+// the first invalid byte. The value itself is never part of the message.
+// Table and Column are set by the caller that knows them (LocateError), Row
+// (key columns and a salted key hash, never key values) by WithRow.
 type JSONNotUTF8Error struct {
 	Table  string
 	Column string
@@ -54,10 +62,13 @@ func (e *JSONNotUTF8Error) Error() string {
 		where += fmt.Sprintf(" (row %s)", e.Row)
 	}
 	return fmt.Sprintf("%s: json value%s is not valid UTF-8 (first invalid byte at offset %d), "+
-		"so the source halts instead of replacing characters. json and jsonb are emitted as strings. "+
-		"Fix: the database encoding is most likely SQL_ASCII, which stores bytes unchecked; "+
-		"correct the value in the table (for a snapshot row) or move the table to a UTF8 database",
-		ErrorCodeJSONNotUTF8, where, e.Offset)
+		"and json.invalidUTF8 is halt, so the source stops instead of emitting it. "+
+		"A restart resumes at the same position and stops here again. "+
+		"Fix: set json.invalidUTF8 to base64 (the default) and restart: the value is delivered as the base64 of its bytes "+
+		"and the record's metadata postgres.json.raw_bytes lists the column, so consumers can decode it; "+
+		"or correct the value (enough for a snapshot row, not for a change already in the WAL). "+
+		"The database server_encoding is most likely SQL_ASCII, which stores bytes unchecked. Runbook: %s",
+		ErrorCodeJSONNotUTF8, where, e.Offset, JSONNotUTF8Runbook)
 }
 
 // LocateJSON returns a copy of err with its table and column set, and true,
@@ -116,10 +127,11 @@ func jsonNoopUnmarshal(src []byte, dst any) error {
 // formatJSON returns the text of a json or jsonb value as a string, exactly
 // as Postgres sent it (jsonb in its canonical form, json as stored). NULL is
 // the untyped nil; the JSON literal null is the string "null". Text that is
-// not valid UTF-8 is a *JSONNotUTF8Error, never a string with replaced bytes.
-// Any other Go type means the value was decoded by a codec that unmarshalled
-// it (RegisterJSONText was not applied), which has already changed it, so
-// that is an error too rather than a re-marshalled approximation.
+// not valid UTF-8 is a *JSONNotUTF8Error, never a string with replaced bytes;
+// JSONPolicy.FormatColumn decides what the source does with it. Any other Go
+// type means the value was decoded by a codec that unmarshalled it
+// (RegisterJSONText was not applied), which has already changed it, so that
+// is an error too rather than a re-marshalled approximation.
 func formatJSON(v any) (any, error) {
 	var s string
 	switch t := v.(type) {

@@ -13,6 +13,11 @@ logrepl-delete-null-key-refused
 logrepl-gap-accepted-warning
 logrepl-idle-advance-beacon-cap
 logrepl-import-slot-ahead-refused
+logrepl-json-backfill-named
+logrepl-json-delete-key-named
+logrepl-json-halt-old-row
+logrepl-json-no-before-unnamed
+logrepl-json-raw-named
 logrepl-slot-invalidated-refused
 logrepl-transient-check-refused
 logrepl-verifyheld-limit

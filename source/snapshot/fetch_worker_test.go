@@ -393,7 +393,7 @@ func Test_FetcherRun_TemporalTypes(t *testing.T) {
 
 		notNull, err := schema.LoadNotNull(ctx, pool, fields[0].TableOID)
 		is.NoErr(err)
-		_, payload, err := (&FetchWorker{
+		_, payload, _, err := (&FetchWorker{
 			conf:    FetchConfig{Table: table, Key: "id", WithAvroSchema: true},
 			notNull: notNull,
 		}).buildRecordData(fields, values)
@@ -595,7 +595,7 @@ func Test_FetchWorker_buildRecordData(t *testing.T) {
 		expectValues = []any{1, now}
 	)
 
-	key, payload, err := (&FetchWorker{
+	key, payload, _, err := (&FetchWorker{
 		conf: FetchConfig{Table: "mytable", Key: "id"},
 	}).buildRecordData(fields, values)
 
@@ -615,7 +615,7 @@ func Test_FetchWorker_buildRecordData(t *testing.T) {
 func Test_FetchWorker_buildRecordData_KeyOwnsItsValue(t *testing.T) {
 	is := is.New(t)
 	fields := []pgconn.FieldDescription{{Name: "id", DataTypeOID: pgtype.ByteaOID}}
-	key, payload, err := (&FetchWorker{
+	key, payload, _, err := (&FetchWorker{
 		conf: FetchConfig{Table: "mytable", Key: "id"},
 	}).buildRecordData(fields, []any{[]byte{1, 2}})
 	is.NoErr(err)

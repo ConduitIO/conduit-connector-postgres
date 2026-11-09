@@ -61,7 +61,7 @@ func BenchmarkRelationSetValues(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		values, err := rs.Values(42, tuple)
+		values, _, err := rs.Values(42, tuple)
 		if err != nil {
 			b.Fatal(err)
 		}

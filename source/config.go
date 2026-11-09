@@ -22,6 +22,7 @@ import (
 
 	"github.com/conduitio/conduit-connector-postgres/source/dbzoffset"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
+	"github.com/conduitio/conduit-connector-postgres/source/types"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
 )
@@ -132,6 +133,19 @@ type Config struct {
 	//     changes still halt.
 	// "dlq" is reserved for a future version and rejected at validation.
 	LogreplSchemaDriftPolicy logrepl.SchemaDriftPolicy `json:"logrepl.schemaDrift.policy" default:"halt"`
+
+	// JSONInvalidUTF8 is what the source does with a json or jsonb value
+	// (or an element of a json[] or jsonb[]) whose text is not valid UTF-8,
+	// which only a database with server_encoding SQL_ASCII can hold:
+	//   - "base64" (default): the field holds the standard base64 (RFC 4648,
+	//     padded) of the value's bytes, and the record's metadata
+	//     postgres.json.raw_bytes (postgres.json.raw_bytes.before for
+	//     Before) lists the column as a JSON array of column names, for
+	//     example ["doc"]. For an array column every non-NULL element is
+	//     base64. Nothing is replaced, dropped or skipped.
+	//   - "halt": the source stops with the error postgres.source.json_not_utf8.
+	// Valid text is emitted unchanged either way.
+	JSONInvalidUTF8 types.JSONInvalidUTF8 `json:"json.invalidUTF8" validate:"inclusion=base64|halt" default:"base64"`
 
 	// LogreplImportDebeziumOffset starts the pipeline from a Debezium Postgres
 	// connector's committed offset instead of a snapshot. It is written by
