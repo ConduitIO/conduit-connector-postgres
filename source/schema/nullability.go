@@ -17,7 +17,9 @@ package schema
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/iskorotkov/avro/v2"
 	"github.com/jackc/pgx/v5"
@@ -53,11 +55,38 @@ const notNullQuery = `SELECT a.attname,
 FROM pg_catalog.pg_attribute a
 WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped`
 
+// NotNullQueryTimeout bounds the catalog read of LoadNotNull. CDC runs it on
+// the replication goroutine when a Relation message arrives, and while it
+// runs the replication connection is not read: a query stuck on a starved
+// pool or a locked catalog must fail well before wal_sender_timeout (60s by
+// default) ends the walsender, with an error that says what was being read.
+// A variable so tests can shorten it.
+var NotNullQueryTimeout = 10 * time.Second
+
 // LoadNotNull reads the nullability of every live column of the relation
 // with the given OID from the catalog. The result is empty, not an error, when
 // the relation does not exist (anymore); callers decide what a missing column
-// means.
+// means. The read is bounded by NotNullQueryTimeout; an expired or cancelled
+// ctx is returned wrapped, so errors.Is finds context.DeadlineExceeded or
+// context.Canceled.
 func LoadNotNull(ctx context.Context, q Querier, relOID uint32) (NotNull, error) {
+	ctx, cancel := context.WithTimeout(ctx, NotNullQueryTimeout)
+	defer cancel()
+	nn, err := loadNotNull(ctx, q, relOID)
+	if err == nil {
+		return nn, nil
+	}
+	// pgx does not always wrap the context error it was stopped by.
+	switch cerr := ctx.Err(); {
+	case errors.Is(cerr, context.DeadlineExceeded):
+		return nil, fmt.Errorf("reading column nullability of relation %d timed out after %s: %w", relOID, NotNullQueryTimeout, errors.Join(cerr, err))
+	case cerr != nil:
+		return nil, fmt.Errorf("reading column nullability of relation %d was cancelled: %w", relOID, errors.Join(cerr, err))
+	}
+	return nil, err
+}
+
+func loadNotNull(ctx context.Context, q Querier, relOID uint32) (NotNull, error) {
 	rows, err := q.Query(ctx, notNullQuery, relOID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read column nullability of relation %d: %w", relOID, err)
