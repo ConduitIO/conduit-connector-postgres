@@ -593,6 +593,16 @@ already in the WAL, because it is read again after every restart.
 
 ### json and jsonb Columns
 
+> **Upgrade note: check consumers on a database that is not UTF8.** If the source
+> database's `server_encoding` is not `UTF8` (in practice `SQL_ASCII`), a `json` or
+> `jsonb` value whose text is not valid UTF-8 is delivered by default as the base64 of
+> its bytes, with the column named in the record metadata `postgres.json.raw_bytes`.
+> A consumer that does not check `postgres.json.raw_bytes` reads that base64 text as if
+> it were the JSON value. For pipelines whose consumers cannot be updated, set
+> `json.invalidUTF8: halt`: the source then stops on such a value (fail closed)
+> instead of delivering it. The startup warning `postgres.source.json_server_encoding`
+> tells you whether your database can hold such values. Details below.
+
 A `json` or `jsonb` value is a string holding exactly the text Postgres prints for it:
 nothing is parsed, reformatted or rounded, so object keys keep their order,
 `12345678901234567890` keeps every digit and `1.50` keeps its zero. `jsonb` text is
@@ -613,10 +623,143 @@ Schema). One difference from Debezium remains: `json[]` and `jsonb[]` have no Av
 schema here, like every array type, so they need `logrepl.withAvroSchema: false`;
 Debezium emits them as an Avro array of optional `io.debezium.data.Json` strings.
 
-A value whose text is not valid UTF-8 (possible only in a `SQL_ASCII` database, which
-stores bytes unchecked) stops the source with the error code
-`postgres.source.json_not_utf8`, naming the table and column; characters are never
-replaced.
+A value whose text is not valid UTF-8 is delivered, never replaced, dropped or
+skipped. This can only happen when the database's `server_encoding` is `SQL_ASCII`,
+which stores bytes unchecked: every other server encoding checks json text on input.
+`json.invalidUTF8` decides how it is delivered:
+
+- `base64` (the default): the field holds the standard base64 (RFC 4648, with padding)
+  of the value's exact bytes, and the record's metadata `postgres.json.raw_bytes` names
+  the column. For a `json[]` or `jsonb[]` column with one such element, every non-`NULL`
+  element of that value is base64 (`NULL` elements stay `NULL`), so a listed array
+  column is decoded element by element. Valid values, in the same record or another, are
+  the exact text as above, and a record with none has no `postgres.json.raw_bytes`.
+- `halt`: the source stops with the error `postgres.source.json_not_utf8`, and stops
+  again on the same row after every restart.
+
+`postgres.json.raw_bytes` is a JSON array of column names, sorted, each once, for
+example `["doc","tags"]` (a JSON array, because a column name can contain a comma). It
+covers the record's key and `payload.after`; `postgres.json.raw_bytes.before` covers
+`payload.before` (an `UPDATE` or `DELETE` under `REPLICA IDENTITY FULL`). A field
+named in one is base64 only in the part of the record that key covers: an `UPDATE` that
+corrects the value lists the column in `postgres.json.raw_bytes.before` and not in
+`postgres.json.raw_bytes`. The field stays an Avro string, so the schema does not
+change.
+
+Debezium handles such text differently: it decodes it with replacement, so each invalid
+byte becomes U+FFFD (`�`) and the original bytes are lost. This connector keeps them, in
+the OpenCDC format and in the Debezium record format (`sdk.record.format: debezium/json`
+on a destination), where the metadata is in the envelope's `payload.source` object.
+A consumer written for Debezium that ignores `postgres.json.raw_bytes` sees a base64
+string where Debezium would have sent text with `�` in it.
+
+At startup the source logs a warning (`code` `postgres.source.json_server_encoding`)
+when `server_encoding` is not `UTF8` and a captured table has a `json`, `jsonb`,
+`json[]` or `jsonb[]` column, naming the columns and what `json.invalidUTF8` will do.
+The first value of each table and column that is encoded as base64 logs one more
+warning (`code` `postgres.source.json_not_utf8`); later values of that column are
+encoded without one. The connector exposes no metrics, so these warnings and the
+metadata are the signals. See the runbook below.
+
+#### Runbook: postgres.source.json_not_utf8
+
+**Symptom.** With `json.invalidUTF8: base64` (the default), a warning like
+
+```
+{"level":"warn","code":"postgres.source.json_not_utf8","table":"orders","column":"doc",
+"row":"columns id, key hash 3f2a...","path":"cdc","metadata":"postgres.json.raw_bytes",...}
+```
+
+and records whose metadata has `postgres.json.raw_bytes` (or
+`postgres.json.raw_bytes.before`). The pipeline keeps running. Consumers that do not
+read the metadata see base64 where they expect JSON, and may fail to parse it.
+
+With `json.invalidUTF8: halt`, the pipeline stops with an error like
+
+```
+postgres.source.json_not_utf8: json value in column "doc" of table "orders"
+(row columns id, key hash 3f2a...) is not valid UTF-8 (first invalid byte at offset 16),
+and json.invalidUTF8 is halt, ...
+```
+
+and stops again with the same error after every restart. The source resumes at the
+position of the last record it delivered, so it reads the same row again. Nothing after
+that row is delivered, and nothing is lost: the row was never acknowledged.
+
+The warning and the error name the table, the column and the key columns, never a
+value. The key hash correlates log lines of one process; it differs after a restart and
+cannot be used to look the row up.
+
+**Diagnosis.**
+
+1. Check the encoding: `SHOW server_encoding;` in the source database. It is
+   `SQL_ASCII` (or the startup warning named it).
+2. Find the rows whose text is not valid UTF-8, by table and column from the warning
+   or the error:
+
+   ```sql
+   CREATE FUNCTION pg_temp.is_utf8(b bytea) RETURNS boolean LANGUAGE plpgsql AS $$
+   BEGIN
+     PERFORM convert_from(b, 'UTF8');
+     RETURN true;
+   EXCEPTION WHEN character_not_in_repertoire OR untranslatable_character THEN
+     RETURN false;
+   END $$;
+
+   SELECT id FROM orders WHERE NOT pg_temp.is_utf8(convert_to(doc::text, 'SQL_ASCII'));
+   ```
+
+   Replace `orders`, `doc` and `id` with the table, the column and the key columns.
+   For a `json[]` or `jsonb[]` column the same query finds the rows.
+3. With `halt`, find out whether the source stopped in the snapshot or in CDC: a
+   snapshot error contains `fetcher for table`, a CDC error contains
+   `logical replication error`.
+
+**Remediation.**
+
+- **Consumers (base64).** Decode the fields `postgres.json.raw_bytes` names from base64
+  to get the exact bytes Postgres stored, then decode them with the encoding the writer
+  used, or keep them as bytes. Decode nothing else: an unlisted field is JSON text,
+  even when it happens to look like base64. For example, in Python:
+
+  ```python
+  import base64, json
+
+  def json_columns(record):
+      after = record["payload"]["after"]
+      raw = set(json.loads(record["metadata"].get("postgres.json.raw_bytes", "[]")))
+      for col in raw:
+          v = after[col]
+          if isinstance(v, list):  # json[] / jsonb[]: every non-NULL element
+              after[col] = [None if e is None else base64.b64decode(e) for e in v]
+          elif v is not None:
+              after[col] = base64.b64decode(v)  # bytes; e.g. .decode("latin-1")
+      return after
+  ```
+
+  Use `postgres.json.raw_bytes.before` the same way for `payload.before`, and
+  `postgres.json.raw_bytes` for the key.
+- **Halted pipeline.** Set `json.invalidUTF8: base64` and restart: the row is delivered
+  as base64 with the metadata, and the pipeline goes on. A snapshot row can instead be
+  corrected and the source restarted; a change already in the WAL is read again with
+  the bytes it was written with however the row is corrected afterwards, so for CDC
+  base64 is the way past it. Do not drop or advance the replication slot to get past
+  it: that skips every change before the new position, for every table of the slot.
+- **Correct the data.** If you know the encoding the writer used, convert the value,
+  for example from LATIN1:
+
+  ```sql
+  UPDATE orders
+  SET doc = convert_from(convert(convert_to(doc::text, 'SQL_ASCII'), 'LATIN1', 'UTF8'), 'SQL_ASCII')::json
+  WHERE id = ...;
+  ```
+
+  The update is delivered as valid text (under `REPLICA IDENTITY FULL` its Before is
+  still base64 and listed in `postgres.json.raw_bytes.before`).
+- **Prevent it.** Move the database to `UTF8` (dump it and restore it into a database
+  created with `ENCODING 'UTF8'`, converting the data from the encoding the writers
+  used), then start a new pipeline with a snapshot. Until then, make sure every writer
+  stores valid UTF-8 in `json` and `jsonb` columns.
 
 #### Upgrading to v0.21.0: json and jsonb change from bytes to string
 
@@ -642,6 +785,9 @@ affected; the type of the field is.
   `[]byte` as base64; they now print the document as a JSON string.
 - **Processors** in built-in pipelines that type-assert the field to `[]byte` must
   accept `string`.
+- **json text that is not valid UTF-8** (possible only in a `SQL_ASCII` database) was
+  emitted as the raw bytes. It is now the base64 of those bytes with the column named
+  in `postgres.json.raw_bytes` (see above), or a halt with `json.invalidUTF8: halt`.
 - **`json[]` and `jsonb[]`** elements were parsed into Go maps and numbers, which
   reordered keys, rounded large numbers and stopped the source on numbers beyond the
   range of a float64. They are now the exact text of each element.
