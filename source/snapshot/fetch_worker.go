@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -105,6 +106,15 @@ type FetchWorker struct {
 
 	keySchema     *cschema.Schema
 	payloadSchema *cschema.Schema
+	// notNull is the catalog nullability of the table's columns and tableOID
+	// the table it was read for, loaded once per worker in the snapshot
+	// transaction when Avro schemas are on (#326). widenForNull marks a
+	// column nullable in it when a row holds NULL in it.
+	notNull  schema.NotNull
+	tableOID uint32
+	// createSchema registers a schema; nil means sdkschema.Create. A field so
+	// a test can make the registry reject one.
+	createSchema func(ctx context.Context, typ cschema.Type, subject string, bytes []byte) (cschema.Schema, error)
 
 	snapshotEnd int64
 	lastRead    int64
@@ -388,6 +398,10 @@ func (f *FetchWorker) logStart(ctx context.Context) {
 func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 	start := time.Now().UTC()
 
+	if err := f.loadNotNull(ctx, tx); err != nil {
+		return 0, fmt.Errorf("failed to read column nullability: %w", err)
+	}
+
 	rows, err := tx.Query(ctx, fmt.Sprintf("FETCH %d FROM %s", f.conf.FetchSize, f.cursorName))
 	if err != nil {
 		return 0, fmt.Errorf("failed to fetch rows: %w", err)
@@ -409,6 +423,9 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 			return 0, fmt.Errorf("failed to get values: %w", err)
 		}
 
+		if err := f.widenForNull(ctx, fields, values); err != nil {
+			return 0, err
+		}
 		err = f.extractSchemas(ctx, fields)
 		if err != nil {
 			return 0, fmt.Errorf("failed to extract schemas: %w", err)
@@ -548,7 +565,7 @@ func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values [
 
 			// Invariant 6: the key owns its value; FormatColumn can hand back
 			// the scanned value itself, which the payload gets too (#425).
-			key[f.conf.Key] = types.CloneValue(k)
+			key[f.conf.Key] = f.avroShape(fd, types.CloneValue(k))
 		}
 
 		v, err := types.FormatColumn(types.EncodingFor(f.conf.WithAvroSchema), fd.DataTypeOID, fd.TypeModifier, values[i])
@@ -558,10 +575,20 @@ func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values [
 			}
 			return key, payload, fmt.Errorf("failed to format payload field %q: %w", fd.Name, err)
 		}
-		payload[fd.Name] = v
+		payload[fd.Name] = f.avroShape(fd, v)
 	}
 
 	return key, payload, nil
+}
+
+// avroShape gives the value of a nullable column the shape its ["null", T]
+// field needs (types.NullableAvroValue). Without Avro schemas, and for NOT
+// NULL columns, it is v.
+func (f *FetchWorker) avroShape(fd pgconn.FieldDescription, v any) any {
+	if !f.conf.WithAvroSchema || f.notNull[fd.Name] {
+		return v
+	}
+	return types.NullableAvroValue(fd.DataTypeOID, v)
 }
 
 func (f *FetchWorker) withSnapshot(ctx context.Context, tx pgx.Tx) error {
@@ -644,23 +671,35 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 	if !f.conf.WithAvroSchema {
 		return nil
 	}
+	if f.payloadSchema != nil && f.keySchema != nil {
+		return nil
+	}
+	if err := f.checkFieldsFromTable(fields); err != nil {
+		return err
+	}
+	notNull := f.notNull
 
 	if f.payloadSchema == nil {
 		sdk.Logger(ctx).Debug().
 			Msgf("extracting payload schema for %v fields in %v", len(fields), f.conf.Table)
 
-		avroPayloadSch, err := schema.Avro.Extract(f.conf.Table+"_payload", fields)
+		avroPayloadSch, err := schema.Avro.Extract(f.conf.Table+"_payload", fields, notNull)
 		if err != nil {
 			return fmt.Errorf("failed to extract payload schema for table %v: %w", f.conf.Table, err)
 		}
-		ps, err := sdkschema.Create(
+		text, err := schema.Text(avroPayloadSch)
+		if err != nil {
+			return fmt.Errorf("failed to extract payload schema for table %v: %w", f.conf.Table, err)
+		}
+		ps, err := f.create(
 			ctx,
 			cschema.TypeAvro,
 			avroPayloadSch.Name(),
-			[]byte(avroPayloadSch.String()),
+			text,
 		)
 		if err != nil {
-			return fmt.Errorf("failed creating payload schema for table %v: %w", f.conf.Table, err)
+			return fmt.Errorf("failed creating payload schema for table %v: %w",
+				f.conf.Table, &schema.SubjectError{Subject: avroPayloadSch.Name(), Err: err})
 		}
 		f.payloadSchema = &ps
 	}
@@ -669,21 +708,130 @@ func (f *FetchWorker) extractSchemas(ctx context.Context, fields []pgconn.FieldD
 		sdk.Logger(ctx).Debug().
 			Msgf("extracting schema for key %v in %v", f.conf.Key, f.conf.Table)
 
-		avroKeySch, err := schema.Avro.Extract(f.conf.Table+"_key", fields, f.conf.Key)
+		avroKeySch, err := schema.Avro.Extract(f.conf.Table+"_key", fields, notNull, f.conf.Key)
 		if err != nil {
 			return fmt.Errorf("failed to extract key schema for table %v: %w", f.conf.Table, err)
 		}
-		ks, err := sdkschema.Create(
+		text, err := schema.Text(avroKeySch)
+		if err != nil {
+			return fmt.Errorf("failed to extract key schema for table %v: %w", f.conf.Table, err)
+		}
+		ks, err := f.create(
 			ctx,
 			cschema.TypeAvro,
 			avroKeySch.Name(),
-			[]byte(avroKeySch.String()),
+			text,
 		)
 		if err != nil {
-			return fmt.Errorf("failed creating key schema for table %v: %w", f.conf.Table, err)
+			return fmt.Errorf("failed creating key schema for table %v: %w",
+				f.conf.Table, &schema.SubjectError{Subject: avroKeySch.Name(), Err: err})
 		}
 		f.keySchema = &ks
 	}
 
+	return nil
+}
+
+func (f *FetchWorker) create(ctx context.Context, typ cschema.Type, subject string, b []byte) (cschema.Schema, error) {
+	if f.createSchema != nil {
+		return f.createSchema(ctx, typ, subject, b)
+	}
+	return sdkschema.Create(ctx, typ, subject, b)
+}
+
+// widenForNull handles a row that holds NULL in a column the catalog
+// declares NOT NULL. It is a defensive guard, not a handled race: Postgres
+// does not produce such a row here. loadNotNull is a plain SELECT on
+// pg_attribute in the snapshot's REPEATABLE READ transaction, so it reads the
+// catalog as of the same snapshot as the rows (checked on Postgres 17.5 and
+// 18.6: after a concurrent UPDATE and SET NOT NULL commit, the transaction
+// still reads attnotnull false and still sees the NULL row), and it runs after
+// the cursor is declared, so the transaction holds ACCESS SHARE on the table
+// and a SET NOT NULL waits for the snapshot to end. The guard costs one map
+// lookup per NULL value and keeps the row from being encoded under a schema
+// that forbids its NULL if the catalog and the rows ever disagree. The
+// column's field becomes ["null", T] for the rest of the worker, the widened
+// schemas are registered for this row and the next ones, and a warning coded
+// schema.ErrorCodeAvroNullInNotNullColumn is logged once per column; it names
+// the table and the column, never a value or a key. If the registry rejects
+// the widened schema, the fetch fails with an error with that code and the
+// row is not sent. Without Avro schemas it does nothing.
+func (f *FetchWorker) widenForNull(ctx context.Context, fields []pgconn.FieldDescription, values []any) error {
+	if !f.conf.WithAvroSchema {
+		return nil
+	}
+	var cols []string
+	for i, fd := range fields {
+		if values[i] == nil && f.notNull[fd.Name] {
+			cols = append(cols, fd.Name)
+		}
+	}
+	if len(cols) == 0 {
+		return nil
+	}
+	// Invariant 6: the NULL is delivered as null under a schema that admits
+	// it, never coerced to a zero value and never dropped.
+	notNull := maps.Clone(f.notNull)
+	for _, c := range cols {
+		notNull[c] = false
+	}
+	prevNotNull, prevPayload, prevKey := f.notNull, f.payloadSchema, f.keySchema
+	f.notNull, f.payloadSchema, f.keySchema = notNull, nil, nil
+	if err := f.extractSchemas(ctx, fields); err != nil {
+		f.notNull, f.payloadSchema, f.keySchema = prevNotNull, prevPayload, prevKey
+		// The key is widened too when the NULL column is the configured
+		// key, so the rejected subject can be either one.
+		subject := schema.RejectedSubject(err, f.conf.Table+"_payload")
+		return fmt.Errorf(
+			"%s: a row of table %q holds NULL in the column(s) %q, which the catalog declares NOT NULL "+
+				"(the catalog and the snapshot's rows disagree), and the schema of the subject %q with the column(s) made "+
+				"nullable could not be registered: %w. "+
+				"Fix: allow the change on the subject %q (T -> [\"null\", T] is BACKWARD compatible; FORWARD and FULL reject it), "+
+				"for example set its compatibility to BACKWARD or NONE, and restart; or set logrepl.withAvroSchema to false and restart",
+			schema.ErrorCodeAvroNullInNotNullColumn, f.conf.Table, cols, subject, err, subject)
+	}
+	// Once per column: f.notNull now says it is nullable, so its NULLs are
+	// not detected again.
+	for _, c := range cols {
+		sdk.Logger(ctx).Warn().
+			Str("code", schema.ErrorCodeAvroNullInNotNullColumn).
+			Str("table", f.conf.Table).
+			Str("column", c).
+			Msg("a snapshot row holds NULL in a column the catalog declares NOT NULL (the catalog and the snapshot's rows disagree); " +
+				"its Avro field is now nullable and a new payload schema version is registered")
+	}
+	return nil
+}
+
+// loadNotNull reads the nullability of the table's columns from the catalog,
+// in the snapshot's transaction, so it describes the table the rows are read
+// from (#326). It runs before the first FETCH: the transaction's connection
+// cannot run a query while a FETCH result is being read.
+func (f *FetchWorker) loadNotNull(ctx context.Context, tx pgx.Tx) error {
+	if !f.conf.WithAvroSchema || f.notNull != nil {
+		return nil
+	}
+	var oid uint32
+	if err := tx.QueryRow(ctx, "SELECT $1::regclass::oid", internal.WrapSQLIdent(f.conf.Table)).Scan(&oid); err != nil {
+		return fmt.Errorf("table %v: failed to resolve the table: %w", f.conf.Table, err)
+	}
+	notNull, err := schema.LoadNotNull(ctx, tx, oid)
+	if err != nil {
+		return fmt.Errorf("table %v: %w", f.conf.Table, err)
+	}
+	f.tableOID, f.notNull = oid, notNull
+	return nil
+}
+
+// checkFieldsFromTable fails unless every field comes from the table whose
+// nullability loadNotNull read. The cursor is SELECT * on that table, so this
+// holds by construction; it is checked so a schema can never pair the rows of
+// one relation with the nullability of another.
+func (f *FetchWorker) checkFieldsFromTable(fields []pgconn.FieldDescription) error {
+	for _, fd := range fields {
+		if fd.TableOID != f.tableOID {
+			return fmt.Errorf("table %v: field %q comes from relation OID %d, not the table (OID %d)", f.conf.Table, fd.Name, fd.TableOID, f.tableOID)
+		}
+	}
 	return nil
 }

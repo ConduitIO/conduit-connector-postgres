@@ -66,8 +66,10 @@ type avroExtractor struct {
 }
 
 // ExtractLogrepl extracts an Avro schema from the given pglogrepl.RelationMessage.
+// A relation message does not say whether a column is nullable, so notNull
+// must come from the catalog (see LoadNotNull and Extract).
 // If `fieldNames` are specified, then only the given fields will be included in the schema.
-func (a avroExtractor) ExtractLogrepl(schemaName string, rel *pglogrepl.RelationMessage, fieldNames ...string) (*avro.RecordSchema, error) {
+func (a avroExtractor) ExtractLogrepl(schemaName string, rel *pglogrepl.RelationMessage, notNull NotNull, fieldNames ...string) (*avro.RecordSchema, error) {
 	var fields []pgconn.FieldDescription
 
 	for i := range rel.Columns {
@@ -78,12 +80,15 @@ func (a avroExtractor) ExtractLogrepl(schemaName string, rel *pglogrepl.Relation
 		})
 	}
 
-	return a.Extract(schemaName, fields, fieldNames...)
+	return a.Extract(schemaName, fields, notNull, fieldNames...)
 }
 
 // Extract extracts an Avro schema from the given Postgres field descriptions.
+// A column notNull declares NOT NULL is a plain field; any other column is
+// ["null", T] with a default of null (#326). notNull needs an entry for every
+// included field, see NotNull.
 // If `fieldNames` are specified, then only the given fields will be included in the schema.
-func (a *avroExtractor) Extract(schemaName string, fields []pgconn.FieldDescription, fieldNames ...string) (*avro.RecordSchema, error) {
+func (a *avroExtractor) Extract(schemaName string, fields []pgconn.FieldDescription, notNull NotNull, fieldNames ...string) (*avro.RecordSchema, error) {
 	var avroFields []*avro.Field
 
 	for _, f := range fields {
@@ -101,7 +106,7 @@ func (a *avroExtractor) Extract(schemaName string, fields []pgconn.FieldDescript
 			return nil, err
 		}
 
-		af, err := avro.NewField(f.Name, s)
+		af, err := notNull.field(f.Name, s)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create avro field %q: %w", f.Name, err)
 		}

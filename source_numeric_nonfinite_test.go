@@ -138,15 +138,6 @@ func TestSource_NumericNonFinite(t *testing.T) {
 		for _, avro := range []bool{true, false} {
 			for _, v := range values {
 				name := fmt.Sprintf("%s/avro=%t/%s", path, avro, v.name)
-				if avro && v.sql == "NULL" {
-					// The Avro schema the source attaches has no nullable
-					// fields, so the SDK cannot encode ANY NULL under it (#326).
-					// That is independent of this fix; a NULL numeric is covered
-					// below the SDK middleware instead, see
-					// source/snapshot/fetch_worker_test.go and
-					// source/logrepl/internal/relationset_test.go.
-					continue
-				}
 				t.Run(name, func(t *testing.T) {
 					is := is.New(t)
 					id := numericTableSeq.Add(1)

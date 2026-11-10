@@ -19,6 +19,8 @@ import (
 	"fmt"
 
 	"github.com/conduitio/conduit-connector-postgres/internal"
+	"github.com/conduitio/conduit-connector-postgres/source/schema"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -80,4 +82,72 @@ func CheckReplicaIdentity(ctx context.Context, q RowQuerier, table, keyColumn st
 			"(ALTER TABLE %s REPLICA IDENTITY USING INDEX <index>), or REPLICA IDENTITY DEFAULT",
 		ErrorCodeReplicaIdentityExcludesKey, table, index, keyColumn,
 		internal.WrapSQLIdent(table), keyColumn, internal.WrapSQLIdent(table))
+}
+
+// WarnCodeAvroToastIdentity is the code of the warning WarnToastIdentity logs
+// at Open.
+const WarnCodeAvroToastIdentity = "postgres.avro.toast_identity"
+
+// WarnToastIdentity logs a warning coded WarnCodeAvroToastIdentity when table
+// has columns that can be TOASTed (pg_attribute.attstorage other than
+// 'p'lain) and a REPLICA IDENTITY other than FULL. Open calls it once per
+// captured table. With Avro schemas on, an UPDATE that leaves such a
+// column's value unchanged while the value is stored out of line (Postgres
+// does so only for rows above about 2 kB) arrives without the value and
+// stops the source with ErrorCodeAvroUnchangedToast (see requireAllColumns);
+// a column that can be TOASTed but only holds short values never does, and
+// the warning says so. It lets the operator set REPLICA IDENTITY FULL before
+// the first such update instead of after a stopped pipeline. It is a warning only: it
+// never refuses Open, and a failed catalog read is logged, not returned. The
+// read is bounded by schema.NotNullQueryTimeout, like the nullability read,
+// so a starved pool cannot hold Open for the caller's whole deadline. It
+// names the table and columns, never values.
+func WarnToastIdentity(ctx context.Context, q RowQuerier, table string) {
+	const query = `SELECT c.relreplident::text,
+		COALESCE(array_agg(a.attname::text ORDER BY a.attnum) FILTER (WHERE a.attstorage <> 'p'), '{}')
+	FROM pg_class c
+	LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+	WHERE c.oid = $1::regclass
+	GROUP BY c.relreplident`
+
+	var identity string
+	var toastable []string
+	qctx, cancel := context.WithTimeout(ctx, schema.NotNullQueryTimeout)
+	defer cancel()
+	if err := q.QueryRow(qctx, query, internal.WrapSQLIdent(table)).Scan(&identity, &toastable); err != nil {
+		sdk.Logger(ctx).Warn().
+			Str("table", table).
+			Str("error_type", fmt.Sprintf("%T", err)).
+			Bool("timed_out", qctx.Err() != nil && ctx.Err() == nil).
+			Msg("could not check whether the table's replica identity covers its TOASTable columns")
+		return
+	}
+	if identity == "f" || len(toastable) == 0 {
+		return
+	}
+	sdk.Logger(ctx).Warn().
+		Str("code", WarnCodeAvroToastIdentity).
+		Str("table", table).
+		Str("replica_identity", replicaIdentityName(identity)).
+		Strs("toastable_columns", toastable).
+		Msgf("with logrepl.withAvroSchema, an UPDATE that leaves a value of these columns unchanged stops the pipeline with %s "+
+			"if that value is stored out of line (TOASTed), because Postgres does not send it. "+
+			"Postgres stores a value out of line only when its row exceeds about 2 kB, so short values are not affected. "+
+			"To rule it out: ALTER TABLE %s REPLICA IDENTITY FULL",
+			ErrorCodeAvroUnchangedToast, internal.WrapSQLIdent(table))
+}
+
+// replicaIdentityName spells pg_class.relreplident the way ALTER TABLE does.
+func replicaIdentityName(code string) string {
+	switch code {
+	case "d":
+		return "DEFAULT"
+	case "n":
+		return "NOTHING"
+	case "i":
+		return "USING INDEX"
+	case "f":
+		return "FULL"
+	}
+	return code
 }

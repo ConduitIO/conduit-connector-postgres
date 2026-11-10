@@ -25,6 +25,7 @@ import (
 	"github.com/conduitio/conduit-connector-postgres/source/dbzoffset"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
+	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	"github.com/conduitio/conduit-connector-postgres/source/types"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
@@ -201,6 +202,11 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 		c.StartPosition,
 		c.SchemaDriftPolicy,
 	)
+	// Column nullability for the Avro schemas comes from the catalog; a
+	// Relation message does not carry it (#326).
+	handler.loadNotNull = func(ctx context.Context, relationID uint32) (schema.NotNull, error) {
+		return schema.LoadNotNull(ctx, pool, relationID)
+	}
 
 	newSub := subscriptionOpener(c)
 	sub, err := newSub(

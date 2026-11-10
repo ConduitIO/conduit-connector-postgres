@@ -26,6 +26,7 @@ import (
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl/internal"
 	"github.com/conduitio/conduit-connector-postgres/source/position"
+	"github.com/conduitio/conduit-connector-postgres/source/schema"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -66,6 +67,10 @@ func newNamedBeforeTestHandler(ctx context.Context, t *testing.T, withAvro bool,
 	})
 	ch := make(chan []opencdc.Record, 1)
 	h := NewCDCHandler(ctx, rs, map[string]string{name: "id"}, ch, withAvro, 1, time.Hour, position.Position{}, SchemaDriftPolicyHalt)
+	// The catalog: id is the primary key, i and t are nullable (#326).
+	h.loadNotNull = func(context.Context, uint32) (schema.NotNull, error) {
+		return schema.NotNull{"id": true, "i": false, "t": false}, nil
+	}
 	return h, ch, name
 }
 

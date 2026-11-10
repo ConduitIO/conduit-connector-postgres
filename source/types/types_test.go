@@ -79,7 +79,7 @@ func Test_Format(t *testing.T) {
 				pgtype.UUIDOID, pgtype.UUIDOID,
 			},
 			expect: []any{
-				"bd94ee0b-564f-4088-bf4e-8d5e626caf66", "",
+				"bd94ee0b-564f-4088-bf4e-8d5e626caf66", nil, // NULL stays NULL, never "" (#326)
 			},
 		},
 	}
@@ -109,4 +109,31 @@ func pgxNumeric(t *testing.T, num string) pgtype.Numeric {
 	is.NoErr(plan.Scan([]byte(num), &n))
 
 	return n
+}
+
+// TestFormatFor_NullStaysNull pins invariant 6 for NULL in every type the Avro
+// extractor maps, in both encodings: pgx decodes NULL as nil, and the connector
+// must emit nil, never a zero value. A NULL uuid came out of the snapshot as
+// "" (#326).
+func TestFormatFor_NullStaysNull(t *testing.T) {
+	oids := []uint32{
+		pgtype.BoolOID, pgtype.ByteaOID, pgtype.Float4OID, pgtype.Float8OID,
+		pgtype.Int2OID, pgtype.Int4OID, pgtype.Int8OID, pgtype.TextOID, pgtype.VarcharOID,
+		pgtype.JSONOID, pgtype.JSONBOID, pgtype.TSVectorOID, pgtype.TimestamptzOID,
+		pgtype.TimestampOID, pgtype.DateOID, pgtype.UUIDOID, pgtype.NumericOID,
+	}
+	for _, enc := range []Encoding{EncodingNative, EncodingAvro} {
+		for _, oid := range oids {
+			got, err := FormatFor(enc, oid, nil)
+			if err != nil || got != nil {
+				t.Errorf("encoding %d, oid %d: FormatFor(nil) = %#v, %v; want nil, nil", enc, oid, got, err)
+			}
+			for _, typMod := range []int32{-1, 10<<16 | 2 + 4} {
+				got, err := FormatColumn(enc, oid, typMod, nil)
+				if err != nil || got != nil {
+					t.Errorf("encoding %d, oid %d, typmod %d: FormatColumn(nil) = %#v, %v; want nil, nil", enc, oid, typMod, got, err)
+				}
+			}
+		}
+	}
 }

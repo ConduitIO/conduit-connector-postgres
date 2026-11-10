@@ -64,94 +64,61 @@ var BouncerConnString = "postgres://meroxauser:meroxapass@127.0.0.1:" + envPort(
 
 // TestTableAvroSchemaV1 is the Avro schema representation of the test table
 // defined through testTableCreateQuery.
-// The fields are sorted by name.
+// The fields are sorted by name. Every column but the primary key is nullable,
+// so it is ["null", T] with a default of null (#326).
 const TestTableAvroSchemaV1 = `{
     "type": "record",
     "name": "%s",
     "fields":
     [
-	{"name":"UppercaseColumn1","type":"int"},
-        {"name":"column1","type":"string"},
-        {"name":"column2","type":"int"},
-        {"name":"column3","type":"boolean"},
-        {
-            "name": "column4",
-            "type":
-            {
-                "type": "bytes",
-                "logicalType": "decimal",
-                "precision": 16,
-                "scale": 3
-            }
-        },
-        {
-            "name": "column5",
-            "type":
-            {
-                "type": "bytes",
-                "logicalType": "decimal",
-                "precision": 5
-            }
-        },
-        {"name":"column6","type":"bytes"},
-        {"name":"column7","type":"bytes"},
+        {"name":"UppercaseColumn1","type":["null","int"],"default":null},
+        {"name":"column1","type":["null","string"],"default":null},
+        {"name":"column2","type":["null","int"],"default":null},
+        {"name":"column3","type":["null","boolean"],"default":null},
+        {"name":"column4","type":["null",{"type":"bytes","logicalType":"decimal","precision":16,"scale":3}],"default":null},
+        {"name":"column5","type":["null",{"type":"bytes","logicalType":"decimal","precision":5}],"default":null},
+        {"name":"column6","type":["null","bytes"],"default":null},
+        {"name":"column7","type":["null","bytes"],"default":null},
         {"name":"id","type":"long"},
-        {"name":"key","type":"bytes"}
+        {"name":"key","type":["null","bytes"],"default":null}
     ]
 }`
 
-// TestTableAvroSchemaV2 is TestTableAvroSchemaV1 with `column6` (local-timestamp-micros) added.
+// TestTableAvroSchemaV2 is TestTableAvroSchemaV1 with `column101` (local-timestamp-micros) added.
 const TestTableAvroSchemaV2 = `{
     "type": "record",
     "name": "%s",
     "fields":
     [
-	{"name":"UppercaseColumn1","type":"int"},
-        {"name":"column1","type":"string"},
-        {"name":"column101","type":{"type":"long","logicalType":"local-timestamp-micros"}},
-        {"name":"column2","type":"int"},
-        {"name":"column3","type":"boolean"},
-        {
-            "name": "column4",
-            "type":
-            {
-                "type": "bytes",
-                "logicalType": "decimal",
-                "precision": 16,
-                "scale": 3
-            }
-        },
-        {
-            "name": "column5",
-            "type":
-            {
-                "type": "bytes",
-                "logicalType": "decimal",
-                "precision": 5
-            }
-        },
-        {"name":"column6","type":"bytes"},
-        {"name":"column7","type":"bytes"},
+        {"name":"UppercaseColumn1","type":["null","int"],"default":null},
+        {"name":"column1","type":["null","string"],"default":null},
+        {"name":"column101","type":["null",{"type":"long","logicalType":"local-timestamp-micros"}],"default":null},
+        {"name":"column2","type":["null","int"],"default":null},
+        {"name":"column3","type":["null","boolean"],"default":null},
+        {"name":"column4","type":["null",{"type":"bytes","logicalType":"decimal","precision":16,"scale":3}],"default":null},
+        {"name":"column5","type":["null",{"type":"bytes","logicalType":"decimal","precision":5}],"default":null},
+        {"name":"column6","type":["null","bytes"],"default":null},
+        {"name":"column7","type":["null","bytes"],"default":null},
         {"name":"id","type":"long"},
-        {"name":"key","type":"bytes"}
+        {"name":"key","type":["null","bytes"],"default":null}
     ]
 }`
 
-// TestTableAvroSchemaV3 is TestTableAvroSchemaV1 with `column4` and `column5` dropped.
+// TestTableAvroSchemaV3 is TestTableAvroSchemaV2 with `column4` and `column5` dropped.
 const TestTableAvroSchemaV3 = `{
     "type": "record",
     "name": "%s",
     "fields":
     [
-	{"name":"UppercaseColumn1","type":"int"},
-        {"name":"column1","type":"string"},
-        {"name":"column101","type":{"type":"long","logicalType":"local-timestamp-micros"}},
-        {"name":"column2","type":"int"},
-        {"name":"column3","type":"boolean"},
-        {"name":"column6","type":"bytes"},
-        {"name":"column7","type":"bytes"},
+        {"name":"UppercaseColumn1","type":["null","int"],"default":null},
+        {"name":"column1","type":["null","string"],"default":null},
+        {"name":"column101","type":["null",{"type":"long","logicalType":"local-timestamp-micros"}],"default":null},
+        {"name":"column2","type":["null","int"],"default":null},
+        {"name":"column3","type":["null","boolean"],"default":null},
+        {"name":"column6","type":["null","bytes"],"default":null},
+        {"name":"column7","type":["null","bytes"],"default":null},
         {"name":"id","type":"long"},
-        {"name":"key","type":"bytes"}
+        {"name":"key","type":["null","bytes"],"default":null}
     ]
 }`
 
