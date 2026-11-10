@@ -38,6 +38,20 @@ func (blockingQuerier) Query(ctx context.Context, _ string, _ ...any) (pgx.Rows,
 	return nil, errors.New("conn closed")
 }
 
+// TestSubjectError pins what the error messages depend on: SubjectError
+// keeps the registry's text unchanged, and RejectedSubject falls back when
+// no SubjectError is in the chain.
+func TestSubjectError(t *testing.T) {
+	is := is.New(t)
+	e := errors.New("incompatible schema")
+	se := &SubjectError{Subject: "t_key", Err: e}
+	is.Equal(se.Error(), e.Error())
+	is.True(errors.Is(se, e))
+	is.Equal(RejectedSubject(fmt.Errorf("register: %w", se), "t_payload"), "t_key")
+	is.Equal(RejectedSubject(e, "t_payload"), "t_payload")
+	is.Equal(RejectedSubject(nil, "t_payload"), "t_payload")
+}
+
 // TestNotNullQueryTimeout_Default pins the bound the design depends on: the
 // CDC catalog read must fail well before wal_sender_timeout (60s by default)
 // ends the walsender while the replication connection is not read.

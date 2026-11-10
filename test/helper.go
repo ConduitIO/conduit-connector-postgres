@@ -232,12 +232,24 @@ func CreateReplicationSlot(t *testing.T, conn Querier, slotName string) {
 	is.NoErr(err)
 
 	t.Cleanup(func() {
-		_, err := conn.Exec(
-			context.Background(),
-			"SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name=$1",
-			slotName,
-		)
-		is.NoErr(err)
+		// A test that closed its replication connection can still find the
+		// slot active for a moment: the server's walsender exits after the
+		// client is gone. Retry while the slot is in use (SQLSTATE 55006)
+		// instead of failing a test that passed.
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			_, err := conn.Exec(
+				context.Background(),
+				"SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name=$1",
+				slotName,
+			)
+			var pgErr *pgconn.PgError
+			if err == nil || !errors.As(err, &pgErr) || pgErr.Code != "55006" || time.Now().After(deadline) {
+				is.NoErr(err)
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 	})
 }
 
