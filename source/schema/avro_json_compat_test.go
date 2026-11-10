@@ -143,3 +143,42 @@ func TestJSONDebeziumNamedSchema_Compatible(t *testing.T) {
 		})
 	}
 }
+
+// A nullable json column changes twice in the same release: bytes becomes
+// string, and the field becomes ["null", string] (#466). The registered
+// version is BACKWARD compatible with the v0.20 bytes schema (a reader on the
+// new schema reads old data, to the exact string) and not FORWARD compatible
+// (a reader still on bytes cannot read the union), so not FULL. Rolling back
+// re-registers bytes after the union, which is not BACKWARD compatible
+// either: the README's upgrade notes say so, and this pins it.
+func TestJSONNullableSchema_BackwardOnly(t *testing.T) {
+	is := is.New(t)
+
+	extracted, err := Avro.Extract("t_payload", []pgconn.FieldDescription{
+		{Name: "id", DataTypeOID: pgtype.Int8OID, TypeModifier: -1},
+		{Name: "j", DataTypeOID: pgtype.JSONOID, TypeModifier: -1},
+	}, NotNull{"id": true, "j": false})
+	is.NoErr(err)
+	text, err := Text(extracted)
+	is.NoErr(err)
+	is.True(strings.Contains(string(text), `"type":["null",{"type":"string","connect.name":"io.debezium.data.Json"`))
+	newSch, err := avro.Parse(string(text)) // as a registry hands it back
+	is.NoErr(err)
+	oldSch, err := avro.Parse(`{"name":"t_payload","type":"record","fields":[{"name":"id","type":"long"},{"name":"j","type":"bytes"}]}`)
+	is.NoErr(err)
+
+	sc := avro.NewSchemaCompatibility()
+	is.NoErr(sc.Compatible(newSch, oldSch)) // BACKWARD: new reader, old writer
+	// Not FORWARD (old reader, new writer). The same check is the rollback's:
+	// bytes registered after the union is not BACKWARD compatible.
+	is.True(sc.Compatible(oldSch, newSch) != nil)
+
+	doc := `{"z": 1, "u": "日本 😀"}`
+	oldData, err := avro.Marshal(oldSch, map[string]any{"id": int64(1), "j": []byte(doc)})
+	is.NoErr(err)
+	resolved, err := sc.Resolve(newSch, oldSch)
+	is.NoErr(err)
+	var got map[string]any
+	is.NoErr(avro.Unmarshal(resolved, oldData, &got))
+	is.Equal(got["j"], doc) // old data resolves to the exact string
+}

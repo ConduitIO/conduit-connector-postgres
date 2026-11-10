@@ -774,9 +774,14 @@ affected; the type of the field is.
   new schema version for its subjects (payload, and key if the key is a `jsonb`
   column) with the field typed `string` and named `io.debezium.data.Json`. The Avro
   specification allows promoting `bytes` to `string` and `string` to `bytes` in schema
-  resolution, and the `connect.*` properties are ignored by it, so the new version is
-  `BACKWARD`, `FORWARD` and `FULL` compatible with the old one; the Avro library this
-  connector uses agrees (`source/schema/avro_json_compat_test.go`).
+  resolution, and the `connect.*` properties are ignored by it, so for a `NOT NULL`
+  column the new version is `BACKWARD`, `FORWARD` and `FULL` compatible with the old
+  one; the Avro library this connector uses agrees
+  (`source/schema/avro_json_compat_test.go`). A nullable column also becomes
+  `["null", string]` in this release (see "Upgrading from v0.20.x or earlier" under
+  Avro Schema), and that version is only `BACKWARD` compatible with the old `bytes`
+  one: a registry that enforces `FORWARD` or `FULL` on the subject rejects it, so
+  relax the subject's compatibility for the upgrade or upgrade the consumers first.
   Conduit sets compatibility `NONE` on subjects it creates and its built-in registry
   does not check compatibility, so nothing is rejected there either way.
 - **Consumers.** A consumer that resolves records against its own reader schema keeps
@@ -804,8 +809,12 @@ affected; the type of the field is.
   written as its bytes (see "json text that is not valid UTF-8" under Destination).
   Upgrade the destination with the source, or before it: an older destination writes
   the base64 text of such a column.
-- **Rolling back** to v0.20.0 registers the `bytes` version again on the next record
-  and is otherwise safe.
+- **Rolling back** to v0.20.0 registers the `bytes` version again on the next record.
+  For a `NOT NULL` column that is compatible in every mode. For a nullable column,
+  `bytes` after `["null", string]` is not `BACKWARD` compatible, so a registry that
+  enforces `BACKWARD` or `FULL` on the subject rejects it. v0.20.0 emits json text that
+  is not valid UTF-8 as raw bytes again, without `postgres.json.raw_bytes`. Positions
+  and state are unchanged, so the rollback is otherwise safe.
 
 ### Numeric Columns
 
