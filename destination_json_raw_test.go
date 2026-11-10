@@ -83,15 +83,18 @@ func TestDecodeJSONRawBytes_Errors(t *testing.T) {
 		payload opencdc.StructuredData
 		want    string
 	}{
-		"metadata not JSON":        {meta: `j`, want: `has metadata postgres.json.raw_bytes that is not a JSON array`},
-		"metadata empty":           {meta: ``, want: `that is not a JSON array`},
-		"metadata null":            {meta: `null`, want: `that is not a JSON array`},
-		"metadata a string":        {meta: `"j"`, want: `that is not a JSON array`},
-		"metadata not strings":     {meta: `[1]`, want: `that is not a JSON array`},
-		"metadata trailing data":   {meta: `["j"] x`, want: `that is not a JSON array`},
-		"column missing":           {meta: `["gone"]`, want: `lists column "gone", which is not in the record's key or payload`},
-		"value not base64":         {meta: `["j"]`, payload: opencdc.StructuredData{"j": secret + "!"}, want: `column "j" of table "t" is listed in metadata postgres.json.raw_bytes, but its value is not standard padded base64`},
-		"value unpadded":           {meta: `["j"]`, payload: opencdc.StructuredData{"j": "/w"}, want: `its value is not standard padded base64`},
+		"metadata not JSON":      {meta: `j`, want: `has metadata postgres.json.raw_bytes that is not a JSON array`},
+		"metadata empty":         {meta: ``, want: `that is not a JSON array`},
+		"metadata null":          {meta: `null`, want: `that is not a JSON array`},
+		"metadata a string":      {meta: `"j"`, want: `that is not a JSON array`},
+		"metadata not strings":   {meta: `[1]`, want: `that is not a JSON array`},
+		"metadata trailing data": {meta: `["j"] x`, want: `that is not a JSON array`},
+		"column missing":         {meta: `["gone"]`, want: `lists column "gone", which is not in the record's key or payload`},
+		"value not base64":       {meta: `["j"]`, payload: opencdc.StructuredData{"j": secret + "!"}, want: `column "j" of table "t" is listed in metadata postgres.json.raw_bytes, but its value is not standard padded base64`},
+		"value unpadded":         {meta: `["j"]`, payload: opencdc.StructuredData{"j": "/w"}, want: `its value is not standard padded base64`},
+		// "/x==" has non-zero trailing bits: a lenient decoder reads it as
+		// 0xff, the same byte as the canonical "/w==". Strict rejects it.
+		"value not canonical":      {meta: `["j"]`, payload: opencdc.StructuredData{"j": "/x=="}, want: `its value is not standard padded base64`},
 		"value null":               {meta: `["j"]`, payload: opencdc.StructuredData{"j": nil}, want: `its value is null`},
 		"value a number":           {meta: `["j"]`, payload: opencdc.StructuredData{"j": int64(4711)}, want: `its value is a int64`},
 		"value bytes":              {meta: `["j"]`, payload: opencdc.StructuredData{"j": []byte(secret)}, want: `its value is a []uint8`},

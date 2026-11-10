@@ -964,13 +964,19 @@ Unlisted columns are written as they are.
   and remove it from the metadata.
 - The bytes are sent in the session's `client_encoding`, which is the database's
   encoding unless the url sets it. A url that sets `client_encoding=UTF8` on a
-  `SQL_ASCII` target makes Postgres reject them as on a `UTF8` one.
+  `SQL_ASCII` target makes Postgres reject them as on a `UTF8` one. For that reason
+  `default_query_exec_mode=simple_protocol` cannot write to a `SQL_ASCII` target: pgx
+  refuses every simple-protocol query unless `client_encoding` is `UTF8`, and with it
+  Postgres rejects the listed values. Use `describe_exec` (the default),
+  `cache_statement`, `cache_describe` or `exec`.
 - A metadata value that is not a JSON array of column names, a listed column that the
   record's key and payload do not have, or a listed value that is not standard padded
   base64 (or a list of such strings and nulls) fails the write with
   `postgres.destination.json_raw_bytes_invalid`, naming the table and the column, never
   the value. A processor that renames, drops or rewrites a listed column must update
-  the metadata.
+  the metadata, or remove the column from it. The destination cannot always tell a
+  rewritten value from base64: a new value that happens to be valid padded base64,
+  such as `true` or `1234`, is decoded and its bytes are written without an error.
 - `postgres.json.raw_bytes.before` is ignored: the destination does not write
   `payload.before`.
 
