@@ -443,10 +443,13 @@ func (h *CDCHandler) handleUpdate(
 	}
 
 	oldValues, rawJSONBefore, err := h.relationSet.Values(msg.RelationID, msg.OldTuple)
-	if err != nil && h.json.Halts() {
+	if err != nil && h.json.Halts() && msg.OldTupleType == pglogrepl.UpdateMessageTupleTypeOld {
 		// Invariant 6: with json.invalidUTF8 halt, json text that is not
-		// valid UTF-8 stops the source in the old row too; Before is not
-		// dropped quietly for it.
+		// valid UTF-8 stops the source in a full old row too (REPLICA
+		// IDENTITY FULL); Before is not dropped quietly for it. A key-only
+		// old tuple ('K') is never emitted (no Before, and the key comes
+		// from the new row), so it does not halt the source: halting on a
+		// value that is not delivered would stop it on every restart.
 		var je *types.JSONNotUTF8Error
 		// guard: logrepl-json-halt-old-row tests=^TestHandler_JSONRawBytes_Halt$
 		if errors.As(err, &je) {

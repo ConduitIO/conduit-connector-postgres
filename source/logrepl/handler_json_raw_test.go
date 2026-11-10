@@ -238,12 +238,17 @@ func TestHandler_JSONRawBytes_Key(t *testing.T) {
 }
 
 // json.invalidUTF8 halt keeps the coded error, in the new row and in a full
-// old row (Before is not dropped quietly), and emits nothing.
+// old row (Before is not dropped quietly), and emits nothing. A key-only old
+// tuple of an UPDATE ('K', the key changed) is never emitted, so invalid
+// text in it does not halt: the record is delivered without Before. A
+// DELETE's key-only old tuple is the key, so it halts.
 func TestHandler_JSONRawBytes_Halt(t *testing.T) {
 	valid := `{"ok": 1}`
 	for _, tc := range []struct {
-		name   string
-		handle func(context.Context, *CDCHandler) error
+		name      string
+		keyColumn string
+		handle    func(context.Context, *CDCHandler) error
+		noHalt    bool
 	}{{
 		name: "insert",
 		handle: func(ctx context.Context, h *CDCHandler) error {
@@ -259,6 +264,17 @@ func TestHandler_JSONRawBytes_Halt(t *testing.T) {
 			}, 1)
 		},
 	}, {
+		name:      "update, invalid only in the key-only old tuple",
+		keyColumn: "jb",
+		handle: func(ctx context.Context, h *CDCHandler) error {
+			return h.handleUpdate(ctx, &pglogrepl.UpdateMessage{
+				RelationID: 1, OldTupleType: pglogrepl.UpdateMessageTupleTypeKey,
+				OldTuple: tuple(null(), null(), txt(rawJSON)),
+				NewTuple: row(true, "1", valid, valid, nil),
+			}, 1)
+		},
+		noHalt: true,
+	}, {
 		name: "delete",
 		handle: func(ctx context.Context, h *CDCHandler) error {
 			return h.handleDelete(ctx, &pglogrepl.DeleteMessage{
@@ -266,12 +282,36 @@ func TestHandler_JSONRawBytes_Halt(t *testing.T) {
 				OldTuple: row(true, "1", valid, rawJSON, nil),
 			}, 1)
 		},
+	}, {
+		name:      "delete, key-only old tuple",
+		keyColumn: "jb",
+		handle: func(ctx context.Context, h *CDCHandler) error {
+			return h.handleDelete(ctx, &pglogrepl.DeleteMessage{
+				RelationID: 1, OldTupleType: pglogrepl.DeleteMessageTupleTypeKey,
+				OldTuple: tuple(null(), null(), txt(rawJSON)),
+			}, 1)
+		},
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			is := is.New(t)
-			h, ch := newJSONRawTestHandler(ctx, t, true, types.JSONInvalidUTF8Halt, "id")
+			keyColumn := tc.keyColumn
+			if keyColumn == "" {
+				keyColumn = "id"
+			}
+			h, ch := newJSONRawTestHandler(ctx, t, true, types.JSONInvalidUTF8Halt, keyColumn)
 			err := tc.handle(ctx, h)
+			if tc.noHalt {
+				is.NoErr(err)
+				rec, encErr := receiveAndEncode(ctx, t, ch)
+				is.NoErr(encErr)
+				is.Equal(rec.Payload.Before, nil)
+				_, ok := rec.Metadata[types.MetadataJSONRawBytesBefore]
+				is.True(!ok)
+				_, ok = rec.Metadata[types.MetadataJSONRawBytes]
+				is.True(!ok)
+				return
+			}
 			var je *types.JSONNotUTF8Error
 			is.True(errors.As(err, &je))
 			is.True(je.Table != "" && je.Column != "")
