@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -142,6 +143,14 @@ func TestSource_JSONIsExactString(t *testing.T) {
 	}
 }
 
+// jsonArrayShapes are json[]/jsonb[] literals by row id: empty, two
+// dimensions with a NULL, and lower bound 0.
+var jsonArrayShapes = map[int64]string{
+	3: `{}`,
+	4: `{{"{\"a\": 1}",NULL},{"[1, 2]","\"x\""}}`,
+	5: `[0:1]={"{\"b\": 2}",3}`,
+}
+
 // json[] and jsonb[] have no Avro schema (no array has), so they are read
 // without one. Their elements are strings, like the scalars. Before, pgx
 // unmarshalled them into maps and float64s, which reordered keys and rounded
@@ -167,6 +176,14 @@ func TestSource_JSONArrayElementsAreExactStrings(t *testing.T) {
 				is.NoErr(err)
 				_, err = conn.Exec(ctx, fmt.Sprintf("INSERT INTO %s VALUES (2, NULL, NULL)", table))
 				is.NoErr(err)
+				// Shapes the snapshot (binary, pgx) and CDC (text, the
+				// connector's parser) decode with different code: empty,
+				// two-dimensional (flattened in storage order) and a
+				// non-default lower bound.
+				for id, lit := range jsonArrayShapes {
+					_, err = conn.Exec(ctx, fmt.Sprintf("INSERT INTO %s VALUES ($1, $2::text::json[], $2::text::jsonb[])", table), id, lit)
+					is.NoErr(err)
+				}
 			}
 			mode := "never"
 			if path == "snapshot" {
@@ -186,9 +203,9 @@ func TestSource_JSONArrayElementsAreExactStrings(t *testing.T) {
 			}
 
 			// What Postgres prints for each element.
-			elems := func(col string) []any {
+			elems := func(col string, id int64) []any {
 				var out []*string
-				is.NoErr(conn.QueryRow(ctx, fmt.Sprintf("SELECT array_agg(e::text ORDER BY o) FROM %s, unnest(%s) WITH ORDINALITY AS u(e, o) WHERE id = 1", table, col)).Scan(&out))
+				is.NoErr(conn.QueryRow(ctx, fmt.Sprintf("SELECT array_agg(e::text ORDER BY o) FROM %s, unnest(%s) WITH ORDINALITY AS u(e, o) WHERE id = $1", table, col), id).Scan(&out))
 				res := make([]any, len(out))
 				for i, e := range out {
 					if e != nil {
@@ -197,22 +214,33 @@ func TestSource_JSONArrayElementsAreExactStrings(t *testing.T) {
 				}
 				return res
 			}
-			wantJA, wantJBA := elems("ja"), elems("jba")
+			wantJA, wantJBA := elems("ja", 1), elems("jba", 1)
 			is.Equal(wantJA[0], jsonDocs[0]) // json keeps the text as written
+			is.Equal(elems("ja", 3), []any{})
+			is.Equal(len(elems("ja", 4)), 4)
+			is.Equal(elems("ja", 5), []any{`{"b": 2}`, "3"})
 
-			for _, rec := range readAcked(ctx, t, s, 2) {
+			seen := 0
+			for _, rec := range readAcked(ctx, t, s, 2+len(jsonArrayShapes)) {
 				after := jsonPayload(ctx, t, rec, false)
-				switch fmt.Sprint(after["id"]) {
-				case "1":
+				id, err := strconv.ParseInt(fmt.Sprint(after["id"]), 10, 64)
+				is.NoErr(err)
+				switch {
+				case id == 1:
 					is.Equal(after["ja"], wantJA)
 					is.Equal(after["jba"], wantJBA)
-				case "2":
+				case id == 2:
 					is.Equal(after["ja"], nil)
 					is.Equal(after["jba"], nil)
+				case jsonArrayShapes[id] != "":
+					is.Equal(after["ja"], elems("ja", id))   // the exact text of each element
+					is.Equal(after["jba"], elems("jba", id)) // in storage order
 				default:
 					t.Fatalf("unexpected id %v", after["id"])
 				}
+				seen++
 			}
+			is.Equal(seen, 2+len(jsonArrayShapes))
 		})
 	}
 }
