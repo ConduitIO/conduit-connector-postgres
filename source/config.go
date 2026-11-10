@@ -142,7 +142,9 @@ type Config struct {
 	//     postgres.json.raw_bytes (postgres.json.raw_bytes.before for
 	//     Before) lists the column as a JSON array of column names, for
 	//     example ["doc"]. For an array column every non-NULL element is
-	//     base64. Nothing is replaced, dropped or skipped.
+	//     base64. Nothing is replaced, dropped or skipped. A consumer that
+	//     does not read that metadata reads the base64 text as if it were
+	//     the JSON value; set "halt" to fail closed instead.
 	//   - "halt": the source stops with the error postgres.source.json_not_utf8.
 	// Valid text is emitted unchanged either way.
 	JSONInvalidUTF8 types.JSONInvalidUTF8 `json:"json.invalidUTF8" validate:"inclusion=base64|halt" default:"base64"`
