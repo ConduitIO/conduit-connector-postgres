@@ -737,7 +737,10 @@ specification:
       ```
 
       Use `postgres.json.raw_bytes.before` the same way for `payload.before`, and
-      `postgres.json.raw_bytes` for the key.
+      `postgres.json.raw_bytes` for the key. This connector's destination does this
+      itself: it writes the bytes of every listed column, which a `SQL_ASCII` target
+      stores exactly and a `UTF8` target rejects with SQLSTATE 22021 (see "json text that
+      is not valid UTF-8" under Destination).
     - **Halted pipeline.** Set `json.invalidUTF8: base64` and restart: the row is delivered
       as base64 with the metadata, and the pipeline goes on. A snapshot row can instead be
       corrected and the source restarted; a change already in the WAL is read again with
@@ -796,7 +799,10 @@ specification:
       `json` to `jsonb` and back is admitted.
     - **Destination.** This connector's destination writes a `json` or `jsonb` column from
       a string or from bytes, so records produced before and after the upgrade both land as
-      the same document.
+      the same document. A column listed in `postgres.json.raw_bytes` is base64-decoded and
+      written as its bytes (see "json text that is not valid UTF-8" under Destination).
+      Upgrade the destination with the source, or before it: an older destination writes
+      the base64 text of such a column.
     - **Rolling back** to v0.20.0 registers the `bytes` version again on the next record
       and is otherwise safe.
 
@@ -927,6 +933,36 @@ specification:
       commit fails, nothing from that write is stored and no record of it is acknowledged;
       the records are redelivered (at-least-once). Keyed upserts make redelivery
       idempotent; keyless inserts append again.
+
+    ### json text that is not valid UTF-8
+
+    This connector's source delivers a `json` or `jsonb` value whose text is not valid
+    UTF-8 (possible only in a `SQL_ASCII` database) as the base64 of its bytes and lists
+    its column in the record metadata `postgres.json.raw_bytes` (see json and jsonb
+    Columns under Source). For every listed column, in the key and in the payload, the
+    destination decodes the base64 and writes the bytes, never the base64 text. For a
+    list (a `json[]` or `jsonb[]`) it decodes every element and keeps `NULL` elements.
+    Unlisted columns are written as they are.
+
+    - A `SQL_ASCII` target database stores the bytes exactly as the source read them, in
+      `json`, `jsonb` and `text` columns and in `jsonb[]` and `text[]` columns, and a
+      delete by a listed `jsonb` key matches the row by those bytes.
+    - A `UTF8` target database cannot hold them: Postgres rejects the write with its own
+      error, SQLSTATE `22021` (invalid byte sequence for encoding "UTF8"), and nothing of
+      that write is stored or acknowledged. Move the target to `SQL_ASCII`, fix the data at
+      the source (see the source runbook), or transform the column before the destination
+      and remove it from the metadata.
+    - The bytes are sent in the session's `client_encoding`, which is the database's
+      encoding unless the url sets it. A url that sets `client_encoding=UTF8` on a
+      `SQL_ASCII` target makes Postgres reject them as on a `UTF8` one.
+    - A metadata value that is not a JSON array of column names, a listed column that the
+      record's key and payload do not have, or a listed value that is not standard padded
+      base64 (or a list of such strings and nulls) fails the write with
+      `postgres.destination.json_raw_bytes_invalid`, naming the table and the column, never
+      the value. A processor that renames, drops or rewrites a listed column must update
+      the metadata.
+    - `postgres.json.raw_bytes.before` is ignored: the destination does not write
+      `payload.before`.
 
     ### Schema-drift markers
 

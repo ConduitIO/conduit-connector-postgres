@@ -1224,6 +1224,12 @@ func (d *Destination) upsert(ctx context.Context, idx int, r opencdc.Record, p *
 	if err := checkIdentifiers(tableName, key, payload); err != nil {
 		return err
 	}
+	// Invariant 6: a column the source sent as base64 (json text that is not
+	// valid UTF-8) is written as its bytes, never as the base64 text.
+	key, payload, err = decodeJSONRawBytes(r.Metadata, tableName, key, payload)
+	if err != nil {
+		return err
+	}
 	if err := checkKeyValues(r.Operation, tableName, key); err != nil {
 		return err
 	}
@@ -1250,6 +1256,13 @@ func (d *Destination) remove(ctx context.Context, idx int, r opencdc.Record, p *
 	}
 
 	if err := checkIdentifiers(tableName, key, nil); err != nil {
+		return err
+	}
+	// The source lists a jsonb key column whose text is not valid UTF-8: the
+	// delete must match the row by its bytes, not by the base64.
+	after, _ := r.Payload.After.(opencdc.StructuredData) // ensureStructuredData made it structured
+	key, _, err = decodeJSONRawBytes(r.Metadata, tableName, key, after)
+	if err != nil {
 		return err
 	}
 	if err := checkKeyValues(r.Operation, tableName, key); err != nil {
