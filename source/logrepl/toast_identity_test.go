@@ -118,6 +118,16 @@ func TestWarnToastIdentity(t *testing.T) {
 		is.True(!strings.Contains(logs.String(), WarnCodeAvroToastIdentity))
 	})
 
+	t.Run("caller cancels: not reported as timed out", func(t *testing.T) {
+		is := is.New(t)
+		cctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		var logs bytes.Buffer
+		WarnToastIdentity(zerolog.New(&logs).WithContext(cctx), blockingRowQuerier{}, "canceled_ti")
+		is.True(strings.Contains(logs.String(), `"timed_out":false`))
+		is.True(!strings.Contains(logs.String(), WarnCodeAvroToastIdentity))
+	})
+
 	t.Run("catalog read fails: no refusal, no panic", func(t *testing.T) {
 		is := is.New(t)
 		var logs bytes.Buffer

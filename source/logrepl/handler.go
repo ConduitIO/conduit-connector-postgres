@@ -1600,7 +1600,8 @@ func (h *CDCHandler) widenForNull(ctx context.Context, rel *pglogrepl.RelationMe
 			"%s: change on table %q (WAL LSN %s) holds NULL in the column(s) %q, which the catalog declares NOT NULL "+
 				"(the column was made NOT NULL after the change was written), and the schema registry rejected the schema "+
 				"of the subject %q with the column(s) made nullable: %w. "+
-				"Fix: allow the change on the subject %q (T -> [\"null\", T] is BACKWARD compatible; FORWARD and FULL reject it), "+
+				"Fix: allow the change on the subject %q, and on the key subject too if the column is the record key "+
+				"(T -> [\"null\", T] is BACKWARD compatible; FORWARD and FULL reject it), "+
 				"for example set its compatibility to BACKWARD or NONE, and restart; or set logrepl.withAvroSchema to false and restart",
 			ErrorCodeAvroNullInNotNullColumn, rel.RelationName, lsn, cols, subject, err, subject)
 	}

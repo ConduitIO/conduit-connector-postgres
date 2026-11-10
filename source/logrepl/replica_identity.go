@@ -99,9 +99,9 @@ const WarnCodeAvroToastIdentity = "postgres.avro.toast_identity"
 // the warning says so. It lets the operator set REPLICA IDENTITY FULL before
 // the first such update instead of after a stopped pipeline. It is a warning only: it
 // never refuses Open, and a failed catalog read is logged, not returned. The
-// read is bounded by schema.NotNullQueryTimeout, like the nullability read,
-// so a starved pool cannot hold Open for the caller's whole deadline. It
-// names the table and columns, never values.
+// read is bounded by schema.NotNullQueryTimeout per table, like the
+// nullability read, so a slow or locked catalog query cannot hold Open
+// indefinitely. It names the table and columns, never values.
 func WarnToastIdentity(ctx context.Context, q RowQuerier, table string) {
 	const query = `SELECT c.relreplident::text,
 		COALESCE(array_agg(a.attname::text ORDER BY a.attnum) FILTER (WHERE a.attstorage <> 'p'), '{}')
