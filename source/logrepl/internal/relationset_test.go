@@ -73,7 +73,7 @@ func TestRelationSetValues_UnchangedToast(t *testing.T) {
 		},
 	}
 
-	values, err := rs.Values(1, row)
+	values, _, err := rs.Values(1, row)
 	is.NoErr(err)
 
 	is.Equal(values["id"], int64(1))
@@ -109,7 +109,7 @@ func TestRelationSetValues_RealNull(t *testing.T) {
 		},
 	}
 
-	values, err := rs.Values(1, row)
+	values, _, err := rs.Values(1, row)
 	is.NoErr(err)
 
 	gotVal, isPresent := values["nullable_col"]
@@ -170,7 +170,7 @@ func TestRelationSetAllTypes(t *testing.T) {
 	t.Run("with builtin plugin", func(t *testing.T) {
 		is := is.New(t)
 
-		values, err := rs.Values(ins.RelationID, ins.Tuple)
+		values, _, err := rs.Values(ins.RelationID, ins.Tuple)
 		is.NoErr(err)
 		isValuesAllTypes(is, values)
 	})
@@ -178,7 +178,7 @@ func TestRelationSetAllTypes(t *testing.T) {
 	t.Run("with standalone plugin", func(t *testing.T) {
 		is := is.New(t)
 
-		values, err := rs.Values(ins.RelationID, ins.Tuple)
+		values, _, err := rs.Values(ins.RelationID, ins.Tuple)
 		is.NoErr(err)
 		isValuesAllTypesStandalone(is, values)
 	})
@@ -228,7 +228,7 @@ func TestRelationSetTemporalTypes(t *testing.T) {
 			rs := NewRelationSetWithEncoding(tc.enc)
 			rs.Add(rel)
 
-			got, err := rs.Values(ins.RelationID, ins.Tuple)
+			got, _, err := rs.Values(ins.RelationID, ins.Tuple)
 			is.NoErr(err)
 
 			want := test.TemporalExpected(ctx, t, pool, table, tc.enc == types.EncodingAvro, tc.groups...)
@@ -348,7 +348,7 @@ func TestRelationSetValues_UnchangedToast_Integration(t *testing.T) {
 		break
 	}
 
-	values, err := rs.Values(upd.RelationID, upd.NewTuple)
+	values, _, err := rs.Values(upd.RelationID, upd.NewTuple)
 	is.NoErr(err)
 
 	is.Equal(values["small_col"], "changed")
@@ -599,8 +599,8 @@ func isValuesAllTypes(is *is.I, got map[string]any) {
 			Months:       0,
 			Valid:        true,
 		},
-		"col_json":  []byte(`{"foo": "bar"}`),
-		"col_jsonb": []byte(`{"foo": "baz"}`),
+		"col_json":  `{"foo": "bar"}`,
+		"col_jsonb": `{"foo": "baz"}`,
 		"col_line": pgtype.Line{
 			A:     19,
 			B:     20,
@@ -700,8 +700,8 @@ func isValuesAllTypesStandalone(is *is.I, got map[string]any) {
 			Months:       0,
 			Valid:        true,
 		},
-		"col_json":  []byte(`{"foo": "bar"}`),
-		"col_jsonb": []byte(`{"foo": "baz"}`),
+		"col_json":  `{"foo": "bar"}`,
+		"col_jsonb": `{"foo": "baz"}`,
 		"col_line": pgtype.Line{
 			A:     19,
 			B:     20,
@@ -800,7 +800,7 @@ func TestRelationSetValues_NumericNonFinite(t *testing.T) {
 					col = &pglogrepl.TupleDataColumn{DataType: pglogrepl.TupleDataTypeNull}
 				}
 
-				values, err := rs.Values(7, &pglogrepl.TupleData{ColumnNum: 2, Columns: []*pglogrepl.TupleDataColumn{
+				values, _, err := rs.Values(7, &pglogrepl.TupleData{ColumnNum: 2, Columns: []*pglogrepl.TupleDataColumn{
 					{DataType: pglogrepl.TupleDataTypeText, Data: []byte("7")}, col,
 				}})
 
@@ -851,7 +851,7 @@ func TestRelationSetValues_NumericArrayNonFinite(t *testing.T) {
 		is := is.New(t)
 		rs := NewRelationSetWithEncoding(types.EncodingNative)
 		rs.Add(rel)
-		got, err := rs.Values(9, tuple("{1.5,NaN,-Infinity,NULL}"))
+		got, _, err := rs.Values(9, tuple("{1.5,NaN,-Infinity,NULL}"))
 		is.NoErr(err)
 		a, ok := got["v"].([]any)
 		is.True(ok)
@@ -867,7 +867,7 @@ func TestRelationSetValues_NumericArrayNonFinite(t *testing.T) {
 		for _, enc := range []types.Encoding{types.EncodingNative, types.EncodingAvro} {
 			rs := NewRelationSetWithEncoding(enc)
 			rs.Add(rel)
-			got, err := rs.Values(9, tuple("{1.5,2}"))
+			got, _, err := rs.Values(9, tuple("{1.5,2}"))
 			is.NoErr(err)
 			a, ok := got["v"].([]any)
 			is.True(ok)
@@ -880,7 +880,7 @@ func TestRelationSetValues_NumericArrayNonFinite(t *testing.T) {
 		is := is.New(t)
 		rs := NewRelationSetWithEncoding(types.EncodingAvro)
 		rs.Add(rel)
-		_, err := rs.Values(9, tuple("{1.5,Infinity}"))
+		_, _, err := rs.Values(9, tuple("{1.5,Infinity}"))
 		is.True(err != nil)
 		is.True(strings.HasPrefix(err.Error(), "postgres.source.numeric_not_representable: "))
 		is.True(strings.Contains(err.Error(), `"Infinity"`))

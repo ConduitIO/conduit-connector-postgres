@@ -144,7 +144,7 @@ func TestAvroExtract_NullableColumns(t *testing.T) {
 			if _, isUnion := pf.Type().(*avro.UnionSchema); isUnion {
 				t.Fatalf("NOT NULL field is a union: %s", mustText(t, plain))
 			}
-			typeJSON := pf.Type().String()
+			typeJSON := mustText(t, pf.Type()) // with its properties (json, jsonb)
 
 			nullable := extractOne(t, tc.pgType, tc.typMod, false)
 			want := `{"name":"t_payload","type":"record","fields":[{"name":"c","type":["null",` + typeJSON + `],"default":null}]}`

@@ -21,6 +21,7 @@ import (
 	"math/big"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,6 +59,14 @@ import (
 // generator on the pre-swap tree and found them byte-identical. The new schema is
 // a plain string, which hamba and iskorotkov encode identically (0x02 0x30 for
 // "0").
+//
+// A second deliberate exception: json and jsonb became Avro strings (Debezium
+// parity, io.debezium.data.Json). The c_json and c_jsonb fields of "every
+// mapped type" and the four typeChanges between bytea and json/jsonb (now not
+// preserved: bytes and a string are different values) were edited in place.
+// The row hex is unchanged: Avro encodes bytes and string identically (a
+// zigzag length followed by the raw bytes), so the hamba-era bytes still
+// decode, now to a string.
 
 const (
 	pgBool        = "bool"
@@ -225,8 +234,10 @@ func rowFor(cols []compatCol) map[string]any {
 		switch c.PGType {
 		case pgBool:
 			row[c.Name] = true
-		case pgBytea, pgJSON, pgJSONb:
+		case pgBytea:
 			row[c.Name] = []byte(`{"a":[1,2,3]}`)
+		case pgJSON, pgJSONb:
+			row[c.Name] = `{"a":[1,2,3]}`
 		case pgFloat4:
 			row[c.Name] = float32(15.5)
 		case pgFloat8:
@@ -289,11 +300,18 @@ func extractCompat(t *testing.T, c compatCase) string {
 	if err != nil {
 		t.Fatalf("%s: text: %v", c.Name, err)
 	}
-	if text := string(text); text != sch.String() {
+	// The one other difference from the canonical form is the connect.name
+	// and connect.version of json and jsonb fields (io.debezium.data.Json),
+	// which are not part of the Avro type; the fixtures hold the type itself.
+	plain := strings.ReplaceAll(string(text), debeziumJSONType, `"string"`)
+	if plain != sch.String() {
 		t.Fatalf("%s: registered text differs from the canonical form for a schema without defaults:\n%s\n%s", c.Name, text, sch.String())
 	}
-	return string(text)
+	return plain
 }
+
+// debeziumJSONType is the registered type of a json or jsonb field.
+const debeziumJSONType = `{"type":"string","connect.name":"io.debezium.data.Json","connect.version":1}`
 
 func TestAvroExtract_HambaCompat(t *testing.T) {
 	const path = "testdata/hamba_schema_fixtures.json"

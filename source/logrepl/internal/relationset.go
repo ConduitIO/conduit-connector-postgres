@@ -30,6 +30,9 @@ type RelationSet struct {
 	relations map[uint32]*pglogrepl.RelationMessage
 	connInfo  *pgtype.Map
 	encoding  types.Encoding
+	// json is what to do with json text that is not valid UTF-8; nil is the
+	// default, base64.
+	json *types.JSONPolicy
 }
 
 // NewRelationSet creates a new relation set that formats values for records
@@ -42,11 +45,21 @@ func NewRelationSet() *RelationSet {
 // the given encoding. Use types.EncodingAvro when the connector attaches Avro
 // schemas to the records built from these values.
 func NewRelationSetWithEncoding(enc types.Encoding) *RelationSet {
+	connInfo := pgtype.NewMap()
+	// json and jsonb (and their arrays) decode to the text Postgres sent, the
+	// same as on the snapshot's connections (cpool).
+	types.RegisterJSONText(connInfo)
 	return &RelationSet{
 		relations: map[uint32]*pglogrepl.RelationMessage{},
-		connInfo:  pgtype.NewMap(),
+		connInfo:  connInfo,
 		encoding:  enc,
 	}
+}
+
+// SetJSONPolicy sets what Values does with json text that is not valid
+// UTF-8. Without it Values uses the default, base64.
+func (rs *RelationSet) SetJSONPolicy(p *types.JSONPolicy) {
+	rs.json = p
 }
 
 func (rs *RelationSet) Add(r *pglogrepl.RelationMessage) {
@@ -62,7 +75,10 @@ func (rs *RelationSet) Get(id uint32) (*pglogrepl.RelationMessage, error) {
 }
 
 // Values decodes a logical replication tuple into a map of column name to
-// value.
+// value. rawJSON lists the json, jsonb, json[] and jsonb[] columns whose text
+// was not valid UTF-8 and whose value is therefore the base64 of its bytes
+// (types.JSONPolicy.FormatColumn); a caller that emits the values must name
+// them in the record metadata (types.MetadataJSONRawBytes).
 //
 // Invariant 6 (schema handling never silently mangles data): a column whose
 // pglogrepl.TupleDataColumn.DataType is 'u' (TupleDataTypeToast) is an
@@ -77,20 +93,20 @@ func (rs *RelationSet) Get(id uint32) (*pglogrepl.RelationMessage, error) {
 // REPLICA IDENTITY FULL, where UpdateMessage.OldTuple carries the full old
 // row) can backfill the omitted column from there; see
 // CDCHandler.handleUpdate.
-func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]any, error) {
+func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (values map[string]any, rawJSON []string, err error) {
 	if row == nil {
-		return nil, errors.New("no tuple data")
+		return nil, nil, errors.New("no tuple data")
 	}
 
 	rel, err := rs.Get(id)
 	if err != nil {
-		return nil, fmt.Errorf("no relation for %d", id)
+		return nil, nil, fmt.Errorf("no relation for %d", id)
 	}
 
 	// Size the map for the full column set so it never rehashes while filling.
 	// The emitted map may hold fewer entries (unchanged-TOAST columns are
 	// omitted), so this is an upper bound, never an over-count.
-	values := make(map[string]any, len(row.Columns))
+	values = make(map[string]any, len(row.Columns))
 
 	// assert same number of row and rel columns
 	for i, tuple := range row.Columns {
@@ -106,10 +122,10 @@ func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]a
 			continue
 		}
 
-		v, decodeErr := rs.decodeValue(col, tuple.Data)
+		v, raw, decodeErr := rs.decodeValue(col, tuple.Data)
 		if decodeErr != nil {
 			if located, ok := types.LocateError(decodeErr, rel.RelationName, col.Name); ok {
-				return nil, types.WithRow(located, keyText(rel, row))
+				return nil, nil, types.WithRow(located, keyText(rel, row))
 			}
 			// The decoder's error repeats the value it could not parse, or
 			// part of it: strconv's `parsing "..."`, an array element, a
@@ -117,17 +133,23 @@ func (rs *RelationSet) Values(id uint32, row *pglogrepl.TupleData) (map[string]a
 			// and CLI output, so the cause text is not passed on: only the
 			// column, the type of the error, the value's size and a salted
 			// hash are. The original error stays in the chain.
-			return nil, &scrubbedError{
+			return nil, nil, &scrubbedError{
 				msg: fmt.Sprintf("failed to decode value for column %q (%d bytes, value hash %s): %T (details not shown: they can quote the value)",
 					col.Name, len(tuple.Data), pginternal.KeyHash(map[string]any{col.Name: string(tuple.Data)}), rootCause(decodeErr)),
 				err: decodeErr,
 			}
 		}
 
+		// Invariant 6: the base64 value goes out with its column named, never
+		// as a string a consumer would take for JSON text.
+		// guard: logrepl-json-raw-named tests=^TestHandler_JSONRawBytes_ pkgs=./source/logrepl
+		if raw {
+			rawJSON = append(rawJSON, col.Name)
+		}
 		values[col.Name] = v
 	}
 
-	return values, nil
+	return values, rawJSON, nil
 }
 
 func (rs *RelationSet) oidToCodec(id uint32) pgtype.Codec {
@@ -138,7 +160,7 @@ func (rs *RelationSet) oidToCodec(id uint32) pgtype.Codec {
 	return dt.Codec
 }
 
-func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, data []byte) (any, error) {
+func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, data []byte) (v any, rawJSON bool, err error) {
 	decoder := rs.oidToCodec(col.DataType)
 	// This workaround is due to an issue in pgx v5.7.1.
 	// Namely, that version introduces an XML codec
@@ -146,7 +168,6 @@ func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, data []
 	// The XML codec, however, always return nil when deserializing input bytes
 	// (see: https://github.com/jackc/pgx/pull/2083#discussion_r1755768269).
 	var val any
-	var err error
 
 	switch col.DataType {
 	case pgtype.XMLOID, pgtype.XMLArrayOID, pgtype.JSONBOID, pgtype.JSONOID:
@@ -156,15 +177,15 @@ func (rs *RelationSet) decodeValue(col *pglogrepl.RelationMessageColumn, data []
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode value of pgtype %v: %w", col.DataType, err)
+		return nil, false, fmt.Errorf("failed to decode value of pgtype %v: %w", col.DataType, err)
 	}
 
-	v, err := types.FormatColumn(rs.encoding, col.DataType, col.TypeModifier, val)
+	v, rawJSON, err = rs.json.FormatColumn(rs.encoding, col.DataType, col.TypeModifier, val)
 	if err != nil {
-		return nil, fmt.Errorf("failed to format column %q type %T: %w", col.Name, val, err)
+		return nil, false, fmt.Errorf("failed to format column %q type %T: %w", col.Name, val, err)
 	}
 
-	return v, nil
+	return v, rawJSON, nil
 }
 
 // scrubbedError carries a message without the offending value and keeps the

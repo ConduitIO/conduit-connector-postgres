@@ -109,6 +109,11 @@ func Test_AvroExtract(t *testing.T) {
 		is.Equal(rowTSTZ.UTC().String(), colTSTZ.UTC().String())
 
 		is.Equal(row["col_uuid"], decoded["col_uuid"])
+
+		// json keeps its text as stored, jsonb its canonical text; both are
+		// strings, numbers are not rounded and keys are not reordered.
+		is.Equal(decoded["col_json"], `{"b": 1,  "a": [1.0, 12345678901234567890]}`)
+		is.Equal(decoded["col_jsonb"], `{"a": [1.0, 12345678901234567890], "b": 1}`)
 	})
 }
 
@@ -131,7 +136,9 @@ func setupAvroTestTable(ctx context.Context, t *testing.T, conn test.Querier) st
 		  col_text          text,
 		  col_timestamp     timestamp,
 		  col_timestamptz   timestamptz,
-		  col_uuid          uuid
+		  col_uuid          uuid,
+		  col_json          json,
+		  col_jsonb         jsonb
 		)`
 	query = fmt.Sprintf(query, table)
 	_, err := conn.Exec(ctx, query)
@@ -157,7 +164,9 @@ func insertAvroTestRow(ctx context.Context, t *testing.T, conn test.Querier, tab
 			col_text,
 			col_timestamp,
 			col_timestamptz,
-			col_uuid
+			col_uuid,
+			col_json,
+			col_jsonb
 		) VALUES (
 		  true,                                       -- col_boolean
 		  '\x07',                                     -- col_bytea
@@ -172,7 +181,9 @@ func insertAvroTestRow(ctx context.Context, t *testing.T, conn test.Querier, tab
 		  'foo bar baz',                              -- col_text
 		  '2022-03-14 15:16:17',                      -- col_timestamp
 		  '2022-03-14 15:16:17-08',                   -- col_timestamptz
-		  'bd94ee0b-564f-4088-bf4e-8d5e626caf66'      -- col_uuid
+		  'bd94ee0b-564f-4088-bf4e-8d5e626caf66',     -- col_uuid
+		  '{"b": 1,  "a": [1.0, 12345678901234567890]}', -- col_json
+		  '{"b": 1,  "a": [1.0, 12345678901234567890]}'  -- col_jsonb
 		)`
 	query = fmt.Sprintf(query, table)
 	_, err := conn.Exec(ctx, query)
@@ -212,6 +223,8 @@ func avroTestSchema(t *testing.T, table string) avro.Schema {
 			avro.String,
 			avro.NewPrimitiveLogicalSchema(avro.UUID),
 		))),
+		assert(avro.NewField("col_json", jsonSchema())),
+		assert(avro.NewField("col_jsonb", jsonSchema())),
 	}
 
 	// Every column of the test table is nullable (#326).
@@ -240,6 +253,8 @@ func avrolizeMap(fields []pgconn.FieldDescription, values []any) map[string]any 
 			row[f.Name] = n
 		case pgtype.UUIDOID:
 			row[f.Name] = fmt.Sprint(values[i])
+		case pgtype.JSONOID, pgtype.JSONBOID:
+			row[f.Name] = assert(types.Format(f.DataTypeOID, values[i]))
 		default:
 			row[f.Name] = values[i]
 		}
@@ -278,6 +293,125 @@ func TestAvroExtract_UnconstrainedNumericIsString(t *testing.T) {
 	}
 }
 
+// json and jsonb are Avro strings, as Debezium emits them
+// (io.debezium.data.Json); they were bytes before v0.21.0.
+func TestAvroExtract_JSONIsString(t *testing.T) {
+	is := is.New(t)
+	sch, err := Avro.Extract("t_payload", []pgconn.FieldDescription{
+		{Name: "j", DataTypeOID: pgtype.JSONOID, TypeModifier: -1},
+		{Name: "jb", DataTypeOID: pgtype.JSONBOID, TypeModifier: -1},
+	}, NotNull{"j": true, "jb": true})
+	is.NoErr(err)
+	is.Equal(sch.String(), `{"name":"t_payload","type":"record","fields":[{"name":"j","type":"string"},{"name":"jb","type":"string"}]}`)
+
+	// A jsonb key column (jsonb has a btree opclass, so it can be a primary
+	// key) is a string in the key schema too.
+	key, err := Avro.Extract("t_key", []pgconn.FieldDescription{
+		{Name: "id", DataTypeOID: pgtype.Int8OID, TypeModifier: -1},
+		{Name: "jb", DataTypeOID: pgtype.JSONBOID, TypeModifier: -1},
+	}, NotNull{"id": true, "jb": true}, "jb")
+	is.NoErr(err)
+	is.Equal(key.String(), `{"name":"t_key","type":"record","fields":[{"name":"jb","type":"string"}]}`)
+}
+
+// The registered text of a json or jsonb field carries Debezium's Kafka
+// Connect name, as Confluent's Avro converter writes it for Debezium:
+// connect.name and connect.version on the field's type. The canonical form
+// (String) stays "string": the properties are not part of the Avro type.
+func TestText_JSONCarriesDebeziumName(t *testing.T) {
+	is := is.New(t)
+	const jsonType = `{"type":"string","connect.name":"io.debezium.data.Json","connect.version":1}`
+
+	sch, err := Avro.Extract("t_payload", []pgconn.FieldDescription{
+		{Name: "id", DataTypeOID: pgtype.Int8OID, TypeModifier: -1},
+		{Name: "j", DataTypeOID: pgtype.JSONOID, TypeModifier: -1},
+		{Name: "jb", DataTypeOID: pgtype.JSONBOID, TypeModifier: -1},
+	}, NotNull{"id": true, "j": true, "jb": true})
+	is.NoErr(err)
+	text, err := Text(sch)
+	is.NoErr(err)
+	is.Equal(string(text), `{"name":"t_payload","type":"record","fields":[{"name":"id","type":"long"},`+
+		`{"name":"j","type":`+jsonType+`},{"name":"jb","type":`+jsonType+`}]}`)
+	is.Equal(sch.String(), `{"name":"t_payload","type":"record","fields":[{"name":"id","type":"long"},{"name":"j","type":"string"},{"name":"jb","type":"string"}]}`)
+
+	key, err := Avro.Extract("t_key", []pgconn.FieldDescription{
+		{Name: "id", DataTypeOID: pgtype.Int8OID, TypeModifier: -1},
+		{Name: "jb", DataTypeOID: pgtype.JSONBOID, TypeModifier: -1},
+	}, NotNull{"id": true, "jb": true}, "jb")
+	is.NoErr(err)
+	keyText, err := Text(key)
+	is.NoErr(err)
+	is.Equal(string(keyText), `{"name":"t_key","type":"record","fields":[{"name":"jb","type":`+jsonType+`}]}`)
+
+	// What a registry hands back parses to the same properties.
+	parsed, err := avro.Parse(string(text))
+	is.NoErr(err)
+	for _, name := range []string{"j", "jb"} {
+		var f *avro.Field
+		for _, pf := range parsed.(*avro.RecordSchema).Fields() {
+			if pf.Name() == name {
+				f = pf
+			}
+		}
+		is.True(f != nil)
+		ps, ok := f.Type().(*avro.PrimitiveSchema)
+		is.True(ok)
+		is.Equal(ps.Type(), avro.String)
+		is.Equal(ps.Prop("connect.name"), DebeziumJSONName)
+		is.Equal(ps.Prop("connect.version"), float64(1)) // a JSON number
+	}
+}
+
+// A nullable json or jsonb column is ["null", T] with a default of null
+// (#326), T being the Debezium-named string: Debezium's optional Json field.
+func TestText_NullableJSON(t *testing.T) {
+	is := is.New(t)
+	const jsonType = `{"type":"string","connect.name":"io.debezium.data.Json","connect.version":1}`
+	sch, err := Avro.Extract("t_payload", []pgconn.FieldDescription{
+		{Name: "id", DataTypeOID: pgtype.Int8OID, TypeModifier: -1},
+		{Name: "j", DataTypeOID: pgtype.JSONOID, TypeModifier: -1},
+		{Name: "jb", DataTypeOID: pgtype.JSONBOID, TypeModifier: -1},
+	}, NotNull{"id": true, "j": false, "jb": false})
+	is.NoErr(err)
+	text, err := Text(sch)
+	is.NoErr(err)
+	is.Equal(string(text), `{"name":"t_payload","type":"record","fields":[{"name":"id","type":"long"},`+
+		`{"name":"j","type":["null",`+jsonType+`],"default":null},{"name":"jb","type":["null",`+jsonType+`],"default":null}]}`)
+}
+
+// Registering Text instead of String changes nothing for a NOT NULL column
+// of any type but json and jsonb: every other type the extractor emits has
+// the same text either way. Only json and jsonb fields gain their properties
+// (and nullable fields their default of null, see avro_nullable_test.go).
+func TestText_EqualsStringWithoutProps(t *testing.T) {
+	var fields []pgconn.FieldDescription
+	for name := range Avro.avroMap {
+		typ, ok := Avro.pgMap.TypeForName(name)
+		if !ok {
+			t.Fatalf("no pgtype for %q", name)
+		}
+		if isJSON(typ.OID) {
+			continue
+		}
+		fields = append(fields, pgconn.FieldDescription{Name: "f_" + name, DataTypeOID: typ.OID, TypeModifier: -1})
+	}
+	fields = append(fields,
+		pgconn.FieldDescription{Name: "n_unconstrained", DataTypeOID: pgtype.NumericOID, TypeModifier: -1},
+		pgconn.FieldDescription{Name: "n_scale0", DataTypeOID: pgtype.NumericOID, TypeModifier: 5<<16 + 4},
+		pgconn.FieldDescription{Name: "n_scale3", DataTypeOID: pgtype.NumericOID, TypeModifier: 16<<16 | 3 + 4},
+	)
+	for _, f := range fields {
+		t.Run(f.Name, func(t *testing.T) {
+			is := is.New(t)
+			sch, err := Avro.Extract("t_payload", []pgconn.FieldDescription{f}, NotNull{f.Name: true})
+			is.NoErr(err)
+			text, err := Text(sch)
+			is.NoErr(err)
+			is.Equal(string(text), sch.String())
+		})
+	}
+}
+
 func TestTypeChangePreservesValues(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
@@ -291,6 +425,13 @@ func TestTypeChangePreservesValues(t *testing.T) {
 		{"unconstrained to constrained numeric", pgtype.NumericOID, pgtype.NumericOID, -1, 10<<16 | 2 + 4, false, false},
 		{"constrained numeric widened", pgtype.NumericOID, pgtype.NumericOID, 10<<16 | 2 + 4, 12<<16 | 2 + 4, false, false},
 		{"unconstrained numeric unchanged", pgtype.NumericOID, pgtype.NumericOID, -1, -1, true, true},
+		{"json to jsonb", pgtype.JSONOID, pgtype.JSONBOID, -1, -1, true, true},
+		{"jsonb to json", pgtype.JSONBOID, pgtype.JSONOID, -1, -1, true, true},
+		{"bytea to jsonb", pgtype.ByteaOID, pgtype.JSONBOID, -1, -1, false, false},
+		{"jsonb to bytea", pgtype.JSONBOID, pgtype.ByteaOID, -1, -1, false, false},
+		{"text to jsonb", pgtype.TextOID, pgtype.JSONBOID, -1, -1, false, false},
+		{"json to varchar", pgtype.JSONOID, pgtype.VarcharOID, -1, 20, false, false},
+		{"jsonb to unconstrained numeric", pgtype.JSONBOID, pgtype.NumericOID, -1, -1, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			is := is.New(t)

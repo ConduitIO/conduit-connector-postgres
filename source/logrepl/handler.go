@@ -16,10 +16,12 @@ package logrepl
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
 	"reflect"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -43,6 +45,10 @@ import (
 type CDCHandler struct {
 	tableKeys   map[string]string
 	relationSet *internal.RelationSet
+	// json is what to do with json text that is not valid UTF-8, the same
+	// policy relationSet decodes with (SetJSONPolicy). nil is the default,
+	// base64.
+	json *types.JSONPolicy
 
 	// truncateWarns rate-limits the TRUNCATE warning, one entry per table.
 	// Only touched on the subscription goroutine (Handle). now is replaceable
@@ -343,6 +349,14 @@ func (h *CDCHandler) Handle(ctx context.Context, m pglogrepl.Message, lsn pglogr
 	return 0, nil
 }
 
+// SetJSONPolicy sets what the handler and its relation set do with json text
+// that is not valid UTF-8 (json.invalidUTF8). Call it before the first
+// message; without it the default, base64, applies.
+func (h *CDCHandler) SetJSONPolicy(p *types.JSONPolicy) {
+	h.json = p
+	h.relationSet.SetJSONPolicy(p)
+}
+
 // handleInsert formats a Record with INSERT event data from Postgres and sends
 // it to the output channel.
 func (h *CDCHandler) handleInsert(
@@ -371,7 +385,7 @@ func (h *CDCHandler) handleInsert(
 	// drift-halt message reports. See position.SetFirstSeenLSN.
 	h.backfillFirstSeenLSN(rel, lsn)
 
-	newValues, err := h.relationSet.Values(msg.RelationID, msg.Tuple)
+	newValues, rawJSON, err := h.relationSet.Values(msg.RelationID, msg.Tuple)
 	if err != nil {
 		return fmt.Errorf("failed to decode new values: %w", err)
 	}
@@ -383,10 +397,11 @@ func (h *CDCHandler) handleInsert(
 		return err
 	}
 	h.avroShape(rel, newValues)
+	h.warnRawJSON(ctx, rel, newValues, rawJSON)
 
 	rec := sdk.Util.Source.NewRecordCreate(
 		h.buildPosition(lsn),
-		h.buildRecordMetadata(rel),
+		h.buildRecordMetadata(rel, rawJSON, nil),
 		h.buildRecordKey(newValues, rel.RelationName),
 		h.buildRecordPayload(newValues),
 	)
@@ -418,7 +433,7 @@ func (h *CDCHandler) handleUpdate(
 	// Backfill the shape's FirstSeenLSN — see handleInsert.
 	h.backfillFirstSeenLSN(rel, lsn)
 
-	newValues, err := h.relationSet.Values(msg.RelationID, msg.NewTuple)
+	newValues, rawJSON, err := h.relationSet.Values(msg.RelationID, msg.NewTuple)
 	if err != nil {
 		return fmt.Errorf("failed to decode new values: %w", err)
 	}
@@ -427,7 +442,20 @@ func (h *CDCHandler) handleUpdate(
 		return fmt.Errorf("failed to update avro schema: %w", err)
 	}
 
-	oldValues, err := h.relationSet.Values(msg.RelationID, msg.OldTuple)
+	oldValues, rawJSONBefore, err := h.relationSet.Values(msg.RelationID, msg.OldTuple)
+	if err != nil && h.json.Halts() && msg.OldTupleType == pglogrepl.UpdateMessageTupleTypeOld {
+		// Invariant 6: with json.invalidUTF8 halt, json text that is not
+		// valid UTF-8 stops the source in a full old row too (REPLICA
+		// IDENTITY FULL); Before is not dropped quietly for it. A key-only
+		// old tuple ('K') is never emitted (no Before, and the key comes
+		// from the new row), so it does not halt the source: halting on a
+		// value that is not delivered would stop it on every restart.
+		var je *types.JSONNotUTF8Error
+		// guard: logrepl-json-halt-old-row tests=^TestHandler_JSONRawBytes_Halt$
+		if errors.As(err, &je) {
+			return fmt.Errorf("failed to decode old values: %w", err)
+		}
+	}
 	if err != nil {
 		// this is not a critical error, old values are optional, just log it
 		// we use level "trace" intentionally to not clog up the logs in production
@@ -455,6 +483,12 @@ func (h *CDCHandler) handleUpdate(
 				// Invariant 6: a copy, so After does not share the value with
 				// Before (#425).
 				newValues[col] = types.CloneValue(oldVal)
+				// Invariant 6: a base64 value taken from the old row stays
+				// named as one in After.
+				// guard: logrepl-json-backfill-named tests=^TestHandler_JSONRawBytes_Base64$
+				if slices.Contains(rawJSONBefore, col) {
+					rawJSON = append(rawJSON, col)
+				}
 			}
 		}
 	}
@@ -469,12 +503,18 @@ func (h *CDCHandler) handleUpdate(
 	}
 	h.avroShape(rel, newValues)
 	h.avroShape(rel, oldValues)
+	before := h.buildRecordBefore(msg.OldTupleType, oldValues)
+	// guard: logrepl-json-no-before-unnamed tests=^TestHandler_JSONRawBytes_Base64$
+	if before == nil {
+		rawJSONBefore = nil // no Before, nothing in it to name
+	}
+	h.warnRawJSON(ctx, rel, newValues, append(slices.Clone(rawJSON), rawJSONBefore...))
 
 	rec := sdk.Util.Source.NewRecordUpdate(
 		h.buildPosition(lsn),
-		h.buildRecordMetadata(rel),
+		h.buildRecordMetadata(rel, rawJSON, rawJSONBefore),
 		h.buildRecordKey(newValues, rel.RelationName),
-		h.buildRecordBefore(msg.OldTupleType, oldValues),
+		before,
 		h.buildRecordPayload(newValues),
 	)
 	h.attachSchemas(rec, rel.RelationName)
@@ -507,7 +547,7 @@ func (h *CDCHandler) handleDelete(
 	// Backfill the shape's FirstSeenLSN — see handleInsert.
 	h.backfillFirstSeenLSN(rel, lsn)
 
-	oldValues, err := h.relationSet.Values(msg.RelationID, msg.OldTuple)
+	oldValues, rawJSONBefore, err := h.relationSet.Values(msg.RelationID, msg.OldTuple)
 	if err != nil {
 		return fmt.Errorf("failed to decode old values: %w", err)
 	}
@@ -519,6 +559,18 @@ func (h *CDCHandler) handleDelete(
 		return err
 	}
 	h.avroShape(rel, oldValues)
+	// A delete has no After: postgres.json.raw_bytes covers the key, which
+	// comes from the old row. Before is only emitted for a full old row.
+	var rawJSON []string
+	// guard: logrepl-json-delete-key-named tests=^TestHandler_JSONRawBytes_Key$
+	if keyColumn := h.tableKeys[rel.RelationName]; slices.Contains(rawJSONBefore, keyColumn) {
+		rawJSON = []string{keyColumn}
+	}
+	before := h.buildRecordBefore(msg.OldTupleType, oldValues)
+	if before == nil {
+		rawJSONBefore = nil
+	}
+	h.warnRawJSON(ctx, rel, oldValues, append(slices.Clone(rawJSON), rawJSONBefore...))
 
 	key := h.buildRecordKey(oldValues, rel.RelationName)
 	// Invariant 3: a delete with a null key cannot be applied downstream (the
@@ -533,9 +585,9 @@ func (h *CDCHandler) handleDelete(
 
 	rec := sdk.Util.Source.NewRecordDelete(
 		h.buildPosition(lsn),
-		h.buildRecordMetadata(rel),
+		h.buildRecordMetadata(rel, rawJSON, rawJSONBefore),
 		key,
-		h.buildRecordBefore(msg.OldTupleType, oldValues),
+		before,
 	)
 	h.attachSchemas(rec, rel.RelationName)
 	h.addToBatch(ctx, rec)
@@ -562,12 +614,37 @@ func (h *CDCHandler) addToBatch(ctx context.Context, rec opencdc.Record) {
 	}
 }
 
-func (h *CDCHandler) buildRecordMetadata(rel *pglogrepl.RelationMessage) map[string]string {
+// buildRecordMetadata returns the metadata of a change of rel. rawJSON names
+// the columns whose value in the Key or After is the base64 of json text that
+// is not valid UTF-8, rawJSONBefore those in Before (types.JSONPolicy).
+func (h *CDCHandler) buildRecordMetadata(rel *pglogrepl.RelationMessage, rawJSON, rawJSONBefore []string) map[string]string {
 	m := map[string]string{
 		opencdc.MetadataCollection: rel.RelationName,
 	}
+	// Invariant 6: every base64 value is named, so a consumer decodes exactly
+	// those and never mistakes one for JSON text.
+	if v, ok := types.JSONRawBytesMetadata(rawJSON); ok {
+		m[types.MetadataJSONRawBytes] = v
+	}
+	if v, ok := types.JSONRawBytesMetadata(rawJSONBefore); ok {
+		m[types.MetadataJSONRawBytesBefore] = v
+	}
 
 	return m
+}
+
+// warnRawJSON logs, once per table and column, that columns held json text
+// that is not valid UTF-8 and were emitted as base64. The row is named by its
+// key column and a salted hash, never by a value.
+func (h *CDCHandler) warnRawJSON(ctx context.Context, rel *pglogrepl.RelationMessage, values map[string]any, columns []string) {
+	if len(columns) == 0 {
+		return
+	}
+	row := ""
+	if keyColumn := h.tableKeys[rel.RelationName]; keyColumn != "" {
+		row = pginternal.RowRef(map[string]any{keyColumn: values[keyColumn]})
+	}
+	h.json.WarnRawBytes(sdk.Logger(ctx), "cdc", rel.RelationName, row, columns)
 }
 
 // buildRecordKey takes the values from the message and extracts the key that

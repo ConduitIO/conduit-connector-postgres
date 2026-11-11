@@ -53,6 +53,10 @@ type FetchConfig struct {
 	FetchSize      int
 	Position       position.Position
 	WithAvroSchema bool
+	// JSON is what to do with json text that is not valid UTF-8, shared with
+	// the other workers and the CDC handler of the source. nil is the
+	// default, base64.
+	JSON *types.JSONPolicy
 }
 
 var (
@@ -96,6 +100,10 @@ type FetchData struct {
 	Table         string
 	PayloadSchema cschema.Schema
 	KeySchema     cschema.Schema
+	// RawJSON lists the json, jsonb, json[] and jsonb[] columns whose text
+	// was not valid UTF-8 and is emitted as base64 (types.JSONPolicy). The
+	// iterator puts it in the record metadata types.MetadataJSONRawBytes.
+	RawJSON []string
 }
 
 // FetchWorker fetches snapshot data from a single table
@@ -435,6 +443,9 @@ func (f *FetchWorker) fetch(ctx context.Context, tx pgx.Tx) (int, error) {
 		if err != nil {
 			return nread, fmt.Errorf("failed to build fetch data: %w", err)
 		}
+		if len(data.RawJSON) > 0 {
+			f.conf.JSON.WarnRawBytes(sdk.Logger(ctx), "snapshot", f.conf.Table, f.rowID(fields, values), data.RawJSON)
+		}
 
 		toBeSent = append(toBeSent, data)
 
@@ -487,7 +498,7 @@ func (f *FetchWorker) buildFetchData(fields []pgconn.FieldDescription, values []
 		return FetchData{}, fmt.Errorf("failed to build snapshot position: %w", err)
 	}
 
-	key, payload, err := f.buildRecordData(fields, values)
+	key, payload, rawJSON, err := f.buildRecordData(fields, values)
 	if err != nil {
 		return FetchData{}, fmt.Errorf("failed to encode record data: %w", err)
 	}
@@ -497,6 +508,7 @@ func (f *FetchWorker) buildFetchData(fields []pgconn.FieldDescription, values []
 		Payload:  payload,
 		Position: pos,
 		Table:    f.conf.Table,
+		RawJSON:  rawJSON,
 	}
 	if f.conf.WithAvroSchema {
 		fd.PayloadSchema = *f.payloadSchema
@@ -547,20 +559,23 @@ func (f *FetchWorker) rowID(fields []pgconn.FieldDescription, values []any) stri
 	return ""
 }
 
-func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values []any) (opencdc.StructuredData, opencdc.StructuredData, error) {
-	var (
-		key     = make(opencdc.StructuredData)
-		payload = make(opencdc.StructuredData)
-	)
+// buildRecordData formats the key and the payload of a row. rawJSON lists the
+// columns whose json text was not valid UTF-8 and holds the base64 of its
+// bytes instead (types.JSONPolicy.FormatColumn); the key column, when it is
+// one of them, is in it as a payload column.
+func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values []any) (key, payload opencdc.StructuredData, rawJSON []string, err error) {
+	key = make(opencdc.StructuredData)
+	payload = make(opencdc.StructuredData)
+	enc := types.EncodingFor(f.conf.WithAvroSchema)
 
 	for i, fd := range fields {
 		if fd.Name == f.conf.Key {
-			k, err := types.FormatColumn(types.EncodingFor(f.conf.WithAvroSchema), fd.DataTypeOID, fd.TypeModifier, values[i])
+			k, _, err := f.conf.JSON.FormatColumn(enc, fd.DataTypeOID, fd.TypeModifier, values[i])
 			if err != nil {
 				if located, ok := types.LocateErrorSnapshot(err, f.conf.Table, fd.Name); ok {
-					return key, payload, types.WithRow(located, f.rowID(fields, values))
+					return key, payload, nil, types.WithRow(located, f.rowID(fields, values))
 				}
-				return key, payload, fmt.Errorf("failed to format key %q: %w", f.conf.Key, err)
+				return key, payload, nil, fmt.Errorf("failed to format key %q: %w", f.conf.Key, err)
 			}
 
 			// Invariant 6: the key owns its value; FormatColumn can hand back
@@ -568,17 +583,23 @@ func (f *FetchWorker) buildRecordData(fields []pgconn.FieldDescription, values [
 			key[f.conf.Key] = f.avroShape(fd, types.CloneValue(k))
 		}
 
-		v, err := types.FormatColumn(types.EncodingFor(f.conf.WithAvroSchema), fd.DataTypeOID, fd.TypeModifier, values[i])
+		v, raw, err := f.conf.JSON.FormatColumn(enc, fd.DataTypeOID, fd.TypeModifier, values[i])
 		if err != nil {
 			if located, ok := types.LocateErrorSnapshot(err, f.conf.Table, fd.Name); ok {
-				return key, payload, types.WithRow(located, f.rowID(fields, values))
+				return key, payload, nil, types.WithRow(located, f.rowID(fields, values))
 			}
-			return key, payload, fmt.Errorf("failed to format payload field %q: %w", fd.Name, err)
+			return key, payload, nil, fmt.Errorf("failed to format payload field %q: %w", fd.Name, err)
+		}
+		if raw {
+			// Invariant 6: a base64 value is never emitted without its
+			// column in the metadata that says so; the record is delivered,
+			// never dropped (invariant 3).
+			rawJSON = append(rawJSON, fd.Name)
 		}
 		payload[fd.Name] = f.avroShape(fd, v)
 	}
 
-	return key, payload, nil
+	return key, payload, rawJSON, nil
 }
 
 // avroShape gives the value of a nullable column the shape its ["null", T]

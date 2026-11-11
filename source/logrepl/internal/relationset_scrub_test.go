@@ -55,7 +55,7 @@ func TestRelationSet_DecodeErrorDoesNotContainTheValue(t *testing.T) {
 				ColumnNum:    1,
 				Columns:      []*pglogrepl.RelationMessageColumn{{Name: "c", DataType: tc.oid}},
 			})
-			_, err := rs.Values(1, &pglogrepl.TupleData{
+			_, _, err := rs.Values(1, &pglogrepl.TupleData{
 				ColumnNum: 1,
 				Columns:   []*pglogrepl.TupleDataColumn{{DataType: pglogrepl.TupleDataTypeText, Data: []byte(tc.value)}},
 			})

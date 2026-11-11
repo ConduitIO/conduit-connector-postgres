@@ -54,6 +54,30 @@ var RepmgrConnString = "postgres://repmgr:repmgrmeroxa@127.0.0.1:" + envPort("CO
 // RegularConnString is a non-replication user connection string for the test postgres.
 var RegularConnString = "postgres://meroxauser:meroxapass@127.0.0.1:" + envPort("CONDUIT_PG_TEST_PORT", "5433") + "/meroxadb?sslmode=disable"
 
+// SQLASCIIRepmgrConnString and SQLASCIIRegularConnString are
+// RepmgrConnString and RegularConnString for meroxadb_sqlascii, a database
+// of the same server whose server_encoding is SQL_ASCII
+// (test/initdb/01-sqlascii-db.sql). It stores json text unchecked, so it
+// can hold json that is not valid UTF-8.
+var (
+	SQLASCIIRepmgrConnString  = strings.Replace(RepmgrConnString, "/meroxadb?", "/meroxadb_sqlascii?", 1)
+	SQLASCIIRegularConnString = strings.Replace(RegularConnString, "/meroxadb?", "/meroxadb_sqlascii?", 1)
+)
+
+// failIfSQLASCIIMissing fails the test with the fix when err says that
+// meroxadb_sqlascii does not exist. test/initdb creates it only when the
+// compose volume is first initialized, so a volume created before the
+// database was added lacks it, and recreating the containers (make test
+// does) does not add it.
+func failIfSQLASCIIMissing(t *testing.T, connString string, err error) {
+	t.Helper()
+	var pgErr *pgconn.PgError
+	if strings.Contains(connString, "/meroxadb_sqlascii?") && errors.As(err, &pgErr) && pgErr.Code == "3D000" {
+		t.Fatalf("database meroxadb_sqlascii does not exist: the test volume predates test/initdb/01-sqlascii-db.sql. " +
+			"Recreate it with `docker compose -f test/docker-compose.yml down -v`, then start the stack again (make test)")
+	}
+}
+
 // BouncerConnString connects the regular user through the test PgBouncer
 // (test/docker-compose.yml, test/pgbouncer/pgbouncer.ini): transaction pooling,
 // two server connections, and prepared-statement tracking
@@ -77,8 +101,8 @@ const TestTableAvroSchemaV1 = `{
         {"name":"column3","type":["null","boolean"],"default":null},
         {"name":"column4","type":["null",{"type":"bytes","logicalType":"decimal","precision":16,"scale":3}],"default":null},
         {"name":"column5","type":["null",{"type":"bytes","logicalType":"decimal","precision":5}],"default":null},
-        {"name":"column6","type":["null","bytes"],"default":null},
-        {"name":"column7","type":["null","bytes"],"default":null},
+        {"name":"column6","type":["null","string"],"default":null},
+        {"name":"column7","type":["null","string"],"default":null},
         {"name":"id","type":"long"},
         {"name":"key","type":["null","bytes"],"default":null}
     ]
@@ -97,8 +121,8 @@ const TestTableAvroSchemaV2 = `{
         {"name":"column3","type":["null","boolean"],"default":null},
         {"name":"column4","type":["null",{"type":"bytes","logicalType":"decimal","precision":16,"scale":3}],"default":null},
         {"name":"column5","type":["null",{"type":"bytes","logicalType":"decimal","precision":5}],"default":null},
-        {"name":"column6","type":["null","bytes"],"default":null},
-        {"name":"column7","type":["null","bytes"],"default":null},
+        {"name":"column6","type":["null","string"],"default":null},
+        {"name":"column7","type":["null","string"],"default":null},
         {"name":"id","type":"long"},
         {"name":"key","type":["null","bytes"],"default":null}
     ]
@@ -115,8 +139,8 @@ const TestTableAvroSchemaV3 = `{
         {"name":"column101","type":["null",{"type":"long","logicalType":"local-timestamp-micros"}],"default":null},
         {"name":"column2","type":["null","int"],"default":null},
         {"name":"column3","type":["null","boolean"],"default":null},
-        {"name":"column6","type":["null","bytes"],"default":null},
-        {"name":"column7","type":["null","bytes"],"default":null},
+        {"name":"column6","type":["null","string"],"default":null},
+        {"name":"column7","type":["null","string"],"default":null},
         {"name":"id","type":"long"},
         {"name":"key","type":["null","bytes"],"default":null}
     ]
@@ -156,6 +180,7 @@ type Querier interface {
 func ConnectPool(ctx context.Context, t *testing.T, connString string) *pgxpool.Pool {
 	is := is.New(t)
 	pool, err := cpool.New(ctx, connString)
+	failIfSQLASCIIMissing(t, connString, err)
 	is.NoErr(err)
 	t.Cleanup(func() {
 		// close connection with fresh context
@@ -169,6 +194,7 @@ func ConnectSimple(ctx context.Context, t *testing.T, connString string) *pgx.Co
 	is := is.New(t)
 	pool := ConnectPool(ctx, t, connString)
 	conn, err := pool.Acquire(ctx)
+	failIfSQLASCIIMissing(t, connString, err)
 	is.NoErr(err)
 	t.Cleanup(func() {
 		conn.Release()

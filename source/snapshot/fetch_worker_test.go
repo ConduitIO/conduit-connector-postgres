@@ -293,8 +293,8 @@ func Test_FetcherRun_Initial(t *testing.T) {
 	is.Equal(len(gotFetchData), 4)
 
 	var (
-		value6 = []byte(`{"foo": "bar"}`)
-		value7 = []byte(`{"foo": "baz"}`)
+		value6 = `{"foo": "bar"}`
+		value7 = `{"foo": "baz"}`
 	)
 
 	expectedMatch := []opencdc.StructuredData{
@@ -393,7 +393,7 @@ func Test_FetcherRun_TemporalTypes(t *testing.T) {
 
 		notNull, err := schema.LoadNotNull(ctx, pool, fields[0].TableOID)
 		is.NoErr(err)
-		_, payload, err := (&FetchWorker{
+		_, payload, _, err := (&FetchWorker{
 			conf:    FetchConfig{Table: table, Key: "id", WithAvroSchema: true},
 			notNull: notNull,
 		}).buildRecordData(fields, values)
@@ -481,8 +481,8 @@ func Test_FetcherRun_Resume(t *testing.T) {
 				"column3":          false,
 				"column4":          nil,
 				"column5":          big.NewRat(9, 1),
-				"column6":          []byte(`{"foo": "bar"}`),
-				"column7":          []byte(`{"foo": "baz"}`),
+				"column6":          `{"foo": "bar"}`,
+				"column7":          `{"foo": "baz"}`,
 				"UppercaseColumn1": int32(3),
 			},
 			cmp.Comparer(func(x, y *big.Rat) bool {
@@ -595,7 +595,7 @@ func Test_FetchWorker_buildRecordData(t *testing.T) {
 		expectValues = []any{1, now}
 	)
 
-	key, payload, err := (&FetchWorker{
+	key, payload, _, err := (&FetchWorker{
 		conf: FetchConfig{Table: "mytable", Key: "id"},
 	}).buildRecordData(fields, values)
 
@@ -615,7 +615,7 @@ func Test_FetchWorker_buildRecordData(t *testing.T) {
 func Test_FetchWorker_buildRecordData_KeyOwnsItsValue(t *testing.T) {
 	is := is.New(t)
 	fields := []pgconn.FieldDescription{{Name: "id", DataTypeOID: pgtype.ByteaOID}}
-	key, payload, err := (&FetchWorker{
+	key, payload, _, err := (&FetchWorker{
 		conf: FetchConfig{Table: "mytable", Key: "id"},
 	}).buildRecordData(fields, []any{[]byte{1, 2}})
 	is.NoErr(err)
