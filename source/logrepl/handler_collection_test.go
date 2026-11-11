@@ -210,6 +210,10 @@ func TestHandler_Collection_TwoRelationsOneConfiguredNameHalts(t *testing.T) {
 		is.True(strings.HasPrefix(err.Error(), ErrorCodeConfiguredTableAmbiguous+": "))
 		is.True(strings.Contains(err.Error(), "archive.users"))
 		is.True(strings.Contains(err.Error(), "public.users"))
+		// the new holder of the name was never snapshotted: the fix says how to read its rows
+		is.True(strings.Contains(err.Error(), "never snapshotted"))
+		is.True(strings.Contains(err.Error(), "re-snapshot"))
+		is.True(strings.Contains(err.Error(), `tables: "users", snapshotMode: initial`))
 		is.True(!strings.Contains(err.Error(), "secret")) // never a value
 		is.Equal(len(ch), 0)
 	}

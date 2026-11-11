@@ -362,7 +362,13 @@ specification:
     configured collection. If a moved table and a new table under the configured name
     are both streamed, the source stops with
     `postgres.source.configured_table_ambiguous` instead of delivering both as the
-    configured table; a restart resolves the name again. After a restart the
+    configured table; a restart resolves the name again. The table that holds the name
+    after that restart was never snapshotted, so its existing rows are not delivered,
+    only its changes from then on. To deliver them, re-snapshot (stop the pipeline,
+    delete the source connector and create it again so it has no position; every
+    configured table is read again), or read only that table with a separate source
+    connector (`tables` set to it, `snapshotMode: initial`, its own `logrepl.slotName`
+    and `logrepl.publicationName`). After a restart the
     configured name is resolved again, so changes replayed from before it can carry a
     different collection than when they were first delivered if the name now means
     another table.

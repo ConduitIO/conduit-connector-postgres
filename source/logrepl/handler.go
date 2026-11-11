@@ -469,8 +469,13 @@ func (h *CDCHandler) checkTable(ctx context.Context, rel *pglogrepl.RelationMess
 					"and %s.%s (relation %d); the table was moved to another schema while the pipeline ran and "+
 					"another table took its name. Nothing was emitted for this change. Fix: restart the pipeline; "+
 					"%q is then resolved again through search_path, and the other table's records carry its "+
-					"schema-qualified name",
-					ErrorCodeConfiguredTableAmbiguous, name, ns, name, oid, rel.Namespace, rel.RelationName, rel.RelationID, name)
+					"schema-qualified name. The table that holds the name after the restart was never snapshotted, "+
+					"so only its changes from now on are delivered, not its existing rows. To deliver those, "+
+					"re-snapshot: stop the pipeline, delete the source connector and create it again so it has no "+
+					"position (snapshotMode initial reads every configured table again, so the destination must "+
+					"tolerate duplicates), or read only that table with a separate source connector "+
+					"(tables: %q, snapshotMode: initial, its own logrepl.slotName and logrepl.publicationName)",
+					ErrorCodeConfiguredTableAmbiguous, name, ns, name, oid, rel.Namespace, rel.RelationName, rel.RelationID, name, name)
 			}
 		}
 		seen[rel.RelationID] = rel.Namespace
