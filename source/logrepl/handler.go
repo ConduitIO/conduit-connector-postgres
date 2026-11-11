@@ -44,13 +44,15 @@ import (
 // converting them to a record and sending them to a channel.
 type CDCHandler struct {
 	tableKeys map[string]string
-	// tableNamespaces maps each configured table to the schema (namespace)
-	// it resolved to at Open (SetTableNamespaces). tableName uses it to tell
-	// a configured table from a same-name table in another schema that a
+	// tableNamespaces maps each configured table to the relation (OID and
+	// schema) it resolved to at iterator start, tableOIDs the OID back to the
+	// configured name (SetTableNamespaces). tableName uses them to tell a
+	// configured table from a same-name table in another schema that a
 	// reused publication also streams (#424). nil keeps the bare relation
 	// name for every relation. unconfiguredWarned remembers the relations
 	// already warned about. Subscription goroutine only.
-	tableNamespaces    map[string]string
+	tableNamespaces    map[string]ConfiguredTable
+	tableOIDs          map[uint32]string
 	unconfiguredWarned map[string]bool
 	relationSet        *internal.RelationSet
 	// json is what to do with json text that is not valid UTF-8, the same
@@ -365,11 +367,18 @@ func (h *CDCHandler) SetJSONPolicy(p *types.JSONPolicy) {
 	h.relationSet.SetJSONPolicy(p)
 }
 
-// SetTableNamespaces sets the schema each configured table resolved to, keyed
-// by the configured name (ResolveTableNamespaces). Call it before the first
-// message.
-func (h *CDCHandler) SetTableNamespaces(m map[string]string) {
+// SetTableNamespaces sets the relation each configured table resolved to,
+// keyed by the configured name (ResolveTableNamespaces). Call it before the
+// first message.
+func (h *CDCHandler) SetTableNamespaces(m map[string]ConfiguredTable) {
 	h.tableNamespaces = m
+	h.tableOIDs = nil
+	if m != nil {
+		h.tableOIDs = make(map[uint32]string, len(m))
+		for name, t := range m {
+			h.tableOIDs[t.OID] = name
+		}
+	}
 }
 
 // tableName is the name of rel's table in its records: their
@@ -382,19 +391,29 @@ func (h *CDCHandler) SetTableNamespaces(m map[string]string) {
 // the relation's name exactly, and the snapshot and CDC records of a table
 // carry the same collection, key and subjects.
 //
-// A relation that is not a configured table is named "<schema>.<table>". Only
-// a publication wider than the tables setting streams one: a publication that
-// already existed under logrepl.publicationName and that the connector reused,
-// or in Debezium import mode one that covers more of Debezium's tables. With
-// the bare name, a same-name table in another schema would take the
-// configured table's collection, key column and subjects, and its rows would
-// be merged into that table downstream (#424). Invariant 6: a record never
-// claims to come from a table it does not come from.
+// A relation is a configured table when its OID (RelationID) is the one the
+// name resolved to at iterator start, so a table moved with ALTER TABLE ...
+// SET SCHEMA (or renamed) while the pipeline runs keeps its configured name
+// and key column, and its deletes keep the null-key check (invariant 3).
+// Failing that, it is one when its (namespace, name) is the resolved one: a
+// table dropped and created again under the same name has a new OID.
+//
+// Any other relation is named "<schema>.<table>". Only a publication wider
+// than the tables setting streams one: a publication that already existed
+// under logrepl.publicationName and that the connector reused, or in Debezium
+// import mode one that covers more of Debezium's tables. With the bare name, a
+// same-name table in another schema would take the configured table's
+// collection, key column and subjects, and its rows would be merged into that
+// table downstream (#424). Invariant 6: a record never claims to come from a
+// table it does not come from.
 func (h *CDCHandler) tableName(rel *pglogrepl.RelationMessage) string {
 	if h.tableNamespaces == nil {
 		return rel.RelationName
 	}
-	if ns, ok := h.tableNamespaces[rel.RelationName]; ok && ns == rel.Namespace {
+	if name, ok := h.tableOIDs[rel.RelationID]; ok {
+		return name
+	}
+	if t, ok := h.tableNamespaces[rel.RelationName]; ok && t.Namespace == rel.Namespace {
 		return rel.RelationName
 	}
 	return rel.Namespace + "." + rel.RelationName
@@ -408,7 +427,7 @@ func (h *CDCHandler) warnUnconfigured(ctx context.Context, rel *pglogrepl.Relati
 		return
 	}
 	name := h.tableName(rel)
-	if name == rel.RelationName || h.unconfiguredWarned[name] {
+	if _, configured := h.tableNamespaces[name]; configured || h.unconfiguredWarned[name] {
 		return
 	}
 	if h.unconfiguredWarned == nil {
@@ -1580,7 +1599,7 @@ func (h *CDCHandler) relationAvroText(ctx context.Context, rel *pglogrepl.Relati
 	if err != nil {
 		return relationAvro{}, err
 	}
-	ra, err := buildRelationAvro(rel, h.tableName(rel), notNull, h.tableKeys[h.tableName(rel)])
+	ra, err := buildRelationAvro(rel, notNull, h.tableKeys[h.tableName(rel)])
 	if err != nil {
 		return relationAvro{}, err
 	}
@@ -1589,10 +1608,14 @@ func (h *CDCHandler) relationAvroText(ctx context.Context, rel *pglogrepl.Relati
 }
 
 // buildRelationAvro builds the payload and key schema texts of rel with the
-// given nullability, named after name (CDCHandler.tableName), so the Avro
-// record names match the subjects they are registered under.
-func buildRelationAvro(rel *pglogrepl.RelationMessage, name string, notNull schema.NotNull, keyColumn string) (relationAvro, error) {
-	payload, err := schema.Avro.ExtractLogrepl(name+"_payload", rel, notNull)
+// given nullability. The Avro record names are <relation>_payload and
+// <relation>_key with the bare relation name, as before #424, also for a
+// relation whose subjects are schema-qualified (CDCHandler.tableName): Avro
+// would read the schema as a record namespace and reject one that is not a
+// valid Avro name (sales-eu, 1x), halting the source. The subject, not the
+// record name, tells the tables apart.
+func buildRelationAvro(rel *pglogrepl.RelationMessage, notNull schema.NotNull, keyColumn string) (relationAvro, error) {
+	payload, err := schema.Avro.ExtractLogrepl(rel.RelationName+"_payload", rel, notNull)
 	if err != nil {
 		return relationAvro{}, fmt.Errorf("failed to extract payload schema: %w", err)
 	}
@@ -1600,7 +1623,7 @@ func buildRelationAvro(rel *pglogrepl.RelationMessage, name string, notNull sche
 	if err != nil {
 		return relationAvro{}, fmt.Errorf("failed to extract payload schema: %w", err)
 	}
-	key, err := schema.Avro.ExtractLogrepl(name+"_key", rel, notNull, keyColumn)
+	key, err := schema.Avro.ExtractLogrepl(rel.RelationName+"_key", rel, notNull, keyColumn)
 	if err != nil {
 		return relationAvro{}, fmt.Errorf("failed to extract key schema: %w", err)
 	}
@@ -1722,7 +1745,7 @@ func (h *CDCHandler) widenForNull(ctx context.Context, rel *pglogrepl.RelationMe
 	for _, c := range cols {
 		notNull[c] = false
 	}
-	ra, err := buildRelationAvro(rel, h.tableName(rel), notNull, h.tableKeys[h.tableName(rel)])
+	ra, err := buildRelationAvro(rel, notNull, h.tableKeys[h.tableName(rel)])
 	if err != nil {
 		return fmt.Errorf("failed to widen avro schema: %w", err)
 	}

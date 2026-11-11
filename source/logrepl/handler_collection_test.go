@@ -15,7 +15,9 @@
 package logrepl
 
 import (
+	"bytes"
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,12 +29,19 @@ import (
 	"github.com/jackc/pglogrepl"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/matryer/is"
+	"github.com/rs/zerolog"
 )
 
+// addRelation adds a users-shaped relation (id, v) to h's relation set.
+func addRelation(h *CDCHandler, id uint32, namespace, name string) {
+	h.relationSet.Add(&pglogrepl.RelationMessage{RelationID: id, Namespace: namespace, RelationName: name, ColumnNum: 2,
+		Columns: []*pglogrepl.RelationMessageColumn{{Name: "id", DataType: pgtype.Int8OID, Flags: 1}, {Name: "v", DataType: pgtype.TextOID}}})
+}
+
 // newCollectionTestHandler returns a handler for the configured table
-// public.users (key id) whose relation set also knows audit.users (key column
-// uid), the same name in another schema, as a reused publication can stream
-// it (#424). Relation 1 is public.users, 2 is audit.users. subjects collects
+// public.users (OID 1, key id) whose relation set also knows audit.users
+// (OID 2), the same name in another schema, as a reused publication can
+// stream it (#424). Both have an id column, the worst case. subjects collects
 // every subject the handler registers.
 func newCollectionTestHandler(withAvro bool) (*CDCHandler, chan []opencdc.Record, *[]string) {
 	rs := internal.NewRelationSet()
@@ -43,7 +52,7 @@ func newCollectionTestHandler(withAvro bool) (*CDCHandler, chan []opencdc.Record
 	ch := make(chan []opencdc.Record, 4)
 	h := NewCDCHandler(context.Background(), rs, map[string]string{"users": "id"}, ch, withAvro, 1, time.Hour,
 		position.Position{}, SchemaDriftPolicyHalt)
-	h.SetTableNamespaces(map[string]string{"users": "public"})
+	h.SetTableNamespaces(map[string]ConfiguredTable{"users": {OID: 1, Namespace: "public"}})
 	subjects := &[]string{}
 	h.loadNotNull = func(context.Context, uint32) (schema.NotNull, error) {
 		return schema.NotNull{"id": true}, nil
@@ -111,4 +120,79 @@ func TestHandler_Collection_NoNamespacesKeepsBareName(t *testing.T) {
 	h, _, _ := newCollectionTestHandler(false)
 	h.SetTableNamespaces(nil)
 	is.Equal(h.tableName(&pglogrepl.RelationMessage{Namespace: "audit", RelationName: "users"}), "users")
+}
+
+// A configured table moved to another schema (ALTER TABLE ... SET SCHEMA)
+// while the pipeline runs keeps its OID, so it keeps its configured name and
+// key column, and a delete with a missing key is still refused (invariant 3).
+// A table dropped and created again under the same name has a new OID and is
+// matched by (namespace, name).
+func TestHandler_Collection_ConfiguredTableMatchedByOID(t *testing.T) {
+	ctx := context.Background()
+	is := is.New(t)
+	h, ch, _ := newCollectionTestHandler(false)
+	addRelation(h, 1, "moved", "users")  // the Relation message after SET SCHEMA
+	addRelation(h, 3, "public", "users") // dropped and created again
+
+	is.NoErr(h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 1, Tuple: tuple(txt("7"), txt("x"))}, 1))
+	rec := (<-ch)[0]
+	is.Equal(rec.Metadata[opencdc.MetadataCollection], "users")
+	is.Equal(rec.Key, opencdc.StructuredData{"id": int64(7)})
+
+	is.NoErr(h.handleDelete(ctx, &pglogrepl.DeleteMessage{
+		RelationID: 1, OldTupleType: pglogrepl.DeleteMessageTupleTypeKey, OldTuple: tuple(txt("7"), null()),
+	}, 2))
+	rec = (<-ch)[0]
+	is.Equal(rec.Metadata[opencdc.MetadataCollection], "users")
+	is.Equal(rec.Key, opencdc.StructuredData{"id": int64(7)})
+
+	err := h.handleDelete(ctx, &pglogrepl.DeleteMessage{
+		RelationID: 1, OldTupleType: pglogrepl.DeleteMessageTupleTypeKey, OldTuple: tuple(null(), null()),
+	}, 3)
+	is.True(err != nil)
+	is.True(strings.HasPrefix(err.Error(), ErrorCodeReplicaIdentityExcludesKey))
+
+	is.NoErr(h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 3, Tuple: tuple(txt("8"), txt("y"))}, 4))
+	rec = (<-ch)[0]
+	is.Equal(rec.Metadata[opencdc.MetadataCollection], "users")
+	is.Equal(rec.Key, opencdc.StructuredData{"id": int64(8)})
+}
+
+// A schema name that is not a valid Avro name must not halt the source: the
+// subject is schema-qualified, the Avro record name is the bare relation
+// name, as it was before #424.
+func TestHandler_Collection_SchemaNameNotAnAvroName(t *testing.T) {
+	ctx := context.Background()
+	for _, ns := range []string{"sales-eu", "1x"} {
+		is := is.New(t)
+		h, ch, subjects := newCollectionTestHandler(true)
+		addRelation(h, 4, ns, "users")
+		is.NoErr(h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 4, Tuple: tuple(txt("7"), txt("x"))}, 1))
+		rec := (<-ch)[0]
+		is.Equal(rec.Metadata[opencdc.MetadataCollection], ns+".users")
+		is.Equal(*subjects, []string{ns + ".users_payload", ns + ".users_key"})
+		sub, err := rec.Metadata.GetPayloadSchemaSubject()
+		is.NoErr(err)
+		is.Equal(sub, ns+".users_payload")
+	}
+}
+
+// postgres.source.unconfigured_table is the only signal for this class: it is
+// logged once per unconfigured relation, never for a configured one.
+func TestHandler_Collection_UnconfiguredWarnedOnce(t *testing.T) {
+	is := is.New(t)
+	var logs bytes.Buffer
+	ctx := zerolog.New(&logs).WithContext(context.Background())
+	h, ch, _ := newCollectionTestHandler(false)
+	addRelation(h, 5, "sales", "orders")
+	for i, id := range []uint32{1, 2, 2, 5, 2, 1, 5} {
+		is.NoErr(h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: id, Tuple: tuple(txt("7"), txt("x"))}, pglogrepl.LSN(i+1)))
+		<-ch
+	}
+	out := logs.String()
+	is.Equal(strings.Count(out, WarnCodeUnconfiguredTable), 2)
+	is.Equal(strings.Count(out, `"table":"audit.users"`), 1)
+	is.Equal(strings.Count(out, `"table":"sales.orders"`), 1)
+	is.True(!strings.Contains(out, `"table":"users"`))
+	is.True(strings.Contains(out, `"level":"warn"`))
 }

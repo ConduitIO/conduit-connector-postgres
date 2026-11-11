@@ -31,8 +31,9 @@ and schema cache. If both tables have the key column (`id`), the other table's r
 reach the destination keyed as the configured table's rows and upsert over them.
 Invariant 6.
 
-This change names each CDC relation by (namespace, name): a configured table keeps
-the configured name, and any other relation is named `<schema>.<table>`.
+This change identifies each CDC relation as a configured table by its OID, or failing
+that by (namespace, name). A configured table keeps the configured name, and any other
+relation is named `<schema>.<table>`.
 
 Tier 1: changes the records the source emits. Roadmap: Conduit v0.22, "Postgres Avro
 schemas match the table" / correct data on the default path.
@@ -64,12 +65,17 @@ schemas match the table" / correct data on the default path.
 
 ## Alternatives
 
-1. **Name by (namespace, name); configured tables keep the configured name, others
-   are `<schema>.<table>` (chosen).** At iterator start each configured name is
-   resolved (`to_regclass`, the same quoting and `search_path` as the rest of the
-   connector) to its schema. A Relation message whose (namespace, name) matches a
-   configured entry is that table; anything else gets the qualified name. No change
-   for any configured table, collisions removed for the rest.
+1. **Match configured tables by OID, then by (namespace, name); configured tables
+   keep the configured name, others are `<schema>.<table>` (chosen).** At iterator
+   start each configured name is resolved (`to_regclass`, the same quoting and
+   `search_path` as the rest of the connector) to its OID and schema. A Relation
+   message whose `RelationID` is that OID is the configured table, wherever it has
+   moved since. One whose (namespace, name) is the resolved one is also the configured
+   table: it was dropped and created again, so it has a new OID. Anything else gets the
+   qualified name. No change for any configured table, collisions removed for the rest.
+   (A first version matched by (namespace, name) only. Review found that a table moved
+   with `SET SCHEMA` then lost its key, and its deletes skipped the null-key check, a
+   regression from v0.21.0.)
 2. **Always emit `<schema>.<table>`, in both phases.** Unambiguous and what Debezium
    does in its topic names. Lost: every existing pipeline's collection changes, the
    default Postgres destination template stops finding its table (it quotes the whole
@@ -91,15 +97,22 @@ schemas match the table" / correct data on the default path.
 
 Alternative 1.
 
-- `logrepl.ResolveTableNamespaces` returns configured name → schema. It runs in
+- `logrepl.ResolveTableNamespaces` returns configured name → (OID, schema). It runs in
   `newCDCIteratorHandler` before the subscription creates the slot; it is read-only,
   and a failure fails the start (nothing is left behind).
-- `CDCHandler.tableName(rel)` returns `rel.RelationName` when
-  `tableNamespaces[rel.RelationName] == rel.Namespace`, otherwise
-  `rel.Namespace + "." + rel.RelationName`. It is used for the collection, the
-  key column lookup (insert, update, delete, the delete-key check), the schema caches,
-  the subjects and the Avro record names. Without `SetTableNamespaces` (unit tests
-  that build a handler directly) every relation keeps its bare name.
+- `CDCHandler.tableName(rel)` returns the configured name when `rel.RelationID` is a
+  resolved OID. Otherwise it returns `rel.RelationName` when the resolved schema of that
+  name is `rel.Namespace`, and otherwise `rel.Namespace + "." + rel.RelationName`. It is
+  used for the collection, the key column lookup (insert, update, delete, the
+  delete-key check), the schema caches and the subjects. Without `SetTableNamespaces`
+  (unit tests that build a handler directly) every relation keeps its bare name.
+- The Avro record names stay `<relation>_payload`/`<relation>_key` with the bare
+  relation name, as on v0.21.0. A qualified record name would make Avro read the
+  schema as a record namespace and reject one that is not a valid Avro name
+  (`sales-eu`, `1x`: `invalid name part`), halting the source on a table that v0.21.0
+  emitted. The subject tells the tables apart; the record name does not need to. The
+  connector does not sanitise table names for Avro anywhere, so a table name that is
+  not a valid Avro name fails as it did before.
 - The first change of an unconfigured relation logs a `WARN` with the code
   `postgres.source.unconfigured_table`, once per relation and process.
 - `NewCDCIterator`'s publication step moved into `ensurePublication` (no behaviour
@@ -126,9 +139,13 @@ How ambiguity resolves:
 | --- | --- |
 | Configured table, any case, any schema on `search_path` | Configured name in both phases, as before. Tested. |
 | Schema-qualified entry (`public.orders`) | Open refused, 42P01, as before. Tested. |
-| Reused publication streams a same-name table in another schema | That table's records say `<schema>.<table>`, empty key, own subjects; `WARN` once. Tested (unit and integration). |
+| Reused publication streams a same-name table in another schema | That table's records say `<schema>.<table>`, empty key, own subjects; `WARN` once per relation. Tested (unit, integration with and without Avro, and the once-per-relation warning). Their deletes carry an empty key, as unconfigured tables' deletes already did on v0.21.0; emit-versus-refuse for unconfigured tables is a separate decision (kept as emit for now). |
 | Reused publication streams an unrelated unconfigured table | Collection changes from `t` to `<schema>.t`. Release-noted. |
-| Table moved with `ALTER TABLE ... SET SCHEMA` while running | Its later changes no longer match the resolved schema: they are emitted as `<newschema>.<table>` with an empty key, and the `WARN` names it. A restart re-resolves (or fails if the new schema is not on `search_path`). Before, the collection stayed the bare name. |
+| Configured table moved with `ALTER TABLE ... SET SCHEMA` while running | Same OID: its changes keep the configured name and key column, and a delete with a missing key is still refused (invariant 3), as on v0.21.0. Tested (unit, and integration with an update and a delete). A restart re-resolves the name, and fails if the new schema is not on `search_path`. |
+| Configured table renamed while running | Same OID: keeps the configured name and key (v0.21.0 emitted the new bare name with no key column). A restart fails, because the configured name no longer resolves. |
+| Configured table dropped and created again | New OID, same (namespace, name): configured name. Tested (unit). |
+| On restart, a new same-name table earlier on `search_path` | The name resolves to the new table, the same as the snapshot and the primary key lookup. The original, if a publication still streams it, is `<schema>.<table>` with no key. Needs a DDL that changes what the configured name means; not handled. |
+| Unconfigured table in a schema whose name is not a valid Avro name (`sales-eu`, `1x`) | Emitted: the subject is `sales-eu.<table>_payload` and the record name is the bare `<table>_payload`. Tested (unit). |
 | Table dropped between Open and the iterator start | `ResolveTableNamespaces` fails the start; the pipeline retries. |
 | A configured name that itself contains a dot (a table literally named `audit.users`) and an unconfigured `audit`.`users` in the same publication | Both would be `audit.users`. Needs a table name with a dot that equals another schema's qualified name; not handled. |
 | Restart mid-transaction, replayed Relation messages | Naming is a pure function of the message and the resolved map; replay gives the same names. |
@@ -145,9 +162,11 @@ before.
   publication when Debezium captured more tables). Those tables' CDC records change
   collection from `<table>` to `<schema>.<table>`, and their Avro subjects from
   `<table>_payload`/`_key` to `<schema>.<table>_payload`/`_key` (new subjects, version
-  1). Destinations routing on the collection see a new name; the Postgres destination
-  with its default template will report `postgres.destination.table_not_found` for
-  them.
+  1). Their Avro record names do not change. Destinations routing on the collection
+  see a new name; the Postgres destination with its default template will report
+  `postgres.destination.table_not_found` for them.
+- Configured tables moved to another schema or renamed while running keep their
+  configured collection and key column, as on v0.21.0 for `SET SCHEMA`.
 - Rollback: install the previous version. Nothing persisted changes format; records
   return to the bare names.
 
@@ -160,7 +179,8 @@ Release note:
 > `postgres.source.unconfigured_table` once per table. Before, they carried the bare
 > table name, so a same-name table in another schema was merged into the configured
 > table's collection and keyed by its key column (#424). Configured tables are
-> unchanged: their snapshot and CDC records carry the configured name. If you rely on
+> unchanged: their snapshot and CDC records carry the configured name, also after an
+> `ALTER TABLE ... SET SCHEMA` while the pipeline runs. If you rely on
 > those extra tables, configure them in `tables`, or use a publication that covers
 > only the configured tables.
 

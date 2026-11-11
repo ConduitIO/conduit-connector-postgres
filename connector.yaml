@@ -347,17 +347,25 @@ specification:
     looks for a table named `public.orders` and, when there is none, the source refuses to
     start (`relation "public.orders" does not exist`). To read a table outside `public`,
     put its schema in the connection's `search_path` (for example `&search_path=sales,public`
-    in `url`) and list the table by its bare name. `*` lists the tables of the `public`
-    schema.
+    in `url`) and list the table by its bare name. `*` lists the names of the tables in
+    the `public` schema, and each name is then found through `search_path` like any
+    other entry: with a `search_path` that puts another schema with a same-name table
+    first, `*` reads that schema's table.
 
     Every record of a configured table, snapshot and CDC, carries the configured name in
     `opencdc.collection`, and its Avro subjects are `<name>_payload` and `<name>_key`.
+    CDC recognises a configured table by the table it resolved to when the source
+    started, so a table moved with `ALTER TABLE ... SET SCHEMA` (or renamed) while the
+    pipeline runs keeps its configured name and key column. After a restart the
+    configured name is resolved again.
 
     A publication that already exists under `logrepl.publicationName` is used as it is, so
     it can stream tables that are not in `tables` (in Debezium import mode, the publication
     can cover more of Debezium's tables). The records of such a table carry the
     schema-qualified name, `<schema>.<table>`, in `opencdc.collection` and in their Avro
-    subjects, have no snapshot and an empty key, and the connector logs a `WARN` with the
+    subjects (the Avro record name stays `<table>_payload`/`<table>_key`, so a schema
+    name that is not a valid Avro name, such as `sales-eu`, still works), have no
+    snapshot and an empty key, and the connector logs a `WARN` with the
     code `postgres.source.unconfigured_table` once per table. Up to v0.21.0 they carried
     the bare table name, so a same-name table in another schema was merged into the
     configured table's collection and keyed by its key column. Use a publication that

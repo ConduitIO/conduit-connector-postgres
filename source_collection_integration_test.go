@@ -218,3 +218,71 @@ func TestSource_Collection_ReusedPublicationSameNameOtherSchema(t *testing.T) {
 	is.Equal(recs[1].Metadata[opencdc.MetadataCollection], table)
 	is.Equal(recs[1].Key, opencdc.StructuredData{"id": int64(7)})
 }
+
+// A configured table moved to another schema while the pipeline runs is the
+// same relation (same OID): its changes keep the configured collection and
+// key column, so an update and a delete after ALTER TABLE ... SET SCHEMA
+// still identify the row (invariant 3). Matching by (schema, name) alone gave
+// them "<schema>.<table>" and an empty key.
+func TestSource_Collection_ConfiguredTableMovedToOtherSchema(t *testing.T) {
+	ctx := test.Context(t)
+	is := is.New(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	other := createCollectionSchema(ctx, t, conn)
+	table := test.RandomIdentifier(t)
+	createCollectionTable(ctx, t, conn, "public", table)
+	t.Cleanup(func() { // the table ends up in other, which the schema cleanup drops
+		_, _ = conn.Exec(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS %s.%s", other, table))
+	})
+	execf(ctx, t, conn, "INSERT INTO public.%s VALUES (1, 'snap')", table)
+
+	s, err := openCollectionSource(ctx, t, test.RepmgrConnString, table, test.RandomIdentifier(t), false)
+	is.NoErr(err)
+	snap := readAcked(ctx, t, s, 1)[0]
+	is.Equal(snap.Metadata[opencdc.MetadataCollection], table)
+
+	execf(ctx, t, conn, "ALTER TABLE public.%s SET SCHEMA %s", table, other)
+	execf(ctx, t, conn, "UPDATE %s.%s SET v = 'moved' WHERE id = 1", other, table)
+	execf(ctx, t, conn, "DELETE FROM %s.%s WHERE id = 1", other, table)
+	recs := readAcked(ctx, t, s, 2)
+
+	is.Equal(recs[0].Operation, opencdc.OperationUpdate)
+	is.Equal(recs[0].Metadata[opencdc.MetadataCollection], table)
+	is.Equal(recs[0].Key, opencdc.StructuredData{"id": int64(1)})
+	is.Equal(recs[1].Operation, opencdc.OperationDelete)
+	is.Equal(recs[1].Metadata[opencdc.MetadataCollection], table)
+	is.Equal(recs[1].Key, opencdc.StructuredData{"id": int64(1)})
+}
+
+// The reused-publication case with Avro schemas on (the default): the other
+// schema's table registers its own subjects.
+func TestSource_Collection_ReusedPublicationSameNameOtherSchema_Avro(t *testing.T) {
+	ctx := test.Context(t)
+	is := is.New(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	other := createCollectionSchema(ctx, t, conn)
+	table := test.RandomIdentifier(t)
+	createCollectionTable(ctx, t, conn, "public", table)
+	createCollectionTable(ctx, t, conn, other, table)
+	execf(ctx, t, conn, "INSERT INTO public.%s VALUES (1, 'snap')", table)
+
+	slot := test.RandomIdentifier(t)
+	repl := test.ConnectSimple(ctx, t, test.RepmgrConnString)
+	execf(ctx, t, repl, "CREATE PUBLICATION %s FOR TABLE public.%s, %s.%s", slot, table, other, table)
+
+	s, err := openCollectionSource(ctx, t, test.RepmgrConnString, table, slot, true)
+	is.NoErr(err)
+	snap := readAcked(ctx, t, s, 1)[0]
+	execf(ctx, t, conn, "INSERT INTO %s.%s VALUES (7, 'other')", other, table)
+	execf(ctx, t, conn, "INSERT INTO public.%s VALUES (7, 'configured')", table)
+	recs := readAcked(ctx, t, s, 2)
+
+	subject := func(r opencdc.Record) string {
+		sub, err := r.Metadata.GetPayloadSchemaSubject()
+		is.NoErr(err)
+		return sub
+	}
+	is.Equal(subject(snap), table+"_payload")
+	is.Equal(subject(recs[0]), other+"."+table+"_payload")
+	is.Equal(subject(recs[1]), table+"_payload")
+}
