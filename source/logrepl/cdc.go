@@ -154,25 +154,8 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	}
 	c.StartPosition.SystemIdentifier, c.StartPosition.Timeline = history.SystemID, history.Timeline
 
-	// Import mode never creates the publication (#341 S16): one created
-	// after the slot's start makes pgoutput skip the earlier WAL of its
-	// tables. The preflight checked that it exists and covers the tables.
-	if c.Import == nil {
-		if err := internal.CreatePublication(
-			ctx,
-			pool,
-			c.PublicationName,
-			internal.CreatePublicationOptions{Tables: c.Tables},
-		); err != nil {
-			// If creating the publication fails with code 42710, this means
-			// the publication already exists.
-			if !internal.IsPgDuplicateErr(err) {
-				return nil, err
-			}
-
-			sdk.Logger(ctx).Warn().
-				Msgf("Publication %q already exists.", c.PublicationName)
-		}
+	if err := ensurePublication(ctx, pool, c); err != nil {
+		return nil, err
 	}
 
 	ident, err := resolveSlotIdentity(ctx, pool, c, server)
@@ -193,24 +176,10 @@ func NewCDCIterator(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) (*CDCI
 	// The handler can prepare the next batch, and the CDCIterator can use them
 	// to return the maximum number of records.
 	batchesCh := make(chan []opencdc.Record, 1)
-	handler := NewCDCHandler(
-		ctx,
-		internal.NewRelationSetWithEncoding(types.EncodingFor(c.WithAvroSchema)),
-		c.TableKeys,
-		batchesCh,
-		c.WithAvroSchema,
-		c.BatchSize,
-		// todo make configurable
-		time.Second,
-		c.StartPosition,
-		c.SchemaDriftPolicy,
-	)
-	// Column nullability for the Avro schemas comes from the catalog; a
-	// Relation message does not carry it (#326).
-	handler.loadNotNull = func(ctx context.Context, relationID uint32) (schema.NotNull, error) {
-		return schema.LoadNotNull(ctx, pool, relationID)
+	handler, err := newCDCIteratorHandler(ctx, pool, c, batchesCh)
+	if err != nil {
+		return nil, err
 	}
-	handler.SetJSONPolicy(c.JSON)
 
 	newSub := subscriptionOpener(c)
 	sub, err := newSub(
@@ -918,4 +887,68 @@ func (i *CDCIterator) LowWatermarkLSN() pglogrepl.LSN {
 // relied on at construction.
 func (i *CDCIterator) SetSnapshotLowWatermarkLSN(lsn string) {
 	i.handler.setBasePositionLowWatermark(lsn)
+}
+
+// newCDCIteratorHandler builds the handler of a CDC iterator: the relation
+// set, the catalog nullability lookup, the json policy and the schema each
+// configured table resolved to. It runs before the subscription creates the
+// slot, and the namespace lookup is read-only, so a failure leaves nothing
+// behind.
+func newCDCIteratorHandler(ctx context.Context, pool *pgxpool.Pool, c CDCConfig, batchesCh chan []opencdc.Record) (*CDCHandler, error) {
+	// Invariant 6: a same-name table in another schema, streamed by a reused
+	// publication, must not take a configured table's collection, key column
+	// or subjects (#424).
+	namespaces, err := ResolveTableNamespaces(ctx, pool, c.Tables)
+	if err != nil {
+		return nil, err
+	}
+	handler := NewCDCHandler(
+		ctx,
+		internal.NewRelationSetWithEncoding(types.EncodingFor(c.WithAvroSchema)),
+		c.TableKeys,
+		batchesCh,
+		c.WithAvroSchema,
+		c.BatchSize,
+		// todo make configurable
+		time.Second,
+		c.StartPosition,
+		c.SchemaDriftPolicy,
+	)
+	// Column nullability for the Avro schemas comes from the catalog; a
+	// Relation message does not carry it (#326).
+	handler.loadNotNull = func(ctx context.Context, relationID uint32) (schema.NotNull, error) {
+		return schema.LoadNotNull(ctx, pool, relationID)
+	}
+	handler.SetJSONPolicy(c.JSON)
+	handler.SetTableNamespaces(namespaces)
+	return handler, nil
+}
+
+// ensurePublication creates the publication for c.Tables unless it exists.
+// Import mode never creates the publication (#341 S16): one created after the
+// slot's start makes pgoutput skip the earlier WAL of its tables. The
+// preflight checked that it exists and covers the tables. An existing
+// publication is used as it is, so it can stream tables that are not in
+// c.Tables (see CDCHandler.tableName).
+func ensurePublication(ctx context.Context, pool *pgxpool.Pool, c CDCConfig) error {
+	if c.Import != nil {
+		return nil
+	}
+	err := internal.CreatePublication(
+		ctx,
+		pool,
+		c.PublicationName,
+		internal.CreatePublicationOptions{Tables: c.Tables},
+	)
+	if err == nil {
+		return nil
+	}
+	// If creating the publication fails with code 42710, this means the
+	// publication already exists.
+	if !internal.IsPgDuplicateErr(err) {
+		return err
+	}
+	sdk.Logger(ctx).Warn().
+		Msgf("Publication %q already exists.", c.PublicationName)
+	return nil
 }

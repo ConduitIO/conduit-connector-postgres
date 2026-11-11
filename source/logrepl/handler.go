@@ -43,8 +43,21 @@ import (
 // CDCHandler is responsible for handling logical replication messages,
 // converting them to a record and sending them to a channel.
 type CDCHandler struct {
-	tableKeys   map[string]string
-	relationSet *internal.RelationSet
+	tableKeys map[string]string
+	// tableNamespaces maps each configured table to the relation (OID and
+	// schema) it resolved to at iterator start, tableOIDs the OID back to the
+	// configured name (SetTableNamespaces). tableName uses them to tell a
+	// configured table from a same-name table in another schema that a
+	// reused publication also streams (#424). nil keeps the bare relation
+	// name for every relation. unconfiguredWarned remembers the relations
+	// already warned about. configuredSeen holds, per configured name, the
+	// namespace each relation OID named after it was last seen in during this
+	// run (checkTable). Subscription goroutine only.
+	tableNamespaces    map[string]ConfiguredTable
+	tableOIDs          map[uint32]string
+	unconfiguredWarned map[string]bool
+	configuredSeen     map[string]map[uint32]string
+	relationSet        *internal.RelationSet
 	// json is what to do with json text that is not valid UTF-8, the same
 	// policy relationSet decodes with (SetJSONPolicy). nil is the default,
 	// base64.
@@ -357,6 +370,140 @@ func (h *CDCHandler) SetJSONPolicy(p *types.JSONPolicy) {
 	h.relationSet.SetJSONPolicy(p)
 }
 
+// SetTableNamespaces sets the relation each configured table resolved to,
+// keyed by the configured name (ResolveTableNamespaces). Call it before the
+// first message.
+func (h *CDCHandler) SetTableNamespaces(m map[string]ConfiguredTable) {
+	h.tableNamespaces = m
+	h.tableOIDs = nil
+	if m != nil {
+		h.tableOIDs = make(map[uint32]string, len(m))
+		for name, t := range m {
+			h.tableOIDs[t.OID] = name
+		}
+	}
+}
+
+// tableName is the name of rel's table in its records: their
+// opencdc.collection, the key column lookup (tableKeys) and the Avro subjects
+// <name>_payload and <name>_key.
+//
+// For a configured table it is the configured name, which is also the name
+// the snapshot gives the table's records. The connector resolves a configured
+// name as one quoted identifier through the session's search_path, so it is
+// the relation's name exactly, and the snapshot and CDC records of a table
+// carry the same collection, key and subjects.
+//
+// A relation is a configured table when its OID (RelationID) is the one the
+// name resolved to at iterator start and its name is still the configured
+// one, so a table moved with ALTER TABLE ... SET SCHEMA while the pipeline
+// runs keeps its configured name and key column, and its deletes keep the
+// null-key check (invariant 3). A renamed table is not matched by OID: in a
+// rename-and-swap (T to T_old, T_new to T) the retired T_old would otherwise
+// take T's collection and key, and its deletes would remove live rows of T
+// downstream. Failing the OID match, a relation is a configured table when
+// its (namespace, name) is the resolved one: a table dropped and created
+// again under the same name has a new OID. checkTable refuses two live
+// relations that both match one configured name.
+//
+// Any other relation is named "<schema>.<table>": a table renamed while the
+// pipeline runs, or a table the tables setting does not name, which only a
+// publication wider than the setting streams (one that already existed under
+// logrepl.publicationName and that the connector reused, or in Debezium
+// import mode one that covers more of Debezium's tables). With the bare name, a
+// same-name table in another schema would take the configured table's
+// collection, key column and subjects, and its rows would be merged into that
+// table downstream (#424). Invariant 6: a record never claims to come from a
+// table it does not come from.
+func (h *CDCHandler) tableName(rel *pglogrepl.RelationMessage) string {
+	if h.tableNamespaces == nil {
+		return rel.RelationName
+	}
+	if name, ok := h.tableOIDs[rel.RelationID]; ok && name == rel.RelationName {
+		return name
+	}
+	if t, ok := h.tableNamespaces[rel.RelationName]; ok && t.Namespace == rel.Namespace {
+		return rel.RelationName
+	}
+	return rel.Namespace + "." + rel.RelationName
+}
+
+// ErrorCodeConfiguredTableAmbiguous prefixes the error returned when two
+// relations both match one configured table in the same run (checkTable).
+const ErrorCodeConfiguredTableAmbiguous = "postgres.source.configured_table_ambiguous"
+
+// checkTable runs before a change of rel is turned into a record.
+//
+// It refuses a change when another relation has already been named after
+// the same configured table in this run from a different schema: the
+// configured table was moved with ALTER TABLE ... SET SCHEMA (matched by OID)
+// and a new table took its place under the configured name (matched by
+// name), or the other way round. Both would carry the configured collection
+// and key column, and one table's deletes and upserts would be applied to the
+// other downstream (#424, invariant 6). A table dropped and created again in
+// the same schema has a new OID but is not refused: the old one is gone. The
+// refusal does not recur on restart: the name is resolved again, to the table
+// that holds it then, and the other is named "<schema>.<table>".
+//
+// It also logs, once per relation and process, that the publication streams
+// a table that is not a configured table, and the collection its records
+// carry.
+func (h *CDCHandler) checkTable(ctx context.Context, rel *pglogrepl.RelationMessage) error {
+	if h.tableNamespaces == nil {
+		return nil
+	}
+	name := h.tableName(rel)
+	if _, configured := h.tableNamespaces[name]; configured {
+		if h.configuredSeen == nil {
+			h.configuredSeen = make(map[string]map[uint32]string)
+		}
+		seen := h.configuredSeen[name]
+		if seen == nil {
+			seen = make(map[uint32]string)
+			h.configuredSeen[name] = seen
+		}
+		for oid, ns := range seen {
+			// guard: logrepl-configured-table-ambiguous tests=^TestHandler_Collection_TwoRelationsOneConfiguredNameHalts$
+			if oid != rel.RelationID && ns != rel.Namespace {
+				return fmt.Errorf("%s: two tables match the configured table %q in this run: %s.%s (relation %d) "+
+					"and %s.%s (relation %d); the table was moved to another schema while the pipeline ran and "+
+					"another table took its name. Nothing was emitted for this change. Fix: restart the pipeline; "+
+					"%q is then resolved again through search_path, and the other table's records carry its "+
+					"schema-qualified name. The table that holds the name after the restart was never snapshotted, "+
+					"so only its changes from now on are delivered, not its existing rows. To deliver those, "+
+					"re-snapshot: stop the pipeline, delete the source connector and create it again so it has no "+
+					"position (snapshotMode initial reads every configured table again, so the destination must "+
+					"tolerate duplicates), or read only that table with a separate source connector "+
+					"(tables: %q, snapshotMode: initial, its own logrepl.slotName and logrepl.publicationName)",
+					ErrorCodeConfiguredTableAmbiguous, name, ns, name, oid, rel.Namespace, rel.RelationName, rel.RelationID, name, name)
+			}
+		}
+		seen[rel.RelationID] = rel.Namespace
+		return nil
+	}
+	if h.unconfiguredWarned[name] {
+		return nil
+	}
+	if h.unconfiguredWarned == nil {
+		h.unconfiguredWarned = make(map[string]bool)
+	}
+	h.unconfiguredWarned[name] = true
+	sdk.Logger(ctx).Warn().
+		Str("code", WarnCodeUnconfiguredTable).
+		Str("table", name).
+		Str("collection", name).
+		Msg("the publication streams a table that is not a configured table (not in the tables setting, or renamed " +
+			"while the pipeline runs); its records carry the schema-qualified collection, no snapshot and no key. " +
+			"Fix: use a publication that covers only the configured tables (logrepl.publicationName), or add the " +
+			"table to tables if it should be read")
+	return nil
+}
+
+// WarnCodeUnconfiguredTable is the code of the warning logged when the
+// publication streams a table that is not in the tables setting (see
+// CDCHandler.tableName).
+const WarnCodeUnconfiguredTable = "postgres.source.unconfigured_table"
+
 // handleInsert formats a Record with INSERT event data from Postgres and sends
 // it to the output channel.
 func (h *CDCHandler) handleInsert(
@@ -376,6 +523,9 @@ func (h *CDCHandler) handleInsert(
 	rel, err := h.relationSet.Get(msg.RelationID)
 	if err != nil {
 		return fmt.Errorf("failed getting relation %v: %w", msg.RelationID, err)
+	}
+	if err := h.checkTable(ctx, rel); err != nil {
+		return err
 	}
 
 	// Backfill the shape's FirstSeenLSN if it is the "0/0" placeholder. Shapes
@@ -402,10 +552,10 @@ func (h *CDCHandler) handleInsert(
 	rec := sdk.Util.Source.NewRecordCreate(
 		h.buildPosition(lsn),
 		h.buildRecordMetadata(rel, rawJSON, nil),
-		h.buildRecordKey(newValues, rel.RelationName),
+		h.buildRecordKey(newValues, h.tableName(rel)),
 		h.buildRecordPayload(newValues),
 	)
-	h.attachSchemas(rec, rel.RelationName)
+	h.attachSchemas(rec, h.tableName(rel))
 	h.addToBatch(ctx, rec)
 
 	return nil
@@ -427,6 +577,9 @@ func (h *CDCHandler) handleUpdate(
 
 	rel, err := h.relationSet.Get(msg.RelationID)
 	if err != nil {
+		return err
+	}
+	if err := h.checkTable(ctx, rel); err != nil {
 		return err
 	}
 
@@ -513,11 +666,11 @@ func (h *CDCHandler) handleUpdate(
 	rec := sdk.Util.Source.NewRecordUpdate(
 		h.buildPosition(lsn),
 		h.buildRecordMetadata(rel, rawJSON, rawJSONBefore),
-		h.buildRecordKey(newValues, rel.RelationName),
+		h.buildRecordKey(newValues, h.tableName(rel)),
 		before,
 		h.buildRecordPayload(newValues),
 	)
-	h.attachSchemas(rec, rel.RelationName)
+	h.attachSchemas(rec, h.tableName(rel))
 	h.addToBatch(ctx, rec)
 
 	return nil
@@ -543,6 +696,9 @@ func (h *CDCHandler) handleDelete(
 	if err != nil {
 		return err
 	}
+	if err := h.checkTable(ctx, rel); err != nil {
+		return err
+	}
 
 	// Backfill the shape's FirstSeenLSN — see handleInsert.
 	h.backfillFirstSeenLSN(rel, lsn)
@@ -563,7 +719,7 @@ func (h *CDCHandler) handleDelete(
 	// comes from the old row. Before is only emitted for a full old row.
 	var rawJSON []string
 	// guard: logrepl-json-delete-key-named tests=^TestHandler_JSONRawBytes_Key$
-	if keyColumn := h.tableKeys[rel.RelationName]; slices.Contains(rawJSONBefore, keyColumn) {
+	if keyColumn := h.tableKeys[h.tableName(rel)]; slices.Contains(rawJSONBefore, keyColumn) {
 		rawJSON = []string{keyColumn}
 	}
 	before := h.buildRecordBefore(msg.OldTupleType, oldValues)
@@ -572,14 +728,14 @@ func (h *CDCHandler) handleDelete(
 	}
 	h.warnRawJSON(ctx, rel, oldValues, append(slices.Clone(rawJSON), rawJSONBefore...))
 
-	key := h.buildRecordKey(oldValues, rel.RelationName)
+	key := h.buildRecordKey(oldValues, h.tableName(rel))
 	// Invariant 3: a delete with a null key cannot be applied downstream (the
 	// Postgres destination turns it into `WHERE id IS NULL`, matches nothing
 	// and acks), so the row would silently survive. Open refuses tables whose
 	// replica identity does not cover the key column; this catches the same
 	// condition if the identity is changed while the pipeline runs.
 	// guard: logrepl-delete-null-key-refused tests=^TestHandler_Delete_NullKeyHalts$
-	if err := h.requireDeleteKey(key, rel.RelationName, lsn); err != nil {
+	if err := h.requireDeleteKey(key, h.tableName(rel), lsn); err != nil {
 		return err
 	}
 
@@ -589,7 +745,7 @@ func (h *CDCHandler) handleDelete(
 		key,
 		before,
 	)
-	h.attachSchemas(rec, rel.RelationName)
+	h.attachSchemas(rec, h.tableName(rel))
 	h.addToBatch(ctx, rec)
 
 	return nil
@@ -619,7 +775,7 @@ func (h *CDCHandler) addToBatch(ctx context.Context, rec opencdc.Record) {
 // is not valid UTF-8, rawJSONBefore those in Before (types.JSONPolicy).
 func (h *CDCHandler) buildRecordMetadata(rel *pglogrepl.RelationMessage, rawJSON, rawJSONBefore []string) map[string]string {
 	m := map[string]string{
-		opencdc.MetadataCollection: rel.RelationName,
+		opencdc.MetadataCollection: h.tableName(rel),
 	}
 	// Invariant 6: every base64 value is named, so a consumer decodes exactly
 	// those and never mistakes one for JSON text.
@@ -641,10 +797,10 @@ func (h *CDCHandler) warnRawJSON(ctx context.Context, rel *pglogrepl.RelationMes
 		return
 	}
 	row := ""
-	if keyColumn := h.tableKeys[rel.RelationName]; keyColumn != "" {
+	if keyColumn := h.tableKeys[h.tableName(rel)]; keyColumn != "" {
 		row = pginternal.RowRef(map[string]any{keyColumn: values[keyColumn]})
 	}
-	h.json.WarnRawBytes(sdk.Logger(ctx), "cdc", rel.RelationName, row, columns)
+	h.json.WarnRawBytes(sdk.Logger(ctx), "cdc", h.tableName(rel), row, columns)
 }
 
 // buildRecordKey takes the values from the message and extracts the key that
@@ -1465,31 +1621,23 @@ func (h *CDCHandler) updateAvroSchema(ctx context.Context, rel *pglogrepl.Relati
 // registerAvro registers the payload and key schema texts of rel and makes
 // them the schemas attached to rel's next records.
 func (h *CDCHandler) registerAvro(ctx context.Context, rel *pglogrepl.RelationMessage, texts relationAvro) error {
+	name := h.tableName(rel)
+
 	// Payload schema
-	ps, err := h.createSchema(
-		ctx,
-		cschema.TypeAvro,
-		rel.RelationName+"_payload",
-		texts.payload,
-	)
+	ps, err := h.createSchema(ctx, cschema.TypeAvro, name+"_payload", texts.payload)
 	if err != nil {
 		return fmt.Errorf("failed creating payload schema for relation %v: %w",
-			rel.RelationName, &schema.SubjectError{Subject: rel.RelationName + "_payload", Err: err})
+			name, &schema.SubjectError{Subject: name + "_payload", Err: err})
 	}
-	h.payloadSchemas[rel.RelationName] = ps
+	h.payloadSchemas[name] = ps
 
 	// Key schema
-	ks, err := h.createSchema(
-		ctx,
-		cschema.TypeAvro,
-		rel.RelationName+"_key",
-		texts.key,
-	)
+	ks, err := h.createSchema(ctx, cschema.TypeAvro, name+"_key", texts.key)
 	if err != nil {
 		return fmt.Errorf("failed creating key schema for relation %v: %w",
-			rel.RelationName, &schema.SubjectError{Subject: rel.RelationName + "_key", Err: err})
+			name, &schema.SubjectError{Subject: name + "_key", Err: err})
 	}
-	h.keySchemas[rel.RelationName] = ks
+	h.keySchemas[name] = ks
 
 	return nil
 }
@@ -1513,7 +1661,7 @@ func (h *CDCHandler) relationAvroText(ctx context.Context, rel *pglogrepl.Relati
 	if err != nil {
 		return relationAvro{}, err
 	}
-	ra, err := buildRelationAvro(rel, notNull, h.tableKeys[rel.RelationName])
+	ra, err := buildRelationAvro(rel, notNull, h.tableKeys[h.tableName(rel)])
 	if err != nil {
 		return relationAvro{}, err
 	}
@@ -1522,7 +1670,12 @@ func (h *CDCHandler) relationAvroText(ctx context.Context, rel *pglogrepl.Relati
 }
 
 // buildRelationAvro builds the payload and key schema texts of rel with the
-// given nullability.
+// given nullability. The Avro record names are <relation>_payload and
+// <relation>_key with the bare relation name, as before #424, also for a
+// relation whose subjects are schema-qualified (CDCHandler.tableName): Avro
+// would read the schema as a record namespace and reject one that is not a
+// valid Avro name (sales-eu, 1x), halting the source. The subject, not the
+// record name, tells the tables apart.
 func buildRelationAvro(rel *pglogrepl.RelationMessage, notNull schema.NotNull, keyColumn string) (relationAvro, error) {
 	payload, err := schema.Avro.ExtractLogrepl(rel.RelationName+"_payload", rel, notNull)
 	if err != nil {
@@ -1654,25 +1807,25 @@ func (h *CDCHandler) widenForNull(ctx context.Context, rel *pglogrepl.RelationMe
 	for _, c := range cols {
 		notNull[c] = false
 	}
-	ra, err := buildRelationAvro(rel, notNull, h.tableKeys[rel.RelationName])
+	ra, err := buildRelationAvro(rel, notNull, h.tableKeys[h.tableName(rel)])
 	if err != nil {
 		return fmt.Errorf("failed to widen avro schema: %w", err)
 	}
-	prevPayload, hadPayload := h.payloadSchemas[rel.RelationName]
+	prevPayload, hadPayload := h.payloadSchemas[h.tableName(rel)]
 	if err := h.registerAvro(ctx, rel, ra); err != nil {
 		// Nothing is widened: the cache keeps the narrow texts and the next
 		// attempt detects the NULL and widens again. If the payload was
 		// registered and the key rejected, the attached payload schema goes
 		// back to the narrow one too.
 		if hadPayload {
-			h.payloadSchemas[rel.RelationName] = prevPayload
+			h.payloadSchemas[h.tableName(rel)] = prevPayload
 		} else {
-			delete(h.payloadSchemas, rel.RelationName)
+			delete(h.payloadSchemas, h.tableName(rel))
 		}
 		// The key is widened too when the NULL column is the record key
 		// (a configured key that is not the primary key), so the rejected
 		// subject can be either one.
-		subject := schema.RejectedSubject(err, rel.RelationName+"_payload")
+		subject := schema.RejectedSubject(err, h.tableName(rel)+"_payload")
 		return fmt.Errorf(
 			"%s: change on table %q (WAL LSN %s) holds NULL in the column(s) %q, which the catalog declares NOT NULL "+
 				"(the column was made NOT NULL after the change was written), and the schema registry rejected the schema "+
@@ -1680,7 +1833,7 @@ func (h *CDCHandler) widenForNull(ctx context.Context, rel *pglogrepl.RelationMe
 				"Fix: allow the change on the subject %q, and on the key subject too if the column is the record key "+
 				"(T -> [\"null\", T] is BACKWARD compatible; FORWARD and FULL reject it), "+
 				"for example set its compatibility to BACKWARD or NONE, and restart; or set logrepl.withAvroSchema to false and restart",
-			ErrorCodeAvroNullInNotNullColumn, rel.RelationName, lsn, cols, subject, err, subject)
+			ErrorCodeAvroNullInNotNullColumn, h.tableName(rel), lsn, cols, subject, err, subject)
 	}
 	h.avroTexts[rel.RelationID] = ra
 	if h.widened[rel.RelationID] == nil {
@@ -1692,7 +1845,7 @@ func (h *CDCHandler) widenForNull(ctx context.Context, rel *pglogrepl.RelationMe
 		h.widened[rel.RelationID][c] = true
 		sdk.Logger(ctx).Warn().
 			Str("code", ErrorCodeAvroNullInNotNullColumn).
-			Str("table", rel.RelationName).
+			Str("table", h.tableName(rel)).
 			Str("column", c).
 			Msg("a change holds NULL in a column the catalog declares NOT NULL (the column was made NOT NULL after the change was written); " +
 				"its Avro field is now nullable and a new payload schema version is registered")
