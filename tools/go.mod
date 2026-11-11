@@ -1,6 +1,6 @@
 module github.com/conduitio/conduit-connector-postgres/tools
 
-go 1.26.9
+go 1.26.11
 
 tool (
 	github.com/conduitio/conduit-connector-sdk/conn-sdk-cli
