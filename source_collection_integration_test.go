@@ -16,9 +16,11 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-postgres/source/logrepl"
@@ -285,4 +287,91 @@ func TestSource_Collection_ReusedPublicationSameNameOtherSchema_Avro(t *testing.
 	is.Equal(subject(snap), table+"_payload")
 	is.Equal(subject(recs[0]), other+"."+table+"_payload")
 	is.Equal(subject(recs[1]), table+"_payload")
+}
+
+// shortIdentifier is a unique table name short enough to take a suffix
+// within the 63-byte identifier limit.
+func shortIdentifier(t *testing.T) string {
+	id := test.RandomIdentifier(t)
+	return "t_" + id[max(0, len(id)-20):]
+}
+
+// A rename-and-swap of a configured table (T to T_old, a copy to T) while the
+// pipeline runs: the publication the connector created still streams the
+// retired T_old (membership is by OID), and its cleanup delete must not carry
+// T's collection and key, or it would delete a live row of T downstream.
+func TestSource_Collection_RenameAndSwap(t *testing.T) {
+	ctx := test.Context(t)
+	is := is.New(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	table := shortIdentifier(t)
+	createCollectionTable(ctx, t, conn, "public", table)
+	t.Cleanup(func() {
+		_, _ = conn.Exec(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS public.%s_old", table))
+		_, _ = conn.Exec(context.Background(), fmt.Sprintf("DROP TABLE IF EXISTS public.%s_new", table))
+	})
+	execf(ctx, t, conn, "INSERT INTO public.%s VALUES (1, 'snap')", table)
+
+	s, err := openCollectionSource(ctx, t, test.RepmgrConnString, table, test.RandomIdentifier(t), false)
+	is.NoErr(err)
+	snap := readAcked(ctx, t, s, 1)[0]
+	is.Equal(snap.Metadata[opencdc.MetadataCollection], table)
+
+	execf(ctx, t, conn, "CREATE TABLE public.%s_new (LIKE public.%s INCLUDING ALL)", table, table)
+	execf(ctx, t, conn, "INSERT INTO public.%s_new SELECT * FROM public.%s", table, table)
+	execf(ctx, t, conn, "ALTER TABLE public.%s RENAME TO %s_old", table, table)
+	execf(ctx, t, conn, "ALTER TABLE public.%s_new RENAME TO %s", table, table)
+	execf(ctx, t, conn, "DELETE FROM public.%s_old WHERE id = 1", table)
+	rec := readAcked(ctx, t, s, 1)[0]
+
+	is.Equal(rec.Operation, opencdc.OperationDelete)
+	is.Equal(rec.Metadata[opencdc.MetadataCollection], "public."+table+"_old")
+	is.Equal(rec.Key, opencdc.StructuredData{})
+}
+
+// The configured table moved with SET SCHEMA and a new table created under
+// its name, both streamed: two live relations match one configured name, so
+// the source halts with postgres.source.configured_table_ambiguous instead of
+// delivering both as the configured table.
+func TestSource_Collection_TwoRelationsOneConfiguredNameHalts(t *testing.T) {
+	ctx := test.Context(t)
+	is := is.New(t)
+	conn := test.ConnectSimple(ctx, t, test.RegularConnString)
+	other := createCollectionSchema(ctx, t, conn)
+	table := shortIdentifier(t)
+	createCollectionTable(ctx, t, conn, "public", table)
+	execf(ctx, t, conn, "INSERT INTO public.%s VALUES (1, 'snap')", table)
+
+	slot := test.RandomIdentifier(t)
+	repl := test.ConnectSimple(ctx, t, test.RepmgrConnString)
+	execf(ctx, t, repl, "CREATE PUBLICATION %s FOR TABLE public.%s", slot, table)
+
+	s, err := openCollectionSource(ctx, t, test.RepmgrConnString, table, slot, false)
+	is.NoErr(err)
+	readAcked(ctx, t, s, 1)
+
+	execf(ctx, t, conn, "ALTER TABLE public.%s SET SCHEMA %s", table, other)
+	createCollectionTable(ctx, t, conn, "public", table)
+	execf(ctx, t, repl, "ALTER PUBLICATION %s ADD TABLE public.%s", slot, table)
+	execf(ctx, t, conn, "INSERT INTO %s.%s VALUES (2, 'moved')", other, table)
+	moved := readAcked(ctx, t, s, 1)[0]
+	is.Equal(moved.Metadata[opencdc.MetadataCollection], table)
+	is.Equal(moved.Key, opencdc.StructuredData{"id": int64(2)})
+
+	execf(ctx, t, conn, "INSERT INTO public.%s VALUES (3, 'new')", table)
+	readCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	for {
+		recs, err := s.ReadN(readCtx, 1)
+		if errors.Is(err, sdk.ErrBackoffRetry) {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		is.Equal(len(recs), 0) // nothing delivered as the configured table
+		is.True(err != nil)
+		if !strings.Contains(err.Error(), logrepl.ErrorCodeConfiguredTableAmbiguous) {
+			t.Fatalf("error %q does not carry %s", err, logrepl.ErrorCodeConfiguredTableAmbiguous)
+		}
+		return
+	}
 }

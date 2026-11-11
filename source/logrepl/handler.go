@@ -50,10 +50,13 @@ type CDCHandler struct {
 	// configured table from a same-name table in another schema that a
 	// reused publication also streams (#424). nil keeps the bare relation
 	// name for every relation. unconfiguredWarned remembers the relations
-	// already warned about. Subscription goroutine only.
+	// already warned about. configuredSeen holds, per configured name, the
+	// namespace each relation OID named after it was last seen in during this
+	// run (checkTable). Subscription goroutine only.
 	tableNamespaces    map[string]ConfiguredTable
 	tableOIDs          map[uint32]string
 	unconfiguredWarned map[string]bool
+	configuredSeen     map[string]map[uint32]string
 	relationSet        *internal.RelationSet
 	// json is what to do with json text that is not valid UTF-8, the same
 	// policy relationSet decodes with (SetJSONPolicy). nil is the default,
@@ -392,16 +395,22 @@ func (h *CDCHandler) SetTableNamespaces(m map[string]ConfiguredTable) {
 // carry the same collection, key and subjects.
 //
 // A relation is a configured table when its OID (RelationID) is the one the
-// name resolved to at iterator start, so a table moved with ALTER TABLE ...
-// SET SCHEMA (or renamed) while the pipeline runs keeps its configured name
-// and key column, and its deletes keep the null-key check (invariant 3).
-// Failing that, it is one when its (namespace, name) is the resolved one: a
-// table dropped and created again under the same name has a new OID.
+// name resolved to at iterator start and its name is still the configured
+// one, so a table moved with ALTER TABLE ... SET SCHEMA while the pipeline
+// runs keeps its configured name and key column, and its deletes keep the
+// null-key check (invariant 3). A renamed table is not matched by OID: in a
+// rename-and-swap (T to T_old, T_new to T) the retired T_old would otherwise
+// take T's collection and key, and its deletes would remove live rows of T
+// downstream. Failing the OID match, a relation is a configured table when
+// its (namespace, name) is the resolved one: a table dropped and created
+// again under the same name has a new OID. checkTable refuses two live
+// relations that both match one configured name.
 //
-// Any other relation is named "<schema>.<table>". Only a publication wider
-// than the tables setting streams one: a publication that already existed
-// under logrepl.publicationName and that the connector reused, or in Debezium
-// import mode one that covers more of Debezium's tables. With the bare name, a
+// Any other relation is named "<schema>.<table>": a table renamed while the
+// pipeline runs, or a table the tables setting does not name, which only a
+// publication wider than the setting streams (one that already existed under
+// logrepl.publicationName and that the connector reused, or in Debezium
+// import mode one that covers more of Debezium's tables). With the bare name, a
 // same-name table in another schema would take the configured table's
 // collection, key column and subjects, and its rows would be merged into that
 // table downstream (#424). Invariant 6: a record never claims to come from a
@@ -410,7 +419,7 @@ func (h *CDCHandler) tableName(rel *pglogrepl.RelationMessage) string {
 	if h.tableNamespaces == nil {
 		return rel.RelationName
 	}
-	if name, ok := h.tableOIDs[rel.RelationID]; ok {
+	if name, ok := h.tableOIDs[rel.RelationID]; ok && name == rel.RelationName {
 		return name
 	}
 	if t, ok := h.tableNamespaces[rel.RelationName]; ok && t.Namespace == rel.Namespace {
@@ -419,16 +428,56 @@ func (h *CDCHandler) tableName(rel *pglogrepl.RelationMessage) string {
 	return rel.Namespace + "." + rel.RelationName
 }
 
-// warnUnconfigured logs, once per relation and process, that the publication
-// streams a table the tables setting does not name, and the collection its
-// records carry.
-func (h *CDCHandler) warnUnconfigured(ctx context.Context, rel *pglogrepl.RelationMessage) {
+// ErrorCodeConfiguredTableAmbiguous prefixes the error returned when two
+// relations both match one configured table in the same run (checkTable).
+const ErrorCodeConfiguredTableAmbiguous = "postgres.source.configured_table_ambiguous"
+
+// checkTable runs before a change of rel is turned into a record.
+//
+// It refuses a change when another relation has already been named after
+// the same configured table in this run from a different schema: the
+// configured table was moved with ALTER TABLE ... SET SCHEMA (matched by OID)
+// and a new table took its place under the configured name (matched by
+// name), or the other way round. Both would carry the configured collection
+// and key column, and one table's deletes and upserts would be applied to the
+// other downstream (#424, invariant 6). A table dropped and created again in
+// the same schema has a new OID but is not refused: the old one is gone. The
+// refusal does not recur on restart: the name is resolved again, to the table
+// that holds it then, and the other is named "<schema>.<table>".
+//
+// It also logs, once per relation and process, that the publication streams
+// a table that is not a configured table, and the collection its records
+// carry.
+func (h *CDCHandler) checkTable(ctx context.Context, rel *pglogrepl.RelationMessage) error {
 	if h.tableNamespaces == nil {
-		return
+		return nil
 	}
 	name := h.tableName(rel)
-	if _, configured := h.tableNamespaces[name]; configured || h.unconfiguredWarned[name] {
-		return
+	if _, configured := h.tableNamespaces[name]; configured {
+		if h.configuredSeen == nil {
+			h.configuredSeen = make(map[string]map[uint32]string)
+		}
+		seen := h.configuredSeen[name]
+		if seen == nil {
+			seen = make(map[uint32]string)
+			h.configuredSeen[name] = seen
+		}
+		for oid, ns := range seen {
+			// guard: logrepl-configured-table-ambiguous tests=^TestHandler_Collection_TwoRelationsOneConfiguredNameHalts$
+			if oid != rel.RelationID && ns != rel.Namespace {
+				return fmt.Errorf("%s: two tables match the configured table %q in this run: %s.%s (relation %d) "+
+					"and %s.%s (relation %d); the table was moved to another schema while the pipeline ran and "+
+					"another table took its name. Nothing was emitted for this change. Fix: restart the pipeline; "+
+					"%q is then resolved again through search_path, and the other table's records carry its "+
+					"schema-qualified name",
+					ErrorCodeConfiguredTableAmbiguous, name, ns, name, oid, rel.Namespace, rel.RelationName, rel.RelationID, name)
+			}
+		}
+		seen[rel.RelationID] = rel.Namespace
+		return nil
+	}
+	if h.unconfiguredWarned[name] {
+		return nil
 	}
 	if h.unconfiguredWarned == nil {
 		h.unconfiguredWarned = make(map[string]bool)
@@ -438,9 +487,11 @@ func (h *CDCHandler) warnUnconfigured(ctx context.Context, rel *pglogrepl.Relati
 		Str("code", WarnCodeUnconfiguredTable).
 		Str("table", name).
 		Str("collection", name).
-		Msg("the publication streams a table that is not in the tables setting; its records carry the schema-qualified " +
-			"collection, no snapshot and no key. Fix: use a publication that covers only the configured tables " +
-			"(logrepl.publicationName), or add the table to tables if it should be read")
+		Msg("the publication streams a table that is not a configured table (not in the tables setting, or renamed " +
+			"while the pipeline runs); its records carry the schema-qualified collection, no snapshot and no key. " +
+			"Fix: use a publication that covers only the configured tables (logrepl.publicationName), or add the " +
+			"table to tables if it should be read")
+	return nil
 }
 
 // WarnCodeUnconfiguredTable is the code of the warning logged when the
@@ -468,7 +519,9 @@ func (h *CDCHandler) handleInsert(
 	if err != nil {
 		return fmt.Errorf("failed getting relation %v: %w", msg.RelationID, err)
 	}
-	h.warnUnconfigured(ctx, rel)
+	if err := h.checkTable(ctx, rel); err != nil {
+		return err
+	}
 
 	// Backfill the shape's FirstSeenLSN if it is the "0/0" placeholder. Shapes
 	// are now recorded at the deciding change's LSN, but a position written by
@@ -521,7 +574,9 @@ func (h *CDCHandler) handleUpdate(
 	if err != nil {
 		return err
 	}
-	h.warnUnconfigured(ctx, rel)
+	if err := h.checkTable(ctx, rel); err != nil {
+		return err
+	}
 
 	// Backfill the shape's FirstSeenLSN — see handleInsert.
 	h.backfillFirstSeenLSN(rel, lsn)
@@ -636,7 +691,9 @@ func (h *CDCHandler) handleDelete(
 	if err != nil {
 		return err
 	}
-	h.warnUnconfigured(ctx, rel)
+	if err := h.checkTable(ctx, rel); err != nil {
+		return err
+	}
 
 	// Backfill the shape's FirstSeenLSN — see handleInsert.
 	h.backfillFirstSeenLSN(rel, lsn)

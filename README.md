@@ -356,9 +356,17 @@ first, `*` reads that schema's table.
 Every record of a configured table, snapshot and CDC, carries the configured name in
 `opencdc.collection`, and its Avro subjects are `<name>_payload` and `<name>_key`.
 CDC recognises a configured table by the table it resolved to when the source
-started, so a table moved with `ALTER TABLE ... SET SCHEMA` (or renamed) while the
-pipeline runs keeps its configured name and key column. After a restart the
-configured name is resolved again.
+started, so a table moved with `ALTER TABLE ... SET SCHEMA` while the pipeline runs
+keeps its configured name and key column. A table renamed while the pipeline runs
+is no longer the configured table: its records carry `<schema>.<new name>` and an
+empty key, so after a rename-and-swap the retired table's deletes never reach the
+configured collection. If a moved table and a new table under the configured name
+are both streamed, the source stops with
+`postgres.source.configured_table_ambiguous` instead of delivering both as the
+configured table; a restart resolves the name again. After a restart the
+configured name is resolved again, so changes replayed from before it can carry a
+different collection than when they were first delivered if the name now means
+another table.
 
 A publication that already exists under `logrepl.publicationName` is used as it is, so
 it can stream tables that are not in `tables` (in Debezium import mode, the publication

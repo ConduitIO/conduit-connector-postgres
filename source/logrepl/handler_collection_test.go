@@ -123,16 +123,14 @@ func TestHandler_Collection_NoNamespacesKeepsBareName(t *testing.T) {
 }
 
 // A configured table moved to another schema (ALTER TABLE ... SET SCHEMA)
-// while the pipeline runs keeps its OID, so it keeps its configured name and
-// key column, and a delete with a missing key is still refused (invariant 3).
-// A table dropped and created again under the same name has a new OID and is
-// matched by (namespace, name).
+// while the pipeline runs keeps its OID and its name, so it keeps its
+// configured name and key column, and a delete with a missing key is still
+// refused (invariant 3).
 func TestHandler_Collection_ConfiguredTableMatchedByOID(t *testing.T) {
 	ctx := context.Background()
 	is := is.New(t)
 	h, ch, _ := newCollectionTestHandler(false)
-	addRelation(h, 1, "moved", "users")  // the Relation message after SET SCHEMA
-	addRelation(h, 3, "public", "users") // dropped and created again
+	addRelation(h, 1, "moved", "users") // the Relation message after SET SCHEMA
 
 	is.NoErr(h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 1, Tuple: tuple(txt("7"), txt("x"))}, 1))
 	rec := (<-ch)[0]
@@ -151,11 +149,70 @@ func TestHandler_Collection_ConfiguredTableMatchedByOID(t *testing.T) {
 	}, 3)
 	is.True(err != nil)
 	is.True(strings.HasPrefix(err.Error(), ErrorCodeReplicaIdentityExcludesKey))
+}
 
-	is.NoErr(h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 3, Tuple: tuple(txt("8"), txt("y"))}, 4))
-	rec = (<-ch)[0]
+// A configured table renamed while the pipeline runs is not matched by OID.
+// In a rename-and-swap (users to users_old, a copy to users) the retired
+// table's delete must not carry the configured collection and key: it would
+// delete a live row of users downstream.
+func TestHandler_Collection_RenamedTableNotMatchedByOID(t *testing.T) {
+	ctx := context.Background()
+	is := is.New(t)
+	h, ch, _ := newCollectionTestHandler(false)
+	addRelation(h, 1, "public", "users_old") // the configured table, renamed
+	addRelation(h, 3, "public", "users")     // the copy, renamed to users
+
+	is.NoErr(h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: 3, Tuple: tuple(txt("2"), txt("x"))}, 1))
+	rec := (<-ch)[0]
 	is.Equal(rec.Metadata[opencdc.MetadataCollection], "users")
-	is.Equal(rec.Key, opencdc.StructuredData{"id": int64(8)})
+	is.Equal(rec.Key, opencdc.StructuredData{"id": int64(2)})
+
+	is.NoErr(h.handleDelete(ctx, &pglogrepl.DeleteMessage{
+		RelationID: 1, OldTupleType: pglogrepl.DeleteMessageTupleTypeKey, OldTuple: tuple(txt("1"), null()),
+	}, 2))
+	rec = (<-ch)[0]
+	is.Equal(rec.Metadata[opencdc.MetadataCollection], "public.users_old")
+	is.Equal(rec.Key, opencdc.StructuredData{})
+}
+
+// A table dropped and created again under the same name has a new OID and is
+// matched by (namespace, name); the old relation is gone, so this is not two
+// relations for one configured name.
+func TestHandler_Collection_DroppedAndRecreated(t *testing.T) {
+	ctx := context.Background()
+	is := is.New(t)
+	h, ch, _ := newCollectionTestHandler(false)
+	addRelation(h, 3, "public", "users")
+	for i, id := range []uint32{1, 3} {
+		is.NoErr(h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: id, Tuple: tuple(txt("8"), txt("y"))}, pglogrepl.LSN(i+1)))
+		rec := (<-ch)[0]
+		is.Equal(rec.Metadata[opencdc.MetadataCollection], "users")
+		is.Equal(rec.Key, opencdc.StructuredData{"id": int64(8)})
+	}
+}
+
+// The configured table moved with SET SCHEMA (matched by OID) and a new
+// table under the configured name (matched by name) are two live relations
+// for one configured name: the change is refused, in either order, and
+// nothing is emitted for it.
+func TestHandler_Collection_TwoRelationsOneConfiguredNameHalts(t *testing.T) {
+	ctx := context.Background()
+	for _, order := range [][2]uint32{{1, 3}, {3, 1}} {
+		is := is.New(t)
+		h, ch, _ := newCollectionTestHandler(false)
+		addRelation(h, 1, "archive", "users") // the configured table, moved
+		addRelation(h, 3, "public", "users")  // a new table in its place
+
+		is.NoErr(h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: order[0], Tuple: tuple(txt("1"), txt("secret-a"))}, 1))
+		<-ch
+		err := h.handleInsert(ctx, &pglogrepl.InsertMessage{RelationID: order[1], Tuple: tuple(txt("1"), txt("secret-b"))}, 2)
+		is.True(err != nil)
+		is.True(strings.HasPrefix(err.Error(), ErrorCodeConfiguredTableAmbiguous+": "))
+		is.True(strings.Contains(err.Error(), "archive.users"))
+		is.True(strings.Contains(err.Error(), "public.users"))
+		is.True(!strings.Contains(err.Error(), "secret")) // never a value
+		is.Equal(len(ch), 0)
+	}
 }
 
 // A schema name that is not a valid Avro name must not halt the source: the
