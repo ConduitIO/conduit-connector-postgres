@@ -219,7 +219,7 @@ func launch(ctx context.Context, args []string) error {
 	guardSHA := fs.String("guard-sha", "", "commit of the guarded arm (the default URL, cache_statement with the schema guard); "+
 		"it also supplies run.sh and the benchmark config (required)")
 	benchTag := fs.String("bench-tag", "pg367-"+time.Now().UTC().Format("20060102"), `value of the "conduit-bench" tag on every resource`)
-	goVersion := fs.String("go-version", "1.26.9", "Go toolchain on the instance; match go.mod")
+	goVersion := fs.String("go-version", "1.26.11", "Go toolchain on the instance; match go.mod")
 	_ = fs.Parse(args)
 
 	if *manifestPath == "" || *account == "" {
