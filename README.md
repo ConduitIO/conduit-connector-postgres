@@ -339,6 +339,31 @@ position, with the error code `postgres.source.slot_invalidated`. `logrepl.allow
 does not apply. Drop the slot (`SELECT pg_drop_replication_slot('<slot>')`), then
 re-snapshot as above; a pipeline with no position only needs the slot dropped.
 
+### Table Names and `opencdc.collection`
+
+Each entry in `tables` is one table name, quoted as a single identifier and found
+through the connection's `search_path`, the same way for the snapshot, the primary key
+lookup and the publication the connector creates. Case is kept (`Orders` and `orders`
+are two tables). A name with a dot is not split into schema and table: `public.orders`
+looks for a table named `public.orders` and, when there is none, the source refuses to
+start (`relation "public.orders" does not exist`). To read a table outside `public`,
+put its schema in the connection's `search_path` (for example `&search_path=sales,public`
+in `url`) and list the table by its bare name. `*` lists the tables of the `public`
+schema.
+
+Every record of a configured table, snapshot and CDC, carries the configured name in
+`opencdc.collection`, and its Avro subjects are `<name>_payload` and `<name>_key`.
+
+A publication that already exists under `logrepl.publicationName` is used as it is, so
+it can stream tables that are not in `tables` (in Debezium import mode, the publication
+can cover more of Debezium's tables). The records of such a table carry the
+schema-qualified name, `<schema>.<table>`, in `opencdc.collection` and in their Avro
+subjects, have no snapshot and an empty key, and the connector logs a `WARN` with the
+code `postgres.source.unconfigured_table` once per table. Up to v0.21.0 they carried
+the bare table name, so a same-name table in another schema was merged into the
+configured table's collection and keyed by its key column. Use a publication that
+covers only the configured tables.
+
 ### Key Handling
 
 The connector will automatically look up the primary key column for the specified tables
@@ -1123,7 +1148,11 @@ pipelines:
         type: source
         settings:
           # Tables is a List of table names to read from, separated by a comma,
-          # e.g.:"table1,table2". Use "*" if you'd like to listen to all tables.
+          # e.g.:"table1,table2". Use "*" if you'd like to listen to all tables
+          # of the public schema. Each name is one identifier, case-sensitive,
+          # found through the connection's search_path; a dot does not separate
+          # a schema. Records carry the name as configured in
+          # opencdc.collection.
           # Type: string
           # Required: yes
           tables: ""

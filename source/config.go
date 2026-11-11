@@ -59,7 +59,10 @@ type Config struct {
 	URL string `json:"url" validate:"required"`
 
 	// Tables is a List of table names to read from, separated by a comma, e.g.:"table1,table2".
-	// Use "*" if you'd like to listen to all tables.
+	// Use "*" if you'd like to listen to all tables of the public schema.
+	// Each name is one identifier, case-sensitive, found through the
+	// connection's search_path; a dot does not separate a schema. Records
+	// carry the name as configured in opencdc.collection.
 	Tables []string `json:"tables" validate:"required"`
 
 	// SnapshotMode is whether the plugin will take a snapshot of the entire table before starting cdc mode.
